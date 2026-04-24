@@ -1,0 +1,73 @@
+
+CRS:
+  for_distances: 3857
+  standard: 4326
+
+Testcase:
+  id_delta1: 4267691
+
+Delta_masks:
+  scale_factor: 1.1 # factor to scale s1, rm and s2 if partially intersecting with coastline
+  min_delta_area: 1  # Minimum delta area (km2) below which a delta is excluded from processing.
+  bbox_delta: 500_000 # Buffer added around each delta bounding box when clipping supporting data.
+  tolerance_deg: 0.01 # Buffer around polygons (especially coastline) for difference with basins
+  snap_distance_rivers: 0.02
+
+DomainSchema:
+  geometry_lbl: 'geometry'  # default column name assumed for any polygon or water shed basin to contain the coordinates
+  delta_id_lbl: 'BasinID2'  # asserted column name to distinguish between different Geometries for different deltas. Original from Edmonds et al. (2020)
+  area_lbl: 'area'  #
+
+Rivers:
+  glofas_min_discharge: 100  # m3/s: to identify which cells to consider. TODO: proper analysis and determine Q2
+  glofas_discharge_parameter: 'dis24' # TODO needs to be modified when Q2 value is added.
+  glofas_lon_name: 'longitude'  # name in Glofas dataframe for longitudinal coordinates
+  glofas_lat_name: 'latitude'  # name in Glofas dataframe for lattitudinal coordinates
+
+
+LandUse:
+  code_builtup: 50
+
+filepaths:
+  ## Inputs
+  delta_polygons_original: '../src/input_processing/data/DeltaWebs/769_DeltaWebs.shp'
+  hand_picked_deltas: '../src/input_processing/data/DeltaWebs/40_deltas.geojson'
+  land_use: '../src/input_processing/data/Copernicus_LandUse.tif'
+  coastline: '../src/input_processing/data/osm_coastlines-db.gpkg'
+  river: '../src/input_processing/data/rivers_lin.gpkg'
+  river_grit: '../src/input_processing/data/GRIT/GRITv1.0_segments_NA_EPSG4326.gpkg'
+  river_sword: '../src/input_processing/data/Global_rivers.gpkg'
+  river_basins_applied: '../src/modelling_framework/static_data/HydroBasins/hybas_global_merged_lev06.shp'
+  river_basins_lvl04: '../src/modelling_framework/static_data/HydroBasins/hybas_global_merged_levlev04.shp'
+  river_basins_lvl05: '../src/modelling_framework/static_data/HydroBasins/hybas_global_merged_levlev05.shp'
+  river_basins_lvl06: '../src/modelling_framework/static_data/HydroBasins/hybas_global_merged_levlev06.shp'
+  river_basins_lvl07: '../src/modelling_framework/static_data/HydroBasins/hybas_global_merged_levlev07.shp'
+  delta_polygons_used: '../src/modelling_framework/static_data/HydroBasins/delta_masks_subset.gpkg'
+
+
+
+  glofas: '../src/input_processing/data/GloFAS/data_version-4.0_consolidated.nc'
+
+  ## Outputs
+  output: '../src/modelling_framework/static_data/delta_masks_Edmonds_modified.gpkg'
+  new_domains: '../src/modelling_framework/static_data/basin_delta_domains.gpkg'
+  unique_sources: '../src/modelling_framework/static_data/unique_river_source_points.gpkg'
+  possible_sources: '../src/input_processing/data/validation/all_possible_river_source_points.gpkg'
+  out_deltas_no_rivers: '../src/input_processing/data/validation/deltas_no_river_sources.gpkg'
+
+  # Validation / Calibration only
+  out_river_basins_lvl04: '../src/input_processing/data/validation/basin_delta_domains_lvl04.gpkg'
+  out_river_basins_lvl05: '../src/input_processing/data/validation/basin_delta_domains_lvl05.gpkg'
+  out_river_basins_lvl06: '../src/input_processing/data/validation/basin_delta_domains_lvl06.gpkg'
+  out_river_basins_lvl07: '../src/input_processing/data/validation/basin_delta_domains_lvl07.gpkg'
+
+  mismatched_polygons: '../src/input_processing/data/validation/deltas_no_river.gpkg'
+
+
+
+  ## Storage_figures
+  test_masks: "../figures/validation/river_input/delta_polygons/"
+  statistics_delta_domains: "../figures/validation/river_input/delta_polygons/statistics_delta_domains.png"
+  delta_domain_test: "../figures/validation/river_input/delta_polygons/delta_domain_test"
+  debug_river_sources: "../figures/validation/river_input/debug_sources/missing_sources"
+  river_sources_plots: "../figures/validation/river_input/domains_with_rivers/available_sources"

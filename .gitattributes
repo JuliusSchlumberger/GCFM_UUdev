@@ -1,0 +1,26 @@
+# .gitattributes
+
+# Default — normalize all text files to LF in the repo,
+# convert to OS line endings on checkout
+* text=auto
+
+# Explicitly enforce LF for these types (even on Windows checkout)
+*.py    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.md    text eol=lf
+*.toml  text eol=lf
+*.cfg   text eol=lf
+*.ini   text eol=lf
+*.sh    text eol=lf
+
+# GeoJSON and spatial formats — LF only, binary-safe
+*.geojson  text eol=lf
+*.json     text eol=lf
+
+# Treat binary files as binary — no line ending conversion
+*.gpkg  binary
+*.nc    binary
+*.tif   binary
+*.png   binary
+*.jpg   binary

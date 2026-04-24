@@ -1,0 +1,234 @@
+meta:
+  version: '1'
+  name: data_catalog_v1
+  root: C:/Users/Schlu005/GCFM_UU/input
+
+# 40_delta_polygons: # ogiginal deltas (edmonds)
+#   data_type: GeoDataFrame
+#   driver:
+#     name: pyogrio
+#   metadata:
+#     crs: 4326
+#   uri: 40_delta_polygons.geojson
+
+4_delta_polygons: # edited domains, but too big to run on local computer
+  data_type: GeoDataFrame
+  driver:
+    name: pyogrio
+  metadata:
+    crs: 4326
+  uri: 4_delta_polygons.geojson
+
+4_small_deltas: # edited domains
+ data_type: GeoDataFrame
+ driver:
+   name: pyogrio
+ metadata:
+   crs: 4326
+ uri: 4_small_deltas.geojson
+
+global_SWORD_old: # works
+  data_type: GeoDataFrame
+  driver:
+    name: pyogrio
+  metadata:
+    category: hydrography
+    crs: 4326
+    notes: SWORD data
+  uri: Global_rivers.gpkg
+
+global_SWORD_network: # gives error (projection thing i think)
+  data_type: GeoDataFrame
+  driver:
+    name: pyogrio
+  metadata:
+    category: hydrography
+    crs: 4326
+    notes: SWORD data
+  uri: SWORD_global_unpublished.gpkg
+
+global_rivers_lin:
+  data_type: GeoDataFrame
+  driver:
+   name: pyogrio
+  metadata:
+    category: hydrography
+    crs: 4326
+    notes: https://zenodo.org/records/3552776
+  uri: rivers_lin.gpkg
+
+merit: # not on p-drive
+  data_type: RasterDataset
+  driver:
+    name: raster_xarray
+  metadata:
+    crs: 4326
+    paper_doi: 10.1002/2017GL072874
+    paper_ref: Yamazaki et al. (2018)
+    source_license: CC-BY-NC 4.0 or ODbL 1.0
+    source_url: p://hydro.iis.u-tokyo.ac.jp/~yamadai/MERIT_DEM/
+    source_version: 1.0.3
+  uri: merit.nc
+  # uri: P:/wflow_global/hydromt/topography/merit/merit.nc
+
+gebco: # dont have enough space for this folder on my loca computer
+  data_type: RasterDataset
+  driver:
+    name: rasterio
+  metadata:
+    crs: 4326
+    paper_doi: 10.5285/a29c5465-b138-234d-e053-6c86abc040b9
+    paper_ref: Weatherall et al (2020)
+    source_license: https://www.gebco.net/data_and_products/gridded_bathymetry_data/#a1
+    source_url: https://www.bodc.ac.uk/data/open_download/gebco/gebco_2020/geotiff/
+    source_version: '2020'
+    unit: m+MSL
+#  uri: P:/wflow_global/hydromt/bathymetry/gebco/gebco.vrt
+  uri: gebco_clipped.tif
+
+esa_worldcover: # dont have enough space for this folder on my local computer
+  data_type: RasterDataset
+  driver:
+    name: rasterio
+    options:
+      chunks:
+        x: 2048
+        y: 2048
+  metadata:
+    crs: 4326
+    source_license: CC BY 4.0
+    source_url: https://doi.org/10.5281/zenodo.5571936
+    source_version: v100
+#  uri: P:/wflow_global/hydromt/landuse/esa_worldcover/esa-worldcover.vrt
+  uri: Copernicus_LandUse.tif
+
+esa_worldcover_mapping:
+  data_type: DataFrame
+  driver:
+    name: pandas
+  metadata:
+    category: landuse
+    notes: Manning Roughness values for each ESA World Cover class
+  uri: esa_worldcover_mapping.csv
+
+gcn250:
+  data_type: RasterDataset
+  driver:
+    name: rasterio
+  metadata:
+    category: soil
+    paper_doi: 10.1038/s41597-019-0155-x
+    paper_ref: Jaafar et al. (2019)
+    source_license: CC BY 4.0
+    source_url: https://doi.org/10.6084/m9.figshare.7756202.v1
+    source_version: v1
+  uri: gcn250/GCN250_ARCII.tif
+
+combined_dataset_deltas:
+  data_type: DataFrame
+  driver:
+    name: pandas
+  uri: Combined_dataset_global_deltas.xlsx
+
+deltadtm:
+  data_type: RasterDataset
+  driver:
+    name: rasterio
+    options:
+      chunks:
+        x: 1000
+        y: 1000
+  metadata:
+    category: topography
+    source_url: https://data.4tu.nl/datasets/1da2e70f-6c4d-4b03-86bd-b53e789cc629
+    source_version: 1.1.1
+  uri: DeltaDTM/deltadtm_v1_1.vrt
+
+osm_water: # dont have enough space for this folder on my local computer
+  data_type: GeoDataFrame
+  driver:
+    name: pyogrio
+  metadata:
+    category: geography
+    crs: 4326
+  uri: osm_coastlines-db.gpkg
+
+# gtsm_codec_reanalysis: # from sanne - works
+#   data_adapter:
+#     rename:
+#       station_x_coordinate: lon
+#       station_y_coordinate: lat
+#       stations: index
+#   data_type: GeoDataset
+#   driver:
+#     name: geodataset_xarray
+#     options:
+#       chunks: {stations: 100, time: 1500}
+#       combine: by_coords
+#       decode_times: true
+#       parallel: true
+#   metadata:
+#     category: ocean
+#     crs: 4326
+#     paper_doi: 10.3389/fmars.2020.00263
+#     paper_ref: Muis et al. (2020)
+#     source_license: https://cds.climate.copernicus.eu/api/v2/terms/static/licence-to-use-copernicus-products.pdf
+#     source_url: https://doi.org/10.24381/cds.8c59054f
+#     source_version: v1
+#   uri: P:/archivedprojects_tmp/11210221-gtsm-reanalysis/GTSM-ERA5-E_dataset/waterlevel/reanalysis_waterlevel_hourly_{year}_{month:02d}_v3.nc
+
+merit_hydro:
+  data_type: RasterDataset
+  driver:
+    name: rasterio
+    options:
+      chunks:
+        x: 6000
+        y: 6000
+  metadata:
+    crs: 4326
+    category: topography
+    paper_doi: 10.1029/2019WR024873
+    paper_ref: Yamazaki et al. (2019)
+    source_license: CC-BY-NC 4.0 or ODbL 1.0
+    source_url: http://hydro.iis.u-tokyo.ac.jp/~yamadai/MERIT_Hydro
+    source_version: 1.0
+  uri: P:/wflow_global/hydromt/topography/merit_hydro/*.vrt
+  data_adapter:
+    rename:
+      bas: basins
+      dir: flwdir
+      elv: elevtn
+      slp: lndslp
+      sto: strord
+      upa: uparea
+      upg: upgrid
+      wth: rivwth
+
+
+gtsm_codec_reanalysis_waterlevel_hourly: # works
+  data_adapter:
+    rename:
+      station_x_coordinate: lon
+      station_y_coordinate: lat
+      stations: index
+  data_type: GeoDataset
+  driver:
+    name: geodataset_xarray
+    options:
+      chunks: {stations: 100, time: 1500}
+      combine: by_coords
+      decode_times: true
+      parallel: true
+  metadata:
+    category: ocean
+    crs: 4326
+    paper_doi: 10.3389/fmars.2020.00263
+    paper_ref: Muis et al. (2020)
+    source_license: https://cds.climate.copernicus.eu/api/v2/terms/static/licence-to-use-copernicus-products.pdf
+    source_url: https://doi.org/10.24381/cds.8c59054f
+    source_version: v1
+  uri: reanalysis_waterlevel_hourly_2018_12.nc
+
+
+grit:

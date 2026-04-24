@@ -1,0 +1,14 @@
+site_name: Global Compound Flood Model Utrecht University
+
+theme:
+  name: material
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+
+nav:
+  - Home: index.md
