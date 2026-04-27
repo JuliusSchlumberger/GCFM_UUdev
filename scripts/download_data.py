@@ -1,15 +1,44 @@
-from src.input_processing.utils.download_DeltaDTM_data import *
+"""Command-line entry point for downloading the DeltaDTM dataset.
+
+Delegates to :func:`run_download`, which reads the configured CSV file,
+auto-detects the URL column, and downloads all listed TIF files to the
+configured output directory.
+
+Example:
+    Run from the command line::
+
+        python scripts/download_data.py
+
+    Or call programmatically::
+
+        >>> from scripts.download_data import main
+        >>> main()
+"""
+
+from __future__ import annotations
+
+from src.input_processing.utils.download_DeltaDTM_data import run_download
 
 
+def main() -> None:
+    """Download all DeltaDTM TIF files listed in the configured CSV.
 
-def main():
-    # parser = argparse.ArgumentParser(description="Modify Edmond et al. 2020 polygons to include the entire coastline of a delta")
-    # # parser.add_argument("--choice",
-    # #                     help="Select which parts of the input processing you want to operate. The following are currently implemented: 'validate_glofas', ...", required=True)
-    # # parser.add_argument("--delta", help="specify which delta to run scripts for, see /config/decision.yaml for options",
-    # #                     default="id_delta1")
-    #
-    # args = parser.parse_args()
+    Thin entry point that calls :func:`run_download` with no arguments,
+    using all file paths and settings defined in
+    :mod:`download_DeltaDTM_data`.
+
+    Returns:
+        None. Downloaded files are written to ``OUTPUT_DIR`` and any failures
+        are logged to ``FAILED_LOG`` as defined in
+        :mod:`download_DeltaDTM_data`.
+
+    Raises:
+        SystemExit: If the configured CSV file does not exist or no URL
+            column can be detected (propagated from :func:`run_download`).
+
+    Example:
+        >>> main()
+    """
     run_download()
 
 

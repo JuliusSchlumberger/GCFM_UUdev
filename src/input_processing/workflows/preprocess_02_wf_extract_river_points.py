@@ -1,61 +1,69 @@
-"""
-Extracts river source points for each delta domain polygon.
+"""Workflow for extracting river source points across all delta domain polygons.
 
 Reads the pre-built basin domains and for each delta finds the most-downstream
 GloFAS discharge cells that can serve as model inflow points.
 
-Performance notes
------------------
-- All heavy files (rivers, coastline, GloFAS) are loaded ONCE via
-  ``load_global_data()`` before the loop.
-- Per-delta subsets are derived via ``load_data_delta_domain()`` using
-  coordinate indexing (.cx) and xarray slicing — no repeated file I/O.
-- Basin and delta lookups use pre-built dicts (O(1) per delta).
-- GloFAS dataset is periodically re-opened to prevent file-handle / lazy-graph
-  accumulation from crashing the process after many iterations.
+Performance notes:
+    - All heavy files (rivers, coastline, GloFAS) are loaded once via
+      :func:`load_global_data` before the loop.
+    - Per-delta subsets are derived via :func:`load_data_delta_domain` using
+      coordinate indexing (``.cx``) and xarray slicing — no repeated file I/O.
+    - Basin and delta lookups use pre-built dicts (O(1) per delta).
+    - GloFAS is periodically re-opened every ``_GLOFAS_RELOAD_INTERVAL``
+      iterations to prevent xarray lazy-graph accumulation from causing
+      slowdowns or crashes.
+    - Accumulated results are flushed to disk every ``_FLUSH_INTERVAL``
+      successful iterations to cap peak memory usage.
+
+Example:
+    >>> from src.input_processing.workflows.preprocess_02_wf_extract_river_points import (
+    ...     extract_points,
+    ... )
+    >>> extract_points()
 """
 
 from __future__ import annotations
 
 import gc
 from pathlib import Path
+from typing import cast
 
 import geopandas as gpd
 import pandas as pd
-from geopandas import GeoDataFrame, GeoSeries
-from shapely.geometry import MultiLineString, LineString, Polygon
-from shapely.geometry.base import BaseGeometry
 import xarray as xr
+from geopandas import GeoDataFrame, GeoSeries
+from collections.abc import Hashable
+from shapely.geometry import LineString, MultiLineString, Polygon
+from shapely.geometry.base import BaseGeometry
 
 from src.input_processing.config.loader import config
-from src.input_processing.utils.util_unify_typing_and_schema import (
-    ensure_valid_schema,
-    CRS_STANDARD,
-    BASIN_COL,
-    GEOM_COL,
+from src.input_processing.utils.loading_files import (
+    GlobalData,
+    load_data_delta_domain,
+    load_global_data,
 )
 from src.input_processing.utils.preprocess_02_ut_extract_river_points import (
-    extract_cells_within_delta,
     clip_basin_boundary_from_coast,
+    extract_cells_within_delta,
 )
-
+from src.input_processing.utils.util_unify_typing_and_schema import (
+    BASIN_COL,
+    CRS_STANDARD,
+    GEOM_COL,
+    ensure_valid_schema,
+)
 from src.input_processing.utils.validation.modify_delta_masks import classify_points
-from src.input_processing.utils.loading_files import (
-    load_global_data,
-    load_data_delta_domain,
-    GlobalData,
-)
-from typing import cast
-
 
 # ---------------------------------------------------------------------------
-# How often to re-open the GloFAS dataset.
-# xarray builds up a lazy computation graph on each .sel() slice — after
-# many iterations this graph grows large enough to cause slowdowns or crashes.
-# Re-opening closes the old graph and starts fresh.
+# Tuning constants
 # ---------------------------------------------------------------------------
-_FLUSH_INTERVAL: int = 5  # write to disk every N successful results
-_GLOFAS_RELOAD_INTERVAL: int = 5  # also reduce this from 10 to 5
+
+_FLUSH_INTERVAL: int = 5
+"""Write accumulated results to disk every this many successful iterations."""
+
+_GLOFAS_RELOAD_INTERVAL: int = 5
+"""Re-open the GloFAS dataset every this many iterations to clear the lazy graph."""
+
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -63,18 +71,43 @@ _GLOFAS_RELOAD_INTERVAL: int = 5  # also reduce this from 10 to 5
 
 
 def _is_empty(gdf: GeoDataFrame | None) -> bool:
-    """Return True when *gdf* is None or contains no rows."""
+    """Return True when *gdf* is None or contains no rows.
+
+    Args:
+        gdf: GeoDataFrame to check, or None.
+
+    Returns:
+        True if *gdf* is None or has no rows; False otherwise.
+
+    Example:
+        >>> _is_empty(None)
+        True
+        >>> _is_empty(gpd.GeoDataFrame())
+        True
+    """
     return gdf is None or gdf.empty
 
 
 def _reload_glofas(global_data: GlobalData) -> GlobalData:
-    """
-    Close the current GloFAS dataset and re-open it.
+    """Close the current GloFAS dataset and re-open it with a fresh lazy graph.
 
-    Returns a new ``GlobalData`` instance with a fresh xarray Dataset,
-    reusing the already-loaded rivers and coastline GeoDataFrames.
-    This prevents the xarray lazy-evaluation graph from accumulating
-    across many ``.sel()`` calls, which causes slowdowns and crashes.
+    Returns a new :class:`GlobalData` instance reusing the already-loaded
+    rivers and coastline GeoDataFrames. Closing and re-opening the xarray
+    Dataset discards any accumulated lazy computation graph from previous
+    ``.sel()`` calls, which prevents the process from slowing down or crashing
+    after many iterations.
+
+    Args:
+        global_data: The current ``GlobalData`` instance whose GloFAS dataset
+            will be replaced. Rivers and coastline are reused unchanged.
+
+    Returns:
+        A new frozen :class:`GlobalData` instance with a freshly opened GloFAS
+        dataset and the same rivers and coastline as *global_data*.
+
+    Example:
+        >>> global_data = _reload_glofas(global_data)
+        [MEM] Re-opening GloFAS dataset to clear lazy graph ...
     """
     print("[MEM] Re-opening GloFAS dataset to clear lazy graph ...", flush=True)
     try:
@@ -87,10 +120,45 @@ def _reload_glofas(global_data: GlobalData) -> GlobalData:
     ).rio.write_crs(CRS_STANDARD)
 
     return GlobalData(
-        rivers=global_data.rivers,  # reuse — already in memory
-        coastline=global_data.coastline,  # reuse — already in memory
+        rivers=global_data.rivers,
+        coastline=global_data.coastline,
         glofas=fresh_glofas,
     )
+
+
+def _flush_to_disk(
+    frames: list[GeoDataFrame],
+    path: str,
+    crs: int,
+) -> None:
+    """Concatenate *frames* and append to (or create) a GeoPackage at *path*.
+
+    If the output file already exists the data is appended; if it does not
+    exist a new file is created. Does nothing if *frames* is empty.
+
+    Args:
+        frames: List of GeoDataFrames to concatenate and write. If empty,
+            the function returns immediately without touching the file.
+        path: Output file path. Must be writable; the parent directory must
+            already exist.
+        crs: EPSG code applied to the concatenated GeoDataFrame before
+            writing.
+
+    Returns:
+        None. Data is written directly to *path*.
+
+    Example:
+        >>> _flush_to_disk(all_unique_sources, "output/unique.gpkg", 4326)
+        >>> _flush_to_disk([], "output/unique.gpkg", 4326)  # no-op
+    """
+    if not frames:
+        return
+    gdf: GeoDataFrame = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs=crs)
+    p: Path = Path(path)
+    if p.exists():
+        gdf.to_file(p, driver="GPKG", mode="a")
+    else:
+        gdf.to_file(p, driver="GPKG")
 
 
 # ---------------------------------------------------------------------------
@@ -110,33 +178,49 @@ def find_river_source_points(
     all_rivers: GeoDataFrame,
     use_basins: bool = True,
 ) -> tuple[GeoDataFrame | None, GeoDataFrame | None, GeoSeries | None]:
-    """
-    Find unique and possible river source points for a single delta domain.
+    """Find unique and possible river source points for a single delta domain.
+
+    Clips the river network to the basin, derives the inland boundary either
+    from the Pfafstetter watershed or from the classified Edmonds polygon
+    vertices, then calls :func:`extract_cells_within_delta` to identify the
+    most-downstream GloFAS cells.
 
     Args:
-        delta_basins_gpd:      Basin polygons for this delta, in CRS_STANDARD.
-        delta_polygon:         Edmonds delta polygon geometry (used when
-                               ``use_basins=False``).
-        rivers_gpd:            River network clipped to the delta bounding box.
-        glofas_min:            Per-cell minimum GloFAS discharge DataArray for
-                               the delta region.
-        coast_polygon:         Union of coastline polygons for the delta region.
-        delta_edmonds:         Edmonds delta polygon GeoDataFrame (for plotting).
-        basin_polygons:        All basin polygons (for plotting context).
-        basin_polygons_domain: Basin polygons for this delta only (for plotting).
-        all_rivers:            Full river network (for plotting context).
-        use_basins:            If True, derive the inland boundary from the
-                               watershed clipped to the coast.  If False, use
-                               the classify_points fallback.
+        delta_basins_gpd: Basin polygons for this delta in ``CRS_STANDARD``.
+        delta_polygon: Edmonds delta polygon geometry. Only used when
+            ``use_basins=False``; ignored otherwise.
+        rivers_gpd: River network clipped to the delta bounding box.
+        glofas_min: Per-cell minimum GloFAS discharge DataArray for the delta
+            region, derived from the full time series.
+        coast_polygon: Union of coastline polygons for the delta region.
+            Used to subtract the seaward boundary from the basin outline.
+        delta_edmonds: Edmonds delta polygon GeoDataFrame, passed through to
+            :func:`extract_cells_within_delta` for plotting.
+        basin_polygons: All basin polygons, passed through for plot context.
+        basin_polygons_domain: Basin polygons for this delta only, passed
+            through for plotting.
+        all_rivers: Full river network for the region, passed through for
+            plot context.
+        use_basins: If True, derive the inland boundary by clipping the
+            Pfafstetter basin outline against the coastline. If False, use the
+            :func:`classify_points` fallback on the raw Edmonds polygon.
+            Defaults to True.
 
     Returns:
-        ``(unique_sources, possible_sources, buffered_cells)`` — all
-        GeoDataFrames/GeoSeries in CRS_STANDARD, or ``(None, None, None)``
-        if the inland boundary could not be derived.
+        A tuple of ``(unique_sources, possible_sources, buffered_cells)`` in
+        ``CRS_STANDARD``, or ``(None, None, None)`` if the inland boundary
+        could not be derived.
+
+    Example:
+        >>> unique, possible, cells = find_river_source_points(
+        ...     delta_basins_gpd, delta_polygon, rivers_gpd, glofas_min,
+        ...     coast_polygon, delta_edmonds, basin_polygons,
+        ...     basin_polygons_domain, all_rivers
+        ... )
     """
     # --- Clip rivers to this basin ---
     relevant_rivers: GeoDataFrame = gpd.sjoin(rivers_gpd, delta_basins_gpd, how="inner")
-    relevant_rivers = relevant_rivers[rivers_gpd.columns].copy()
+    relevant_rivers = cast(GeoDataFrame, relevant_rivers[rivers_gpd.columns].copy())
     relevant_rivers[BASIN_COL] = delta_basins_gpd[BASIN_COL].iloc[0]
 
     # --- Inland boundary ---
@@ -149,10 +233,7 @@ def find_river_source_points(
         else:
             bw, s1, s2, _, _ = classify_points(delta_polygon, coast_polygon)
             inland_boundary = MultiLineString(
-                [
-                    LineString([s1, bw]),
-                    LineString([bw, s2]),
-                ]
+                [LineString([s1, bw]), LineString([bw, s2])]
             )
     except ValueError as e:
         delta_id: int | str = delta_basins_gpd[BASIN_COL].iloc[0]
@@ -182,23 +263,45 @@ def extract_all_river_source_points(
     out_deltas_no_rivers: str = config["filepaths"]["out_deltas_no_rivers"],
     debug_plots: bool = True,
 ) -> None:
-    """
-    Iterate over all delta domains, extract river source points, and save results.
+    """Iterate over all delta domains, extract river source points, and save results.
 
-    All heavy files are loaded once before the loop.  Per-delta subsets are
-    derived via coordinate-index slicing with no repeated file I/O.
-    The GloFAS dataset is re-opened every ``_GLOFAS_RELOAD_INTERVAL`` iterations
-    to prevent xarray lazy-graph accumulation.
+    All heavy files are loaded once before the loop. Per-delta subsets are
+    derived via coordinate-index slicing with no repeated file I/O. The GloFAS
+    dataset is re-opened every ``_GLOFAS_RELOAD_INTERVAL`` iterations to
+    prevent xarray lazy-graph accumulation. Accumulated results are flushed to
+    disk every ``_FLUSH_INTERVAL`` successful iterations to cap peak memory.
 
-    Outputs three GeoPackage files:
-    - *out_unique_sources*:    Most-downstream unique inflow points per delta.
-    - *out_possible_sources*:  All candidate inflow points per delta.
-    - *out_deltas_no_rivers*:  Delta polygons for which no sources were found.
+    Args:
+        out_unique_sources: Output path for the most-downstream unique inflow
+            points per delta. Defaults to
+            ``config['filepaths']['unique_sources']``.
+        out_possible_sources: Output path for all candidate inflow points per
+            delta. Defaults to ``config['filepaths']['possible_sources']``.
+        out_deltas_no_rivers: Output path for delta polygons for which no
+            river sources were found. Defaults to
+            ``config['filepaths']['out_deltas_no_rivers']``.
+        debug_plots: If True, pass ``debug_plots=True`` through to
+            :func:`find_river_source_points` so diagnostic figures are saved
+            for each delta. Defaults to True.
+
+    Returns:
+        None. Three GeoPackage files are written to the configured output
+        paths. Each file is built incrementally via ``_flush_to_disk`` so
+        partial results are preserved even if the pipeline is interrupted.
+
+    Raises:
+        FileNotFoundError: If the delta domains or basin domains GeoPackage
+            cannot be found at the configured paths.
+
+    Example:
+        >>> extract_all_river_source_points(debug_plots=False)
+        0 ...
+        10 ...
+        Processed: 42 domains | 8 without sources.
     """
     # --- Load heavy datasets once ---
     global_data: GlobalData = load_global_data()
 
-    # --- Load and validate domain files ---
     delta_domains: GeoDataFrame = ensure_valid_schema(
         gpd.read_file(config["filepaths"]["delta_polygons_used"]),
         excluded=[],
@@ -220,8 +323,7 @@ def extract_all_river_source_points(
         cast(int | str, k): cast(GeoDataFrame, v.copy())
         for k, v in delta_domains.groupby(BASIN_COL)
     }
-    # basin_polygons_lookup reuses river_basins_gpd — same source file,
-    # no second read required.
+    # Reuses river_basins_gpd — same source file, no second read required.
     basin_polygons_lookup: dict[int | str, GeoDataFrame] = basin_lookup
 
     # --- Accumulators ---
@@ -231,43 +333,23 @@ def extract_all_river_source_points(
 
     success_count: int = 0
     fail_count: int = 0
-    flush_count: int = 0  # tracks how many times we've flushed to disk
-
-    # helper — append to a GeoPackage if it exists, create it if not
-    def _flush_to_disk(
-        frames: list[GeoDataFrame],
-        path: str,
-        crs: int,
-    ) -> None:
-        if not frames:
-            return
-        gdf = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs=crs)
-        p = Path(path)
-        if p.exists():
-            # Append to existing file
-            gdf.to_file(p, driver="GPKG", mode="a")
-        else:
-            gdf.to_file(p, driver="GPKG")
 
     # --- Per-delta loop ---
-    idx: int
+    idx: Hashable
     row: pd.Series
     for idx, row in delta_domains.iterrows():
-        if idx % 10 == 0:
-            print(f"{idx} ...")
+        idx_int: int = cast(int, idx)
+        if idx_int % 10 == 0:
+            print(f"{idx_int} ...")
 
-        # -------------------------------------------------------------------
-        # Periodic GloFAS reload — prevents xarray lazy-graph accumulation.
-        # Rivers and coastline are already fully in memory so they are reused.
-        # -------------------------------------------------------------------
-        if idx > 0 and idx % _GLOFAS_RELOAD_INTERVAL == 0:
+        # Periodic GloFAS reload — clears the xarray lazy computation graph.
+        if idx_int > 0 and idx_int % _GLOFAS_RELOAD_INTERVAL == 0:
             global_data = _reload_glofas(global_data)
             gc.collect()
 
-        polygon_id: int | str = row[BASIN_COL]
-        delta_polygon: Polygon = row[GEOM_COL]
+        polygon_id: int | str = cast(int | str, row[BASIN_COL])
+        delta_polygon: Polygon = cast(Polygon, row[GEOM_COL])
 
-        # --- basin lookup ---
         if polygon_id not in basin_lookup:
             print(f"[WARNING] Missing basin for delta {polygon_id} — skipping.")
             deltas_without_sources.append(row.copy())
@@ -278,7 +360,6 @@ def extract_all_river_source_points(
         delta_edmonds: GeoDataFrame = delta_lookup[polygon_id]
         basin_polygons_domain: GeoDataFrame = basin_polygons_lookup[polygon_id]
 
-        # --- Per-delta spatial subset (no file I/O) ---
         try:
             rivers_gpd, coast_polygon, coastline_gpd, glofas_min = (
                 load_data_delta_domain(delta_basins_gpd, global_data)
@@ -289,7 +370,6 @@ def extract_all_river_source_points(
             fail_count += 1
             continue
 
-        # --- Source point extraction ---
         unique_sources, possible_sources, _ = find_river_source_points(
             delta_basins_gpd=delta_basins_gpd,
             delta_polygon=delta_polygon,
@@ -302,10 +382,9 @@ def extract_all_river_source_points(
             all_rivers=all_rivers,
         )
 
-        # --- Release per-delta intermediates explicitly ---
+        # Release per-delta intermediates before the next iteration.
         del rivers_gpd, coast_polygon, coastline_gpd, glofas_min
 
-        # --- Validation ---
         if _is_empty(unique_sources) or _is_empty(possible_sources):
             deltas_without_sources.append(row.copy())
             fail_count += 1
@@ -320,8 +399,8 @@ def extract_all_river_source_points(
         all_possible_sources.append(possible_sources)
         success_count += 1
 
-        # --- Periodic flush to disk to cap memory usage ---
-        if success_count % _FLUSH_INTERVAL == 0:
+        # Periodic flush to disk — caps peak memory by clearing the accumulators.
+        if idx_int % _FLUSH_INTERVAL == 0:
             print(
                 f"[MEM] Flushing {len(all_unique_sources)} results to disk ...",
                 flush=True,
@@ -333,10 +412,9 @@ def extract_all_river_source_points(
             gc.collect()
             print("[MEM] Flush complete.", flush=True)
 
-    # --- Summary ---
     print(f"Processed: {success_count} domains | {fail_count} without sources.")
 
-    # --- Final flush of any remaining results ---
+    # Final flush of any remaining results.
     _flush_to_disk(all_unique_sources, out_unique_sources, CRS_STANDARD)
     _flush_to_disk(all_possible_sources, out_possible_sources, CRS_STANDARD)
 
@@ -349,4 +427,17 @@ def extract_all_river_source_points(
 
 
 def extract_points() -> None:
+    """Run the full river source point extraction pipeline with default settings.
+
+    Convenience entry point that calls
+    :func:`extract_all_river_source_points` with all arguments at their
+    configured defaults. Intended for use as a script entry point or a
+    one-line pipeline trigger.
+
+    Returns:
+        None.
+
+    Example:
+        >>> extract_points()
+    """
     extract_all_river_source_points()

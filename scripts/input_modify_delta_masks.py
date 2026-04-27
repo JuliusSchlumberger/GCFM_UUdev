@@ -1,20 +1,47 @@
+"""Command-line entry point for modifying delta mask polygons.
+
+Delegates to :func:`modify_test_delta_masks`, which loads the Edmonds et al.
+(2020) delta polygons and iteratively expands any polygon whose offshore edges
+do not fully reach the coastline.
+
+Example:
+    Run from the command line::
+
+        python scripts/input_modify_delta_masks.py
+
+    Or call programmatically::
+
+        >>> from scripts.input_modify_delta_masks import main
+        >>> main()
+"""
+
+from __future__ import annotations
+
 from src.input_processing.validation.river_input.test_delta_masks_modification import (
     modify_test_delta_masks,
 )
 
-import argparse
 
+def main() -> None:
+    """Run the delta mask modification pipeline with default settings.
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Modify Edmond et al. 2020 polygons to include the entire coastline of a delta"
-    )
-    # parser.add_argument("--choice",
-    #                     help="Select which parts of the input processing you want to operate. The following are currently implemented: 'validate_glofas', ...", required=True)
-    # parser.add_argument("--delta", help="specify which delta to run scripts for, see /config/decision.yaml for options",
-    #                     default="id_delta1")
+    Thin entry point that calls :func:`modify_test_delta_masks` with all
+    arguments at their configured defaults. Loads the Edmonds et al. (2020)
+    delta polygons, corrects any polygon whose offshore edges do not reach the
+    coastline, and writes the corrected set to the configured output GeoPackage.
 
-    args = parser.parse_args()
+    Returns:
+        None. Results are written to the output path defined in
+        ``config['filepaths']['output']``.
+
+    Raises:
+        FileNotFoundError: If the delta polygon file or land-use raster cannot
+            be found at the configured paths (propagated from
+            :func:`modify_test_delta_masks`).
+
+    Example:
+        >>> main()
+    """
     modify_test_delta_masks()
 
 

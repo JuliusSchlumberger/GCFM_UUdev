@@ -1,41 +1,38 @@
-"""
-delta_polygon_modification.py
-==============================
-Utilities for detecting and correcting incomplete delta polygons from the
-Edmonds et al. (2020) dataset.
+"""Utilities for detecting and correcting incomplete delta polygons.
 
-Background
-----------
-The Edmonds et al. (2020) dataset provides polygons for major river deltas
-worldwide. For several deltas the supplied polygon does not fully enclose the
-estuary / river mouth. This module provides a pipeline to:
+Background:
+    The Edmonds et al. (2020) dataset provides polygons for major river deltas
+    worldwide. For several deltas the supplied polygon does not fully enclose
+    the estuary or river mouth. This module provides a pipeline to:
 
-1. Load and unionise coastal reference data around a given delta polygon.
-2. Classify the four vertices of each quadrilateral polygon into meaningful
-   roles (delta node, two shore points, river-mouth point).
-3. Iteratively scale the two offshore edges outward until they lie entirely
-   within the coastline geometry, producing a corrected polygon.
+    1. Load and unionise coastal reference data around a given delta polygon.
+    2. Classify the four vertices of each quadrilateral polygon into meaningful
+       roles (delta node, two shore points, river-mouth point).
+    3. Iteratively scale the two offshore edges outward until they lie entirely
+       within the coastline geometry, producing a corrected polygon.
 
-Typical usage
--------------
-    from delta_polygon_modification import unionize_coastal_data, modify_masks
-
-    coastline  = unionize_coastal_data(delta_gdf, "path/to/coastline.gpkg")
-    new_polygon = modify_masks(original_polygon, coastline, delta_id=42,
-                               debug_plot=True, plot_rivers=rivers_gdf,
-                               plot_lu=landuse_da)
-
-Dependencies
-------------
-- geopandas, shapely, matplotlib, xarray
-- Internal: src.input_processing.config.loader (config dict)
-            src.input_processing.utils.plotting  (helper functions)
+Example:
+    >>> from delta_polygon_modification import unionize_coastal_data, modify_masks
+    >>> coastline = unionize_coastal_data(delta_gdf, "path/to/coastline.gpkg")
+    >>> new_polygon = modify_masks(
+    ...     original_polygon, coastline, delta_id=42,
+    ...     debug_plot=True, plot_rivers=rivers_gdf, plot_lu=landuse_da
+    ... )
 """
 
+from __future__ import annotations
+
+import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
+import geopandas as gpd
 from geopandas import GeoDataFrame
 from shapely.geometry import LineString, Point, Polygon, box
 from shapely.affinity import scale
 from shapely.geometry.base import BaseGeometry
+from xarray import DataArray
+from typing import cast
+import logging
+import pandas as pd
 
 from src.input_processing.config.loader import config
 from src.input_processing.utils.plotting import (
@@ -43,10 +40,6 @@ from src.input_processing.utils.plotting import (
     annotate_below_plot,
     get_esa_cmap,
 )
-import matplotlib.pyplot as plt
-import geopandas as gpd
-from typing import Tuple
-from xarray import DataArray
 
 
 # ---------------------------------------------------------------------------
@@ -55,43 +48,49 @@ from xarray import DataArray
 
 
 def build_local_bbox(
-    geometry: BaseGeometry, buffer_m: float = config["Delta_masks"]["bbox_delta"]
-):
-    """
-    Return a buffered bounding-box polygon around *geometry* in WGS-84.
+    geometry: BaseGeometry,
+    buffer_m: float = config["Delta_masks"]["bbox_delta"],
+) -> Polygon:
+    """Return a buffered bounding-box polygon around *geometry* in WGS-84.
 
     The box is constructed in the geometry's native (projected) CRS and then
     reprojected to EPSG:4326 for use as a spatial filter when loading raster
-    and vector data that are stored in geographic coordinates.
+    and vector data stored in geographic coordinates.
 
-    Parameters
-    ----------
-    geometry : shapely geometry
-        Delta polygon in the project standard CRS.
-    buffer_m : float
-        Buffer distance in metres. Defaults to :data:`SPATIAL_BUFFER_M`.
+    Args:
+        geometry: Delta polygon in the project standard CRS.
+        buffer_m: Buffer distance in metres. Defaults to
+            ``config['Delta_masks']['bbox_delta']``.
 
-    Returns
-    -------
-    shapely.geometry.Polygon
-        Bounding-box polygon in EPSG:4326.
+    Returns:
+        Bounding-box polygon in EPSG:4326, expanded by *buffer_m* on all sides.
+
+    Example:
+        >>> bbox = build_local_bbox(delta_polygon.geometry.iloc[0])
+        >>> print(bbox.geom_type)
+        Polygon
     """
-    geometry = gpd.GeoSeries([geometry], crs=config["CRS"]["standard"]).to_crs(
+    geoseries = gpd.GeoSeries([geometry], crs=config["CRS"]["standard"]).to_crs(
         epsg=config["CRS"]["for_distances"]
     )
-    geometry = geometry.geometry.values[0]
-    minx, miny, maxx, maxy = geometry.bounds
+    projected_geom = geoseries.geometry.values[0]
+    minx, miny, maxx, maxy = projected_geom.bounds
+
     bbox_projected = box(
         minx - buffer_m,
         miny - buffer_m,
         maxx + buffer_m,
         maxy + buffer_m,
     )
+
     # Reproject to geographic CRS for use as a mask when reading files stored
     # in WGS-84 (the common case for global coastline / river datasets).
-    bbox_4326 = gpd.GeoSeries(
-        [bbox_projected], crs=config["CRS"]["for_distances"]
-    ).to_crs(epsg=4326)[0]
+    bbox_4326: Polygon = cast(
+        Polygon,
+        gpd.GeoSeries([bbox_projected], crs=config["CRS"]["for_distances"]).to_crs(
+            epsg=4326
+        )[0],
+    )
 
     return bbox_4326
 
@@ -101,49 +100,56 @@ def build_local_bbox(
 # ---------------------------------------------------------------------------
 
 
-def load_delta_context(geometry, land_use_full):
-    """
-    Load and pre-process all supporting data needed to modify one delta.
+def load_delta_context(
+    geometry: BaseGeometry,
+    land_use_full: DataArray,
+) -> tuple[BaseGeometry, GeoDataFrame, DataArray]:
+    """Load and pre-process all supporting data needed to modify one delta.
 
     All outputs are in the project standard CRS
     (``config['CRS']['for_distances']``).
 
-    Parameters
-    ----------
-    geometry : shapely geometry
-        Delta polygon in the project standard CRS.
-    land_use_full : xarray.DataArray
-        Full (lazily loaded) Copernicus land-use raster in its native CRS.
+    Args:
+        geometry: Delta polygon in the project standard CRS.
+        land_use_full: Full (lazily loaded) Copernicus land-use raster in its
+            native CRS. The function clips this to the local bounding box to
+            avoid loading the entire global raster into memory.
 
-    Returns
-    -------
-    coast_geom : shapely geometry
-        Unified coastline geometry for containment checks.
-    rivers : GeoDataFrame
-        River centre-lines clipped to the local bounding box.
-    lu_builtup : xarray.DataArray
-        Land-use raster clipped to the bounding box, reprojected to the
-        standard CRS, filtered to built-up pixels only.
+    Returns:
+        A tuple of ``(coast_geom, rivers, lu_builtup)`` where:
+
+        - *coast_geom*: Unified coastline geometry for containment checks.
+        - *rivers*: River centre-lines clipped to the local bounding box.
+        - *lu_builtup*: Land-use raster clipped and reprojected to the
+          standard CRS, filtered to built-up pixels only.
+
+    Example:
+        >>> coast, rivers, lu = load_delta_context(row.geometry, land_use_da)
+        >>> print(type(coast))
+        <class 'shapely.geometry.multipolygon.MultiPolygon'>
     """
     bbox_4326 = build_local_bbox(geometry)
-    std_crs = config["CRS"]["for_distances"]
+    std_crs: int = config["CRS"]["for_distances"]
 
     # --- Coastline ---
-    coastline = gpd.read_file(config["filepaths"]["coastline"], mask=bbox_4326).to_crs(
-        epsg=std_crs
-    )
-    coast_geom = coastline.geometry.union_all()
+    coastline: GeoDataFrame = gpd.read_file(
+        config["filepaths"]["coastline"], mask=bbox_4326
+    ).to_crs(epsg=std_crs)
+    coast_geom: BaseGeometry = coastline.geometry.union_all()
 
     # --- Rivers ---
-    rivers = gpd.read_file(
+    rivers: GeoDataFrame = gpd.read_file(
         config["Rivers"]["select_file_location"], mask=bbox_4326
     ).to_crs(epsg=std_crs)
 
-    # --- Land use (built-up pixels only) ---
     # Clip to the local bbox first (still in the raster's native CRS / 4326),
     # then filter to the built-up class, then reproject to the standard CRS.
-    lu_clipped = land_use_full.rio.clip([bbox_4326], from_disk=True).squeeze()
-    lu_builtup = lu_clipped.where(lu_clipped == config["LandUse"]["code_builtup"])
+    lu_clipped: DataArray = land_use_full.rio.clip(
+        [bbox_4326], from_disk=True
+    ).squeeze()
+    lu_builtup: DataArray = lu_clipped.where(
+        lu_clipped == config["LandUse"]["code_builtup"]
+    )
     lu_builtup = lu_builtup.rio.reproject(std_crs)
 
     return coast_geom, rivers, lu_builtup
@@ -154,40 +160,35 @@ def load_delta_context(geometry, land_use_full):
 # ---------------------------------------------------------------------------
 
 
-def unionize_coastal_data(delta_polygon: GeoDataFrame, file_name: str):
-    """
-    Load a coastline vector file clipped to a buffered delta extent and return
-    its geometry as a single unified shape.
+def unionize_coastal_data(delta_polygon: GeoDataFrame, file_name: str) -> BaseGeometry:
+    """Load a coastline file clipped to a buffered delta extent and return a unified geometry.
 
-    The delta polygon is scaled by a factor of 2 (about its own centroid)
-    before being used as a spatial filter, ensuring the coastline extends
-    well beyond the polygon edges so that offshore edge checks are reliable.
+    The delta polygon is scaled by a factor of 2 about its own centroid before
+    being used as a spatial filter, ensuring the coastline extends well beyond
+    the polygon edges so that offshore edge checks are reliable.
 
-    Parameters
-    ----------
-    delta_polygon : GeoDataFrame
-        Single-row GeoDataFrame whose ``geometry`` column holds the delta
-        polygon of interest.
-    file_name : str
-        Path to any OGR-readable vector file containing coastline geometries
-        (e.g. a GeoPackage or Shapefile).
+    Args:
+        delta_polygon: Single-row GeoDataFrame whose ``geometry`` column holds
+            the delta polygon of interest. Must be in the project standard CRS.
+        file_name: Path to any OGR-readable vector file containing coastline
+            geometries (e.g. a GeoPackage or Shapefile).
 
-    Returns
-    -------
-    shapely.geometry.base.BaseGeometry
+    Returns:
         A single (possibly multi-part) geometry representing the union of all
-        coastline features inside the search window.
+        coastline features inside the 2× search window.
+
+    Example:
+        >>> coast = unionize_coastal_data(delta_gdf, "data/coastline.gpkg")
+        >>> print(coast.geom_type)
+        MultiPolygon
     """
     # Expand the bounding mask to 2× the polygon size so we capture coastline
     # segments that extend past the polygon boundary.
-    mask_polygon = scale(
+    mask_polygon: BaseGeometry = scale(
         delta_polygon["geometry"].values[0], xfact=2, yfact=2, origin="center"
     )
 
-    # Read only the features that intersect our enlarged mask, then reproject
-    # to the project-wide standard CRS before unioning everything into one
-    # geometry.
-    coastline = gpd.read_file(file_name, mask=mask_polygon).to_crs(
+    coastline: GeoDataFrame = gpd.read_file(file_name, mask=mask_polygon).to_crs(
         epsg=config["CRS"]["for_distances"]
     )
     return coastline.geometry.union_all()
@@ -202,42 +203,36 @@ def plot_polygons_with_vertices(
     polygon_gdf: GeoDataFrame,
     coastline: Polygon,
     testcase_id: str,
-):
-    """
-    Produce a diagnostic figure showing the delta polygon with its vertices
-    labelled, overlaid on the coastline and river network.
+) -> None:
+    """Produce a diagnostic figure showing the delta polygon with its vertices labelled.
 
-    The figure is saved to ``figures/input_processing/validation/`` and is
-    intended as a visual aid for identifying vertex numbering before running
-    :func:`classify_points`.
+    The figure is overlaid on the coastline and river network, saved to
+    ``figures/input_processing/validation/``, and intended as a visual aid
+    for identifying vertex numbering before running :func:`classify_points`.
 
-    Parameters
-    ----------
-    polygon_gdf : GeoDataFrame
-        Single-row GeoDataFrame containing the delta polygon.
-    coastline : Polygon
-        Unified coastline geometry returned by :func:`unionize_coastal_data`.
-    testcase_id : str
-        Key used to look up the human-readable delta name from the config.
+    Args:
+        polygon_gdf: Single-row GeoDataFrame containing the delta polygon in
+            the project standard CRS.
+        coastline: Unified coastline geometry returned by
+            :func:`unionize_coastal_data`.
+        testcase_id: Key used to look up the human-readable delta name from
+            the config dict.
+
+    Example:
+        >>> plot_polygons_with_vertices(delta_gdf, coast_geom, "delta_nile")
     """
-    # Look up the display name for axis title / file name.
-    idx = config["Testcase"][testcase_id]
+    idx: str = config["Testcase"][testcase_id]
 
     fig, ax = plt.subplots(figsize=(10, 10))
-    poly = polygon_gdf["geometry"].values[0]
+    poly: Polygon = polygon_gdf["geometry"].values[0]
 
-    # Zoom the axes to a padded bounding box around the polygon.
     create_bounds_around_delta(ax, poly)
 
-    # Load river centre-lines clipped to the polygon extent.
-    rivers = gpd.read_file(config["filepaths"]["river"], mask=poly).to_crs(
-        epsg=config["CRS"]["for_distances"]
-    )
+    rivers: GeoDataFrame = gpd.read_file(
+        config["filepaths"]["river"], mask=poly
+    ).to_crs(epsg=config["CRS"]["for_distances"])
 
-    # --- Coastline (grey reference line) ---
     gpd.GeoSeries([coastline]).plot(ax=ax, color="grey", linewidth=1)
-
-    # --- Delta polygon outline (red, no fill) ---
     gpd.GeoSeries([poly]).plot(
         ax=ax,
         edgecolor="red",
@@ -245,7 +240,6 @@ def plot_polygons_with_vertices(
         linewidth=2,
     )
 
-    # --- Vertex labels ---
     # Drop the closing duplicate coordinate before iterating.
     coords = list(poly.exterior.coords)[:-1]
     for i, coord in enumerate(coords):
@@ -254,12 +248,12 @@ def plot_polygons_with_vertices(
         ax.text(
             point.x,
             point.y,
-            f"P{i + 1}",  # 1-based label for human readability
+            f"P{i + 1}",
             fontsize=10,
             ha="right",
         )
 
-    rivers.plot(ax=ax, legend="Lin et al.")
+    rivers.plot(ax=ax)
     ax.set_title(f"{idx} Delta Polygon to identify Point sequencing")
 
     plt.savefig(
@@ -275,68 +269,49 @@ def plot_polygons_with_vertices(
 
 def classify_points(
     polygon: Polygon,
-    coastline,
-) -> Tuple[Point, Point, Point, Point, Point]:
-    """
-    Assign functional roles to the four vertices of a delta polygon.
+    coastline: BaseGeometry,
+) -> tuple[Point, Point, Point, Point, Point]:
+    """Assign functional roles to the four vertices of a delta polygon.
 
-    Edmonds et al. (2020) do not follow a consistent vertex ordering, so the
-    roles must be inferred geometrically:
+    Edmonds et al. (2020) do not follow a consistent vertex ordering, so roles
+    are inferred geometrically:
 
-    * **Basin-ward extent point (BW)** – the vertex farthest from the coastline (i.e. most
-      inland, at the apex of the delta).
-    * **River-mouth point** – of the remaining three vertices, the one
-      whose summed distance to the other two is smallest (i.e. it lies
-      between the two shore points).
-    * **Shore points s1 & s2** – the two remaining coastal vertices on
-      either side of the river mouth.
-    * **Delta node (DN)**: The DN is defined as either (1) the upstream-most bifurcation of the parent channel,
-    or if no bifurcation is present, as (2) the intersection of the main channel with the delta shoreline vector
-    (LS) which is defined as the line connecting S1 and S2.
+    - **Basin-ward extent point (BW)**: the vertex farthest from the coastline,
+      i.e. the most inland point at the apex of the delta fan.
+    - **Shore points s1 & s2**: the two coastal vertices on either side of the
+      river mouth.
+    - **River-mouth / delta-node candidates (rm_dn1, rm_dn2)**: the remaining
+      two vertices between the shore points.
 
-    Parameters
-    ----------
-    polygon : Polygon
-        The quadrilateral delta polygon to classify.
-    coastline : shapely geometry
-        Unified coastline geometry used as the distance reference.
+    Args:
+        polygon: The quadrilateral delta polygon to classify. Must have exactly
+            four unique exterior vertices (closing coordinate excluded).
+        coastline: Unified coastline geometry used as the distance reference.
+            Typically the output of :func:`unionize_coastal_data`.
 
-    Returns
-    -------
-    tuple of Point
-        ``(delta_node, s1, river_mouth, s2)``
+    Returns:
+        A tuple of ``(basin_ward, s1, s2, rm_dn1, rm_dn2)`` where each element
+        is a :class:`~shapely.geometry.Point` in the project standard CRS.
+
+    Example:
+        >>> bw, s1, s2, rm1, rm2 = classify_points(delta_polygon, coast_geom)
+        >>> print(bw.geom_type)
+        Point
     """
     coords = list(polygon.exterior.coords)[:-1]
     points = [Point(c) for c in coords]
 
-    # The delta node is the vertex with the greatest distance to the coast —
-    # it marks the upstream limit of the delta fan.
-    basin_ward = max(points, key=lambda p: p.distance(coastline))
+    # The basin-ward point is the vertex with the greatest distance to the
+    # coast — it marks the upstream limit of the delta fan.
+    basin_ward: Point = max(points, key=lambda p: p.distance(coastline))
 
-    position_bw = points.index(basin_ward)
+    position_bw: int = points.index(basin_ward)
     print((position_bw + 1) % len(points), (position_bw - 2) % len(points), position_bw)
-    s1, s2 = points[position_bw - 1], points[(position_bw + 1) % len(points)]
-    rm_dn_1, rm_dn_2 = (
-        points[(position_bw - 2) % len(points)],
-        points[(position_bw + 2) % len(points)],
-    )
 
-    # # Among the three remaining points we identify the river-mouth point as
-    # # the one that minimises the sum of its distances to the other two.
-    # # This works because the river mouth sits *between* the two shore points
-    # # while those two are separated from each other on opposite banks.
-    # best_rm = None
-    # min_score = float("inf")
-    #
-    # for rm in remaining:
-    #     shores = [p for p in remaining if p != rm]
-    #     s1, s2 = shores
-    #     score = rm.distance(s1) + rm.distance(s2)
-    #
-    #     if score < min_score:
-    #         min_score = score
-    #         best_rm = rm
-    #         best_s1, best_s2 = s1, s2
+    s1: Point = points[position_bw - 1]
+    s2: Point = points[(position_bw + 1) % len(points)]
+    rm_dn_1: Point = points[(position_bw - 2) % len(points)]
+    rm_dn_2: Point = points[(position_bw + 2) % len(points)]
 
     return Point(basin_ward), Point(s1), Point(s2), Point(rm_dn_1), Point(rm_dn_2)
 
@@ -346,75 +321,90 @@ def classify_points(
 # ---------------------------------------------------------------------------
 
 
-def make_offshore_edges(s1: Point, rm_dn1: Point, rm_dn2: Point, s2: Point) -> list:
+def make_offshore_edges(
+    s1: Point,
+    rm_dn1: Point,
+    rm_dn2: Point,
+    s2: Point,
+) -> tuple[list[LineString], Point, Point]:
+    """Build the three offshore edges of the delta polygon.
+
+    Tests both orderings of the two river-mouth / delta-node candidate points
+    and selects the sequence that minimises total edge length. The three edges
+    connect ``s1 → rm_dn → dn_rm → s2`` and are the ones that may extend
+    beyond the coastline for incomplete polygons.
+
+    Args:
+        s1: First shore point.
+        rm_dn1: First river-mouth or delta-node candidate point.
+        rm_dn2: Second river-mouth or delta-node candidate point.
+        s2: Second shore point.
+
+    Returns:
+        A tuple of ``(edges, best_rm_dn1, best_rm_dn2)`` where:
+
+        - *edges*: List of three :class:`~shapely.geometry.LineString` objects
+          ``[s1→rm_dn1, rm_dn1→rm_dn2, rm_dn2→s2]`` in the optimal ordering.
+        - *best_rm_dn1*: The candidate point assigned to the first interior
+          position in the optimal ordering.
+        - *best_rm_dn2*: The candidate point assigned to the second interior
+          position in the optimal ordering.
+
+    Example:
+        >>> edges, rm1, rm2 = make_offshore_edges(s1, rm_dn1, rm_dn2, s2)
+        >>> print(len(edges))
+        3
     """
-    Build the three offshore edges of the delta polygon.
+    best_sequence: list[LineString] | None = None
+    best_rm_dn1: Point | None = None
+    best_rm_dn2: Point | None = None
+    min_score: float = float("inf")
+    options: list[Point] = [rm_dn1, rm_dn2]
 
-    These edges connect each shore point to the river-mouth and delta-node point and are the
-    ones that may extend beyond the coastline for incomplete polygons.
-
-    Parameters
-    ----------
-    s1 : Point
-        First shore point.
-    rm_dn1 : Point
-        River-mouth point or delta-node
-    rm_dn2 : Point
-        River-mouth point or delta-node
-    s2 : Point
-        Second shore point.
-
-    Returns
-    -------
-    list of LineString
-        ``[edge_s1_rm, edge_rm_dn, edge_dn_s2]``
-    """
-    best_sequence = None
-    min_score = float("inf")
-    options = [rm_dn1, rm_dn2]
     for ii, _ in enumerate(options):
         sequence = [
             LineString([s1, options[ii]]),
             LineString([options[ii], options[ii - 1]]),
             LineString([options[ii - 1], s2]),
         ]
-
-        score = (
+        score: float = (
             s1.distance(options[ii])
             + options[ii].distance(options[ii - 1])
             + options[ii - 1].distance(s2)
         )
-
         if score < min_score:
             min_score = score
             best_sequence = sequence
             best_rm_dn1 = options[ii]
             best_rm_dn2 = options[ii - 1]
+    if best_sequence is None or best_rm_dn1 is None or best_rm_dn2 is None:
+        raise ValueError("make_offshore_edges: could not determine best edge sequence.")
 
     return best_sequence, best_rm_dn1, best_rm_dn2
 
 
 def scale_point(origin: Point, point: Point, factor: int | float) -> Point:
-    """
-    Move *point* away from *origin* by the given scale factor.
+    """Move *point* away from *origin* by the given scale factor.
 
     The new position is computed as a simple radial scaling:
     ``new = origin + factor * (point - origin)``
-    so ``factor > 1`` moves the point further from the origin.
+    so a factor greater than 1 moves the point further from the origin.
 
-    Parameters
-    ----------
-    origin : Point
-        Fixed reference point (the delta node in normal usage).
-    point : Point
-        The point to be moved (a shore or river-mouth point).
-    factor : int or float
-        Scaling factor. Values > 1 extend the point outward.
+    Args:
+        origin: Fixed reference point (the delta node in normal usage).
+        point: The point to be moved (a shore or river-mouth point).
+        factor: Scaling factor. Values greater than 1 extend the point
+            outward from *origin*.
 
-    Returns
-    -------
-    Point
-        The rescaled point.
+    Returns:
+        A new :class:`~shapely.geometry.Point` at the rescaled position.
+
+    Example:
+        >>> origin = Point(0, 0)
+        >>> p = Point(1, 0)
+        >>> scaled = scale_point(origin, p, 2.0)
+        >>> print(scaled)
+        POINT (2 0)
     """
     return Point(
         origin.x + (point.x - origin.x) * factor,
@@ -422,26 +412,25 @@ def scale_point(origin: Point, point: Point, factor: int | float) -> Point:
     )
 
 
-def edge_needs_scaling(edge: LineString, coastline: Polygon) -> bool:
-    """
-    Check whether any part of *edge* lies outside the coastline geometry.
+def edge_needs_scaling(edge: LineString, coastline: BaseGeometry) -> bool:
+    """Check whether any part of *edge* lies outside the coastline geometry.
 
-    An edge needs further scaling (i.e. the polygon still doesn't reach the
-    coast) when the difference between the edge and the coastline is
-    non-empty — meaning some portion of the edge is not covered by land.
+    An edge needs further scaling when the difference between the edge and the
+    coastline is non-empty, meaning some portion of the edge is not covered by
+    land.
 
-    Parameters
-    ----------
-    edge : LineString
-        One of the two offshore edges to test.
-    coastline : Polygon
-        Unified coastline reference geometry.
+    Args:
+        edge: One of the offshore edges to test.
+        coastline: Unified coastline reference geometry.
 
-    Returns
-    -------
-    bool
-        ``True`` if the edge extends beyond the coastline; ``False`` if it
-        is fully contained within or along the coast.
+    Returns:
+        True if the edge extends beyond the coastline; False if it is fully
+        contained within or along the coast.
+
+    Example:
+        >>> needs = edge_needs_scaling(LineString([(0, 0), (1, 1)]), coast_geom)
+        >>> print(type(needs))
+        <class 'bool'>
     """
     remainder = edge.difference(coastline)
     return not remainder.is_empty
@@ -453,30 +442,28 @@ def edge_needs_scaling(edge: LineString, coastline: Polygon) -> bool:
 
 
 def plot_scaling_step(
-    ax,
+    ax: Axes,
     original_poly: Polygon,
     current_poly: Polygon,
     iteration: int,
-):
-    """
-    Add the original (blue dashed) and current (red solid) polygon outlines
-    to an existing axes object during the iterative scaling loop.
+) -> None:
+    """Add the original and current polygon outlines to an axes during scaling.
 
-    Labels are only set on the first iteration to avoid duplicate legend
-    entries.
+    The original polygon is drawn as a blue dashed outline and the current
+    scaled polygon as a solid red outline. Labels are only set on the first
+    iteration to avoid duplicate legend entries.
 
-    Parameters
-    ----------
-    ax : matplotlib.axes.Axes
-        The axes to draw on.
-    original_poly : Polygon
-        The unmodified input polygon (drawn for reference).
-    current_poly : Polygon
-        The polygon at the current iteration of scaling.
-    iteration : int
-        Zero-based iteration counter; used to suppress duplicate legend labels.
+    Args:
+        ax: The matplotlib axes to draw on.
+        original_poly: The unmodified input polygon drawn for reference.
+        current_poly: The polygon at the current iteration of scaling.
+        iteration: Zero-based iteration counter used to suppress duplicate
+            legend labels on subsequent iterations.
+
+    Example:
+        >>> fig, ax = plt.subplots()
+        >>> plot_scaling_step(ax, original_polygon, scaled_polygon, iteration=0)
     """
-    # Original polygon — blue dashed outline, label only on first iteration.
     gpd.GeoSeries([original_poly]).plot(
         ax=ax,
         edgecolor="blue",
@@ -485,8 +472,6 @@ def plot_scaling_step(
         linewidth=1,
         label="original" if iteration == 0 else "",
     )
-
-    # Current (scaled) polygon — solid red outline.
     gpd.GeoSeries([current_poly]).plot(
         ax=ax,
         edgecolor="red",
@@ -494,7 +479,6 @@ def plot_scaling_step(
         linewidth=2,
         label="scaled" if iteration == 0 else "",
     )
-
     ax.set_title(f"Scaling iteration {iteration}")
 
 
@@ -504,8 +488,8 @@ def plot_scaling_step(
 
 
 def scale_polygon(
-    edges: list,
-    coastline: Polygon,
+    edges: list[LineString],
+    coastline: BaseGeometry,
     delta_node: Point,
     s1: Point,
     best_rm_dn1: Point,
@@ -514,103 +498,89 @@ def scale_polygon(
     delta_id: int,
     max_iter: int = 20,
     debug_plot: bool = False,
-    plot_rivers=None,
-    plot_lu=None,
-):
+    plot_rivers: GeoDataFrame | None = None,
+    plot_lu: DataArray | None = None,
+) -> Polygon:
+    """Iteratively expand the offshore edges of a delta polygon until they reach the coastline.
+
+    Starting from the classified vertices, tests whether the offshore edges
+    extend beyond the coastline. If they do, the three movable vertices (s1,
+    rm, s2) are scaled outward from the fixed delta node by
+    ``config['Delta_masks']['scale_factor']`` on each iteration. The process
+    repeats until both edges are fully inside the coast or *max_iter* is
+    reached.
+
+    Args:
+        edges: The initial offshore edges produced by :func:`make_offshore_edges`.
+        coastline: Unified coastline geometry used for containment checks.
+        delta_node: Fixed inland apex of the delta — not moved during scaling.
+        s1: First (movable) shore point.
+        best_rm_dn1: First river-mouth or delta-node candidate point (movable).
+        best_rm_dn2: Second river-mouth or delta-node candidate point (movable).
+        s2: Second (movable) shore point.
+        delta_id: Numeric identifier for the delta, used in figure file names.
+        max_iter: Maximum number of scaling iterations before giving up.
+            Defaults to 20.
+        debug_plot: If True, generate and save a step-by-step scaling figure.
+            Defaults to False.
+        plot_rivers: River centre-lines to overlay on the debug figure, or
+            None to omit. Defaults to None.
+        plot_lu: Land-use raster to overlay on the debug figure and use for
+            built-up area statistics, or None to omit. Defaults to None.
+
+    Returns:
+        The (possibly expanded) delta polygon with vertices
+        ``[delta_node, s1, best_rm_dn1, best_rm_dn2, s2]``.
+
+    Raises:
+        None: Does not raise. If *max_iter* is exhausted a warning is printed
+            and the best polygon reached so far is returned.
+
+    Note:
+        If the polygon requires no scaling at all (iteration 0 passes), the
+        original polygon is returned immediately without modification.
+
+    Example:
+        >>> result = scale_polygon(
+        ...     edges, coast_geom, delta_node, s1, rm1, rm2, s2, delta_id=42
+        ... )
+        >>> print(result.geom_type)
+        Polygon
     """
-    Iteratively expand the offshore edges of a delta polygon until they are
-    fully contained within the coastline geometry.
-
-    Starting from the classified vertices, the function tests whether the two
-    offshore edges (shore-to-river-mouth) extend beyond the coastline. If they
-    do, the three movable vertices (s1, rm, s2) are scaled outward from the
-    fixed delta node by ``config['Delta_masks']['scale_factor']`` on each
-    iteration. The process repeats until both edges are fully inside the coast,
-    or ``max_iter`` is reached.
-
-    Parameters
-    ----------
-    edges : list of LineString
-        The initial offshore edges produced by :func:`make_offshore_edges`.
-    coastline : Polygon
-        Unified coastline geometry used for containment checks.
-    delta_node : Point
-        Fixed inland apex of the delta (not moved during scaling).
-    s1 : Point
-        First (movable) shore point.
-    best_rm_dn1, best_rm_dn2 : Point
-        River-mouth or Delta-node point (movable).
-    s2 : Point
-        Second (movable) shore point.
-    delta_id : int
-        Numeric identifier for the delta, used in figure file names.
-    max_iter : int, optional
-        Maximum number of scaling iterations before giving up (default 20).
-    debug_plot : bool, optional
-        If ``True``, generate and save a step-by-step scaling figure.
-    plot_rivers : GeoDataFrame or None, optional
-        River centre-lines to overlay on the debug figure.
-    plot_lu : DataArray or None, optional
-        Land-use raster to overlay on the debug figure.
-
-    Returns
-    -------
-    Polygon
-        The (possibly expanded) delta polygon ``[delta_node, s1, rm, s2]``.
-
-    Notes
-    -----
-    * If the polygon requires no scaling at all (iteration 0 passes), the
-      original polygon is returned immediately.
-    * A warning is printed if ``max_iter`` is exhausted; the best polygon
-      reached so far is returned regardless.
-    """
-    scale_factor = config["Delta_masks"]["scale_factor"]
-
-    # Keep a reference to the pre-scaling polygon for diagnostics.
-    original_poly = Polygon([delta_node, s1, best_rm_dn1, best_rm_dn2, s2])
-
-    # Gather statistics on the original polygon for figure annotations.
-    delta_statistics = get_polygon_statistics(
+    scale_factor: float = config["Delta_masks"]["scale_factor"]
+    original_poly: Polygon = Polygon([delta_node, s1, best_rm_dn1, best_rm_dn2, s2])
+    delta_statistics: dict = get_polygon_statistics(
         original_poly, delta_node, coastline, plot_lu
     )
 
-    # --- Set up debug figure (optional) ---
     if debug_plot:
         fig, ax = plt.subplots(figsize=(8, 8))
         gpd.GeoSeries([coastline]).plot(ax=ax, color="lightblue", linewidth=0.5)
-
         if isinstance(plot_rivers, GeoDataFrame):
             plot_rivers.plot(ax=ax)
         if isinstance(plot_lu, DataArray):
             cmap_esa, norm = get_esa_cmap()
             plot_lu.plot.imshow(ax=ax, alpha=1, cmap=cmap_esa, norm=norm)
 
-    # --- Main iteration loop ---
     for i in range(max_iter):
         print(f"... iterating {i}")
-        current_poly = Polygon([delta_node, s1, best_rm_dn1, best_rm_dn2, s2])
-
-        # Check whether either offshore edge still extends beyond the coast.
-        needs_scaling = any(edge_needs_scaling(edge, coastline) for edge in edges)
+        current_poly: Polygon = Polygon([delta_node, s1, best_rm_dn1, best_rm_dn2, s2])
+        needs_scaling: bool = any(edge_needs_scaling(edge, coastline) for edge in edges)
 
         if debug_plot:
             plot_scaling_step(ax, original_poly, current_poly, i)
             create_bounds_around_delta(ax, current_poly)
 
-        # --- Termination conditions ---
         if not needs_scaling and i == 0:
-            # Polygon was already correct; return without modification.
             print("Polygon did not need scaling.")
             return Polygon([delta_node, s1, best_rm_dn1, best_rm_dn2, s2])
 
         elif not needs_scaling and i != 0:
-            # Scaling converged; save figure if requested and return.
             print(f"Scaling complete after {i} iterations.")
             if debug_plot:
-                print("Plotting...")
                 ax.set_title(
-                    f"Delta {delta_id}: Comparing Edmonds et al. (2020) polygons with actual river and land use coverage"
+                    f"Delta {delta_id}: Comparing Edmonds et al. (2020) polygons "
+                    f"with actual river and land use coverage"
                 )
                 annotate_below_plot(fig, ax, delta_statistics)
                 fig.savefig(
@@ -621,19 +591,14 @@ def scale_polygon(
                 plt.close()
             return Polygon([delta_node, s1, best_rm_dn1, best_rm_dn2, s2])
 
-        # --- Scale the three movable vertices outward from the delta node ---
         s1 = scale_point(delta_node, s1, scale_factor)
         best_rm_dn1 = scale_point(delta_node, best_rm_dn1, scale_factor)
         best_rm_dn2 = scale_point(delta_node, best_rm_dn2, scale_factor)
         s2 = scale_point(delta_node, s2, scale_factor)
+        edges, _, _ = make_offshore_edges(s1, best_rm_dn1, best_rm_dn2, s2)
 
-        # Recompute edges with the updated vertex positions for the next check.
-        edges, rm_dn1, rm_dn2 = make_offshore_edges(s1, best_rm_dn1, best_rm_dn2, s2)
-
-    # --- Fallback: max iterations reached without convergence ---
     print("Warning: max scaling iterations reached.")
     if debug_plot:
-        print("Plotting...")
         ax.set_title(f"{delta_id} Delta Polygon to identify Point sequencing")
         annotate_below_plot(fig, ax, delta_statistics)
         fig.savefig(
@@ -653,66 +618,57 @@ def scale_polygon(
 def get_polygon_statistics(
     polygon: Polygon,
     delta_node: Point,
-    coastline: Polygon,
-    landuse: None | GeoDataFrame,
-) -> dict:
-    """
-    Compute summary statistics for a delta polygon for use in figure
-    annotations and logging.
+    coastline: BaseGeometry,
+    landuse: DataArray | None,
+) -> dict[str, int]:
+    """Compute summary statistics for a delta polygon for figure annotations.
 
-    Always computed
-    ~~~~~~~~~~~~~~~
-    * Distance from the delta node to the coastline (km).
-    * Area of the initial polygon (km²).
+    Always computes the distance from the delta node to the coastline and the
+    polygon area. Optionally computes built-up area when a land-use raster is
+    provided.
 
-    Computed when *landuse* is provided
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    * Built-up area inside the polygon according to the ESA land-use
-      classification (km²), derived by counting pixels whose value equals
-      ``config['LandUse']['code_builtup']``.
+    Args:
+        polygon: The original, pre-scaling delta polygon.
+        delta_node: Inland apex vertex of the polygon.
+        coastline: Unified coastline geometry for distance computation.
+        landuse: ESA land-use raster clipped to the delta region, or None to
+            skip the built-up area calculation.
 
-    Parameters
-    ----------
-    polygon : Polygon
-        The (original, pre-scaling) delta polygon.
-    delta_node : Point
-        Inland apex vertex of the polygon.
-    coastline : Polygon
-        Unified coastline geometry for distance computation.
-    landuse : DataArray or None
-        ESA land-use raster. Pass ``None`` to skip built-up area estimation.
-
-    Returns
-    -------
-    dict
+    Returns:
         Dictionary with human-readable string keys and integer values, ready
-        for use with :func:`annotate_below_plot`.
-    """
-    delta_statistics = {}
+        for use with :func:`annotate_below_plot`. Keys are:
 
-    # Distance from the delta node to the nearest coastline point [km].
+        - ``"distance to coast [km]"``: distance from *delta_node* to the
+          nearest coastline point, in km.
+        - ``"area initial delta [km2]"``: polygon area in km².
+        - ``"built-up area [km2] (inside delta)"``: only present when
+          *landuse* is provided.
+
+    Example:
+        >>> stats = get_polygon_statistics(poly, node, coast, lu_raster)
+        >>> print(stats["area initial delta [km2]"])
+        1250
+    """
+    delta_statistics: dict[str, int] = {}
+
     delta_statistics["distance to coast [km]"] = int(
         delta_node.distance(coastline) / 1000
     )
-
-    # Polygon area converted from m² to km².
     delta_statistics["area initial delta [km2]"] = int(polygon.area / 1_000_000)
 
-    # --- Optional: built-up area from ESA land-use raster ---
     if isinstance(landuse, DataArray):
-        # Clip the raster to the polygon extent.
-        lu_clipped_delta = landuse.rio.clip([polygon], from_disk=True).squeeze()
-
-        # Pixel dimensions in the raster's native CRS units (metres assumed).
-        pixel_width = abs(float(landuse.rio.resolution()[0]))
-        pixel_height = abs(float(landuse.rio.resolution()[1]))
-        pixel_area = pixel_width * pixel_height  # m² per pixel
-
-        # Count pixels classified as built-up and convert to km².
-        n_pixels = int((lu_clipped_delta == config["LandUse"]["code_builtup"]).sum())
-        area_km2 = (n_pixels * pixel_area) / 1e6
-
-        delta_statistics["built-up area [km2] (inside delta)"] = int(area_km2)
+        lu_clipped_delta: DataArray = landuse.rio.clip(
+            [polygon], from_disk=True
+        ).squeeze()
+        pixel_width: float = abs(float(landuse.rio.resolution()[0]))
+        pixel_height: float = abs(float(landuse.rio.resolution()[1]))
+        pixel_area: float = pixel_width * pixel_height
+        n_pixels: int = int(
+            (lu_clipped_delta == config["LandUse"]["code_builtup"]).sum()
+        )
+        delta_statistics["built-up area [km2] (inside delta)"] = int(
+            (n_pixels * pixel_area) / 1e6
+        )
 
     return delta_statistics
 
@@ -724,45 +680,44 @@ def get_polygon_statistics(
 
 def modify_masks(
     polygon: Polygon,
-    coastline: Polygon,
+    coastline: BaseGeometry,
     delta_id: int,
     debug_plot: bool,
     plot_rivers: GeoDataFrame,
-    plot_lu: None | DataArray,
+    plot_lu: DataArray | None,
 ) -> Polygon:
-    """
-    High-level pipeline function: classify, build edges, and scale a single
-    delta polygon so that its offshore edges reach the coastline.
+    """Classify, build edges, and scale a single delta polygon to reach the coastline.
 
     This is the main entry point for correcting an individual delta mask. It
-    orchestrates the three processing steps in order:
+    orchestrates three processing steps in order:
 
-    1. **Classify** — Identify the functional role of each polygon vertex
-       using :func:`classify_points`.
-    2. **Build edges** — Construct the two offshore edges that will be tested
-       and extended via :func:`make_offshore_edges`.
-    3. **Scale** — Iteratively expand the polygon until the edges are fully
+    1. **Classify** — identify the functional role of each polygon vertex via
+       :func:`classify_points`.
+    2. **Build edges** — construct the offshore edges that will be tested and
+       extended via :func:`make_offshore_edges`.
+    3. **Scale** — iteratively expand the polygon until the edges are fully
        contained within the coastline via :func:`scale_polygon`.
 
-    Parameters
-    ----------
-    polygon : Polygon
-        The raw delta polygon from the Edmonds et al. (2020) dataset.
-    coastline : Polygon
-        Unified coastline geometry from :func:`unionize_coastal_data`.
-    delta_id : int
-        Numeric identifier for this delta (used in figure file names).
-    debug_plot : bool
-        If ``True``, generate step-by-step scaling figures.
-    plot_rivers : GeoDataFrame
-        River centre-lines for optional overlay on debug figures.
-    plot_lu : DataArray or None
-        ESA land-use raster for optional overlay and built-up area statistics.
+    Args:
+        polygon: The raw delta polygon from the Edmonds et al. (2020) dataset.
+        coastline: Unified coastline geometry from :func:`unionize_coastal_data`.
+        delta_id: Numeric identifier for this delta, used in figure file names.
+        debug_plot: If True, generate step-by-step scaling figures.
+        plot_rivers: River centre-lines for optional overlay on debug figures.
+        plot_lu: ESA land-use raster for optional overlay and built-up area
+            statistics, or None to omit.
 
-    Returns
-    -------
-    Polygon
-        The corrected (possibly enlarged) delta polygon.
+    Returns:
+        The corrected (possibly enlarged) delta polygon in the project standard
+        CRS.
+
+    Example:
+        >>> modified = modify_masks(
+        ...     raw_polygon, coast_geom, delta_id=42,
+        ...     debug_plot=False, plot_rivers=rivers_gdf, plot_lu=None
+        ... )
+        >>> print(modified.geom_type)
+        Polygon
     """
     print("1. Classify points...")
     delta_node, s1, s2, rm_dn1, rm_dn2 = classify_points(polygon, coastline)
@@ -791,33 +746,41 @@ def modify_masks(
 # ---------------------------------------------------------------------------
 
 
-def process_delta(row, land_use_full, logger, debug_plot: bool):
-    """
-    Run the full modification pipeline for one delta polygon.
+def process_delta(
+    row: pd.Series,
+    land_use_full: DataArray,
+    logger: logging.Logger,
+    debug_plot: bool,
+) -> Polygon | None:
+    """Run the full modification pipeline for one delta polygon row.
 
     Wraps data loading and mask modification so that failures are isolated to
     the individual delta and do not abort the parent loop.
 
-    Parameters
-    ----------
-    row : pandas.Series
-        A single row from the delta polygons GeoDataFrame. Must contain
-        ``geometry`` and ``BasinID2`` fields.
-    land_use_full : xarray.DataArray
-        Full (lazily loaded) land-use raster, passed in to avoid repeated
-        file opens.
-    debug_plot : bool
-        Whether to generate step-by-step scaling figures.
+    Args:
+        row: A single row from the delta polygons GeoDataFrame (a
+            ``pandas.Series``). Must contain ``geometry`` and ``BasinID2``
+            fields.
+        land_use_full: Full (lazily loaded) land-use raster, passed in to
+            avoid repeated file opens across iterations.
+        logger: A Python :class:`logging.Logger` instance used to record
+            progress and size-filter decisions.
+        debug_plot: Whether to generate step-by-step scaling figures.
 
-    Returns
-    -------
-    shapely.geometry.Polygon or None
-        The corrected polygon, or ``None`` if processing failed.
+    Returns:
+        The corrected polygon, or None if the delta was too small or
+        processing failed.
+
+    Example:
+        >>> import logging
+        >>> logger = logging.getLogger(__name__)
+        >>> result = process_delta(row, land_use_da, logger, debug_plot=False)
+        >>> print(result is None or result.geom_type == "Polygon")
+        True
     """
-    delta_id = row.BasinID2
-    delta_area = row.geometry.area
+    delta_id: int = cast(int, row["BasinID2"])
+    delta_area: float = cast(BaseGeometry, row["geometry"]).area
 
-    # --- Size filter ---
     if delta_area < config["Delta_masks"]["min_delta_area"]:
         logger.info(
             "Delta %s excluded: area %.1f km² is below %.0f km² threshold.",
@@ -831,13 +794,9 @@ def process_delta(row, land_use_full, logger, debug_plot: bool):
         "Processing delta %s (area %.1f km²)...", delta_id, delta_area / 1_000_000
     )
 
-    # Load all supporting data for this delta.
-    # Heavy objects (clipped raster, GeoDataFrames) are scoped to this
-    # function and released automatically when it returns.
     coast_geom, rivers, lu_builtup = load_delta_context(row.geometry, land_use_full)
 
-    # Run the iterative polygon scaling.
-    modified_polygon = modify_masks(
+    return modify_masks(
         row.geometry,
         coast_geom,
         delta_id,
@@ -845,5 +804,3 @@ def process_delta(row, land_use_full, logger, debug_plot: bool):
         plot_rivers=rivers,
         plot_lu=lu_builtup,
     )
-
-    return modified_polygon

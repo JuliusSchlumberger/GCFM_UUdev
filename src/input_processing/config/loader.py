@@ -1,32 +1,50 @@
-import yaml
+"""Configuration loader for the input processing pipeline.
+
+Loads the project YAML configuration file once at import time and exposes it
+as the module-level ``config`` dictionary. All other modules import ``config``
+from here rather than reading the file themselves.
+
+Example:
+    >>> from src.input_processing.config.loader import config
+    >>> print(config["CRS"]["standard"])
+    4326
+"""
+
+from __future__ import annotations
+
 from pathlib import Path
 
+import yaml
 
-def load_config(path: str) -> dict:
+
+def load_config(path: Path | str) -> dict:
+    """Load a YAML configuration file and return its contents as a dictionary.
+
+    Args:
+        path: Path to the YAML config file. Accepts either a
+            :class:`~pathlib.Path` object or a plain string. Relative paths
+            are resolved from the current working directory.
+
+    Returns:
+        Dictionary containing the parsed YAML configuration. The structure
+        mirrors the YAML file hierarchy directly.
+
+    Raises:
+        FileNotFoundError: If no file exists at *path*.
+        yaml.YAMLError: If the file exists but contains invalid YAML.
+
+    Example:
+        >>> cfg = load_config("src/input_processing/config/decisions.yaml")
+        >>> print(cfg["CRS"]["standard"])
+        4326
     """
-    Load YAML configuration file.
+    config_path: Path = Path(path)
 
-    Parameters
-    ----------
-    path : str
-        Path to YAML config
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config not found: {config_path}")
 
-    Returns
-    -------
-    dict
-        Configuration dictionary
-    """
-    path = Path(path)
-
-    if not path.exists():
-        raise FileNotFoundError(f"Config not found: {path}")
-
-    with open(path, "r") as f:
-        config = yaml.safe_load(f)
-
-    return config
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
 
 
-config = load_config("../src/input_processing/config/decisions.yaml")
-print("Config file created")
-print(config)
+config: dict = load_config("../src/input_processing/config/decisions.yaml")

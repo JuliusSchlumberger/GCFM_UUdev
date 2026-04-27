@@ -1,43 +1,59 @@
-"""
-This CLI script allows to automatically run the code to define the modelling domains per delta. It uses the following
-input data:
-Delta-Polygons (Edmonds et al. 2020): vectorized extend of the deltas globally, characterized by 4 points. As dataset is based on geomorphological identificaiton, it is not suited to determine the hydrologically relevant area for flood modelling, but is used to identify relevant basins that fall within the delta.
-HYDRO-Basins (Lehner et al. 2013): vectorized polygon layers depicting sub-basin boundaries at global scale. They are provided on 12 levels according to "Pfafstetter" coding system.
-                                    We use level 6 as an intermediate resolution based on preliminary testing of overlapping the basins with the Delta Polygons.
-Delta-DTM (Pronk et al., modified by Seeger & minderhoud): coastal topography, used to identify and clip the coastal areas.
+"""CLI entry point for extracting river source points for each delta domain.
+
+Identifies the most-downstream GloFAS discharge cells that can serve as model
+inflow points for each delta domain polygon. Uses three input datasets:
+
+- **Delta polygons** (Edmonds et al. 2020): vectorised global delta extents
+  characterised by four vertices. Used to identify which basins fall within
+  each delta rather than to define the hydrologically relevant flood area
+  directly.
+- **HydroBasins** (Lehner et al. 2013): vectorised sub-basin boundary polygons
+  at global scale, provided at 12 Pfafstetter coding levels. Level 6 is used
+  as an intermediate resolution based on preliminary testing of overlap with
+  the delta polygons.
+- **DeltaDTM** (Pronk et al., modified by Seeger & Minderhoud): coastal
+  topography dataset used to identify and clip coastal areas when deriving
+  the inland domain boundary.
+
+Example:
+    Run from the command line::
+
+        python scripts/preprocess_02_river_source_points.py
+
+    Or call programmatically::
+
+        >>> from scripts.preprocess_02_river_source_points import main
+        >>> main()
 """
 
-import argparse
+from __future__ import annotations
+
 from src.input_processing.workflows.preprocess_02_wf_extract_river_points import (
     extract_points,
 )
-# from src.input_processing.validation.river_input.test_hydrobasin_level import
-# from src.input_processing.validation.river_input.test_domain_qsources import test_domain_qsource_flow,test_validate_process_map
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Define the model domain")
-    # parser.add_argument("--choice",
-    #                     help="Select which parts of the input processing you want to operate. The following are currently implemented: 'validate_glofas', ...", required=True)
-    # parser.add_argument("--delta", help="specify which delta to run scripts for, see /config/decision.yaml for options",
-    #                     default="id_delta1")
+def main() -> None:
+    """Run the river source point extraction pipeline with default configuration.
 
-    args = parser.parse_args()
+    Thin entry point that calls :func:`extract_points` with all file paths and
+    settings read from the project config. Loads global datasets once, iterates
+    over all delta domains, identifies the most-downstream GloFAS inflow points,
+    and writes results to three output GeoPackage files.
 
-    # Create delta domains for selected level of Pfafstetter water sheds
-    # extract_all_river_source_points_debug(max_deltas=5, step_timeout_seconds=60)
+    Returns:
+        None. Output files are written to the paths defined in
+        ``config['filepaths']``.
+
+    Raises:
+        FileNotFoundError: If the delta domains or basin domains GeoPackage
+            cannot be found at the configured paths (propagated from
+            :func:`extract_points`).
+
+    Example:
+        >>> main()
+    """
     extract_points()
-
-    # --- Tests ---
-
-    # Test: workflow and plot figure showing intermediate results
-    # test_validate_process_map()
-
-    # Test: Randomly plot a set of deltas and the extraction points:
-    # test_domain_qsource_flow()
-
-    # get_statistics_delta_domains(debug_plot=False)    # TODO explore how the process of using basin boundaries for all deltas with distance to coastlina < 10km
-    # create_model_domain(testcase_id)
 
 
 if __name__ == "__main__":

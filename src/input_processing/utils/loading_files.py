@@ -1,82 +1,190 @@
-from shapely.geometry import Polygon
+"""Global and per-delta data loading utilities for the river source pipeline.
+
+Heavy datasets (rivers, coastline, GloFAS) are loaded once via
+``load_global_data()`` and stored in a frozen ``GlobalData`` dataclass.
+Per-delta subsets are then derived cheaply via ``load_data_delta_domain()``
+using coordinate-index slicing and xarray selection — no repeated file I/O.
+
+Example:
+    >>> global_data = load_global_data()
+    >>> rivers, coast, coastline_gdf, glofas_min = load_data_delta_domain(
+    ...     delta_basins_gdf, global_data
+    ... )
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
 import geopandas as gpd
-from shapely.geometry.multipolygon import MultiPolygon
+import xarray as xr
+from geopandas import GeoDataFrame
+from shapely.geometry import MultiPolygon, Polygon
+from shapely.geometry.base import BaseGeometry
 
 from src.input_processing.config.loader import config
 from src.input_processing.utils.validation.modify_delta_masks import build_local_bbox
-from geopandas import GeoDataFrame
-import xarray as xr
 
-from dataclasses import dataclass
+
+# ---------------------------------------------------------------------------
+# GlobalData container
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class GlobalData:
+    """Immutable container for the heavy global datasets loaded once at startup.
+
+    Storing all three datasets in a single frozen dataclass makes it easy to
+    pass the full context through the pipeline without repeated file I/O, and
+    ``frozen=True`` prevents accidental mutation during the per-delta loop.
+
+    Attributes:
+        rivers: Full global river network (SWORD) in the project standard CRS.
+        coastline: Global coastline polygons in the project standard CRS.
+        glofas: GloFAS discharge Dataset covering all time steps and the full
+            global extent. Kept as a lazily-evaluated xarray Dataset so that
+            per-delta ``.sel()`` slices remain cheap.
+
+    Example:
+        >>> data = load_global_data()
+        >>> print(type(data.glofas))
+        <class 'xarray.core.dataset.Dataset'>
+    """
+
     rivers: GeoDataFrame
     coastline: GeoDataFrame
     glofas: xr.Dataset
 
 
+# ---------------------------------------------------------------------------
+# Global loader — call once at pipeline startup
+# ---------------------------------------------------------------------------
+
+
 def load_global_data() -> GlobalData:
-    """Load heavy datasets once."""
-    rivers = gpd.read_file(config["filepaths"]["river_sword"]).to_crs(
+    """Load and validate the three heavy global datasets.
+
+    Reads the river network, coastline, and GloFAS discharge file from the
+    paths defined in the project config. Both vector datasets are reprojected
+    to the project standard CRS on load. The GloFAS dataset is opened lazily
+    so the full file is not read into memory until a ``.sel()`` slice is
+    evaluated.
+
+    Returns:
+        A frozen ``GlobalData`` instance ready to be passed into
+        ``load_data_delta_domain()`` for per-delta subsetting.
+
+    Raises:
+        FileNotFoundError: If any of the configured file paths do not exist.
+        ValueError: If the CRS reprojection fails for the river or coastline
+            datasets.
+
+    Example:
+        >>> global_data = load_global_data()
+        >>> print(len(global_data.rivers))  # number of river segments loaded
+        142301
+    """
+    rivers: GeoDataFrame = gpd.read_file(config["filepaths"]["river_sword"]).to_crs(
         epsg=config["CRS"]["standard"]
     )
 
-    coastline = gpd.read_file(config["filepaths"]["coastline"]).to_crs(
+    coastline: GeoDataFrame = gpd.read_file(config["filepaths"]["coastline"]).to_crs(
         epsg=config["CRS"]["standard"]
     )
 
-    glofas = xr.open_dataset(config["filepaths"]["glofas"])
+    glofas: xr.Dataset = xr.open_dataset(config["filepaths"]["glofas"])
     glofas = glofas.rio.write_crs(config["CRS"]["standard"])
 
-    return GlobalData(
-        rivers=rivers,
-        coastline=coastline,
-        glofas=glofas,
-    )
+    return GlobalData(rivers=rivers, coastline=coastline, glofas=glofas)
 
 
-from shapely.geometry import MultiPolygon
-from shapely.geometry.base import BaseGeometry
+# ---------------------------------------------------------------------------
+# Per-delta subset — cheap slice, no I/O
+# ---------------------------------------------------------------------------
 
 
 def load_data_delta_domain(
     delta_basin_mask: GeoDataFrame | Polygon | MultiPolygon,
     global_data: GlobalData,
-) -> tuple[GeoDataFrame, Polygon, GeoDataFrame, xr.DataArray]:
-    """
-    Clip global datasets to a delta-specific bounding box.
+) -> tuple[GeoDataFrame, BaseGeometry, GeoDataFrame, xr.DataArray]:
+    """Clip global datasets to the bounding box of a single delta basin.
+
+    Accepts either a GeoDataFrame of basin polygons or a pre-dissolved shapely
+    geometry. All three global datasets are subset using coordinate-index
+    slicing (``.cx`` for vectors, ``.sel`` for GloFAS) so no file I/O occurs.
+    The coastline union is simplified before returning to prevent
+    ``clip_basin_boundary_from_coast`` from hanging on geometrically complex
+    coastlines.
+
+    Args:
+        delta_basin_mask: Either a GeoDataFrame of basin polygons for the
+            target delta, or a pre-dissolved ``Polygon`` or ``MultiPolygon``.
+            If a GeoDataFrame is passed, all geometries are dissolved into one
+            before the bounding box is computed.
+        global_data: The ``GlobalData`` instance returned by
+            ``load_global_data()``. Must not be None.
 
     Returns:
-        rivers_gpd, coast_polygon, coastline_gpd, glofas_min
+        A tuple of ``(rivers_gpd, coast_polygon, coastline_gpd, glofas_min)``
+        where:
+
+        - *rivers_gpd*: River segments clipped to the delta bounding box, in
+          the project standard CRS.
+        - *coast_polygon*: Simplified union of coastline polygons within the
+          bounding box. Typed as ``BaseGeometry`` since ``union_all()`` may
+          return ``Polygon`` or ``MultiPolygon`` depending on coastline
+          complexity in the region.
+        - *coastline_gpd*: Raw clipped coastline GeoDataFrame before unioning,
+          retained for plotting and diagnostics.
+        - *glofas_min*: Per-cell minimum discharge ``DataArray`` over all
+          time steps in the clipped region, derived from the ``dis24``
+          variable.
+
+    Raises:
+        KeyError: If the GloFAS dataset does not contain a ``dis24`` variable
+            or the expected ``longitude`` / ``latitude`` dimension names.
+
+    Example:
+        >>> global_data = load_global_data()
+        >>> rivers, coast, coastline_gdf, glofas_min = load_data_delta_domain(
+        ...     delta_basins_gdf, global_data
+        ... )
+        >>> print(glofas_min.dims)
+        ('latitude', 'longitude')
     """
-
-    # --- Normalize geometry ---
+    # --- Normalise input to a single geometry ---
+    delta_geom: BaseGeometry
     if isinstance(delta_basin_mask, (Polygon, MultiPolygon)):
-        delta_polygon: BaseGeometry = delta_basin_mask
+        delta_geom = delta_basin_mask
     else:
-        delta_polygon = delta_basin_mask.geometry.union_all()
+        delta_geom = delta_basin_mask.geometry.union_all()
 
-    # --- Bounding box ---
-    bbox_4326 = build_local_bbox(delta_polygon)
+    # --- Bounding box in WGS-84 for coordinate-index slicing ---
+    bbox_4326: BaseGeometry = build_local_bbox(delta_geom)
+    minx: float
+    miny: float
+    maxx: float
+    maxy: float
     minx, miny, maxx, maxy = bbox_4326.bounds
 
-    # --- Clip rivers (FAST, no I/O) ---
-    rivers_gpd = global_data.rivers.cx[minx:maxx, miny:maxy].copy()
+    # --- Spatial subsets (no file I/O) ---
+    rivers_gpd: GeoDataFrame = global_data.rivers.cx[minx:maxx, miny:maxy].copy()
 
-    # --- Clip coastline ---
-    coastline_gpd = global_data.coastline.cx[minx:maxx, miny:maxy].copy()
+    coastline_gpd: GeoDataFrame = global_data.coastline.cx[minx:maxx, miny:maxy].copy()
+
+    # Simplify the union to prevent .difference() from hanging on highly
+    # fragmented coastlines (e.g. regions with 200+ small polygons).
     coast_polygon: BaseGeometry = coastline_gpd.geometry.union_all().simplify(
         config["Delta_masks"]["tolerance_deg"], preserve_topology=True
     )
 
-    # --- Clip GloFAS (NO re-open) ---
-    glofas_clip = global_data.glofas.sel(
+    # --- GloFAS temporal minimum over the clipped region ---
+    # latitude is stored north→south so the slice order is (maxy, miny).
+    glofas_clip: xr.Dataset = global_data.glofas.sel(
         longitude=slice(minx, maxx),
         latitude=slice(maxy, miny),
     )
-
     glofas_min: xr.DataArray = glofas_clip.dis24.min(dim="valid_time")
 
     return rivers_gpd, coast_polygon, coastline_gpd, glofas_min

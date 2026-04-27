@@ -29,6 +29,7 @@ LandUse:
   code_builtup: 50
 
 filepaths:
+    # TODO: properly provide metadata for all inputdatasets used.
   ## Inputs
   delta_polygons_original: '../src/input_processing/data/DeltaWebs/769_DeltaWebs.shp'
   hand_picked_deltas: '../src/input_processing/data/DeltaWebs/40_deltas.geojson'
