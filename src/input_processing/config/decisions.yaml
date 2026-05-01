@@ -12,6 +12,10 @@ Delta_masks:
   bbox_delta: 500_000 # Buffer added around each delta bounding box when clipping supporting data.
   tolerance_deg: 0.01 # Buffer around polygons (especially coastline) for difference with basins
   snap_distance_rivers: 0.02
+  offshore_buffer: 0.1  # distance in deg from shore used to clip gebco
+  gebco_depth: -10  # maximum water depth taken from gebco. Gebco has extreme weakness in intertidal zone and shallow coast area.
+  DTM_buffer: 0.1 # buffer to identify relevant DeltaDTM tiles overlapping with the delta polygons + this buffer
+  DeltaDTM_tile_extent: 1 # 1 degree tiles in DeltaDTM by Seeger & Minderhoud
 
 DomainSchema:
   geometry_lbl: 'geometry'  # default column name assumed for any polygon or water shed basin to contain the coordinates
@@ -32,9 +36,20 @@ filepaths:
     # TODO: properly provide metadata for all inputdatasets used.
   ## Inputs
   delta_polygons_original: '../src/input_processing/data/DeltaWebs/769_DeltaWebs.shp'
-  hand_picked_deltas: '../src/input_processing/data/DeltaWebs/40_deltas.geojson'
-  land_use: '../src/input_processing/data/Copernicus_LandUse.tif'
+  hand_picked_deltas: '../src/modelling_framework/static_data/DeltaWebs/40_deltas.geojson'
+
+  # Landcover (ESA/Copernicus)
+  land_use: '../src/modelling_framework/static_data/Copernicus/Copernicus_LandUse.tif' # 100m resolution, data from 2015 - 2019
+  ESA_roughness_mapping: '../src/input_processing/data/ESA_Worldcover/esa_worldcover_mapping_extended.csv'
+  roughness_map: '../src/modelling_framework/static_data/Copernicus/roughness_map.tif'  # produced using prepare_inputs workflow
+
+  # OSM
   coastline: '../src/input_processing/data/osm_coastlines-db.gpkg'
+  OSM_land: '../src/input_processing/data/OSM/land-polygons-split-4326/land_polygons.shp'
+  OSM_marine_buffer: '../src/input_processing/data/OSM/marine_buffer.gpkg'  # file produced using prepare_inputs_gebco.py
+
+
+  # Rivers
   river: '../src/input_processing/data/rivers_lin.gpkg'
   river_grit: '../src/input_processing/data/GRIT/GRITv1.0_segments_NA_EPSG4326.gpkg'
   river_sword: '../src/input_processing/data/Global_rivers.gpkg'
@@ -45,13 +60,20 @@ filepaths:
   river_basins_lvl07: '../src/modelling_framework/static_data/HydroBasins/hybas_global_merged_levlev07.shp'
   delta_polygons_used: '../src/modelling_framework/static_data/HydroBasins/delta_masks_subset.gpkg'
 
+  GEBCO_clipped: '../src/modelling_frameweork/static_data/gebco_clipped.tif'
+
+  # large datasets for preprocessing
+  GEBCO_original: 'D:/GCFM_UU/data/gebco_2026_geotiff/'
+  DeltaDTM_original: 'D:\GCFM_UU\data\DeltaDTM\'
+  DeltaDTM_temp: 'D:\GCFM_UU\data\DeltaDTM\_temp_selected_tiles'
+
 
 
   glofas: '../src/input_processing/data/GloFAS/data_version-4.0_consolidated.nc'
 
   ## Outputs
   output: '../src/modelling_framework/static_data/delta_masks_Edmonds_modified.gpkg'
-  new_domains: '../src/modelling_framework/static_data/basin_delta_domains.gpkg'
+  new_domains: '../src/modelling_framework/static_data/HydroBasins/basin_delta_domains.gpkg'
   unique_sources: '../src/modelling_framework/static_data/unique_river_source_points.gpkg'
   possible_sources: '../src/input_processing/data/validation/all_possible_river_source_points.gpkg'
   out_deltas_no_rivers: '../src/input_processing/data/validation/deltas_no_river_sources.gpkg'

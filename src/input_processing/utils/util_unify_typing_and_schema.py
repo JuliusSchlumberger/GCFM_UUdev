@@ -30,19 +30,22 @@ import pandas as pd
 from geopandas import GeoDataFrame
 from shapely.strtree import STRtree
 
-from src.input_processing.config.loader import config
+from src.utils.config_loader import load_config
+
+_CONFIG_PATH = "../src/input_processing/config/decisions.yaml"
+_CONFIG: dict = load_config(_CONFIG_PATH)
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-CRS_STANDARD: Final[int] = config["CRS"]["standard"]
-CRS_PROJECTED: Final[int] = config["CRS"]["for_distances"]
+CRS_STANDARD: Final[int] = _CONFIG["CRS"]["standard"]
+CRS_PROJECTED: Final[int] = _CONFIG["CRS"]["for_distances"]
 
-GEOM_COL: Final[str] = config["DomainSchema"]["geometry_lbl"]
-BASIN_COL: Final[str] = config["DomainSchema"]["delta_id_lbl"]
-AREA_COL: Final[str] = config["DomainSchema"]["area_lbl"]
-MIN_DELTA_AREA_KM2: Final[float] = config["Delta_masks"]["min_delta_area"]
+GEOM_COL: Final[str] = _CONFIG["DomainSchema"]["geometry_lbl"]
+BASIN_COL: Final[str] = _CONFIG["DomainSchema"]["delta_id_lbl"]
+AREA_COL: Final[str] = _CONFIG["DomainSchema"]["area_lbl"]
+MIN_DELTA_AREA_KM2: Final[float] = _CONFIG["Delta_masks"]["min_delta_area"]
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +56,7 @@ MIN_DELTA_AREA_KM2: Final[float] = config["Delta_masks"]["min_delta_area"]
 def _validate_schema(gdf: GeoDataFrame, excluded: list[str]) -> None:
     """Raise ValueError if any required column is absent from *gdf*.
 
-    Reads the required column names from ``config['DomainSchema']`` and checks
+    Reads the required column names from ``_CONFIG['DomainSchema']`` and checks
     that each one is present in *gdf*, unless it appears in *excluded*.
 
     Args:
@@ -69,9 +72,9 @@ def _validate_schema(gdf: GeoDataFrame, excluded: list[str]) -> None:
         >>> _validate_schema(gdf, excluded=["Area"])  # skips the Area column
     """
     required: list[str] = [
-        config["DomainSchema"][k]
-        for k in config["DomainSchema"]
-        if config["DomainSchema"][k] not in excluded
+        _CONFIG["DomainSchema"][k]
+        for k in _CONFIG["DomainSchema"]
+        if _CONFIG["DomainSchema"][k] not in excluded
     ]
     missing: list[str] = [col for col in required if col not in gdf.columns]
     if missing:

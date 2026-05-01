@@ -23,7 +23,7 @@ Note:
     use rather than assumed to already be in the correct CRS.
 
 Example:
-    >>> from src.input_processing.workflows.workflow_delta_masks import (
+    >>> from src import (
     ...     modify_test_delta_masks,
     ... )
     >>> modify_test_delta_masks(position_plot=False, debug_plot=True)
@@ -38,8 +38,8 @@ import rioxarray
 from geopandas import GeoDataFrame
 from shapely.geometry import Polygon
 
-from src.input_processing.config.loader import config
-from src.input_processing.utils.validation.modify_delta_masks import (
+from src import config
+from src import (
     plot_polygons_with_vertices,
     unionize_coastal_data,
     process_delta,

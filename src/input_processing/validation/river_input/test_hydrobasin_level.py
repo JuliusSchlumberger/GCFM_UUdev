@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.input_processing.config.loader import config
-from src.input_processing.utils.preprocess_01_ut_model_domains import create_model_domains
+from src import config
+from src import create_model_domains
 
 
 def compare_pfafstett_lvls() -> None:

@@ -22,9 +22,14 @@ from geopandas import GeoDataFrame
 from shapely.geometry import MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
 
-from src.input_processing.config.loader import config
 from src.input_processing.utils.validation.modify_delta_masks import build_local_bbox
+from src.utils.config_loader import load_config
+from src.utils.setup_logger import setup_logging
 
+_LOG = setup_logging("data_loader")
+
+_CONFIG_PATH = "../src/input_processing/config/decisions.yaml"
+_CONFIG: dict = load_config(_CONFIG_PATH)  # type: ignore[type-arg]
 
 # ---------------------------------------------------------------------------
 # GlobalData container
@@ -85,17 +90,32 @@ def load_global_data() -> GlobalData:
         >>> print(len(global_data.rivers))  # number of river segments loaded
         142301
     """
-    rivers: GeoDataFrame = gpd.read_file(config["filepaths"]["river_sword"]).to_crs(
-        epsg=config["CRS"]["standard"]
+    _LOG.info("Loading global datasets ...")
+
+    _LOG.info(
+        "  Reading river network (SWORD): %s", _CONFIG["filepaths"]["river_sword"]
+    )
+    rivers: GeoDataFrame = gpd.read_file(_CONFIG["filepaths"]["river_sword"]).to_crs(
+        epsg=_CONFIG["CRS"]["standard"]
+    )
+    _LOG.info("  Rivers loaded: %d segments", len(rivers))
+
+    _LOG.info("  Reading coastline: %s", _CONFIG["filepaths"]["coastline"])
+    coastline: GeoDataFrame = gpd.read_file(_CONFIG["filepaths"]["coastline"]).to_crs(
+        epsg=_CONFIG["CRS"]["standard"]
+    )
+    _LOG.info("  Coastline loaded: %d features", len(coastline))
+
+    _LOG.info("  Opening GloFAS dataset (lazy): %s", _CONFIG["filepaths"]["glofas"])
+    glofas: xr.Dataset = xr.open_dataset(_CONFIG["filepaths"]["glofas"])
+    glofas = glofas.rio.write_crs(_CONFIG["CRS"]["standard"])
+    _LOG.info(
+        "  GloFAS opened: dims=%s, variables=%s",
+        dict(glofas.dims),
+        list(glofas.data_vars),
     )
 
-    coastline: GeoDataFrame = gpd.read_file(config["filepaths"]["coastline"]).to_crs(
-        epsg=config["CRS"]["standard"]
-    )
-
-    glofas: xr.Dataset = xr.open_dataset(config["filepaths"]["glofas"])
-    glofas = glofas.rio.write_crs(config["CRS"]["standard"])
-
+    _LOG.info("All global datasets loaded.")
     return GlobalData(rivers=rivers, coastline=coastline, glofas=glofas)
 
 
@@ -158,6 +178,7 @@ def load_data_delta_domain(
     if isinstance(delta_basin_mask, (Polygon, MultiPolygon)):
         delta_geom = delta_basin_mask
     else:
+        _LOG.debug("Dissolving GeoDataFrame basin mask into a single geometry.")
         delta_geom = delta_basin_mask.geometry.union_all()
 
     # --- Bounding box in WGS-84 for coordinate-index slicing ---
@@ -167,16 +188,27 @@ def load_data_delta_domain(
     maxx: float
     maxy: float
     minx, miny, maxx, maxy = bbox_4326.bounds
+    _LOG.debug(
+        "Delta bounding box (WGS-84): %.4f, %.4f → %.4f, %.4f", minx, miny, maxx, maxy
+    )
 
     # --- Spatial subsets (no file I/O) ---
     rivers_gpd: GeoDataFrame = global_data.rivers.cx[minx:maxx, miny:maxy].copy()
+    _LOG.debug("Rivers clipped to bbox: %d segments", len(rivers_gpd))
 
     coastline_gpd: GeoDataFrame = global_data.coastline.cx[minx:maxx, miny:maxy].copy()
+    _LOG.debug("Coastline clipped to bbox: %d features", len(coastline_gpd))
 
     # Simplify the union to prevent .difference() from hanging on highly
     # fragmented coastlines (e.g. regions with 200+ small polygons).
+    tolerance: float = _CONFIG["Delta_masks"]["tolerance_deg"]
     coast_polygon: BaseGeometry = coastline_gpd.geometry.union_all().simplify(
-        config["Delta_masks"]["tolerance_deg"], preserve_topology=True
+        tolerance, preserve_topology=True
+    )
+    _LOG.debug(
+        "Coastline union simplified (tolerance=%.6f deg): geometry type=%s",
+        tolerance,
+        coast_polygon.geom_type,
     )
 
     # --- GloFAS temporal minimum over the clipped region ---
@@ -186,5 +218,6 @@ def load_data_delta_domain(
         latitude=slice(maxy, miny),
     )
     glofas_min: xr.DataArray = glofas_clip.dis24.min(dim="valid_time")
+    _LOG.debug("GloFAS clipped: dims=%s", dict(glofas_clip.dims))
 
     return rivers_gpd, coast_polygon, coastline_gpd, glofas_min

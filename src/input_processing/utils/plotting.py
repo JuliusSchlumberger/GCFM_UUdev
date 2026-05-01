@@ -33,7 +33,7 @@ from matplotlib.figure import Figure
 from shapely.geometry import MultiLineString, LineString, Polygon
 from shapely.geometry.base import BaseGeometry
 
-from src.input_processing.config.loader import config
+from src.utils.config_loader import load_config
 from src.input_processing.utils.util_unify_typing_and_schema import (
     CRS_STANDARD,
     BASIN_COL,
@@ -43,6 +43,8 @@ from src.input_processing.utils.util_unify_typing_and_schema import (
 # ---------------------------------------------------------------------------
 # Axes helpers
 # ---------------------------------------------------------------------------
+_CONFIG_PATH = "../src/input_processing/config/decisions.yaml"
+_CONFIG: dict = load_config(_CONFIG_PATH)
 
 
 def create_bounds_around_delta(ax: Axes, polygon: BaseGeometry) -> None:
@@ -244,7 +246,7 @@ def plot_model_domain(
     glofas_p: GeoSeries,
     gdf_all_sources: GeoDataFrame,
     gdf_unique_sources: GeoDataFrame,
-    identifier: str = config["Testcase"]["id_delta1"],
+    identifier: str = _CONFIG["Testcase"]["id_delta1"],
 ) -> None:
     """Save a four-panel overview figure of the full domain-building pipeline.
 
@@ -258,7 +260,7 @@ def plot_model_domain(
     4. **Discharge sources** — all candidate and automatically selected river
        source points.
 
-    The figure is saved to ``config['filepaths']['delta_domain_test']``.
+    The figure is saved to ``_CONFIG['filepaths']['delta_domain_test']``.
 
     Args:
         delta_polygon: The Edmonds et al. (2020) delta polygon used as the
@@ -275,7 +277,7 @@ def plot_model_domain(
         gdf_unique_sources: GeoDataFrame of the automatically selected
             most-downstream source points.
         identifier: Delta identifier string used in the output filename.
-            Defaults to ``config['Testcase']['id_delta1']``.
+            Defaults to ``_CONFIG['Testcase']['id_delta1']``.
 
     Example:
         >>> plot_model_domain(
@@ -355,7 +357,9 @@ def plot_model_domain(
         create_bounds_around_delta(_ax, delta_polygon)
 
     plt.tight_layout()
-    plt.savefig(f"{config['filepaths']['delta_domain_test']}_{identifier}.png", dpi=300)
+    plt.savefig(
+        f"{_CONFIG['filepaths']['delta_domain_test']}_{identifier}.png", dpi=300
+    )
     plt.close(fig)
 
 
@@ -471,9 +475,9 @@ def plot_river_locations(
     plt.tight_layout()
 
     out_path: Path = Path(
-        f"{config['filepaths']['debug_river_sources']}_{delta_id}.png"
+        f"{_CONFIG['filepaths']['debug_river_sources']}_{delta_id}.png"
         if debugging
-        else f"{config['filepaths']['river_sources_plots']}_{delta_id}.png"
+        else f"{_CONFIG['filepaths']['river_sources_plots']}_{delta_id}.png"
     )
     plt.savefig(out_path, dpi=150)
     plt.close(fig)

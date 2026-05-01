@@ -24,40 +24,41 @@ Example:
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Final
+from typing import Final, cast
 
-import pandas as pd
 import geopandas as gpd
 import numpy as np
-from typing import cast
-from shapely import get_parts
 import xarray as xr
 from geopandas import GeoDataFrame, GeoSeries
-from shapely.geometry import MultiLineString, LineString, Point
+from geopandas.array import GeometryArray
+from shapely import get_parts
+from shapely.geometry import LineString, MultiLineString, Point
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import nearest_points, unary_union
 from shapely.strtree import STRtree
-from geopandas.array import GeometryArray
 
-from src.input_processing.config.loader import config
 from src.input_processing.utils.plotting import plot_river_locations
-from src.input_processing.utils.util_unify_typing_and_schema import (
-    ensure_valid_schema,
-)
+from src.input_processing.utils.util_unify_typing_and_schema import ensure_valid_schema
+from src.utils.config_loader import load_config
+from src.utils.setup_logger import setup_logging
+
+_LOG = setup_logging("preprocess_02_extract_river_points")
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+_CONFIG_PATH = "../src/input_processing/config/decisions.yaml"
+_CONFIG: dict = load_config(_CONFIG_PATH)  # type: ignore[type-arg]
 
-CRS_STANDARD: Final[int] = config["CRS"]["standard"]
-GEOM_COL: Final[str] = config["DomainSchema"]["geometry_lbl"]
-BASIN_COL: Final[str] = config["DomainSchema"]["delta_id_lbl"]
-AREA_COL: Final[str] = config["DomainSchema"]["area_lbl"]
-_LON: Final[str] = config["Rivers"]["glofas_lon_name"]
-_LAT: Final[str] = config["Rivers"]["glofas_lat_name"]
-_VAR: Final[str] = config["Rivers"]["glofas_discharge_parameter"]
-_THRESHOLD: Final[float] = config["Rivers"]["glofas_min_discharge"]
-_SNAP_TOL: Final[float] = config["Delta_masks"]["tolerance_deg"]
+CRS_STANDARD: Final[int] = _CONFIG["CRS"]["standard"]
+GEOM_COL: Final[str] = _CONFIG["DomainSchema"]["geometry_lbl"]
+BASIN_COL: Final[str] = _CONFIG["DomainSchema"]["delta_id_lbl"]
+AREA_COL: Final[str] = _CONFIG["DomainSchema"]["area_lbl"]
+_LON: Final[str] = _CONFIG["Rivers"]["glofas_lon_name"]
+_LAT: Final[str] = _CONFIG["Rivers"]["glofas_lat_name"]
+_VAR: Final[str] = _CONFIG["Rivers"]["glofas_discharge_parameter"]
+_THRESHOLD: Final[float] = _CONFIG["Rivers"]["glofas_min_discharge"]
+_SNAP_TOL: Final[float] = _CONFIG["Delta_masks"]["tolerance_deg"]
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +100,12 @@ def _filter_cells_by_threshold(
     """
     q_thresh = q_values_nc.where(q_values_nc > threshold, drop=True)
     df = q_thresh.to_dataframe().dropna(subset=[var_name]).reset_index()
-    print(f"Cells above threshold: {len(df)} / {q_values_nc.size}")
+    _LOG.debug(
+        "Threshold filter (> %.1f m³/s): %d / %d cells retained.",
+        threshold,
+        len(df),
+        q_values_nc.size,
+    )
     return gpd.GeoDataFrame(
         df,
         geometry=gpd.points_from_xy(df[longitude], df[latitude]),
@@ -135,7 +141,9 @@ def _compute_half_cell(
     """
     lon_res: float = float(q_values_nc[longitude].diff(longitude).median())
     lat_res: float = float(q_values_nc[latitude].diff(latitude).median())
-    return max(abs(lon_res), abs(lat_res)) / 2.0
+    half_cell = max(abs(lon_res), abs(lat_res)) / 2.0
+    _LOG.debug("Grid half-cell size: %.6f deg.", half_cell)
+    return half_cell
 
 
 def _filter_cells_near_boundary(
@@ -171,7 +179,13 @@ def _filter_cells_near_boundary(
     mask: np.ndarray = np.zeros(len(cells_gdf), dtype=bool)
     if hits.size > 0:
         mask[hits] = True
-    return cells_gdf.loc[mask].copy()
+    result = cells_gdf.loc[mask].copy()
+    _LOG.debug(
+        "Boundary filter: %d / %d cells intersect inland boundary.",
+        mask.sum(),
+        len(cells_gdf),
+    )
+    return result
 
 
 def _filter_cells_near_rivers(
@@ -206,7 +220,12 @@ def _filter_cells_near_rivers(
     if near.size > 0:
         mask[near] = True
     result: GeoDataFrame = cells_gdf.loc[mask].copy()
-    print(f"Cells near rivers: {mask.sum()} / {len(cells_gdf)}")
+    _LOG.debug(
+        "River proximity filter: %d / %d cells within %.6f deg of rivers.",
+        mask.sum(),
+        len(cells_gdf),
+        half_cell,
+    )
     return result
 
 
@@ -247,34 +266,39 @@ def clip_basin_boundary_from_coast(
         >>> print(boundary.geom_type)
         MultiLineString
     """
+    _LOG.debug(
+        "Clipping basin boundary against coastline (simplify=%.4f deg).",
+        simplify_tolerance,
+    )
     basin_boundary: BaseGeometry = relevant_basins.union_all().boundary
     buffered_coast: BaseGeometry = coast_polygon.buffer(
-        config["Delta_masks"]["tolerance_deg"]
+        _CONFIG["Delta_masks"]["tolerance_deg"]
     )
     buffered_coast = buffered_coast.simplify(simplify_tolerance, preserve_topology=True)
     clipped: BaseGeometry = basin_boundary.difference(buffered_coast)
 
-    # get_parts() handles any geometry type — unlike .geoms which raises
-    # AttributeError on a bare LineString.
     lines: list[LineString] = [
         g for g in get_parts(clipped) if g.geom_type == "LineString"
     ]
 
     if not lines:
         raise ValueError(
-            f"[clip_basin_boundary_from_coast] No inland boundary segments remain "
-            f"after coastal subtraction. Check tolerance_deg "
-            f"({config['Delta_masks']['tolerance_deg']}) or basin/coast alignment."
+            "No inland boundary segments remain after coastal subtraction. "
+            f"Check tolerance_deg ({_CONFIG['Delta_masks']['tolerance_deg']}) "
+            "or basin/coast alignment."
         )
 
     result: BaseGeometry = unary_union(lines)
 
     if not isinstance(result, (LineString, MultiLineString)):
         raise ValueError(
-            f"[clip_basin_boundary_from_coast] Unexpected geometry type after "
-            f"union: {result.geom_type}. Expected LineString or MultiLineString."
+            f"Unexpected geometry type after union: {result.geom_type}. "
+            "Expected LineString or MultiLineString."
         )
 
+    _LOG.debug(
+        "Inland boundary clipped: %d segment(s), type=%s.", len(lines), result.geom_type
+    )
     return result
 
 
@@ -344,7 +368,7 @@ def _find_intersecting_reaches(
         union_geom, predicate="dwithin", distance=snap_tolerance
     )
     result: GeoDataFrame = rivers.iloc[idx].copy()
-    print(f"River segments intersecting candidates: {len(result)}")
+    _LOG.debug("River segments intersecting candidates: %d.", len(result))
     return result
 
 
@@ -387,20 +411,20 @@ def _attach_candidate_points(
     )
 
     if hits.size == 0:
+        _LOG.debug("No candidate points matched any reach within snap tolerance.")
         candidate_reaches["candidate_point"] = None
         return candidate_reaches
 
     # hits shape: (2, n) — row 0: index into candidate_reaches,
     #                       row 1: index into source_candidates.
-    # Keep only the first matching source for each reach.
-    mapping: dict[int, int] = {}
+    reach_to_src: dict[int, int] = {}
     for reach_idx, src_idx in zip(hits[0], hits[1]):
-        if reach_idx not in mapping:
-            mapping[reach_idx] = src_idx
+        if reach_idx not in reach_to_src:
+            reach_to_src[reach_idx] = src_idx
 
     points: list[Point | None] = []
     for i, geom in enumerate(candidate_reaches.geometry.values):
-        src_idx = mapping.get(i)
+        src_idx = reach_to_src.get(i)
         if src_idx is None:
             points.append(None)
             continue
@@ -409,6 +433,10 @@ def _attach_candidate_points(
         points.append(p_on_river)
 
     candidate_reaches["candidate_point"] = points
+    n_matched = sum(p is not None for p in points)
+    _LOG.debug(
+        "Candidate points attached: %d / %d reaches matched.", n_matched, len(points)
+    )
     return candidate_reaches
 
 
@@ -432,42 +460,35 @@ def _deduplicate_by_point(candidate_reaches: GeoDataFrame) -> GeoDataFrame:
         >>> print(len(deduped) <= len(candidate_reaches_gdf))
         True
     """
-    return cast(
+    deduped = cast(
         GeoDataFrame,
-        (
-            candidate_reaches.sort_values("dist_out", ascending=False).drop_duplicates(
-                subset=["candidate_point"], keep="first"
-            )
+        candidate_reaches.sort_values("dist_out", ascending=False).drop_duplicates(
+            subset=["candidate_point"], keep="first"
         ),
     ).copy()
+    _LOG.debug(
+        "Deduplicated by candidate point: %d → %d reaches.",
+        len(candidate_reaches),
+        len(deduped),
+    )
+    return deduped
 
 
 def _build_upstream_map(rivers: GeoDataFrame) -> dict[int, list[int]]:
-    """Map each ``reach_id`` to the list of ``reach_id`` values directly upstream.
-
-    Parses the ``rch_id_dn`` (downstream reach ID) column from *rivers* to
-    invert the flow direction: each reach stores which reaches drain into it,
-    enabling upstream traversal.
-
-    Args:
-        rivers: River network GeoDataFrame containing ``reach_id`` and
-            ``rch_id_dn`` columns.
-
-    Returns:
-        Dictionary mapping each reach ID to a list of IDs of the reaches
-        directly upstream of it. Reaches with no upstream tributaries are not
-        present as keys.
-
-    Example:
-        >>> upstream_map = _build_upstream_map(rivers_gdf)
-        >>> print(upstream_map[74223100024])
-        [74223100025, 74223100026]
-    """
     upstream_map: dict[int, list[int]] = defaultdict(list)
-    row: pd.Series
+
     for _, row in rivers.iterrows():
-        for dn_id in _parse_downstream_ids(str(row["rch_id_dn"])):
-            upstream_map[dn_id].append(int(row["reach_id"]))
+        reach_id = int(row["reach_id"].item())
+        rch_id_dn = str(row["rch_id_dn"].item())
+
+        for dn_id in _parse_downstream_ids(rch_id_dn):
+            upstream_map[int(dn_id)].append(reach_id)
+
+    _LOG.debug(
+        "Upstream map built: %d reach(es) with known upstream neighbours.",
+        len(upstream_map),
+    )
+
     return upstream_map
 
 
@@ -520,8 +541,7 @@ def _remove_upstream_candidates(
     """Discard candidates that appear in the upstream network of another candidate.
 
     If candidate A's ``reach_id`` is found in the upstream set of candidate B,
-    then A is upstream of B and is redundant — retaining B is sufficient. A is
-    therefore discarded.
+    then A is upstream of B and is redundant — retaining B is sufficient.
 
     Args:
         candidate_reaches: GeoDataFrame of candidate reaches, each with a
@@ -551,10 +571,17 @@ def _remove_upstream_candidates(
         if other_id != cid and cid in upstream_sets[other_id]
     }
 
-    return cast(
+    pruned = cast(
         GeoDataFrame,
         candidate_reaches[~candidate_reaches["reach_id"].isin(list(to_discard))],
     ).copy()
+    _LOG.debug(
+        "Upstream pruning: %d → %d candidate reach(es) (%d discarded as redundant).",
+        len(candidate_reaches),
+        len(pruned),
+        len(to_discard),
+    )
+    return pruned
 
 
 def find_downstream_input_points(
@@ -611,7 +638,7 @@ def find_downstream_input_points(
         ),
     )
 
-    print(f"Final downstream points: {len(result)}")
+    _LOG.info("Final downstream inflow points: %d.", len(result))
     return result
 
 
@@ -635,8 +662,7 @@ def extract_cells_within_delta(
 
     Applies three sequential spatial filters to the GloFAS discharge grid —
     threshold, boundary proximity, and river proximity — then identifies the
-    most-downstream unique inflow points using the SWORD river network. A
-    diagnostic or summary plot is always saved.
+    most-downstream unique inflow points using the SWORD river network.
 
     Args:
         q_values_nc: GloFAS discharge DataArray with ``longitude`` and
@@ -656,19 +682,16 @@ def extract_cells_within_delta(
         all_rivers: Full river network for the region, passed through to
             :func:`plot_river_locations` for context.
         threshold: Minimum discharge in m³/s for a GloFAS cell to be
-            considered. Defaults to ``config['Rivers']['glofas_min_discharge']``.
+            considered. Defaults to ``_CONFIG['Rivers']['glofas_min_discharge']``.
         var_name: Name of the discharge variable in *q_values_nc*. Defaults to
-            ``config['Rivers']['glofas_discharge_parameter']``.
+            ``_CONFIG['Rivers']['glofas_discharge_parameter']``.
 
     Returns:
-        A tuple of ``(unique_sources, possible_sources, buffered_cells)`` where:
-
-        - *unique_sources*: GeoDataFrame of the most-downstream unique inflow
-          points in ``CRS_STANDARD``.
-        - *possible_sources*: GeoDataFrame of all candidate cells that passed
-          the boundary and river proximity filters.
-        - *buffered_cells*: GeoSeries of buffered geometries for all
-          above-threshold cells, useful for visualisation.
+        A tuple of ``(unique_sources, possible_sources, buffered_cells)`` where
+        *unique_sources* is a GeoDataFrame of the most-downstream unique inflow
+        points, *possible_sources* contains all candidate cells that passed the
+        boundary and river proximity filters, and *buffered_cells* is a
+        GeoSeries of buffered geometries for all above-threshold cells.
 
     Example:
         >>> unique, possible, buffered = extract_cells_within_delta(
@@ -680,6 +703,7 @@ def extract_cells_within_delta(
     rivers = ensure_valid_schema(rivers, excluded=[AREA_COL, BASIN_COL])
 
     # --- Threshold filter ---
+    _LOG.info("Applying discharge threshold filter (> %.1f m³/s) ...", threshold)
     all_cells: GeoDataFrame = _filter_cells_by_threshold(
         q_values_nc, threshold, var_name, _LON, _LAT
     )
@@ -689,12 +713,16 @@ def extract_cells_within_delta(
     buffered_cells: GeoSeries = all_cells.geometry.buffer(half_cell)
 
     # --- Boundary filter ---
+    _LOG.info("Applying boundary proximity filter ...")
     cells_boundary: GeoDataFrame = _filter_cells_near_boundary(
         all_cells, model_domain_mls, half_cell
     )
-    print(f"Cells on boundary: {len(cells_boundary)}")
+    _LOG.info("Cells on boundary: %d / %d.", len(cells_boundary), len(all_cells))
 
-    # Always save a plot — debug mode if no boundary cells were found.
+    # Save a diagnostic plot — debug mode if no boundary cells were found.
+    debugging = len(cells_boundary) == 0
+    if debugging:
+        _LOG.warning("No cells found on boundary — saving debug plot.")
     plot_river_locations(
         all_cells,
         model_domain_mls,
@@ -703,16 +731,21 @@ def extract_cells_within_delta(
         basin_polygons,
         basin_polygons_domain,
         all_rivers,
-        debugging=(len(cells_boundary) == 0),
+        debugging=debugging,
     )
 
     # --- River proximity filter ---
+    _LOG.info("Applying river proximity filter ...")
     rivers_union: BaseGeometry = unary_union(rivers.geometry)
     cells_boundary_rivers: GeoDataFrame = _filter_cells_near_rivers(
         cells_boundary, rivers_union, half_cell
     )
+    _LOG.info(
+        "Cells near rivers: %d / %d.", len(cells_boundary_rivers), len(cells_boundary)
+    )
 
     # --- Downstream point selection ---
+    _LOG.info("Selecting most-downstream inflow points ...")
     unique_sources: GeoDataFrame = find_downstream_input_points(
         rivers, cells_boundary_rivers, half_cell
     )

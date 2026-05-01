@@ -35,25 +35,29 @@ from geopandas import GeoDataFrame
 from shapely.geometry.base import BaseGeometry
 from shapely.strtree import STRtree
 
-from src.input_processing.config.loader import config
 from src.input_processing.utils.util_unify_typing_and_schema import (
-    ensure_valid_schema,
-    compute_area_km2,
     build_spatial_index,
+    compute_area_km2,
+    ensure_valid_schema,
     find_intersections,
 )
+from src.utils.config_loader import load_config
+from src.utils.setup_logger import setup_logging
+
+_LOG = setup_logging("preprocess_01_model_domains")
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+_CONFIG_PATH = "../src/input_processing/config/decisions.yaml"
+_CONFIG: dict = load_config(_CONFIG_PATH)  # type: ignore[type-arg]
+CRS_STANDARD: Final[int] = _CONFIG["CRS"]["standard"]
+CRS_PROJECTED: Final[int] = _CONFIG["CRS"]["for_distances"]
 
-CRS_STANDARD: Final[int] = config["CRS"]["standard"]
-CRS_PROJECTED: Final[int] = config["CRS"]["for_distances"]
-
-GEOM_COL: Final[str] = config["DomainSchema"]["geometry_lbl"]
-BASIN_COL: Final[str] = config["DomainSchema"]["delta_id_lbl"]
-AREA_COL: Final[str] = config["DomainSchema"]["area_lbl"]
-MIN_DELTA_AREA_KM2: Final[float] = config["Delta_masks"]["min_delta_area"]
+GEOM_COL: Final[str] = _CONFIG["DomainSchema"]["geometry_lbl"]
+BASIN_COL: Final[str] = _CONFIG["DomainSchema"]["delta_id_lbl"]
+AREA_COL: Final[str] = _CONFIG["DomainSchema"]["area_lbl"]
+MIN_DELTA_AREA_KM2: Final[float] = _CONFIG["Delta_masks"]["min_delta_area"]
 
 
 # ---------------------------------------------------------------------------
@@ -158,14 +162,16 @@ def build_domains(
     """
     ensure_valid_schema(valid_polygons)
 
-    # Read the basin file ONCE here — not inside the loop.
+    _LOG.info("Reading Pfafstetter basin file: %s", pfaf_path)
     river_basins: GeoDataFrame = gpd.read_file(pfaf_path).to_crs(epsg=CRS_STANDARD)
+    _LOG.info("  Loaded %d basin polygon(s).", len(river_basins))
 
     domains: list[GeoDataFrame] = []
     geom: BaseGeometry
     basin_id: int | str
+    n_total = len(valid_polygons)
 
-    for row in valid_polygons.itertuples(index=False):
+    for i, row in enumerate(valid_polygons.itertuples(index=False), 1):
         geom = getattr(row, GEOM_COL)
         basin_id = getattr(row, BASIN_COL)
 
@@ -179,7 +185,16 @@ def build_domains(
         new_domain[BASIN_COL] = basin_id
         domains.append(new_domain)
 
+        _LOG.debug(
+            "[%d/%d] Delta '%s': %d basin polygon(s) matched.",
+            i,
+            n_total,
+            basin_id,
+            len(new_domain),
+        )
+
     if not domains:
+        _LOG.warning("No domains could be built — returning empty GeoDataFrame.")
         empty_df = pd.DataFrame(
             data=None,
             index=pd.RangeIndex(0),
@@ -195,6 +210,9 @@ def build_domains(
         geometry=GEOM_COL,
     )
     result[AREA_COL] = compute_area_km2(result)
+    _LOG.info(
+        "Domains built: %d basin polygon(s) across %d delta(s).", len(result), n_total
+    )
 
     return result
 
@@ -248,39 +266,65 @@ def create_model_domains(
         ... )
     """
     # --- Load and validate ---
+    _LOG.info("Loading delta polygons: %s", used_delta_polygons)
     deltas: GeoDataFrame = ensure_valid_schema(
         gpd.read_file(used_delta_polygons), excluded=[AREA_COL]
     )
+    _LOG.info("  Loaded %d delta polygon(s).", len(deltas))
+
+    _LOG.info("Loading river network (SWORD): %s", _CONFIG["filepaths"]["river_sword"])
     rivers: GeoDataFrame = ensure_valid_schema(
-        gpd.read_file(config["filepaths"]["river_sword"]),
+        gpd.read_file(_CONFIG["filepaths"]["river_sword"]),
         excluded=[AREA_COL, BASIN_COL],
     )
+    _LOG.info("  Loaded %d river segment(s).", len(rivers))
 
     # --- Area filter (vectorised) ---
-    # compute_area_km2 returns integer km²; MIN_DELTA_AREA_KM2 is also in km².
     deltas[AREA_COL] = compute_area_km2(deltas)
     large_mask: pd.Series = deltas[AREA_COL] > MIN_DELTA_AREA_KM2
 
     large_deltas: GeoDataFrame = deltas.loc[large_mask].copy()
     small_deltas: GeoDataFrame = deltas.loc[~large_mask].copy()
+    _LOG.info(
+        "Area filter (> %.1f km²): %d large, %d too small.",
+        MIN_DELTA_AREA_KM2,
+        len(large_deltas),
+        len(small_deltas),
+    )
 
     # --- Spatial index and intersection classification ---
+    _LOG.info("Building spatial index and classifying river intersections ...")
     river_tree: STRtree = build_spatial_index(rivers)
     intersects_mask: np.ndarray = find_intersections(large_deltas, river_tree)
 
     valid_polygons: GeoDataFrame = large_deltas.loc[intersects_mask].copy()
     mismatched_polygons: GeoDataFrame = large_deltas.loc[~intersects_mask].copy()
+    _LOG.info(
+        "River intersection filter: %d valid, %d no river match.",
+        len(valid_polygons),
+        len(mismatched_polygons),
+    )
 
     # --- Build domains ---
+    _LOG.info("Building basin domains for %d valid delta(s) ...", len(valid_polygons))
     domains: GeoDataFrame = build_domains(valid_polygons, pfaf_path)
 
     # --- Save outputs ---
+    _LOG.info("Writing outputs ...")
     domains.to_file(Path(outpath_domains), driver="GPKG")
-    mismatched_polygons.to_file(Path(outpath_mismatched), driver="GPKG")
-    valid_polygons.to_file(Path(outpath_subset), driver="GPKG")
+    _LOG.info("  Domains        → %s  (%d rows)", outpath_domains, len(domains))
 
-    print(
-        f"Processed: {len(valid_polygons)} domains | "
-        f"{len(mismatched_polygons)} no river | "
-        f"{len(small_deltas)} too small"
+    mismatched_polygons.to_file(Path(outpath_mismatched), driver="GPKG")
+    _LOG.info(
+        "  Mismatched     → %s  (%d rows)", outpath_mismatched, len(mismatched_polygons)
+    )
+
+    valid_polygons.to_file(Path(outpath_subset), driver="GPKG")
+    _LOG.info("  Subset         → %s  (%d rows)", outpath_subset, len(valid_polygons))
+
+    _LOG.info(
+        "Pipeline complete — %d domain(s) | %d no river | %d too small.",
+        len(valid_polygons),
+        len(mismatched_polygons),
+        len(small_deltas),
     )

@@ -30,17 +30,19 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.affinity import scale
 from shapely.geometry.base import BaseGeometry
 from xarray import DataArray
-from typing import cast
+from typing import cast, Final
 import logging
 import pandas as pd
 
-from src.input_processing.config.loader import config
+from src.utils.config_loader import load_config
 from src.input_processing.utils.plotting import (
     create_bounds_around_delta,
     annotate_below_plot,
     get_esa_cmap,
 )
 
+_CONFIG_PATH = "../src/input_processing/config/decisions.yaml"
+_CONFIG: Final[dict] = load_config(_CONFIG_PATH)  # type: ignore[type-arg]
 
 # ---------------------------------------------------------------------------
 # Build local bounding box
@@ -49,7 +51,7 @@ from src.input_processing.utils.plotting import (
 
 def build_local_bbox(
     geometry: BaseGeometry,
-    buffer_m: float = config["Delta_masks"]["bbox_delta"],
+    buffer_m: float = _CONFIG["Delta_masks"]["bbox_delta"],
 ) -> Polygon:
     """Return a buffered bounding-box polygon around *geometry* in WGS-84.
 
@@ -60,7 +62,7 @@ def build_local_bbox(
     Args:
         geometry: Delta polygon in the project standard CRS.
         buffer_m: Buffer distance in metres. Defaults to
-            ``config['Delta_masks']['bbox_delta']``.
+            ``_CONFIG['Delta_masks']['bbox_delta']``.
 
     Returns:
         Bounding-box polygon in EPSG:4326, expanded by *buffer_m* on all sides.
@@ -70,8 +72,8 @@ def build_local_bbox(
         >>> print(bbox.geom_type)
         Polygon
     """
-    geoseries = gpd.GeoSeries([geometry], crs=config["CRS"]["standard"]).to_crs(
-        epsg=config["CRS"]["for_distances"]
+    geoseries = gpd.GeoSeries([geometry], crs=_CONFIG["CRS"]["standard"]).to_crs(
+        epsg=_CONFIG["CRS"]["for_distances"]
     )
     projected_geom = geoseries.geometry.values[0]
     minx, miny, maxx, maxy = projected_geom.bounds
@@ -87,7 +89,7 @@ def build_local_bbox(
     # in WGS-84 (the common case for global coastline / river datasets).
     bbox_4326: Polygon = cast(
         Polygon,
-        gpd.GeoSeries([bbox_projected], crs=config["CRS"]["for_distances"]).to_crs(
+        gpd.GeoSeries([bbox_projected], crs=_CONFIG["CRS"]["for_distances"]).to_crs(
             epsg=4326
         )[0],
     )
@@ -107,7 +109,7 @@ def load_delta_context(
     """Load and pre-process all supporting data needed to modify one delta.
 
     All outputs are in the project standard CRS
-    (``config['CRS']['for_distances']``).
+    (``_CONFIG['CRS']['for_distances']``).
 
     Args:
         geometry: Delta polygon in the project standard CRS.
@@ -129,17 +131,17 @@ def load_delta_context(
         <class 'shapely.geometry.multipolygon.MultiPolygon'>
     """
     bbox_4326 = build_local_bbox(geometry)
-    std_crs: int = config["CRS"]["for_distances"]
+    std_crs: int = _CONFIG["CRS"]["for_distances"]
 
     # --- Coastline ---
     coastline: GeoDataFrame = gpd.read_file(
-        config["filepaths"]["coastline"], mask=bbox_4326
+        _CONFIG["filepaths"]["coastline"], mask=bbox_4326
     ).to_crs(epsg=std_crs)
     coast_geom: BaseGeometry = coastline.geometry.union_all()
 
     # --- Rivers ---
     rivers: GeoDataFrame = gpd.read_file(
-        config["Rivers"]["select_file_location"], mask=bbox_4326
+        _CONFIG["Rivers"]["select_file_location"], mask=bbox_4326
     ).to_crs(epsg=std_crs)
 
     # Clip to the local bbox first (still in the raster's native CRS / 4326),
@@ -148,7 +150,7 @@ def load_delta_context(
         [bbox_4326], from_disk=True
     ).squeeze()
     lu_builtup: DataArray = lu_clipped.where(
-        lu_clipped == config["LandUse"]["code_builtup"]
+        lu_clipped == _CONFIG["LandUse"]["code_builtup"]
     )
     lu_builtup = lu_builtup.rio.reproject(std_crs)
 
@@ -189,7 +191,7 @@ def unionize_coastal_data(delta_polygon: GeoDataFrame, file_name: str) -> BaseGe
     )
 
     coastline: GeoDataFrame = gpd.read_file(file_name, mask=mask_polygon).to_crs(
-        epsg=config["CRS"]["for_distances"]
+        epsg=_CONFIG["CRS"]["for_distances"]
     )
     return coastline.geometry.union_all()
 
@@ -221,7 +223,7 @@ def plot_polygons_with_vertices(
     Example:
         >>> plot_polygons_with_vertices(delta_gdf, coast_geom, "delta_nile")
     """
-    idx: str = config["Testcase"][testcase_id]
+    idx: str = _CONFIG["Testcase"][testcase_id]
 
     fig, ax = plt.subplots(figsize=(10, 10))
     poly: Polygon = polygon_gdf["geometry"].values[0]
@@ -229,8 +231,8 @@ def plot_polygons_with_vertices(
     create_bounds_around_delta(ax, poly)
 
     rivers: GeoDataFrame = gpd.read_file(
-        config["filepaths"]["river"], mask=poly
-    ).to_crs(epsg=config["CRS"]["for_distances"])
+        _CONFIG["filepaths"]["river"], mask=poly
+    ).to_crs(epsg=_CONFIG["CRS"]["for_distances"])
 
     gpd.GeoSeries([coastline]).plot(ax=ax, color="grey", linewidth=1)
     gpd.GeoSeries([poly]).plot(
@@ -257,7 +259,7 @@ def plot_polygons_with_vertices(
     ax.set_title(f"{idx} Delta Polygon to identify Point sequencing")
 
     plt.savefig(
-        f"{config['filepaths']['test_masks']}/DeltaPolygon_PointPositions_{idx}.png",
+        f"{_CONFIG['filepaths']['test_masks']}/DeltaPolygon_PointPositions_{idx}.png",
         dpi=300,
     )
 
@@ -506,7 +508,7 @@ def scale_polygon(
     Starting from the classified vertices, tests whether the offshore edges
     extend beyond the coastline. If they do, the three movable vertices (s1,
     rm, s2) are scaled outward from the fixed delta node by
-    ``config['Delta_masks']['scale_factor']`` on each iteration. The process
+    ``_CONFIG['Delta_masks']['scale_factor']`` on each iteration. The process
     repeats until both edges are fully inside the coast or *max_iter* is
     reached.
 
@@ -547,7 +549,7 @@ def scale_polygon(
         >>> print(result.geom_type)
         Polygon
     """
-    scale_factor: float = config["Delta_masks"]["scale_factor"]
+    scale_factor: float = _CONFIG["Delta_masks"]["scale_factor"]
     original_poly: Polygon = Polygon([delta_node, s1, best_rm_dn1, best_rm_dn2, s2])
     delta_statistics: dict = get_polygon_statistics(
         original_poly, delta_node, coastline, plot_lu
@@ -584,7 +586,7 @@ def scale_polygon(
                 )
                 annotate_below_plot(fig, ax, delta_statistics)
                 fig.savefig(
-                    f"{config['filepaths']['test_masks']}"
+                    f"{_CONFIG['filepaths']['test_masks']}"
                     f"scaled/DeltaPolygon_{int(delta_id)}_scaled.png",
                     dpi=300,
                 )
@@ -602,7 +604,7 @@ def scale_polygon(
         ax.set_title(f"{delta_id} Delta Polygon to identify Point sequencing")
         annotate_below_plot(fig, ax, delta_statistics)
         fig.savefig(
-            f"{config['filepaths']['test_masks']}"
+            f"{_CONFIG['filepaths']['test_masks']}"
             f"scaling_failed/DeltaPolygon_{delta_id}_scaled_incomplete.png",
             dpi=300,
         )
@@ -664,7 +666,7 @@ def get_polygon_statistics(
         pixel_height: float = abs(float(landuse.rio.resolution()[1]))
         pixel_area: float = pixel_width * pixel_height
         n_pixels: int = int(
-            (lu_clipped_delta == config["LandUse"]["code_builtup"]).sum()
+            (lu_clipped_delta == _CONFIG["LandUse"]["code_builtup"]).sum()
         )
         delta_statistics["built-up area [km2] (inside delta)"] = int(
             (n_pixels * pixel_area) / 1e6
@@ -781,12 +783,12 @@ def process_delta(
     delta_id: int = cast(int, row["BasinID2"])
     delta_area: float = cast(BaseGeometry, row["geometry"]).area
 
-    if delta_area < config["Delta_masks"]["min_delta_area"]:
+    if delta_area < _CONFIG["Delta_masks"]["min_delta_area"]:
         logger.info(
             "Delta %s excluded: area %.1f km² is below %.0f km² threshold.",
             delta_id,
             delta_area / 1_000_000,
-            config["Delta_masks"]["min_delta_area"] / 1_000_000,
+            _CONFIG["Delta_masks"]["min_delta_area"] / 1_000_000,
         )
         return None
 

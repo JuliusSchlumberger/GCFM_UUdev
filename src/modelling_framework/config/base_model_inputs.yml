@@ -1,0 +1,38 @@
+meta:
+  version: '1'
+  name: base_model_inputs
+  root: C:/Users/Schlu005/GCFM_UU/src/modelling_framework/static_data
+
+## Model Domain
+40_delta_polygons: # ogiginal deltas (edmonds)
+   data_type: GeoDataFrame
+   driver:
+     name: pyogrio
+   metadata:
+     category: model_domain
+     crs: 4326
+   uri: DeltaWebs/40_deltas.geojson
+
+basin_deltas: # HydroBasis lvl 6 overlapping with the DeltaWebs delta polygons
+  data_type: GeoDataFrame
+  driver:
+    name: pyogrio
+  metadata:
+    category: model_domain
+    crs: 4326
+    notes: 'This was produced by overlapping Edmond et al. (2020) data with HydroBasins lvl 6.'
+  uri: HydroBasins/basin_delta_domains.gpkg
+
+
+## River & Shore
+osm_water: # dont have enough space for this folder on my local computer
+  data_type: GeoDataFrame
+  driver:
+    name: pyogrio
+  metadata:
+    category: geography
+    crs: 4326
+  uri: osm_coastlines-db.gpkg
+
+
+## DEM / LU

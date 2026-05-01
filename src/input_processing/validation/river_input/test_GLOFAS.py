@@ -10,7 +10,7 @@ References:
     Research Centre (JRC). DOI: 10.24381/cds.a4fdd6b9
 
 Example:
-    >>> from src.input_processing.validation.river_input.test_GLOFAS import plot_glofas
+    >>> from src import plot_glofas
     >>> plot_glofas_lin("id_delta1")
 """
 
@@ -21,7 +21,7 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 from geopandas import GeoDataFrame
 
-from src.input_processing.config.loader import config
+from src import config
 
 
 def plot_glofas(testcase_id: str) -> None:

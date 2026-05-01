@@ -24,13 +24,16 @@ from __future__ import annotations
 
 import csv
 import os
-import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import urlparse
-from collections.abc import Sequence
 
 import requests
+
+from src.utils.setup_logger import setup_logging
+
+_LOG = setup_logging("download_DeltaDTM_data")
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -110,11 +113,9 @@ def download_file(url: str, dest_path: Path) -> tuple[bool, str | None]:
         dest_path: The local path to write the downloaded file to.
 
     Returns:
-        A tuple of ``(success, error)`` where:
-
-        - *success*: True if the file was downloaded without error.
-        - *error*: The error message string if the download failed, or None
-          if it succeeded.
+        A tuple of ``(success, error)`` where *success* is True if the file
+        was downloaded without error, and *error* is the error message string
+        if the download failed, or None if it succeeded.
 
     Example:
         >>> success, err = download_file("https://example.com/file.tif", Path("out/file.tif"))
@@ -129,7 +130,7 @@ def download_file(url: str, dest_path: Path) -> tuple[bool, str | None]:
                     if chunk:
                         f.write(chunk)
         return True, None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return False, str(e)
 
 
@@ -154,8 +155,8 @@ def run_download() -> None:
     """
     csv_path: Path = Path(CSV_FILE)
     if not csv_path.exists():
-        print(f"ERROR: CSV not found: {csv_path.resolve()}")
-        sys.exit(1)
+        _LOG.error("CSV not found: %s", csv_path.resolve())
+        raise SystemExit(1)
 
     output_dir: Path = Path(OUTPUT_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -171,6 +172,7 @@ def run_download() -> None:
 
         # Fallback: scan first row for any value starting with "http"
         if not url_col:
+            _LOG.debug("Header scan found no URL column — scanning first data row.")
             first_row = next(reader, None)
             if first_row:
                 for col, val in first_row.items():
@@ -181,17 +183,20 @@ def run_download() -> None:
                         break
 
         if not url_col:
-            print("ERROR: Cannot detect URL column. Set url_col manually.")
-            sys.exit(1)
+            _LOG.error("Cannot detect URL column. Set url_col manually.")
+            raise SystemExit(1)
 
-        print(f"URL column: '{url_col}'")
+        _LOG.info("URL column detected: '%s'", url_col)
         rows: list[dict[str, str]] = list(reader)
         total: int = len(rows)
-        print(f"Found {total} URLs → {output_dir.resolve()}\n")
+        _LOG.info("Found %d URLs → %s", total, output_dir.resolve())
+
+        t0 = time.time()
 
         for i, row in enumerate(rows, start=1):
             url: str = row.get(url_col, "").strip()
             if not url:
+                _LOG.warning("Row %d: empty URL — skipping.", i)
                 skipped += 1
                 continue
 
@@ -199,18 +204,19 @@ def run_download() -> None:
             dest: Path = output_dir / filename
 
             if dest.exists() and dest.stat().st_size > 0:
-                print(f"[{i}/{total}] Skip (exists): {filename}")
+                _LOG.debug("[%d/%d] Already exists, skipping: %s", i, total, filename)
                 skipped += 1
                 continue
 
-            print(f"[{i}/{total}] {filename} ...", end=" ", flush=True)
+            _LOG.info("[%d/%d] Downloading: %s", i, total, filename)
             success, err = download_file(url, dest)
 
             if success:
-                print(f"OK ({dest.stat().st_size / 1_048_576:.1f} MB)")
+                size_mb = dest.stat().st_size / 1_048_576
+                _LOG.info("[%d/%d] OK — %.1f MB: %s", i, total, size_mb, filename)
                 downloaded += 1
             else:
-                print(f"FAILED: {err}")
+                _LOG.warning("[%d/%d] FAILED: %s — %s", i, total, filename, err)
                 if dest.exists():
                     dest.unlink()
                 failed.append({"url": url, "error": err or "unknown"})
@@ -218,15 +224,20 @@ def run_download() -> None:
 
             time.sleep(0.1)
 
+        elapsed = time.time() - t0
+        _LOG.info(
+            "Download loop finished in %.1f s — "
+            "downloaded: %d, skipped: %d, failed: %d, total: %d",
+            elapsed,
+            downloaded,
+            skipped,
+            errors,
+            total,
+        )
+
     if failed:
         with open(FAILED_LOG, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=["url", "error"])
             writer.writeheader()
             writer.writerows(failed)
-        print(f"\nFailed URLs → {FAILED_LOG}")
-
-    print("\n── Summary ─────────────")
-    print(f"  Downloaded: {downloaded}")
-    print(f"  Skipped:    {skipped}")
-    print(f"  Failed:     {errors}")
-    print(f"  Total:      {total}")
+        _LOG.warning("%d failed URL(s) written to: %s", len(failed), FAILED_LOG)

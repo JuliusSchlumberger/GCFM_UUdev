@@ -25,18 +25,18 @@ Example:
 from __future__ import annotations
 
 import gc
+from collections.abc import Hashable
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
 import geopandas as gpd
 import pandas as pd
 import xarray as xr
 from geopandas import GeoDataFrame, GeoSeries
-from collections.abc import Hashable
 from shapely.geometry import LineString, MultiLineString, Polygon
 from shapely.geometry.base import BaseGeometry
 
-from src.input_processing.config.loader import config
+from src.utils.config_loader import load_config
 from src.input_processing.utils.loading_files import (
     GlobalData,
     load_data_delta_domain,
@@ -53,6 +53,11 @@ from src.input_processing.utils.util_unify_typing_and_schema import (
     ensure_valid_schema,
 )
 from src.input_processing.utils.validation.modify_delta_masks import classify_points
+from src.utils.setup_logger import setup_logging
+
+_LOG = setup_logging("preprocess_02_wf_extract_river_points")
+_CONFIG_PATH = "../src/input_processing/config/decisions.yaml"
+_CONFIG: Final[dict] = load_config(_CONFIG_PATH)  # type: ignore[type-arg]
 
 # ---------------------------------------------------------------------------
 # Tuning constants
@@ -107,16 +112,15 @@ def _reload_glofas(global_data: GlobalData) -> GlobalData:
 
     Example:
         >>> global_data = _reload_glofas(global_data)
-        [MEM] Re-opening GloFAS dataset to clear lazy graph ...
     """
-    print("[MEM] Re-opening GloFAS dataset to clear lazy graph ...", flush=True)
+    _LOG.info("Re-opening GloFAS dataset to clear lazy graph ...")
     try:
         global_data.glofas.close()
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass  # already closed or not closeable — proceed
 
     fresh_glofas: xr.Dataset = xr.open_dataset(
-        config["filepaths"]["glofas"]
+        _CONFIG["filepaths"]["glofas"]
     ).rio.write_crs(CRS_STANDARD)
 
     return GlobalData(
@@ -237,7 +241,7 @@ def find_river_source_points(
             )
     except ValueError as e:
         delta_id: int | str = delta_basins_gpd[BASIN_COL].iloc[0]
-        print(f"[SKIP] Delta {delta_id} — could not derive inland boundary: {e}")
+        _LOG.warning("Delta %s — could not derive inland boundary: %s", delta_id, e)
         return None, None, None
 
     # --- Extract GloFAS source cells ---
@@ -258,9 +262,9 @@ def find_river_source_points(
 
 
 def extract_all_river_source_points(
-    out_unique_sources: str = config["filepaths"]["unique_sources"],
-    out_possible_sources: str = config["filepaths"]["possible_sources"],
-    out_deltas_no_rivers: str = config["filepaths"]["out_deltas_no_rivers"],
+    out_unique_sources: str = _CONFIG["filepaths"]["unique_sources"],
+    out_possible_sources: str = _CONFIG["filepaths"]["possible_sources"],
+    out_deltas_no_rivers: str = _CONFIG["filepaths"]["out_deltas_no_rivers"],
     debug_plots: bool = True,
 ) -> None:
     """Iterate over all delta domains, extract river source points, and save results.
@@ -274,19 +278,19 @@ def extract_all_river_source_points(
     Args:
         out_unique_sources: Output path for the most-downstream unique inflow
             points per delta. Defaults to
-            ``config['filepaths']['unique_sources']``.
+            ``_CONFIG['filepaths']['unique_sources']``.
         out_possible_sources: Output path for all candidate inflow points per
-            delta. Defaults to ``config['filepaths']['possible_sources']``.
+            delta. Defaults to ``_CONFIG['filepaths']['possible_sources']``.
         out_deltas_no_rivers: Output path for delta polygons for which no
             river sources were found. Defaults to
-            ``config['filepaths']['out_deltas_no_rivers']``.
+            ``_CONFIG['filepaths']['out_deltas_no_rivers']``.
         debug_plots: If True, pass ``debug_plots=True`` through to
             :func:`find_river_source_points` so diagnostic figures are saved
             for each delta. Defaults to True.
 
     Returns:
         None. Three GeoPackage files are written to the configured output
-        paths. Each file is built incrementally via ``_flush_to_disk`` so
+        paths. Each file is built incrementally via :func:`_flush_to_disk` so
         partial results are preserved even if the pipeline is interrupted.
 
     Raises:
@@ -295,24 +299,25 @@ def extract_all_river_source_points(
 
     Example:
         >>> extract_all_river_source_points(debug_plots=False)
-        0 ...
-        10 ...
-        Processed: 42 domains | 8 without sources.
     """
     # --- Load heavy datasets once ---
     global_data: GlobalData = load_global_data()
 
     delta_domains: GeoDataFrame = ensure_valid_schema(
-        gpd.read_file(config["filepaths"]["delta_polygons_used"]),
+        gpd.read_file(_CONFIG["filepaths"]["delta_polygons_used"]),
         excluded=[],
     )
     river_basins_gpd: GeoDataFrame = ensure_valid_schema(
-        gpd.read_file(config["filepaths"]["new_domains"]),
+        gpd.read_file(_CONFIG["filepaths"]["new_domains"]),
         excluded=[],
     )
-
-    # all_rivers is already validated inside load_global_data() — no second read.
     all_rivers: GeoDataFrame = global_data.rivers
+
+    _LOG.info(
+        "Loaded %d delta domain(s) and %d basin polygon(s).",
+        len(delta_domains),
+        len(river_basins_gpd),
+    )
 
     # --- Pre-build O(1) lookups by basin ID ---
     basin_lookup: dict[int | str, GeoDataFrame] = {
@@ -323,7 +328,6 @@ def extract_all_river_source_points(
         cast(int | str, k): cast(GeoDataFrame, v.copy())
         for k, v in delta_domains.groupby(BASIN_COL)
     }
-    # Reuses river_basins_gpd — same source file, no second read required.
     basin_polygons_lookup: dict[int | str, GeoDataFrame] = basin_lookup
 
     # --- Accumulators ---
@@ -339,8 +343,15 @@ def extract_all_river_source_points(
     row: pd.Series
     for idx, row in delta_domains.iterrows():
         idx_int: int = cast(int, idx)
+
         if idx_int % 10 == 0:
-            print(f"{idx_int} ...")
+            _LOG.info(
+                "Processing delta %d / %d (success=%d, fail=%d) ...",
+                idx_int,
+                len(delta_domains),
+                success_count,
+                fail_count,
+            )
 
         # Periodic GloFAS reload — clears the xarray lazy computation graph.
         if idx_int > 0 and idx_int % _GLOFAS_RELOAD_INTERVAL == 0:
@@ -351,7 +362,7 @@ def extract_all_river_source_points(
         delta_polygon: Polygon = cast(Polygon, row[GEOM_COL])
 
         if polygon_id not in basin_lookup:
-            print(f"[WARNING] Missing basin for delta {polygon_id} — skipping.")
+            _LOG.warning("Missing basin for delta %s — skipping.", polygon_id)
             deltas_without_sources.append(row.copy())
             fail_count += 1
             continue
@@ -364,8 +375,8 @@ def extract_all_river_source_points(
             rivers_gpd, coast_polygon, coastline_gpd, glofas_min = (
                 load_data_delta_domain(delta_basins_gpd, global_data)
             )
-        except Exception as e:
-            print(f"[ERROR] Failed subsetting data for delta {polygon_id}: {e}")
+        except Exception as e:  # noqa: BLE001
+            _LOG.error("Failed subsetting data for delta %s: %s", polygon_id, e)
             deltas_without_sources.append(row.copy())
             fail_count += 1
             continue
@@ -382,10 +393,10 @@ def extract_all_river_source_points(
             all_rivers=all_rivers,
         )
 
-        # Release per-delta intermediates before the next iteration.
         del rivers_gpd, coast_polygon, coastline_gpd, glofas_min
 
         if _is_empty(unique_sources) or _is_empty(possible_sources):
+            _LOG.debug("Delta %s: no sources found.", polygon_id)
             deltas_without_sources.append(row.copy())
             fail_count += 1
             continue
@@ -400,19 +411,25 @@ def extract_all_river_source_points(
         success_count += 1
 
         # Periodic flush to disk — caps peak memory by clearing the accumulators.
-        if idx_int % _FLUSH_INTERVAL == 0:
-            print(
-                f"[MEM] Flushing {len(all_unique_sources)} results to disk ...",
-                flush=True,
+        if success_count % _FLUSH_INTERVAL == 0:
+            _LOG.info(
+                "Flushing %d result(s) to disk (success=%d, fail=%d) ...",
+                len(all_unique_sources),
+                success_count,
+                fail_count,
             )
             _flush_to_disk(all_unique_sources, out_unique_sources, CRS_STANDARD)
             _flush_to_disk(all_possible_sources, out_possible_sources, CRS_STANDARD)
             all_unique_sources.clear()
             all_possible_sources.clear()
             gc.collect()
-            print("[MEM] Flush complete.", flush=True)
+            _LOG.debug("Flush complete.")
 
-    print(f"Processed: {success_count} domains | {fail_count} without sources.")
+    _LOG.info(
+        "Pipeline complete — %d domain(s) processed, %d without sources.",
+        success_count,
+        fail_count,
+    )
 
     # Final flush of any remaining results.
     _flush_to_disk(all_unique_sources, out_unique_sources, CRS_STANDARD)
@@ -424,6 +441,11 @@ def extract_all_river_source_points(
             geometry=GEOM_COL,
             crs=CRS_STANDARD,
         ).to_file(Path(out_deltas_no_rivers), driver="GPKG")
+        _LOG.info(
+            "%d delta(s) without sources written to: %s",
+            len(deltas_without_sources),
+            out_deltas_no_rivers,
+        )
 
 
 def extract_points() -> None:

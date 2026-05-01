@@ -13,18 +13,23 @@ Example:
 
 from __future__ import annotations
 
-from src.input_processing.config.loader import config
+from src.utils.config_loader import load_config
 from src.input_processing.utils.preprocess_01_ut_model_domains import (
     create_model_domains,
 )
 
+from typing import Final
+
+_CONFIG_PATH = "../src/input_processing/config/decisions.yaml"
+_CONFIG: Final[dict] = load_config(_CONFIG_PATH)  # type: ignore[type-arg]
+
 
 def create_domains_chosen_level(
-    used_delta_polygons: str = config["filepaths"]["hand_picked_deltas"],
-    outpath_domains: str = config["filepaths"]["new_domains"],
-    outpath_mismatched: str = config["filepaths"]["mismatched_polygons"],
-    outpath_subset: str = config["filepaths"]["delta_polygons_used"],
-    pfaf_path: str = config["filepaths"]["river_basins_applied"],
+    used_delta_polygons: str = _CONFIG["filepaths"]["hand_picked_deltas"],
+    outpath_domains: str = _CONFIG["filepaths"]["new_domains"],
+    outpath_mismatched: str = _CONFIG["filepaths"]["mismatched_polygons"],
+    outpath_subset: str = _CONFIG["filepaths"]["delta_polygons_used"],
+    pfaf_path: str = _CONFIG["filepaths"]["river_basins_applied"],
 ) -> None:
     """Build model domains at the configured Pfafstetter level.
 
@@ -38,19 +43,19 @@ def create_domains_chosen_level(
         used_delta_polygons: Path to the input delta polygons GeoPackage,
             i.e. the hand-picked subset of Edmonds et al. (2020) polygons for
             the study area. Defaults to
-            ``config['filepaths']['hand_picked_deltas']``.
+            ``_CONFIG['filepaths']['hand_picked_deltas']``.
         outpath_domains: Output path for the basin domain polygons — large
             deltas with an intersecting river reach. Defaults to
-            ``config['filepaths']['new_domains']``.
+            ``_CONFIG['filepaths']['new_domains']``.
         outpath_mismatched: Output path for large delta polygons that had no
             intersecting river reach. Defaults to
-            ``config['filepaths']['mismatched_polygons']``.
+            ``_CONFIG['filepaths']['mismatched_polygons']``.
         outpath_subset: Output path for the subset of input delta polygons
             that passed the area filter and were used for domain building.
-            Defaults to ``config['filepaths']['delta_polygons_used']``.
+            Defaults to ``_CONFIG['filepaths']['delta_polygons_used']``.
         pfaf_path: Path to the Pfafstetter river-basin vector file used to
             build the domains. Defaults to
-            ``config['filepaths']['river_basins_applied']``.
+            ``_CONFIG['filepaths']['river_basins_applied']``.
 
     Returns:
         None. All results are written to the configured output paths.

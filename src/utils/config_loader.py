@@ -5,7 +5,7 @@ as the module-level ``config`` dictionary. All other modules import ``config``
 from here rather than reading the file themselves.
 
 Example:
-    >>> from src.input_processing.config.loader import config
+    >>> config = load_config("../src/input_processing/config/decisions.yaml")
     >>> print(config["CRS"]["standard"])
     4326
 """
@@ -13,8 +13,9 @@ Example:
 from __future__ import annotations
 
 from pathlib import Path
-
 import yaml
+
+_CONFIG_PATH = Path(__file__).parent / "decisions.yaml"
 
 
 def load_config(path: Path | str) -> dict:
@@ -47,4 +48,4 @@ def load_config(path: Path | str) -> dict:
         return yaml.safe_load(f)
 
 
-config: dict = load_config("../src/input_processing/config/decisions.yaml")
+# config: dict = load_config(_CONFIG_PATH)  # this does not work now that config_loader is moved to separate directory TODO: fix reference for all input_processing!

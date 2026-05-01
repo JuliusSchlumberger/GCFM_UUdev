@@ -1,0 +1,5 @@
+file_paths:
+  rootpath: "../model_runs"  # The root folder where the model will be saved.
+
+model_params:
+  grid_resolution: 30  # grid resolution in m
