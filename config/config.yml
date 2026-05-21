@@ -1,0 +1,10 @@
+data_catalogue: ./config/data_catalogue.yml
+
+results_dir: D:/GCFM_UU/results
+
+# # Which delta basins to process
+# basins:
+#   - 4267691
+#   - 540974
+#   - 1248635
+#   - 7126506

@@ -1,0 +1,21 @@
+# Snakefile
+
+from snakemake.utils import min_version
+min_version("7.0")
+
+# ---- Configuration ----
+configfile: "./config/config.yml"
+
+# ---- Shared setup (catalogue helpers, wildcard constraints, etc.) ----
+include: "rules/common.smk"
+
+# ---- Rules ----
+include: "rules/separate_deltas.smk"
+
+# ---- Default target ----
+rule all:
+    input:
+        expand(
+            results_path("{basin_id}/inputs/delta_polygon.gpkg"),
+            basin_id=BASINS
+        ),

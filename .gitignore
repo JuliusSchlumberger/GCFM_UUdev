@@ -4,3 +4,20 @@
 /input/
 /output/
 pyrightconfig.json
+
+# Snakemake
+.snakemake/
+logs/
+results/
+
+# Project outputs
+model_runs/
+
+# IDE
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

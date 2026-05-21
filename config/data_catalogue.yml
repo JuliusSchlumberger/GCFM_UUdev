@@ -1,0 +1,26 @@
+meta:
+  version: '1'
+  name: data_catalog_v1
+  root: D:/GCFM_UU/raw_data
+
+datasets:
+  - name: delta_polygons
+    description: Dataset of manually drawn polygons representing the delta areas globally based on earth-observation data. The polygons are drawn using five defined points as a first approximation of the geomorphologically active deltaic zone.
+    source: Edmonds, D.A., Caldwell, R.L., Brondizio, E.S. et al. Coastal flooding will disproportionately impact people on river deltas. Nat Commun 11, 4741 (2020). https://doi.org/10.1038/s41467-020-18531-4
+    file_format: shapefile
+    epsg: 4326
+    file_path: DeltaWebs/40_DeltaWebs.shp  # other options: 769_DeltaWebs.shp (original set), 4_DeltaWebs.shp (Mississippi, Amazon, Rhine-Meuse, Fly), or Test_DeltaWebs.shp (Fly delta, AUS)
+    geometry_type: Polygon
+    crs:
+      epsg: 4326
+      name: WGS 84
+      units: degrees
+    attributes:
+      - name: BasinID2
+        type: integer
+        description: >
+          Unique identifier of the delta basin, used as the primary key to join
+          with other datasets in the Edmonds et al. (2020) study.
+        example: 200412
+    primary_key: BasinID2
+    spatial_extent: global
