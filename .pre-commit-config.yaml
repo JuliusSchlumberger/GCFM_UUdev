@@ -30,3 +30,13 @@ repos:
     rev: 6.3.0
     hooks:
       - id: pydocstyle
+        exclude: |
+          (?x)(
+            workflow/archive/|
+            analyze_dem_coverage\.py|
+            _diag_river.*\.py|
+            plot_dag\.py|
+            download_glofas\.py|
+            check_diluvium\.py|
+            sync_deltadtm\.py
+          )

@@ -1,10 +1,11 @@
-import logging
-
 from src.io import load_catalogue, catalogue_entry, read_geometry
+from src.log import setup_logging
+from src.profiling import ScriptProfiler
 
+log = setup_logging(snakemake.log[0])
 
-logging.basicConfig(filename=snakemake.log[0], level=logging.INFO)
-log = logging.getLogger(__name__)
+profiler = ScriptProfiler(snakemake)
+read_geometry = profiler.wrap(read_geometry)
 
 CATALOGUE = load_catalogue(snakemake.config["data_catalogue"])
 
@@ -22,4 +23,5 @@ if basin.empty:
     )
 
 basin.to_file(snakemake.output.specific_delta, driver="GPKG")
+profiler.stop()
 log.info(f"Wrote {snakemake.output.specific_delta} ({len(basin)} features)")

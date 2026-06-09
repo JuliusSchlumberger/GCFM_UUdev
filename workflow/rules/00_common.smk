@@ -3,9 +3,14 @@ from src.io import general_path as _gen_path
 import geopandas as gpd
 
 CATALOGUE = load_catalogue(config["data_catalogue"])
+TESTING_CATALOGUE = load_catalogue(config.get("testing_data_catalogue",
+                                               "./config/testing_data_catalogue.yml"))
 
 def catalogue_path(name):
     return raw_input_path(CATALOGUE, name)
+
+def testing_catalogue_path(name):
+    return raw_input_path(TESTING_CATALOGUE, name)
 
 def general_path(name):
     return _gen_path(CATALOGUE, name)

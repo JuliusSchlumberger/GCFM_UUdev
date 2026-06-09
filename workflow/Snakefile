@@ -7,15 +7,88 @@ min_version("7.0")
 configfile: "./config/config.yml"
 
 # ---- Shared setup (catalogue helpers, wildcard constraints, etc.) ----
-include: "rules/common.smk"
+include: "rules/00_common.smk"
 
 # ---- Rules ----
-include: "rules/separate_deltas.smk"
+include: "rules/01_separate_deltas.smk"
+include: "rules/02_modeldomain.smk"
+include: "rules/03_static_model_data.smk"
+include: "rules/04_boundary_forcings.smk"
+include: "rules/05_clean_river_network.smk"
+include: "rules/06_river_depth.smk"
+include: "rules/07_testing.smk"
+include: "rules/08_build_sfincs.smk"
+include: "rules/09_create_rstart.smk"
+include: "rules/10_sanity_checks.smk"
+
+# ── Shared output lists (used by named targets and rule all) ─────────────────
+
+_PREPROCESS_OUTPUTS = [
+    expand(results_path("{basin_id}/inputs/delta_polygon.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/domain_bbox.json"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/domain.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/landuse.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/roughness.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/land_polygons.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/elevation_merged.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/zsini.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/01_elevation.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/river_network.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/02_landuse.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/03_roughness.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/04_river_network.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/forcing/surge_forcing.nc"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/forcing/river_forcing.nc"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/05a_forcing_locations.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/05b_forcing_timeseries.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/05c_forcing_eva.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/river_network_clean.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/06a_river_clean.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/06b_river_discharge.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/river_network_processed.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/07a_river_depth.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/07b_river_hydraulics.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/07c_river_width_q.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/07d_river_profile.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/08a_discharge_check.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/plots/08b_upstream_boundary_check.png"), basin_id=BASINS),
+]
+
+_BUILD_OUTPUTS = [
+    expand(results_path("{basin_id}/sfincs/sfincs.inp"), basin_id=BASINS),
+    *(expand(results_path("{basin_id}/sfincs/sfincs.sbg"), basin_id=BASINS)
+      if config["sfincs"]["subgrid"]["enabled"] else []),
+    *(expand(results_path("{basin_id}/sfincs/spinup/" + RST_FNAME), basin_id=BASINS)
+      + expand(results_path("{basin_id}/sfincs/spinup/validation_spinup.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/sfincs/spinup/sfincs_map.nc"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/sfincs/spinup/validation_max_inundation.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/sfincs/sanity/01_inundation_ratio.png"), basin_id=BASINS)
+      if config["sfincs"]["rstart"]["enabled"] else []),
+]
+
+# ── Named partial-pipeline targets ───────────────────────────────────────────
+
+rule preprocess:
+    """
+    Run only the preprocessing pipeline (rules 01–07):
+    basin separation, domain, terrain & bathymetry, land use, roughness,
+    boundary forcings, river network, depth, and validation.
+
+    Usage:  snakemake preprocess --cores N
+    """
+    input: _PREPROCESS_OUTPUTS
+
+
+rule build:
+    """
+    Run only the SFINCS model build and spinup restart (rules 08–09).
+    Preprocessing outputs must already exist.
+
+    Usage:  snakemake build --cores N
+    """
+    input: _BUILD_OUTPUTS
+
 
 # ---- Default target ----
 rule all:
-    input:
-        expand(
-            results_path("{basin_id}/inputs/delta_polygon.gpkg"),
-            basin_id=BASINS
-        ),
+    input: _PREPROCESS_OUTPUTS + _BUILD_OUTPUTS

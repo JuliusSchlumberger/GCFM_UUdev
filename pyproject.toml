@@ -1,2 +1,21 @@
 [tool.pydocstyle]
 convention = "google"
+add_ignore = "D100,D102,D103,D107,D200,D202,D205,D212,D213,D415,D417"
+
+[tool.ruff]
+exclude = [
+    "workflow/archive",
+]
+
+[tool.pyright]
+typeCheckingMode = "off"
+exclude = [
+    "workflow/archive",
+    "analyze_dem_coverage.py",
+    "_diag_river.py",
+    "_diag_river2.py",
+    "check_diluvium.py",
+    "sync_deltadtm.py",
+    "download_glofas.py",
+    "plot_dag.py",
+]

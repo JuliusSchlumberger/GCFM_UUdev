@@ -1,0 +1,45 @@
+meta:
+  version: '1'
+  name: testing_data_catalogue_v1
+  root: D:/GCFM_UU/raw_data
+
+datasets:
+  - name: rivers_ge30m
+    description: >
+      Global river reaches with width >= 30 m including modelled Q2 (2-yr return
+      period / bankfull) discharge and width from empirical hydraulic geometry.
+      Used for independent validation of GCFM discharge and width estimates.
+    source: >
+      Lin et al. (in prep.) — Global river network with empirical hydraulic geometry.
+    provider: ogr
+    file_format: GeoPackage
+    file_path: rivers_lin.gpkg
+    layer_name: rivers_ge30m
+    storage: GPKG
+    encoding: UTF-8
+    crs:
+      epsg: 4326
+      name: WGS 84
+      units: degrees
+    geometry_type: MultiLineString
+    geometry_column: geom
+    feature_count: 723822
+    coverage:
+      latitude_range:  [-55.4142, 82.1125]
+      longitude_range: [-177.2042, 180.2367]
+    fields_of_interest:
+      COMID:
+        type: Integer64
+        description: Unique reach identifier (NHDPlus COMID)
+      Q2:
+        type: Real
+        description: Bankfull discharge — 2-year return period (m³ s⁻¹)
+      width_m:
+        type: Real
+        description: Observed channel width (m)
+      order:
+        type: Real
+        description: Strahler stream order
+      area:
+        type: Real
+        description: Upstream drainage area (km²)

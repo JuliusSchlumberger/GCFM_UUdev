@@ -7,7 +7,7 @@ import geopandas as gpd
 
 def load_catalogue(catalogue_path: Path) -> dict:
     """Load the YAML data catalogue from disk."""
-    with open(catalogue_path, "r") as f:
+    with open(catalogue_path, "r", encoding="utf-8") as f:
         catalogue = yaml.safe_load(f)
     return catalogue
 

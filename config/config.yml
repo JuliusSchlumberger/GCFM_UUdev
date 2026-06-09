@@ -1,10 +1,136 @@
 data_catalogue: ./config/data_catalogue.yml
+testing_data_catalogue: ./config/testing_data_catalogue.yml
+
+profiling:
+  enabled: true   # set to true to write line-level timing reports next to each log file
+
+testing:
+  min_stream_order: 3    # keep only Lin reaches with order > this value
+  glofas_search_radius_km: 15  # radius around each Lin reach centroid within which
+                               # GloFAS cells are considered; the cell with the highest
+                               # Q50 (median discharge) within this radius is selected
+  max_match_dist_km: 22  # maximum SWORD–Lin nearest-reach offset; beyond this the
+                         # match is considered unreliable (≈ two neighbouring GloFAS
+                         # cells at opposing boundaries)
 
 results_dir: D:/GCFM_UU/results
 
-# # Which delta basins to process
-# basins:
-#   - 4267691
-#   - 540974
-#   - 1248635
-#   - 7126506
+topography:
+  source: "DiluviumDEM"           # "DiluviumDEM" or "DeltaDTM"
+  clip_elevation_m:
+    DiluviumDEM: 30               # values ≥ this → NaN; also used as SFINCS active-cell zmax
+    DeltaDTM:    10               # DeltaDTM is restricted to low-lying coastal areas (≤ 10 m MSL)
+  land_barrier_elevation: 1.0e7   # fill value for land NaN pixels → impassable barrier in SFINCS
+  datum_correction:
+    # EGM2008 → GOCO06s geoid shift + MDT subtraction → local MSL.
+    # Only applied when source == "DiluviumDEM"; DeltaDTM tiles are already MSL-corrected.
+    # Requires pyshtools and boule: conda install -c conda-forge pyshtools boule
+    enabled: true
+    mdt_variable: "mdt"            # variable name in the MDT NetCDF file
+    mdt_load_margin_deg: 5.0       # margin (degrees) beyond domain bbox when loading MDT
+                                   # larger margin → more offshore values available for land extrapolation
+  blend:
+    enabled: false                # set to true to also produce a gradient-blended elevation_gradient.tif (comparison only)
+    work_res_m:   100             # DEM merge working resolution (m); GEBCO ~450 m limits useful detail
+    blend_buffer_m: 5000          # DiluviumDEM→GEBCO linear-blend transition width (m)
+
+domain:
+  mode: "delta_polygon"         # "basins": bbox around intersecting HydroBASINS (default)
+                                # "delta_polygon": use the delta polygon directly as domain
+  buffer_m: 20_000       # buffer added to bbox in "basins" mode (m)
+  delta_buffer_m: 2000   # clipping bbox buffer in "delta_polygon" mode (m)
+  target_crs: auto_utm
+
+boundary_forcings:
+  surge:
+    min_stations: 6
+    max_stations: 10
+    dedupe_radius_km: 1
+    return_period: 100
+    search_radii_km: [10, 25, 50, 1000]
+    period_hr: 12
+    lead_days: 12
+    dt_hr: 2
+  river:
+    period_hr: 24
+    lead_days: 12
+    dt_hr: 2
+    glofas_buffer_deg: 1.0
+    bankfull_percentile: 5    # 5th percentile = 95% exceedance probability
+    flood_percentile: 95      # 95th percentile = 5% exceedance probability
+    glofas_variable: dis24
+    glofas_search_radius_km: 11.0   # radius around inside-domain reach centroid to search for GloFAS cells
+    glofas_min_mean_discharge: 10.0  # minimum mean discharge (m³/s) for a GloFAS cell to be considered
+    width_column: "width"            # river-network attribute to compare against grid resolution: "width" or "max_width"
+    dem_elevation_filter:
+      enabled: true      # walk further downstream until reach is within valid DEM elevation range
+      buffer_m: 2.0      # tolerance above clip_elevation_m (m) to accept a reach
+
+  upstream_boundary_check:
+    effective_period_fraction: 0.5   # fraction of surge period_hr used as effective tidal period
+    min_depth_at_mouth_m: 2.0        # minimum river depth at mouth for celerity (m)
+    min_river_velocity_ms: 1.0        # minimum river flow velocity at mouth (m/s)
+
+  eva:
+    rp_bf: 2             # return period for bankfull discharge (yr)
+    rp_fl: 100           # return period for flood discharge (yr)
+    ci_alpha: 0.95
+    threshold_start_pct: 90.0
+    threshold_step_pct: 1.0
+    threshold_min_pct: 50.0   # floor: never drop below this percentile
+    threshold_max_pct: 99.5
+    threshold_max_iter: 30    # enough to traverse 50→99.5 % at 1 % steps
+    peaks_per_year_min: 3
+    peaks_per_year_max: 5
+    min_years_high_confidence: 40
+    min_days: 9131       # minimum valid days to attempt EVA (≈25 yr)
+    decorr_cut: 0.368    # autocorrelation cutoff (≈1/e) for decorrelation window
+    decorr_max: 30       # maximum decorrelation lag to search (days)
+    fit_method: Lmoments
+
+sfincs:
+  grid:
+    resolution: 500             # computational grid resolution in meters
+  subgrid:
+    enabled: true                # set to false to skip subgrid (faster testing; model still runs without it)
+    nr_subgrid_pixels: 16        # subgrid pixels per grid cell (must be quadratic (to ensure equal distance in x and y))
+    nr_levels: 5                 # water-level bins for subgrid tables; reduce to halve peak memory
+    nrmax: 2000                  # tile size for subgrid computation (default 2000)
+  observation_points:
+    n_top_crossings: 2           # number of highest-Q boundary crossings to trace downstream
+    n_per_crossing: 5            # observation points placed per crossing
+    max_downstream_hops: 200     # river-network traversal limit per crossing
+  forcing:
+    waterlevel_buffer_m: 25000   # search radius for matching surge boundary stations (m)
+  simulation:
+    tref: "2000-01-01 00:00:00"  # reference datetime; forcing timeseries are in "hours since tref"
+    dtmapout:     3600           # spatial map output interval (s)
+    dtmaxout:     3600           # max-value envelope output interval (s)
+    dthisout:      600           # time-series output at observation points (s)
+    storevelmax:     0           # write maximum flow velocity (0=off, 1=on)
+    storetwet:       0           # write inundation duration / time-wet (0=off, 1=on)
+    threads: 8                   # OpenMP threads for SFINCS (OMP_NUM_THREADS)
+    sfincs_exe: C:/Users/Schlu005\GCFM_UU\delta_model\software\SFINCS_v2.3.0_mt_Faber_release_exe\sfincs.exe
+  rstart:
+    enabled: true                # create a spinup restart file before the main event run
+    spinup_days: 12               # days of constant bankfull forcing to reach steady river state
+    dthisout: 3600               # obs-point output interval during spinup (s) — for validation plot
+    dtmapout: 3600               # map snapshot interval during spinup (s) — controls animation frame count
+    timeout_s: 7200              # max wall-clock time for SFINCS spinup subprocess (s)
+  sanity_checks:
+    min_inundation_depth_m: 0.1  # threshold for counting a cell as flooded in sanity checks
+    animation_fps: 2             # frames per second for flood progression animation
+
+river_processing:
+  cleaning:
+    snapping_tolerance_m: 500
+  depth:
+    discharge_variable: bankfull_discharge
+    flow_accumulation_iterations: 100
+    discharge_threshold: 1.0e-4
+    min_width_m: 1.0
+    hydraulic_geometry:
+      a: 0.27   # at-a-station width coefficient (Leopold & Maddock)
+      b: 0.30   # at-a-station width exponent
+      c: 7.20   # at-a-station depth coefficient
+      f: 0.50   # at-a-station depth exponent

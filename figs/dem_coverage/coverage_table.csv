@@ -1,0 +1,9 @@
+basin_id,DiluviumDEM_n_tiles,DiluviumDEM_n_land_px,DiluviumDEM_n_covered_px,DiluviumDEM_coverage_pct,DiluviumDEM_buffer_5km_coverage_pct,DiluviumDEM_buffer_10km_coverage_pct,DiluviumDEM_buffer_30km_coverage_pct,DeltaDTM_n_tiles,DeltaDTM_n_land_px,DeltaDTM_n_covered_px,DeltaDTM_coverage_pct,DeltaDTM_buffer_5km_coverage_pct,DeltaDTM_buffer_10km_coverage_pct,DeltaDTM_buffer_30km_coverage_pct,n_river_crossings,DiluviumDEM_crossings_covered_pct,DeltaDTM_crossings_covered_pct
+4267691,19,81681691,68431463,83.78,97.73,95.46,89.36,16,81681691,40608181,49.72,57.12,56.04,51.62,,,
+1416812,6,25490024,18378425,72.10,98.48,96.47,90.04,6,25490024,13722612,53.84,66.66,66.33,67.49,1.00,100.00,0.00
+1475442,1,2232749,1928799,86.39,83.70,84.24,86.38,1,2232749,1111089,49.76,31.83,37.19,49.75,1.00,0.00,0.00
+2433835,1,788446,548739,69.60,,,,1,788446,427704,54.25,,,,1.00,100.00,100.00
+1248635,7,16888279,16701340,98.89,,,,7,7505941,5224608,69.61,,,,5.00,100.00,20.00
+2444235,1,349725,336595,96.25,95.99,96.18,96.25,1,349725,257175,73.54,88.31,78.28,73.54,1.00,100.00,100.00
+2209166,2,1132935,950992,83.94,65.14,75.81,83.94,2,1132935,477895,42.18,21.58,28.78,42.18,1.00,0.00,0.00
+620947,1,888702,886854,99.79,,,,1,888702,718016,80.79,,,,1.00,100.00,0.00

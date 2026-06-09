@@ -7,10 +7,8 @@ datasets:
   - name: delta_polygons
     description: Dataset of manually drawn polygons representing the delta areas globally based on earth-observation data. The polygons are drawn using five defined points as a first approximation of the geomorphologically active deltaic zone.
     source: Edmonds, D.A., Caldwell, R.L., Brondizio, E.S. et al. Coastal flooding will disproportionately impact people on river deltas. Nat Commun 11, 4741 (2020). https://doi.org/10.1038/s41467-020-18531-4
-    file_format: shapefile
-    epsg: 4326
-    file_path: DeltaWebs/40_DeltaWebs.shp  # other options: 769_DeltaWebs.shp (original set), 4_DeltaWebs.shp (Mississippi, Amazon, Rhine-Meuse, Fly), or Test_DeltaWebs.shp (Fly delta, AUS)
-    geometry_type: Polygon
+    file_format: gpkg
+    file_path: DeltaWebs/modified/8_polygons.gpkg  # options: TestPolygon.gpkg (Mississippi), 8_polygons.json (Mississippi, Zambezi, Ebro, Calvert, Mangoky, Vijose, Taiwan, Rhine-Meuse)
     crs:
       epsg: 4326
       name: WGS 84
@@ -24,3 +22,566 @@ datasets:
         example: 200412
     primary_key: BasinID2
     spatial_extent: global
+
+  - name: river_basins
+    description: Dataset of river basins globally, used to identify the upstream drainage area for each delta basin.
+    source: "HydroBASINS (https://www.hydrosheds.org/page/hydrobasins). Lehner, B., Grill G. (2013). Global river hydrography and network routing: baseline data and new approaches to study the world’s large river systems. Hydrological Processes, 27(15). 2171-2186. https://doi.org/10.1002/hyp.9740"
+    file_format: shapefile
+    file_path: HydroBASINS/hybas_global_merged_lev06.shp
+    geometry_type: Polygon
+    crs:
+      epsg: 4326
+      name: WGS 84
+      units: degrees
+    attributes:
+      - name: HYBAS_ID
+        type: integer
+        description: >
+          Unique identifier of the river basin, used as the primary key to join
+          with other datasets in the HydroBASINS dataset.
+        example: 1234567890
+    primary_key: HYBAS_ID
+    spatial_extent: global
+
+  - name: diluvium_dem
+    description: Dataset of global coastal topography data with 30m-resolution, clipped at 80 m+MSL, available between 60°N and 60°S. Vertical datum seems to be EGM2008, but this is not explicitly stated in the source publication. The dataset is provided as 1°x1° tiles in WGS84 geographic coordinates (EPSG:4326).
+    source: "Data available here: https://doi.org/10.5281/zenodo.8329293 . Scientific publication: Dusseau, D., Zobel, Z., & Schwalm, C. R. (2023). DiluviumDEM: Enhanced accuracy in global coastal digital elevation models. Remote Sensing of Environment, 298, 113812. https://doi.org/10.1016/j.rse.2023.113812 "
+    provider: gdal
+    file_format: GeoTIFF
+    file_path: DiluviumDEM/tiles/
+    file_naming_convention: "DiluviumDEM_{NS}{lat}_00_{EW}{lon}_00.tif"
+    file_naming_notes: >
+      {NS} is N or S, {EW} is E or W. {lat} and {lon} are zero-padded
+      integer degrees marking the tile's southwestern corner
+      (e.g. N00 E110 spans 0°–1°N, 110°–111°E; S15 W075 spans 15°–14°S, 75°–74°W).
+    tile_examples:
+      - DiluviumDEM_N00_00_E110_00.tif
+      - DiluviumDEM_S15_00_W075_00.tif
+    crs:
+      epsg: 4326
+      name: WGS 84
+      type: Geographic (2D)
+      units: degrees
+      datum: World Geodetic System 1984 ensemble (EPSG:4326)
+      accuracy_m: 2
+    vertical_crs:
+      epsg: 3855
+      name: EGM2008 height
+      type: Vertical
+      units: meters
+      datum: EGM2008 geoid
+      reference_surface: geoid
+      positive_direction: up
+      confidence: based on COP30DEM which is in EGM2008
+    raster_properties:
+      data_type: Float32
+      nodata_value: null
+      band_count: 1
+      tile_extent_deg: 1.0  # 1° x 1° tiles
+    value_range:
+      units: meters above MSL
+      theoretical_max: 80
+      example_tile_stats:
+        min: 8.46
+        max: 80.00
+        mean: 37.47
+        stddev: 14.52
+        valid_percent: 64.88
+    coverage:
+      latitude_range: [-60, 60]
+      longitude_range: [-180, 180]
+
+  - name: delta_dtm
+    description: >
+      Global coastal Digital Terrain Model (DTM) at 30 m (1 arcsecond) resolution,
+      clipped at 10 m +MSL, covering low-lying coastal areas globally. This entry
+      refers to the MODIFIED version provided by Seeger & Minderhoud (2025), which
+      re-references the vertical datum from the original EGM2008 geoid (used as an
+      MSL proxy) to local mean sea level. The underlying product is DeltaDTM
+      (Pronk et al., 2024), which corrects CopernicusDEM using ICESat-2 and GEDI
+      spaceborne lidar. Reported overall vertical MAE of the original is 0.45 m.
+    source: >
+      Original dataset in scientific publication: Pronk, M., Hooijer, A., Eilander, D., Haag, A.,
+      de Jong, T., Vousdoukas, M., Vernimmen, R., Ledoux, H., & Eleveld, M. (2024).
+      DeltaDTM: A global coastal digital terrain model. Scientific Data, 11, 273.
+      https://doi.org/10.1038/s41597-024-03091-9
+      Modified version with local MSL datum shift: Seeger, K., Minderhoud, P.S.J. Sea level much higher than assumed in most coastal hazard assessments. Nature 652, 667–674 (2026). https://doi.org/10.1038/s41586-026-10196-1
+    provider: gdal
+    file_format: Cloud Optimized GeoTIFF (COG)
+    file_path: DeltaDTM/
+    file_naming_convention: "DeltaDTM_v1_1_{NS}{lat:02d}{EW}{lon:03d}_GOCO06s_MDT.tif"
+    file_naming_notes: >
+      Same 1°x1° fixed-grid tiling as DiluviumDEM. {NS} is N or S, {EW} is E or W.
+      {lat} and {lon} are zero-padded integer degrees marking the tile's SW corner.
+      Suffix _GOCO06s_MDT indicates the vertical datum has been corrected from
+      EGM2008 to local MSL via GOCO06s geoid + MDT_CNES-CLS22 subtraction.
+      A VRT mosaic (deltadtm.vrt) and a download manifest CSV (DeltaDTM_v1.1.csv)
+      are also present in the same directory.
+    tile_examples:
+      - DeltaDTM_v1_1_N00E110_GOCO06s_MDT.tif
+      - DeltaDTM_v1_1_S15W075_GOCO06s_MDT.tif
+    crs:
+      epsg: 4326
+      name: WGS 84
+      type: Geographic (2D)
+      units: degrees
+      datum: World Geodetic System 1984 ensemble (EPSG:4326)
+    vertical_crs:
+      Original DeltaDTM: EGM2008 height (EPSG:3855) # geoid used as MSL proxy.
+      Modified: re-referenced to local mean sea level.
+      name: local mean sea level (per Seeger & Minderhoud 2025)
+      type: Vertical
+      units: meters
+      datum: local mean sea level
+      reference_surface: local MSL surface
+      positive_direction: up
+      confidence: >
+        Datum shift asserted Seeger & Minderhoud (2025)
+
+
+  - name: river_network
+  # TODO: add more details and correct information what specific paramters are used for.
+    description:  # add once known — likely SWORD (SWOT River Database) based on field schema
+    source:  # add DOI / publication reference once known
+    provider: ogr
+    file_format: GeoPackage
+    file_path: SWORD_global_unpublished.gpkg
+    layer_name: merged_rivers
+    storage: GPKG
+    encoding: UTF-8
+    crs:
+      epsg: 4326
+      name: WGS 84
+      type: Geographic (2D)
+      units: degrees
+      datum: World Geodetic System 1984 ensemble (EPSG:6326)
+      accuracy_m: 2
+    geometry:
+      type: LineString
+      geometry_column: geom
+    feature_count: 248672
+    coverage:
+      latitude_range: [-52.0002, 82.3108]
+      longitude_range: [-179.9999, 179.9999]
+    primary_key: fid
+    fields_of_interest:
+      x:
+        type: Real
+        description: Longitude of the node or reach ranging from 180°E to 180°W (decimal degrees).
+      y:
+        type: Real
+        description: Latitude of the node or reach ranging from 90°S to 90°N (decimal degrees).
+      reach_id:
+        type: Integer64
+        description:  unique identifier for each river reach
+      width:
+        type: Real
+        description:  reach-averaged width in meters
+      max_width:
+        type: Real
+        description:   Maximum width value across the channel for each node or reach that includes island and bar areas (in meters).
+      lakeflag:
+        type: Integer
+        description: "GRWL water body identifier for each reach: 0 – river, 1 – lake/reservoir, 2 – canal, 3 – tidally influenced river."
+      rch_id_dn:
+        type: String
+        length: 80
+        description:  IDs of downstream reaches (presented as list [rch_id_dn1, rch_id_dn2,...])
+      main_path_id:
+        type: Integer64
+        description: ID of the main path of the river arm to which the reach belongs (multiple reaches can share the same main_path_id if they belong to the same river arm)
+      path_seg_pos:
+        type: Integer64
+        description: position within main path of river arm (0 = most upstream, increasing downstream)
+      slope:
+        type: Real
+        description:  # add once known — likely reach slope, units to confirm (m/m or m/km)
+
+  - name: coastal_bathymetry
+    description: Global terrain model for ocean and land providing elevation in meters on a 15 arc-second interval grid. Bathymetry over oceans plus land topography in one continuous grid.
+    source: "GEBCO Compilation Group (2026) GEBCO 2026 Grid. Available at https://www.gebco.net/data-products/gridded-bathymetry-data. Published 23 April 2026 by the Nippon Foundation-GEBCO Seabed 2030 Project. Base grid: SRTM15+ V2.8 (Tozer et al. 2019) augmented with regional multibeam compilations from the four Seabed 2030 Regional Centers."
+    provider: gdal  # adjust if you're loading the NetCDF directly rather than via a GeoTIFF
+    file_format: GeoTIFF
+    file_path:  gebco_2026_geotiff/
+    crs:
+      epsg: 4326
+      name: WGS 84
+      type: Geographic (2D)
+      units: degrees
+      datum: World Geodetic System 1984 ensemble (EPSG:6326)
+      accuracy_m: 2
+    raster_properties:
+      data_type:  # add once known — typically Int16 for elevation in meters, but confirm from the file
+      nodata_value:  # add once known
+      band_count: 1
+      pixel_size_arcsec: 15
+      pixel_size_deg: 0.004166666666666667  # 15/3600 — ≈ 460 m at the equator
+    value_range:
+      units: meters
+      convention: positive above sea level, negative below
+    coverage:
+      latitude_range: [-90, 90]
+      longitude_range: [-180, 180]
+    versions_available:
+      - standard: elevation includes ice-surface in Greenland and Antarctica
+      - under_ice: bedrock topography beneath the Greenland and Antarctica ice sheets
+    notes: >
+      GEBCO has limited accuracy and resolution, but it is the only available data source in many places in the world, so it is sometimes used as the best-estimate in very data-poor sites. However, the accuracy of GEBCO varies depending on the input data sources (Monteys et al. 2015). Problem is, that satellite altimetry breaks down nearshore given the resolution and fine-scale details and temporal changes especially in sandy, nearshore, (inter)tidal areas (Almar et al. 2021). As a result of being merged of many different datasets, GEBCO does not provide any information regarding vertical accuracy or vertical reference datum. GEBCO's global elevation models are generated by the assimilation of heterogeneous data types, assuming all of them to be referred to Mean Sea Level.
+
+  - name: land_use
+    description: Global dynamic land cover map at 100 m spatial resolution, discrete classification layer. Reference year 2019, based on PROBA-V observations from 2017-04 to 2020-03. Part of the Copernicus Global Land Service LC100 product portfolio.
+    source: "Buchhorn, M., Smets, B., Bertels, L., De Roo, B., Lesiv, M., Tsendbazar, N.-E., Herold, M., Fritz, S. (2020). Copernicus Global Land Service: Land Cover 100m: collection 3: epoch 2019: Globe. https://doi.org/10.5281/zenodo.3939050. Methodology: Buchhorn et al. (2020), Remote Sensing 12(6), 1044. https://doi.org/10.3390/rs12061044. Product page: https://land.copernicus.eu/global/products/lc"
+    provider: gdal
+    file_format: GeoTIFF
+    file_path: Copernicus/Copernicus_LandUse.tif
+    compression: DEFLATE
+    producer:
+      institution: VITO NV
+      creator: Dr. Marcel Buchhorn (VITO)
+      copyright: Copernicus Service information 2020
+      product_version: v3.0.1
+      processing_line: LC100 v4.1
+      file_created: 2020-07-13
+    crs:
+      epsg: 4326
+      name: WGS 84
+      type: Geographic (2D)
+      units: degrees
+      datum: World Geodetic System 1984 ensemble (EPSG:6326)
+      accuracy_m: 2
+    raster_properties:
+      data_type: Byte (UInt8)
+      nodata_value: 255
+      band_count: 1
+      pixel_size_deg: 0.0009920634920634888  # 1/1008° ≈ 100 m at the equator
+      dimensions:
+        width_px: 362880
+        height_px: 141120
+      origin: [-180.0, 80.0]  # upper-left corner (lon, lat)
+      valid_range: [0, 254]
+      area_or_point: Area
+      scale: 1
+      offset: 0
+    coverage:
+      latitude_range: [-60, 80]
+      longitude_range: [-180, 180]
+    temporal_coverage:
+      reference_year: 2019
+      observation_period_start: 2017-04-01
+      observation_period_end: 2020-03-31
+      note: Single epoch (2019-nrt). For multi-year analyses, additional epochs (2015-2018) must be downloaded separately.
+    classification:
+      scheme: Discrete Classification map
+      band_name: Discrete-Classification-map
+      class_count: 23
+      classes:
+        0: unknown
+        20: shrubland
+        30: herbaceous_vegetation
+        40: cropland
+        50: built-up
+        60: bare_sparse_vegetation
+        70: snow_ice
+        80: permanent_inland_water
+        90: herbaceous_wetland
+        100: moss_lichen
+        111: ENF_closed   # Evergreen Needleleaf Forest
+        112: EBF_closed   # Evergreen Broadleaf Forest
+        113: DNF_closed   # Deciduous Needleleaf Forest
+        114: DBF_closed   # Deciduous Broadleaf Forest
+        115: mixed_closed
+        116: unknown_closed
+        121: ENF_open
+        122: EBF_open
+        123: DNF_open
+        124: DBF_open
+        125: mixed_open
+        126: unknown_open
+        200: sea
+        255: missing_value (NoData)
+    satellite:
+      platform: Proba-V
+      sensor: VEGETATION
+      orbit_type: LEO
+      processing_level: L3
+      processing_mode: Offline
+      input_grid: MGRS (Sentinel-2 tiling grid), UTM during production
+    notes: >
+      "The 'closed' forest classes denote >70% canopy cover; 'open' denotes 15–70% canopy cover
+      (per the LC100 product user manual). The 111–116 / 121–126 numbering separates closed
+      vs open forest variants for the same forest type."
+
+  - name: lu_to_roughness_lookup
+    description: "Lookup table to convert land use classes from the Copernicus Land Use dataset to Manning's n roughness coefficients for hydrodynamic modeling. Note: Copernicus land use has 23 classes, while ESA only distinguishes 11. We subsume various Copernicus forest classes into a single 'forest' class, to match the ESA land use classes. The Manning's n values are based on typical values for each land use type from the literature, but may need to be adjusted based on local conditions or specific modeling needs."
+    source:  https://www.hec.usace.army.mil/confluence/rasdocs/r2dum/latest/developing-a-terrain-model-and-geospatial-layers/creating-land-cover-mannings-n-values-and-impervious-layers
+    file_format: CSV
+    file_path: Copernicus/lu_to_roughness_lookup.csv
+    encoding: UTF-8
+    fields:
+      - name: copernicus_worldcover
+        type: Integer
+        description: Copernicus Land use class code corresponding to the classes in the Copernicus Land Use dataset (e.g. 0, 20, 30, ..., 126, 200).
+      - name: lu_name
+        type: string
+        description: Name of the land use class.
+      - name: manning_n
+        type: Real
+        description: Manning's n roughness coefficient associated with each land use class, used for hydrodynamic modeling of flow resistance.
+
+
+  - name: storm_tide_return_periods # TODO: get real timeseries information for extracting real time series
+    description: >
+      Global dataset of coastal storm tide return periods (storm surge + tide) at output
+      locations of the Global Tide and Surge Model (GTSM). Surges from extratropical
+      cyclones are derived from a 38-year ERA5-forced simulation; surges from tropical
+      cyclones are derived from 10,000 years of synthetic tracks from the STORM dataset
+      under current climate conditions. The two are probabilistically combined with tidal
+      levels and return periods are computed empirically.
+    source: "Dullaart, J.C.M., Muis, S., Bloemendaal, N., Chertova, M.V., Couasnon, A., & Aerts, J.C.J.H. (2021). Accounting for tropical cyclones more than doubles the global population exposed to low-probability coastal flooding. Institute for Environmental Studies, Vrije Universiteit Amsterdam. Contact: job.dullaart@vu.nl"
+    provider: xarray
+    file_format: NetCDF
+    file_path: CoastRP/COAST-RP.nc
+    model_version: "Deltares D-Flow FM v1.2.63.64757"
+    forcing_sources:
+      extratropical: ERA5 climate reanalysis (ECMWF), 38-year time series
+      tropical: STORM synthetic tropical cyclone tracks, 10,000 years (current climate)
+    crs:
+      epsg: 4326
+      name: WGS 84
+      type: Geographic (2D)
+      units: degrees
+    geometry_type: Point  # GTSM output stations along the global coastline
+    coordinates:
+      station_x_coordinate: longitude (degrees_east)
+      station_y_coordinate: latitude (degrees_north)
+    primary_key: station_id
+    data_variables:
+      station_id:
+        type: string
+        description: Name/identifier of the GTSM output location.
+      storm_tide_rp_0001:
+        type: Real
+        units: meters
+        description: Storm tide level for the 1-year return period.
+      storm_tide_rp_0002:
+        type: Real
+        units: meters
+        description: Storm tide level for the 2-year return period.
+      storm_tide_rp_0005:
+        type: Real
+        units: meters
+        description: Storm tide level for the 5-year return period.
+      storm_tide_rp_0010:
+        type: Real
+        units: meters
+        description: Storm tide level for the 10-year return period.
+      storm_tide_rp_0025:
+        type: Real
+        units: meters
+        description: Storm tide level for the 25-year return period.
+      storm_tide_rp_0050:
+        type: Real
+        units: meters
+        description: Storm tide level for the 50-year return period.
+      storm_tide_rp_0100:
+        type: Real
+        units: meters
+        description: Storm tide level for the 100-year return period.
+      storm_tide_rp_0250:
+        type: Real
+        units: meters
+        description: Storm tide level for the 250-year return period.
+      storm_tide_rp_0500:
+        type: Real
+        units: meters
+        description: Storm tide level for the 500-year return period.
+      storm_tide_rp_1000:
+        type: Real
+        units: meters
+        description: Storm tide level for the 1000-year return period.
+    vertical_reference:
+      units: m
+      positive: up
+      datum:  # TODO: not explicitly stated in source documentation — likely MSL via GTSM convention; confirm before vertical-datum-sensitive use
+    coverage:
+      latitude_range: [-90, 90]
+      longitude_range: [-180, 180]
+      spatial_extent: global (coastal output stations)
+    notes: >
+      Data are provided at discrete GTSM stations along the coast.
+
+  - name: river_discharge
+    description: >
+      Gridded daily hydrological reanalysis from the Global Flood Awareness System
+      (GloFAS), produced by forcing the LISFLOOD hydrological model with ERA5
+      meteorological reanalysis data. Provides a consistent global representation of
+      river discharge, runoff, snow water equivalent, and root-zone soil wetness. Part
+      of the Copernicus Emergency Management Service (CEMS), managed by the European
+      Commission's Joint Research Centre. Two product streams exist: consolidated
+      (monthly updates, using consolidated ERA5) and intermediate (daily updates,
+      using ERA5T near-real-time data). Data are stored in separate netCDF-4 files per year following the convention "glofas_{year}.nc"
+    source: "Copernicus Emergency Management Service (CEMS), Global Flood Awareness System (GloFAS) v4.0, released 2023-07-26. Produced by ECMWF on behalf of the European Commission's Joint Research Centre. Available via the Copernicus Early Warning Data Store (EWDS): https://ewds.climate.copernicus.eu/"
+    provider: xarray  # NetCDF-4 / GRIB2 — load with xarray.open_dataset (cfgrib engine for GRIB2)
+    file_format: NetCDF-4  # also available as GRIB2
+    file_path: GloFAS/  # add specific file/subfolder once finalised
+    conventions: CF-1.7  # WMO GRIB2 conventions inherited by NetCDF-4
+    producer:
+      institution: European Centre for Medium-Range Weather Forecasts (ECMWF)
+      centre_code: ecmf
+      grib_edition: 2
+      processing: "GRIB to CDM+CF via cfgrib-0.9.15.1 / ecCodes-2.42.0"
+      model_version_date: 2022-10-01  # dateOfModelVersion 20221001
+    model:
+      name: LISFLOOD
+      forcing: ERA5 meteorological reanalysis (interpolated to GloFAS resolution)
+      timestep: 24 hours
+      product_streams:
+        consolidated: monthly updates, forced with consolidated ERA5
+        intermediate: daily updates, forced with ERA5T near-real-time
+    crs:
+      epsg: 4326
+      name: WGS 84
+      type: Geographic (2D)
+      units: degrees
+    raster_properties:
+      grid: Regular latitude-longitude
+      pixel_size_deg: 0.05  # v4.0; legacy versions (≤ v3.1) are 0.1°
+      band_count: 1  # per variable
+    coverage:
+      latitude_range: [-60, 90]   # global except Antarctica
+      longitude_range: [-180, 180]
+      spatial_extent: global excluding Antarctica
+    temporal_coverage:
+      start: 2018-01-02 # TODO: download GLOFAS for full statistical analysis (currently only year 2018)
+      end: 2019-01-01
+      resolution: daily
+    version: GloFAS v4.0 (released 2023-07-26)
+    main_variables:
+      river_discharge_24h:
+        units: m^3 s^-1
+        vertical_level: surface
+        temporal_aggregation: 24-hour mean
+        description: >
+          Volume rate of water flow (incl. sediments, chemical and biological material)
+          in the river channel, averaged over 24 hours through a cross-section.
+      runoff_water_equivalent:
+        units: kg m^-2
+        vertical_level: surface
+        temporal_aggregation: 24-hour accumulation
+        description: >
+          Sum of surface and sub-surface runoff — total water that would drain away
+          from the grid box, accumulated over 24 hours.
+      snow_depth_water_equivalent:
+        units: kg m^-2
+        vertical_level: surface
+        temporal_aggregation: instantaneous (end of timestep)
+        description: >
+          Mass of water per square meter if all snow in the grid box were melted.
+      soil_wetness_index:
+        units: dimensionless
+        vertical_level: subsurface (root zone)
+        temporal_aggregation: instantaneous (end of timestep)
+        valid_range: [0, 1]   # 0 = residual soil moisture, 1 = saturation
+        description: >
+          Volume of water over total volume of voids in the soil column, expressed as
+          an index between 0 (residual) and 1 (saturation), over the root zone depth.
+    ancillary_variables:
+      elevation:
+        units: m
+        description: Mean elevation above sea level per pixel in the GloFAS domain.
+      upstream_area:
+        units: m^2
+        description: >
+          Total upstream catchment area for each river pixel — the area contributing
+          water to the river at that grid point (includes the pixel itself).
+    notes: >
+      "GloFAS provides a consistent global hydrological dataset, but it is a model
+      reanalysis and thus subject to model biases and uncertainties. It is most
+      reliable in data-rich regions where it can be calibrated against observations,
+      and less reliable in data-poor regions (e.g. parts of Africa, South America)
+      where the model relies more heavily on its internal physics and the quality of
+      the ERA5 meteorological forcing. GloFAS v4.0 has improved resolution (0.05°) and
+      updated model physics compared to previous versions, but users should still
+      evaluate its performance against local observations where possible before using
+      it for critical applications."
+
+  - name: osm_land
+    description: >
+      Global land polygons derived from OpenStreetMap (OSM) data, split into a grid
+      with slight overlap between tiles. Provides a high-detail vector representation
+      of the world's coastline and inland water boundaries, suitable for masking,
+      clipping, or rendering land vs ocean.
+    source: "OpenStreetMap contributors (2026). Land polygons extract from https://osmdata.openstreetmap.de/data/land-polygons.html (data snapshot: 2026-04-30). © OpenStreetMap contributors, available under the Open Database License (ODbL): https://www.openstreetmap.org/copyright"
+    license: ODbL (Open Database License)
+    provider: ogr
+    file_format: geopackage
+    file_path: OSM/land_polygons.gpkg
+    layer: land_polygons
+    geometry_type: Polygon
+    feature_count: 864818
+    crs:
+      epsg: 4326
+      name: WGS 84
+      type: Geographic (2D)
+      units: degrees
+    coverage:
+      latitude_range: [-90, 83.665]   # no data north of ~83.67°N
+      longitude_range: [-180, 180]
+      spatial_extent: global (excluding high Arctic above 83.665°N)
+    temporal_coverage:
+      data_snapshot: 2026-04-30
+    notes: >
+      Polygons are split into tiles with slight overlap, so spatial queries near tile
+      boundaries may return duplicate or overlapping geometries — dissolve or de-duplicate
+      if topologically clean output is required. Attribution to OpenStreetMap contributors
+      is required when using or redistributing derivative products (ODbL).
+      The GeoPackage carries TWO layers: 'land_polygons' (the actual polygon geometries,
+      used here) and 'marine_buffer' (an x/y tile-grid index). gpd.read_file()/pyogrio
+      silently default to the first layer ('marine_buffer') if layer= is not given,
+      which yields empty results for small bbox queries — always read with
+      layer="land_polygons".
+
+  - name: goco06s
+    description: >
+      GOCO06s combined gravity field model (satellite-only, degree/order 300).
+      Used to compute GOCO06s geoid undulation N_GOCO06s, which is the common
+      vertical datum with MDT_CNES-CLS22 and COAST-RP water-level datasets.
+      Download from ICGEM Table of Models: http://icgem.gfz-potsdam.de/home
+    source: "Kvas et al. (2021), GOCO06s — A satellite-only gravity field model. Earth System Science Data 13(1), 99–118."
+    file_format: gfc (ICGEM spherical harmonic coefficients)
+    file_path: ICGM/GOCO06s.gfc
+    attributes:
+      - name: max_degree
+        type: integer
+        description: Maximum spherical harmonic degree (≈ 300)
+
+  - name: egm2008_geoid
+    description: >
+      EGM2008 Earth Gravitational Model (degree/order 2190). Used here only to
+      compute the N_EGM2008 geoid undulation — the DiluviumDEM is referenced to
+      this geoid and must be corrected to GOCO06s before blending with GEBCO.
+      Download from ICGEM Table of Models.
+    source: "Pavlis et al. (2012), The development and evaluation of the EGM2008. J. Geophys. Res. 117, B04406."
+    file_format: gfc (ICGEM spherical harmonic coefficients)
+    file_path: ICGM/EGM2008.gfc
+
+  - name: mdt_cnes_cls22
+    description: >
+      Mean Dynamic Topography CNES-CLS22 from AVISO (HYBRID-CNES-CLS2022).
+      Gives the time-mean sea-surface height above the GOCO06s geoid [m].
+      Subtracting MDT from a GOCO06s-referenced DEM converts it to orthometric
+      heights above local Mean Sea Level (MSL): H_MSL = H_GOCO06s − MDT.
+      Download from AVISO+ (https://www.aviso.altimetry.fr) — requires free account.
+      Note: MDT is defined over ocean only; near-coastal values are used for
+      the coastal DiluviumDEM correction (all deltas lie within the 500 km
+      validity range from the coast).
+    source: "CNES-CLS22 MDT, AVISO+ altimetry data centre. https://doi.org/10.24400/527896/a01-2021.001"
+    file_format: NetCDF
+    file_path: AVISO/mdt_hybrid_cnes_cls22_cmems2020_global.nc
+    crs:
+      epsg: 4326
+    variables:
+      mdt:
+        units: m
+        description: Mean dynamic topography above GOCO06s geoid
+        sign_convention: positive upward (sea surface above geoid)

@@ -1,0 +1,437 @@
+================================================================================
+GCFM_UU — Claude Code Reference Memory
+Last updated: 2026-06-09
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. PROJECT OVERVIEW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Project:   Global Coastal Flood Modelling (GCFM_UU)
+Location:  C:\Users\Schlu005\GCFM_UU
+Results:   D:/GCFM_UU/results/{basin_id}/
+Raw data:  D:/GCFM_UU/raw_data/
+
+Purpose: Build per-delta SFINCS hydrodynamic flood models for global river
+deltas. Driven by Snakemake. One basin_id = one delta (e.g. 4267691 = Niger).
+
+User: Julius Schlumberger (julius.schlumberger@gmail.com), researcher.
+
+Conda environment: hmt_sfincs_dev
+  Miniforge3: C:\Users\Schlu005\AppData\Local\miniforge3\
+  Run scripts: & "C:\Users\Schlu005\AppData\Local\miniforge3\Scripts\conda.exe"
+               run -n hmt_sfincs_dev python "<script_path>"
+  NOTE: conda is NOT on PATH. Full exe path required every time.
+  NOTE: `conda run` does NOT support multi-line -c inline scripts — write to .py
+        file first.
+  Additional dependencies for datum correction:
+    conda install -c conda-forge pyshtools boule
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. PIPELINE STRUCTURE (rules 00–10)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Rule files:   workflow/rules/00_common.smk … 10_sanity_checks.smk
+Scripts:      workflow/scripts/01_*.py … 10_*.py
+Shared src:   workflow/src/  (domain, extreme_values, geometry, io, log,
+              plots, postprocessing, profiling, raster, river_forcing,
+              river_network, surge)
+
+Named aggregate targets in Snakefile:
+  - `preprocess`  → _PREPROCESS_OUTPUTS (rules 01–07)
+  - `build`       → _BUILD_OUTPUTS (rules 08–09)
+  - `all`         → both
+
+_PREPROCESS_OUTPUTS is the canonical list; any new rule output that should be
+part of the preprocessing pipeline MUST be added there.
+
+RULE SUMMARY:
+  00  common.smk     — catalogue helpers, wildcard constraints, BASINS list
+  01  separate_deltas — clip delta polygon per basin_id
+  02  modeldomain    — domain bbox, UTM CRS, domain.gpkg
+  03  static data    — elevation, landuse, roughness, river network, land polygons
+      03a: get_elevation      → elevation_merged.tif, zsini.tif
+      03b: get_landuse        → landuse.tif
+      03c: get_roughness      → roughness.tif
+      03d: get_river_network  → river_network.gpkg (with DEM elevation overlay)
+      03e: get_land_polygons  → land_polygons.gpkg
+  04  boundary_forcings — surge (CoastRP EVA) + river (GloFAS EVA) forcing NetCDFs
+  05  clean_river_network — BFS from boundary crossings → river_network_clean.gpkg
+  06  river_depth    — Leopold-Maddock hydraulic geometry → river_network_processed.gpkg
+  07  testing        — discharge comparison + upstream boundary wave propagation check
+  08  build_sfincs   — HydroMT-SFINCS model build
+  09  create_rstart  — SFINCS spinup restart file
+  10  sanity_checks  — post-run inundation ratio checks
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. KEY DATA SOURCES (config/data_catalogue.yml)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DiluviumDEM     — 30 m coastal DEM, EGM2008 vertical datum, 1°×1° tiles
+                  D:/GCFM_UU/raw_data/DiluviumDEM/tiles/
+                  Naming: DiluviumDEM_{NS}{lat}_00_{EW}{lon}_00.tif
+
+DeltaDTM        — 30 m coastal DEM, already MSL-corrected (GOCO06s + MDT)
+                  D:/GCFM_UU/raw_data/DeltaDTM/
+                  Naming: DeltaDTM_v1_1_{NS}{lat:02d}{EW}{lon:03d}_GOCO06s_MDT.tif
+
+GEBCO 2026      — Global bathymetry 15 arc-sec, tiled GeoTIFFs
+                  D:/GCFM_UU/raw_data/gebco_2026_geotiff/
+
+SWORD river     — Global river network GeoPackage (unpublished), layer: merged_rivers
+                  D:/GCFM_UU/raw_data/SWORD_global_unpublished.gpkg
+                  Key fields: reach_id, width, max_width, lakeflag, rch_id_dn,
+                              main_path_id, path_seg_pos
+
+GloFAS v4.0     — Daily river discharge reanalysis 0.05° (ERA5-forced LISFLOOD)
+                  D:/GCFM_UU/raw_data/GloFAS/glofas_{year}.nc
+
+CoastRP         — Global storm tide return periods at GTSM stations
+                  D:/GCFM_UU/raw_data/CoastRP/COAST-RP.nc
+
+OSM land        — Global land polygons (OSM 2026-04-30)
+                  D:/GCFM_UU/raw_data/OSM/land_polygons.gpkg
+                  IMPORTANT: Always read with layer="land_polygons" — gpd.read_file
+                  defaults to the first layer ('marine_buffer') silently.
+
+MDT CNES-CLS22  — Mean dynamic topography above GOCO06s geoid, 0.125°
+                  D:/GCFM_UU/raw_data/AVISO/mdt_hybrid_cnes_cls22_cmems2020_global.nc
+                  Variable: 'mdt'. NaN over land — must extrapolate before use.
+
+GOCO06s         — Gravity field .gfc for geoid synthesis (degree 300)
+                  D:/GCFM_UU/raw_data/ICGM/GOCO06s.gfc
+
+EGM2008         — Gravity field .gfc for geoid synthesis
+                  D:/GCFM_UU/raw_data/ICGM/EGM2008.gfc
+
+Copernicus LC100 — Land use 100 m, discrete classification 2019
+                  D:/GCFM_UU/raw_data/Copernicus/Copernicus_LandUse.tif
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. TOPOGRAPHY & DATUM CORRECTION (rule 03a)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Active source: config.yml → topography.source = "DiluviumDEM"
+Clip elevation: topography.clip_elevation_m.DiluviumDEM = 30 m
+
+Pipeline in 03a_get_elevation.py:
+  1.  Merge DiluviumDEM tiles → topo_utm (UTM, NaN ≥ clip_elevation_m)
+  1b. [DiluviumDEM + datum_correction.enabled] Vertical datum correction:
+        Step 1: topo_utm += geoid_offset  (N_EGM2008 − N_GOCO06s, pyshtools)
+        Step 2: topo_utm -= MDT_extrapolated_over_land
+      KEY DESIGN: MDT (NaN over land) must be extrapolated over land using IDW
+      (rasterio.fill.fillnodata) BEFORE resampling to DEM grid. Without this,
+      only coastal fringe pixels get MDT correction; inland pixels only get the
+      geoid shift, creating a discontinuity.
+  2.  Load GEBCO bathymetry → gebco_utm
+  3.  Land mask from OSM polygons
+  4.  Fill land NaN → land_barrier_val (impassable barrier = 1e7 m)
+  5.  Hard-boundary merge: DEM on land, GEBCO offshore → elevation_merged.tif
+  6.  Optional gradient blend (blend.enabled: false by default) → side-effect only
+  7.  zsini.tif (0 over ocean, DEM value on land, nodata elsewhere)
+
+Datum correction config (topography.datum_correction):
+  enabled: true
+  mdt_variable: "mdt"
+  mdt_load_margin_deg: 5.0   ← wide margin ensures sufficient offshore MDT pixels
+
+Debugging plots produced as side-effects when datum_correction.enabled:
+  01b_geoid_offset.png     — N_EGM2008 − N_GOCO06s in WGS84 lon/lat
+  01b_mdt_ocean.png        — Raw MDT ocean values (NaN over land) in WGS84
+  01b_datum_correction.png — Δ (MSL − EGM2008) applied to land pixels in UTM
+
+Reference: Seeger & Minderhoud (2026), Nature. Method:
+  - Geoid offset from ICGEM .gfc files via pyshtools spherical harmonic synthesis
+  - MDT extrapolation over land: IDW (fillnodata, smoothing_iterations=1)
+  - Only valid within 500 km of coastline (all deltas qualify)
+  - DeltaDTM tiles already have this correction applied (suffix _GOCO06s_MDT)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5. RIVER NETWORK (rules 03d, 05, 06)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Rule 03d (get_river_network):
+  - Clips SWORD global network to domain
+  - Overlays DEM elevation: samples at ~100 m intervals, takes max finite value
+  - Enforces MONOTONE DOWNSTREAM elevation decrease via Kahn's BFS topological
+    sort: at each node, cap elev[dn] = min(elev[dn], elev[up])
+  - Output: river_network.gpkg with max_elevation column
+
+Rule 05 (clean_river_network):
+  - BFS from boundary forcing crossing points downstream
+  - Snaps crossings to nearest river reach (snapping_tolerance_m: 500)
+  - Output: river_network_clean.gpkg
+
+Rule 06 (river_depth):
+  - Flow accumulation: iterative BFS from seed reaches (n_iterations: 100)
+  - Bifurcation split: weight = width × angle_factor
+    angle_factor: 180° (straight) → 1.0; 90° (perpendicular) → 0.1;
+                  <90° (acute/U-turn) → 0.1; linear between 90–180°
+    Angle computed from simplified reach geometries (simplify_tol=1e-3 degrees)
+    upstream "back" vector: coords[-2] − coords[-1]
+    downstream "forward" vector: coords[1] − coords[0]
+  - Hydraulic depth from Leopold-Maddock: depth = alpha × Q^beta / width
+    Params in config: a=0.27, b=0.30, c=7.20, f=0.50
+    alpha = a×c, beta = b+f
+  - Output: river_network_processed.gpkg with rivdph, bankfull_discharge_acc
+
+Key functions in src/river_network.py:
+  - build_downstream_adjacency()       — dict {reach_id: [dn_ids]}
+  - collect_downstream_main_paths()    — BFS from seed set
+  - accumulate_discharge()             — iterative BFS flow accumulation
+    Width × angle_factor bifurcation split (angle factors pre-computed once)
+  - compute_hydraulic_depth()          — Leopold-Maddock formula
+  - _end_direction_vec(line, from_start, simplify_tol=1e-3)
+  - _angle_factor(angle_deg, min_factor=0.1)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6. BOUNDARY FORCINGS (rule 04)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Script: workflow/scripts/04_get_boundary_forcings.py
+
+RIVER FORCING steps:
+  Step 1:  Identify reaches that cross the domain grid boundary
+  Step 2:  resolve_inside_domain_reaches() — walk downstream until reach
+           centroid is inside domain polygon AND lakeflag ≠ 1
+  Step 2b: resolve_dem_elevation_reach() — optional DEM elevation filter
+           Walk downstream until max_elevation ≤ clip_elevation_m + buffer_m
+           Config: boundary_forcings.river.dem_elevation_filter.enabled/buffer_m
+  Step 3:  Snap to GloFAS cell (glofas_search_radius_km: 11.0)
+  Step 4:  EVA on GloFAS discharge time series → bankfull + flood return periods
+  Step 5:  Build forcing NetCDF
+
+SURGE FORCING:
+  - CoastRP station-based EVA
+  - IDW interpolation to SFINCS boundary cells
+  - Period: 12 hr, lead_days: 15, dt_hr: 2
+
+Key src functions:
+  src/river_forcing.py:
+    resolve_inside_domain_reaches()   — downstream walk + domain containment
+    resolve_dem_elevation_reach()     — downstream walk + elevation threshold
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7. TESTING RULES (rule 07)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Output plots (tracked Snakemake outputs):
+  08a_discharge_check.png        — SWORD vs Lin et al. bankfull Q comparison
+  08b_upstream_boundary_check.png — Wave propagation distance check
+
+Upstream boundary check (07_test_upstream_boundary.py):
+  Formula: wave_propagation_distance = T_eff × (celerity − v_river)
+    T_eff    = effective_period_fraction × surge_period_hr × 3600 s
+    celerity = sqrt(g × (depth_mouth + surge_amplitude))
+    v_river  = max(min_river_velocity_ms, Q_bf / (W × D))
+  Forcing points must be OUTSIDE the wave propagation radius from river mouths.
+  Blocked mouths (v ≥ celerity): drawn as orange X markers (undetermined).
+  Config params: effective_period_fraction (0.5), min_depth_at_mouth_m (2.0),
+                 min_river_velocity_ms (1.0)
+  Plot: geodesic circles (radius = wave propagation distance) + river network
+        Green dot = forcing point outside circle (safe)
+        Red dot   = forcing point inside circle (too close)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+8. PLOTS AND VISUALIZATION (src/plots.py)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+All raster plots use _to_wgs84_grid() for reprojection and alignment.
+
+CRITICAL: rasterio.calculate_default_transform() adds padding to destination
+bounds. The extent returned is slightly LARGER than the source bbox. This
+causes visual misalignment between raster content and domain bbox overlay.
+FIX: pass dst_bounds=bbox_poly.bounds to read_raster_reprojected_for_plot() and
+_to_wgs84_grid() to use rasterio.transform.from_bounds instead. This pins the
+output pixels exactly to the domain bbox.
+
+Plot functions:
+  plot_elevation_merged()        — elevation_merged.tif with land overlay
+  plot_zsini()                   — zsini.tif
+  plot_elevation_blending()      — gradient blend comparison (side-effect only)
+  plot_geoid_offset()            — N_EGM2008−N_GOCO06s in WGS84 (debug)
+  plot_mdt_ocean()               — Raw MDT ocean values in WGS84 (debug)
+  plot_datum_correction_delta()  — Δ MSL−EGM2008 in UTM (debug)
+  plot_river_network()           — SWORD clipped network
+  plot_clean_river_network()     — Post-cleaning network
+  plot_river_discharge()         — Discharge-coloured reaches
+  plot_river_depth()             — Hydraulic depth
+  plot_river_hydraulics()        — Hydraulic properties panel
+  plot_river_width_q()           — Width vs discharge scatter
+  plot_river_profile()           — Longitudinal profile (Q + depth)
+
+map_background() helper: draws land polygons at a given margin around the domain.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+9. CONFIGURATION (config/config.yml)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Key active settings (as of 2026-06-09):
+  topography.source:                  DiluviumDEM
+  topography.clip_elevation_m:        DiluviumDEM: 30
+  topography.datum_correction.enabled: true
+  domain.mode:                        delta_polygon
+  domain.delta_buffer_m:              2000
+  sfincs.grid.resolution:             500 m
+  sfincs.subgrid.enabled:             true
+  sfincs.rstart.enabled:              true
+
+  boundary_forcings.river:
+    dem_elevation_filter.enabled:     true
+    dem_elevation_filter.buffer_m:    2.0
+    glofas_search_radius_km:          11.0
+    bankfull_percentile:              5   (= 95th exceedance)
+    flood_percentile:                 95  (= 5th exceedance)
+
+  boundary_forcings.upstream_boundary_check:
+    effective_period_fraction:        0.5
+    min_depth_at_mouth_m:             2.0
+    min_river_velocity_ms:            1.0
+
+  river_processing.depth:
+    flow_accumulation_iterations:     100
+    hydraulic_geometry: a=0.27, b=0.30, c=7.20, f=0.50
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+10. SRC MODULE RESPONSIBILITIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+src/domain.py          — load_domain(): reads domain_bbox.json + domain.gpkg
+src/extreme_values.py  — EVA (GEV, GPD, L-moments) for return period estimation
+src/geometry.py        — UTM CRS selection, geodesic helpers
+src/io.py              — shared I/O utilities
+src/log.py             — setup_logging(): file + console handler
+src/plots.py           — all diagnostic plot functions (see section 8)
+src/postprocessing.py  — SFINCS output processing, flood extent calculation
+src/profiling.py       — ScriptProfiler: wraps functions with timing logs
+src/raster.py          — tile finding, merging, roughness reclassification,
+                         resample_to_utm_array(), compute_geoid_offset_arr()
+src/river_forcing.py   — resolve_inside_domain_reaches(),
+                         resolve_dem_elevation_reach(), GloFAS snapping,
+                         river forcing NetCDF construction
+src/river_network.py   — adjacency, BFS, accumulate_discharge() (width×angle),
+                         compute_hydraulic_depth(), _end_direction_vec(),
+                         _angle_factor()
+src/surge.py           — CoastRP EVA, surge station selection, IDW interpolation
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+11. KNOWN ISSUES / DESIGN DECISIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+IDE FALSE POSITIVES:
+  Snakefile: VS Code flags BASINS as undefined and expand() as unused.
+  These are ALWAYS false positives — BASINS is defined in 00_common.smk via
+  Snakemake include:, which the Python linter doesn't understand.
+  GeoSeries.x / .y attribute errors in IDE are also false positives (pyright
+  doesn't know the GeoSeries type).
+
+RASTER ALIGNMENT:
+  calculate_default_transform adds padding → extent > wgs84_bounds → visual
+  misalignment. Fix: pass dst_bounds to _to_wgs84_grid() to use from_bounds.
+
+MDT EXTRAPOLATION:
+  MDT is NaN over land. Must call rasterio.fill.fillnodata() on the raw WGS84
+  clip BEFORE resampling to UTM DEM grid. Load with 5° margin (mdt_load_margin_deg)
+  to ensure sufficient offshore reference pixels.
+
+SNAKEMAKE OUTPUT SYNC:
+  Always keep _PREPROCESS_OUTPUTS in Snakefile in sync with rule outputs.
+  MissingInputException for tracked outputs almost always means this list is stale.
+
+SFINCS MODEL BUILD:
+  HydroMT-SFINCS 2.0.0.dev0: use component-based API.
+  Open SfincsModel in 'w+' mode for full build — NOT 'r+' (causes sfincs.ind errors).
+
+RIVER ID HANDLING:
+  reach_id from SWORD may be int or string; always normalise with
+  str(int(float(x))) pattern before any dict/set operations.
+
+BIFURCATION DISCHARGE:
+  Weight = width × angle_factor. Single-arm transitions: angle correction
+  irrelevant (full discharge passes through). Only applies at len(dn) > 1.
+
+MONOTONE ELEVATION:
+  Kahn's BFS (topological sort) in 03d enforces downstream elevation decrease.
+  Cycles detected with a warning; DAG assumption is required for correctness.
+
+OSM LAND POLYGONS:
+  File has TWO layers: 'land_polygons' and 'marine_buffer'.
+  gpd.read_file() defaults to the first layer ('marine_buffer') silently.
+  Always specify layer="land_polygons" explicitly.
+
+DEM ELEVATION FILTER:
+  resolve_dem_elevation_reach() in src/river_forcing.py: walks downstream from
+  inside-domain reach until max_elevation ≤ clip_elevation_m + buffer_m.
+  NaN elevation treated as within range (unknown ≠ out of range).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+12. OUTPUT STRUCTURE PER BASIN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+D:/GCFM_UU/results/{basin_id}/
+├── inputs/
+│   ├── delta_polygon.gpkg
+│   ├── domain/
+│   │   ├── domain_bbox.json          ← bounds, UTM CRS, basin_id
+│   │   ├── domain.gpkg
+│   │   ├── elevation_merged.tif      ← DEM on land, GEBCO offshore, UTM
+│   │   ├── zsini.tif                 ← 0 over ocean, DEM on land
+│   │   ├── landuse.tif
+│   │   ├── roughness.tif
+│   │   ├── river_network.gpkg        ← raw SWORD clip + DEM elevation
+│   │   ├── river_network_clean.gpkg  ← BFS-pruned, snapped
+│   │   └── land_polygons.gpkg
+│   ├── forcing/
+│   │   ├── surge_forcing.nc
+│   │   ├── river_forcing.nc
+│   │   └── glofas_clip.nc
+│   ├── river_network_processed.gpkg  ← with rivdph, bankfull_discharge_acc
+│   └── plots/
+│       ├── 01_elevation.png
+│       ├── 01b_datum_correction.png  ← side-effect (datum correction debug)
+│       ├── 01b_geoid_offset.png      ← side-effect (datum correction debug)
+│       ├── 01b_mdt_ocean.png         ← side-effect (datum correction debug)
+│       ├── 01c_zsini.png
+│       ├── 02_landuse.png
+│       ├── 03_roughness.png
+│       ├── 04_river_network.png
+│       ├── 05a_forcing_locations.png
+│       ├── 05b_forcing_timeseries.png
+│       ├── 05c_forcing_eva.png
+│       ├── 06a_river_clean.png
+│       ├── 06b_river_discharge.png
+│       ├── 07a_river_depth.png … 07d_river_profile.png
+│       ├── 08a_discharge_check.png   ← tracked Snakemake output
+│       └── 08b_upstream_boundary_check.png  ← tracked Snakemake output
+└── sfincs/
+    ├── sfincs.inp
+    ├── sfincs.sbg  (if subgrid enabled)
+    ├── spinup/
+    │   ├── sfincs_map.nc
+    │   ├── {RST_FNAME}
+    │   └── validation_spinup.png
+    └── sanity/
+        └── 01_inundation_ratio.png
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+13. ARCHIVE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+workflow/archive/datum_correction/ — previous datum correction implementation
+  (now superseded by the active code in 03a + src/raster.py + src/plots.py)
+  Kept for reference only.
+
+workflow/archive/ — other archived rule/script fragments
+================================================================================

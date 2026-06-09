@@ -21,3 +21,6 @@ model_runs/
 __pycache__/
 *.pyc
 *.pyo
+
+# Logs
+*.log

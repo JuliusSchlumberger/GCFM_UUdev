@@ -4,6 +4,6 @@ rule split_delta_polygons:
     output:
         specific_delta = results_path("{basin_id}/inputs/delta_polygon.gpkg")
     log:
-        "logs/{basin_id}/separate_deltas.log"
+        "logs/{basin_id}/01_separate_deltas.log"
     script:
-        "../scripts/separate_deltas.py"
+        "../scripts/01_separate_deltas.py"
