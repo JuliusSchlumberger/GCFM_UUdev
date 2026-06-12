@@ -38,5 +38,12 @@ else:
 # Print a sample of raw geometry coordinates
 print("\nFirst 3 reach geometries (first & last vertex):")
 for i, row in gdf.head(3).iterrows():
-    coords = list(row.geometry.coords)
-    print(f"  row {i}: first={coords[0]}  last={coords[-1]}  n_vertices={len(coords)}")
+    geom = row.geometry
+    if geom.geom_type == "MultiLineString":
+        parts = list(geom.geoms)
+        first, last = list(parts[0].coords)[0], list(parts[-1].coords)[-1]
+        n_vertices = sum(len(part.coords) for part in parts)
+    else:
+        coords = list(geom.coords)
+        first, last, n_vertices = coords[0], coords[-1], len(coords)
+    print(f"  row {i}: first={first}  last={last}  n_vertices={n_vertices}")

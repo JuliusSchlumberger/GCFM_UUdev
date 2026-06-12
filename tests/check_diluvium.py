@@ -29,7 +29,7 @@ import yaml
 # -- Config --------------------------------------------------------------------
 
 ZENODO_RECORD_ID = "8384665"
-_CATALOGUE = Path(__file__).parent / "config" / "data_catalogue.yml"
+_CATALOGUE = Path(__file__).parent.parent / "config" / "data_catalogue.yml"
 
 
 def _load_paths() -> tuple[Path, Path, Path]:

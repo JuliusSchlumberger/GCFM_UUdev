@@ -55,7 +55,8 @@ from rasterio.transform import Affine, rowcol
 from shapely.geometry.base import BaseGeometry
 
 # ── Import tile finders from the pipeline source ───────────────────────────────
-_WORKFLOW_DIR = Path(__file__).parent / "workflow"
+_REPO_ROOT = Path(__file__).parent.parent
+_WORKFLOW_DIR = _REPO_ROOT / "workflow"
 if str(_WORKFLOW_DIR) not in sys.path:
     sys.path.insert(0, str(_WORKFLOW_DIR))
 
@@ -64,8 +65,8 @@ from src.river_forcing import load_forcing_crossings  # type: ignore[import]  # 
 
 # ── Paths from data_catalogue.yml / config.yml ────────────────────────────────
 
-_CATALOGUE = Path(__file__).parent / "config" / "data_catalogue.yml"
-_CONFIG = Path(__file__).parent / "config" / "config.yml"
+_CATALOGUE = _REPO_ROOT / "config" / "data_catalogue.yml"
+_CONFIG = _REPO_ROOT / "config" / "config.yml"
 
 
 def _load_catalogue_paths() -> dict[str, Path]:

@@ -90,9 +90,9 @@ boundary_forcings:
 
 sfincs:
   grid:
-    resolution: 500             # computational grid resolution in meters
+    resolution: 60             # computational grid resolution in meters
   subgrid:
-    enabled: true                # set to false to skip subgrid (faster testing; model still runs without it)
+    enabled: false                # set to false to skip subgrid (faster testing; model still runs without it)
     nr_subgrid_pixels: 16        # subgrid pixels per grid cell (must be quadratic (to ensure equal distance in x and y))
     nr_levels: 5                 # water-level bins for subgrid tables; reduce to halve peak memory
     nrmax: 2000                  # tile size for subgrid computation (default 2000)
