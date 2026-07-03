@@ -1366,6 +1366,13 @@ GITHUB COLLABORATION TOOLING:
   pydocstyle D102/D103 ignored) — CONTRIBUTING.md/ci.yml were written to match
   them, not the other way around.
 
+  Repo (JuliusSchlumberger/GCFM_UUdev) is now PUBLIC. Branch protection on
+  `main` is NOT yet enabled (it's a manual GitHub setting, not automatic —
+  direct pushes to main still succeed unless/until someone turns it on via
+  Settings → Branches). CONTRIBUTING.md documents the exact steps. Two
+  working branches exist beyond main: adaptation_modelling, improve_base_model
+  (both created off origin/main and pushed).
+
   tools/sync_environment.py + the local "sync-environment-yml" pre-commit
   hook (added to .pre-commit-config.yaml) keep environment.yml in sync with
   the live hmt_sfincs_dev conda env automatically: only fires when

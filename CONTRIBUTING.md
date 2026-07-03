@@ -32,11 +32,17 @@ folder" split — plan branches around that:
 ## Branching model
 
 - `main` is always the current, working state of the model. Nobody pushes to
-  `main` directly — all changes land via pull request (PR). This repo is
-  private, so branch protection isn't available on our current GitHub plan —
-  the PR checklist and CI check are the actual enforcement mechanism, not a
-  merge block. Treat a green CI run + checked-off checklist as the bar for
-  merging, not a formality.
+  `main` directly — all changes land via pull request (PR). The repo is now
+  public, so GitHub branch protection rules are available for free — this
+  needs to be turned on explicitly (it isn't automatic just from making the
+  repo public); until it is, nothing actually blocks a direct push to `main`,
+  so treat the PR-only rule as a personal discipline commitment for now. To
+  enable real enforcement: repo **Settings → Branches → Add branch
+  protection rule**, branch name pattern `main`, enable "Require a pull
+  request before merging" and "Require status checks to pass before merging"
+  (select the CI job(s) from `.github/workflows/ci.yml`). Once set up, a
+  green CI run + checked-off PR checklist becomes an actual merge
+  requirement, not just a convention.
 - Create one branch per pipeline stage or task, off the latest `main`:
   `feature/<short-description>` (e.g. `feature/discharge-eva`) for new rules
   or capabilities, `fix/<short-description>` for bug fixes.

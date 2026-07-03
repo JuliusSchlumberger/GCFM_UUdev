@@ -14,11 +14,15 @@ name: CI
 #     first time that specific script actually executes)
 # Before merging, also actually dry-run `snakemake -n preprocess`/`build`
 # locally against real data -- see CONTRIBUTING.md's PR checklist.
+#
+# Deliberately triggers on pull_request only, not push: triggering on both
+# for the same branch makes each job name show up twice (once per event
+# type) in the branch-protection "required status checks" picker, since
+# GitHub tracks pull_request-triggered and push-triggered runs of the same
+# job as distinct check contexts even though the name is identical.
 
 on:
   pull_request:
-    branches: [main]
-  push:
     branches: [main]
 
 jobs:
