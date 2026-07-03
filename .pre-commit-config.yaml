@@ -40,3 +40,15 @@ repos:
             check_diluvium\.py|
             sync_deltadtm\.py
           )
+  - repo: local
+    hooks:
+      - id: sync-environment-yml
+        name: sync environment.yml with hmt_sfincs_dev
+        description: >-
+          Regenerates environment.yml from the live hmt_sfincs_dev conda env
+          and strips the machine-specific prefix line. Only runs when
+          environment.yml is part of the commit.
+        entry: python tools/sync_environment.py
+        language: system
+        files: ^environment\.yml$
+        pass_filenames: false
