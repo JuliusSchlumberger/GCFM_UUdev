@@ -1,0 +1,46 @@
+name: CI
+
+# What this can and can't check:
+# `snakemake -n` needs every data_catalogue.yml-referenced raw file to exist
+# on disk to build the DAG (raw_data/ is multi-GB and lives outside the repo
+# -- see config/data_catalogue.yml's `root:`), so that's not available to a
+# CI runner and this workflow does NOT attempt a dry-run. What it *does*
+# check, without needing any data:
+#   - formatting / lint / docstrings, via the same pre-commit hooks used
+#     locally (ruff-format, ruff-check, pyright, pydocstyle)
+#   - syntax errors and broken `from src.X import Y` references, via
+#     tests/check_code_health.py -- this catches a class of bug that neither
+#     pre-commit nor a dry-run would catch (a broken import only fails the
+#     first time that specific script actually executes)
+# Before merging, also actually dry-run `snakemake -n preprocess`/`build`
+# locally against real data -- see CONTRIBUTING.md's PR checklist.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: pre-commit/action@v3.0.1
+
+  code-health:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up pipeline conda environment
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          environment-file: environment.yml
+          miniforge-version: latest
+          use-mamba: true
+      - name: Run syntax + import-resolution check
+        shell: bash -el {0}
+        run: python tests/check_code_health.py

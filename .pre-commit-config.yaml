@@ -49,6 +49,12 @@ repos:
           and strips the machine-specific prefix line. Only runs when
           environment.yml is part of the commit.
         entry: python tools/sync_environment.py
-        language: system
+        # language: python (not "system") so pre-commit provisions its own
+        # managed interpreter at a fixed cached path -- a bare "python" via
+        # "system" does not reliably resolve when git invokes this hook
+        # outside an activated conda shell (e.g. from an IDE's git
+        # integration), where it can resolve to the Windows Store's python
+        # app-execution-alias stub instead and fail with exit code 9009.
+        language: python
         files: ^environment\.yml$
         pass_filenames: false
