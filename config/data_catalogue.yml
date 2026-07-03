@@ -8,7 +8,7 @@ datasets:
     description: Dataset of manually drawn polygons representing the delta areas globally based on earth-observation data. The polygons are drawn using five defined points as a first approximation of the geomorphologically active deltaic zone.
     source: Edmonds, D.A., Caldwell, R.L., Brondizio, E.S. et al. Coastal flooding will disproportionately impact people on river deltas. Nat Commun 11, 4741 (2020). https://doi.org/10.1038/s41467-020-18531-4
     file_format: gpkg
-    file_path: DeltaWebs/modified/TestDelta_small.gpkg  # options: TestPolygon.gpkg (Mississippi), 8_polygons.json (Mississippi, Zambezi, Ebro, Calvert, Mangoky, Vijose, Taiwan, Rhine-Meuse)
+    file_path: DeltaWebs/modified/8_polygons.gpkg  # options: TestDelta_small.gpkg, TestPolygon.gpkg (Mississippi), 8_polygons.json (Mississippi, Zambezi, Ebro, Calvert, Mangoky, Vijose, Taiwan, Rhine-Meuse)
     crs:
       epsg: 4326
       name: WGS 84
@@ -43,100 +43,77 @@ datasets:
     primary_key: HYBAS_ID
     spatial_extent: global
 
-  - name: diluvium_dem
-    description: Dataset of global coastal topography data with 30m-resolution, clipped at 80 m+MSL, available between 60°N and 60°S. Vertical datum seems to be EGM2008, but this is not explicitly stated in the source publication. The dataset is provided as 1°x1° tiles in WGS84 geographic coordinates (EPSG:4326).
-    source: "Data available here: https://doi.org/10.5281/zenodo.8329293 . Scientific publication: Dusseau, D., Zobel, Z., & Schwalm, C. R. (2023). DiluviumDEM: Enhanced accuracy in global coastal digital elevation models. Remote Sensing of Environment, 298, 113812. https://doi.org/10.1016/j.rse.2023.113812 "
+  - name: fathomdem
+    description: >
+      Global terrain elevation model covering 60°S–80°N at ~30 m (1 arcsecond)
+      resolution, produced by removing surface artifacts (buildings,
+      vegetation canopy) from the Copernicus DEM (GLO-30) using a hybrid
+      vision-transformer machine-learning model trained on >2,400 LiDAR
+      reference datasets. No elevation clipping is applied (unlike
+      DiluviumDEM's 80 m clip). The dataset is provided as 1°x1° tiles in
+      WGS84 geographic coordinates (EPSG:4326), 19,210 tiles globally.
+      IMPORTANT: pixel values are stored as int32 CENTIMETERS, not meters
+      (raster tags: VERTICAL_UNITS=centimeters; confirmed by inspecting
+      n00e010.tif) — divide by 100 to get meters.
+    source: "Uhe, P., Lucas, C., Hawker, L., Brine, M., Wilkinson, H., Cooper, A., Saoulis, A.A., Savage, J., & Sampson, C. (2025). FathomDEM: an improved global terrain map using a hybrid vision transformer model. Environmental Research Letters, 20, 034002. https://doi.org/10.1088/1748-9326/ada972 . Data: Zenodo record 14523356 (https://doi.org/10.5281/zenodo.14523356), restricted access via share-link token — see tests/download_fathomdem.py."
     provider: gdal
     file_format: GeoTIFF
-    file_path: DiluviumDEM/tiles/
-    file_naming_convention: "DiluviumDEM_{NS}{lat}_00_{EW}{lon}_00.tif"
+    file_path: FathomDEM/
+    file_naming_convention: "{ns}{lat:02d}{ew}{lon:03d}.tif"
     file_naming_notes: >
-      {NS} is N or S, {EW} is E or W. {lat} and {lon} are zero-padded
-      integer degrees marking the tile's southwestern corner
-      (e.g. N00 E110 spans 0°–1°N, 110°–111°E; S15 W075 spans 15°–14°S, 75°–74°W).
+      Lowercase. {ns} is n or s, {ew} is e or w. {lat} (2-digit) and {lon}
+      (3-digit) are the tile's SW-corner integer degrees (e.g. n00e010.tif
+      spans 0°-1°N, 10°-11°E; s01w090.tif spans 1°-0°S, 90°-89°W). Matches
+      src.raster.find_fathomdem_tiles's fname construction (NTFS path
+      lookups are case-insensitive, so the function's uppercase N/E also
+      resolves these files on Windows) — but that function's docstring
+      describes a different, stale "FathomDEM_N00_00_E110_00.tif" pattern;
+      worth fixing for clarity even though the code itself is correct.
     tile_examples:
-      - DiluviumDEM_N00_00_E110_00.tif
-      - DiluviumDEM_S15_00_W075_00.tif
+      - n00e010.tif
+      - s01w090.tif
     crs:
       epsg: 4326
       name: WGS 84
       type: Geographic (2D)
       units: degrees
       datum: World Geodetic System 1984 ensemble (EPSG:4326)
-      accuracy_m: 2
     vertical_crs:
       epsg: 3855
       name: EGM2008 height
       type: Vertical
-      units: meters
+      units: "meters (raw pixel storage: centimeters, int32 — see description)"
       datum: EGM2008 geoid
       reference_surface: geoid
       positive_direction: up
-      confidence: based on COP30DEM which is in EGM2008
     raster_properties:
-      data_type: Float32
-      nodata_value: null
+      data_type: Int32
+      nodata_value: -32768
       band_count: 1
+      pixel_size_arcsec: 1
       tile_extent_deg: 1.0  # 1° x 1° tiles
+      tags:
+        INSTITUTE: Fathom
+        LAYERID: TERRAIN-1ARCSEC-NW_OFFSET-FATHOMDEM-ELEVATION-v2.0
+        VERTICAL_DATUM: EGM2008
+        VERTICAL_UNITS: centimeters
     value_range:
-      units: meters above MSL
-      theoretical_max: 80
-      example_tile_stats:
-        min: 8.46
-        max: 80.00
-        mean: 37.47
-        stddev: 14.52
-        valid_percent: 64.88
+      units: meters (after /100 conversion from raw centimeters)
+      convention: no clipping applied
+      example_tile_stats:  # n00e010.tif, raw values / 100
+        min: -1.62
+        max: 996.90
+        mean: 362.68
     coverage:
-      latitude_range: [-60, 60]
+      latitude_range: [-60, 80]
       longitude_range: [-180, 180]
-
-  - name: delta_dtm
-    description: >
-      Global coastal Digital Terrain Model (DTM) at 30 m (1 arcsecond) resolution,
-      clipped at 10 m +MSL, covering low-lying coastal areas globally. This entry
-      refers to the MODIFIED version provided by Seeger & Minderhoud (2025), which
-      re-references the vertical datum from the original EGM2008 geoid (used as an
-      MSL proxy) to local mean sea level. The underlying product is DeltaDTM
-      (Pronk et al., 2024), which corrects CopernicusDEM using ICESat-2 and GEDI
-      spaceborne lidar. Reported overall vertical MAE of the original is 0.45 m.
-    source: >
-      Original dataset in scientific publication: Pronk, M., Hooijer, A., Eilander, D., Haag, A.,
-      de Jong, T., Vousdoukas, M., Vernimmen, R., Ledoux, H., & Eleveld, M. (2024).
-      DeltaDTM: A global coastal digital terrain model. Scientific Data, 11, 273.
-      https://doi.org/10.1038/s41597-024-03091-9
-      Modified version with local MSL datum shift: Seeger, K., Minderhoud, P.S.J. Sea level much higher than assumed in most coastal hazard assessments. Nature 652, 667–674 (2026). https://doi.org/10.1038/s41586-026-10196-1
-    provider: gdal
-    file_format: Cloud Optimized GeoTIFF (COG)
-    file_path: DeltaDTM/
-    file_naming_convention: "DeltaDTM_v1_1_{NS}{lat:02d}{EW}{lon:03d}_GOCO06s_MDT.tif"
-    file_naming_notes: >
-      Same 1°x1° fixed-grid tiling as DiluviumDEM. {NS} is N or S, {EW} is E or W.
-      {lat} and {lon} are zero-padded integer degrees marking the tile's SW corner.
-      Suffix _GOCO06s_MDT indicates the vertical datum has been corrected from
-      EGM2008 to local MSL via GOCO06s geoid + MDT_CNES-CLS22 subtraction.
-      A VRT mosaic (deltadtm.vrt) and a download manifest CSV (DeltaDTM_v1.1.csv)
-      are also present in the same directory.
-    tile_examples:
-      - DeltaDTM_v1_1_N00E110_GOCO06s_MDT.tif
-      - DeltaDTM_v1_1_S15W075_GOCO06s_MDT.tif
-    crs:
-      epsg: 4326
-      name: WGS 84
-      type: Geographic (2D)
-      units: degrees
-      datum: World Geodetic System 1984 ensemble (EPSG:4326)
-    vertical_crs:
-      Original DeltaDTM: EGM2008 height (EPSG:3855) # geoid used as MSL proxy.
-      Modified: re-referenced to local mean sea level.
-      name: local mean sea level (per Seeger & Minderhoud 2025)
-      type: Vertical
-      units: meters
-      datum: local mean sea level
-      reference_surface: local MSL surface
-      positive_direction: up
-      confidence: >
-        Datum shift asserted Seeger & Minderhoud (2025)
+      tile_count: 19210
+    notes: >
+      Model accuracy reported as substantially improved vs. FABDEM (lower
+      MAE/RMSE), validated against >2,400 LiDAR reference datasets. The
+      only supported coastal topography source (workflow/scripts/
+      05a_get_elevation.py, workflow/src/raster.py find_fathomdem_tiles) —
+      see the description's centimeters-unit caveat.
 
 
   - name: river_network
@@ -402,7 +379,10 @@ datasets:
     vertical_reference:
       units: m
       positive: up
-      datum:  # TODO: not explicitly stated in source documentation — likely MSL via GTSM convention; confirm before vertical-datum-sensitive use
+      datum:  # TODO: stated as local MSL in the source notebooks (see src/surge.py); an optional
+              # MDT-based local-MSL -> geoid correction is available via
+              # boundary_forcings.surge.vertical_correction (default OFF — see the TODO in
+              # src/surge.py for an open consistency question with the DEM's "local MSL" reference)
     coverage:
       latitude_range: [-90, 90]
       longitude_range: [-180, 180]
@@ -452,8 +432,8 @@ datasets:
       longitude_range: [-180, 180]
       spatial_extent: global excluding Antarctica
     temporal_coverage:
-      start: 2018-01-02 # TODO: download GLOFAS for full statistical analysis (currently only year 2018)
-      end: 2019-01-01
+      start: 1979-01-01
+      end: 2025-12-31
       resolution: daily
     version: GloFAS v4.0 (released 2023-07-26)
     main_variables:
@@ -504,6 +484,64 @@ datasets:
       updated model physics compared to previous versions, but users should still
       evaluate its performance against local observations where possible before using
       it for critical applications."
+
+  - name: grdc_discharge
+    description: >
+      Daily river discharge observations from the Global Runoff Data Centre
+      (GRDC), used as ground-truth gauge data to bias-correct GloFAS
+      reanalysis discharge via empirical quantile mapping where a station
+      exists near a delta's main river inflow (see
+      boundary_forcings.river.bias_correction). Currently an extract of 83
+      stations covering the 8 basins in the 8_polygons.json delta-polygon
+      test set (Mississippi, Zambezi, Ebro, Calvert, Mangoky, Vijose,
+      Taiwan, Rhine-Meuse) — not a global extract, so basins outside that
+      test set will typically find no station within grdc_search_radius_km
+      and fall back to GloFAS-as-truth (logged).
+    source: "Global Runoff Data Centre (GRDC), Koblenz, Germany. https://www.bafg.de/GRDC/"
+    provider: xarray
+    file_format: NetCDF-4
+    file_path: GRDC/GRDC-Daily.nc
+    geometry_type: Point   # one point per station (geo_x/geo_y), not gridded
+    crs:
+      epsg: 4326
+      name: WGS 84
+      type: Geographic (2D)
+      units: degrees
+    dimensions:
+      time: 53409   # 1880-01-01 .. 2026-03-24, daily
+      id: 83         # station count (8-test-delta extract, see description)
+    data_variables:
+      runoff_mean:
+        dims: [time, id]
+        type: float32
+        units: m^3 s^-1
+        missing_value: -999.0
+        description: Mean daily discharge (Q). -999.0 indicates missing data.
+      geo_x:   {dims: [id], type: float32, units: degree_east,  description: Station longitude (WGS84).}
+      geo_y:   {dims: [id], type: float32, units: degree_north, description: Station latitude (WGS84).}
+      geo_z:   {dims: [id], type: float32, units: m, description: Station altitude.}
+      area:    {dims: [id], type: float32, units: km^2, description: Catchment area at the station.}
+      river_name:    {dims: [id], description: Name of the river at the station.}
+      station_name:  {dims: [id], description: Name of the gauging station.}
+      country:       {dims: [id], description: Country code of the station.}
+    primary_key: id
+    coverage:
+      spatial_extent: The 8 basins in the 8_polygons.json delta-polygon test
+        set (Mississippi, Zambezi, Ebro, Calvert, Mangoky, Vijose, Taiwan,
+        Rhine-Meuse); not a global extract.
+    temporal_coverage:
+      start: 1880-01-01
+      end: 2026-03-24
+      resolution: daily
+    notes: >
+      Used by src/river_forcing.py (load_grdc_stations, find_nearest_grdc_station,
+      load_grdc_series) and src/extreme_values.py (bias_correct_discharge,
+      compute_grdc_correlation) in rule get_boundary_forcings (07). Search
+      radius: boundary_forcings.river.grdc_search_radius_km. TODO:
+      downloading a global GRDC extract (vs. the current 8-test-delta
+      extract) would let the correlation diagnostic and bias correction run
+      automatically for basins outside the current test set instead of
+      falling back to GloFAS-as-truth.
 
   - name: osm_land
     description: >
@@ -585,3 +623,196 @@ datasets:
         units: m
         description: Mean dynamic topography above GOCO06s geoid
         sign_convention: positive upward (sea surface above geoid)
+
+  - name: protection_levels_flopros
+    description: >
+      FLOPROS flood protection standards (design return period, years) joined
+      to WRI Aqueduct's "geogunit_107" sub-national administrative units, one
+      row per unit (row index = the unit's Geogunits raster value, see
+      wri_geogunit_107 below). Separate Riverine and Coastal columns -- design
+      standards for the two hazards are independent and frequently only one
+      is populated (NaN = no known formal protection standard for that hazard
+      in that unit). Used to estimate the discharge/water-level already
+      handled by existing flood defenses, not represented in the DEM or any
+      other input, for the optional top-level protection_levels
+      correction (see src/protection_levels.py).
+    source: >
+      FLOPROS: Scussolini, P., Aerts, J.C.J.H., Jongman, B., Bouwer, L.M.,
+      Winsemius, H.C., de Moel, H., Ward, P.J. (2016). FLOPROS: an evolving
+      global database of flood protection standards. Natural Hazards and
+      Earth System Sciences, 16, 1049-1061.
+      https://doi.org/10.5194/nhess-16-1049-2016 . Spatial join to WRI
+      Aqueduct geographical units: http://floods.wri.org/
+    provider: openpyxl
+    file_format: xlsx
+    file_path: protection_levels/FLOPROS_NL_geogunit_107.xlsx
+    primary_key: FID_Aque
+    fields_of_interest:
+      FID_Aque:
+        type: Integer
+        description: Geounit ID; matches the Geogunits raster value in wri_geogunit_107.
+      ISO:
+        type: string
+        description: ISO3 country code of the unit.
+      Riverine:
+        type: Real
+        units: years
+        description: Design return period of riverine flood protection (NaN if unknown/no formal standard).
+      Coastal:
+        type: Real
+        units: years
+        description: Design return period of coastal flood protection (NaN if unknown/no formal standard).
+    notes: >
+      Used by src/protection_levels.py (load_flopros_table) in rule
+      get_protection_levels. Only ~74% of units have a Riverine value and
+      ~25% have a Coastal value globally -- missing values are the normal
+      case and are handled by a fallback chain (own hazard -> other hazard
+      -> protection_levels.default_rp_yr), not an error.
+
+  - name: wri_geogunit_107
+    description: >
+      Global ~30 arcsec (~1 km) raster of WRI Aqueduct "geogunit_107"
+      sub-national administrative unit IDs (Geogunits variable, float32,
+      _FillValue=-9999), covering both land and sea (ocean pixels carry the
+      nearest country's unit ID, not a separate no-data sentinel). Pixel
+      value = row index into protection_levels_flopros above and
+      wri_geogunit_107_list below.
+    source: "WRI Aqueduct Global Flood Risk / GLOFRIS impact model. http://floods.wri.org/ . Institute for Environmental Studies VU Amsterdam."
+    provider: xarray
+    file_format: NetCDF
+    file_path: WRI/geogunit_107_all.nc
+    crs:
+      epsg: 4326
+      name: WGS 84
+      units: degrees
+    raster_properties:
+      data_type: Float32
+      nodata_value: -9999.0
+      band_count: 1
+      dimensions:
+        width_px: 43200
+        height_px: 21600
+    coverage:
+      latitude_range: [-90, 90]
+      longitude_range: [-180, 180]
+    notes: >
+      Used by src/protection_levels.py (identify_dominant_protection) in
+      rule get_protection_levels via a small windowed read clipped to each
+      delta polygon's bbox -- the full global array (~900M pixels) is never
+      loaded into memory.
+
+  - name: wri_geogunit_107_list
+    description: >
+      Row index -> ISO3 country code lookup for wri_geogunit_107's Geogunits
+      raster values (same row order as protection_levels_flopros). Used only
+      for labelling the dominant unit in diagnostics/plots.
+    source: "WRI Aqueduct Global Flood Risk / GLOFRIS impact model. http://floods.wri.org/"
+    provider: openpyxl
+    file_format: xlsx
+    file_path: WRI/geogunit_107_all_list.xlsx
+    notes: >
+      Two unnamed columns: geounit index (matches Geogunits raster value /
+      protection_levels_flopros row index) and ISO3 country code.
+
+  - name: slr_ar6_regional
+    description: >
+      IPCC AR6 regional sea-level-change projections (combined
+      confidence-level output: ~1030 gauge-style locations plus 65160 points
+      on a 1°x1° grid). Used to derive a per-station SLR "fingerprint" —
+      sea_level_change at the nearest location, normalised by the
+      global-mean sea_level_change over valid 1° grid cells — for the
+      configured SSP/confidence/year/quantile. Scaled by
+      boundary_forcings.surge.slr.slr_m and added to each surge station's
+      storm-tide return-period level (see src/surge.py).
+    source: "IPCC AR6 Sea Level Projections (Garner et al. 2021), via Zenodo DOI 10.5281/zenodo.5914710"
+    provider: xarray
+    file_format: NetCDF-4
+    file_path: SLR/ar6-regional-confidence/regional/confidence_output_files/
+    crs:
+      epsg: 4326
+    dimensions:
+      locations: 66190   # 1030 gauge-style locations + 65160 on a 1°x1° grid
+      years: 14          # 2020..2150, step 10
+      quantiles: 107     # includes 0.5
+    data_variables:
+      sea_level_change:
+        dims: [quantiles, years, locations]
+        units: mm
+        description: Projected sea-level change relative to a 1995-2014 baseline.
+      lat: {dims: [locations], units: degrees_north}
+      lon: {dims: [locations], units: degrees_east}
+    notes: >
+      Path layout: {confidence}_confidence/{ssp}/total_{ssp}_{confidence}_confidence_values.nc
+      e.g. medium_confidence/ssp245/total_ssp245_medium_confidence_values.nc.
+      Used by src/surge.py (load_slr_fingerprint, compute_global_mean_slr,
+      apply_slr_fingerprint) in rule get_boundary_forcings.
+
+  - name: nienhuis_delta_characteristics
+    description: >
+      Tidal and morphological characteristics of 72 global river deltas:
+      tidal prism, estuary length, tidal amplitude, tidal frequency, mean
+      annual river discharge, mouth widths, and hindcast/predicted tidal
+      discharge. Used by rule add_estuarine_depth to determine which basins
+      overlap a known delta and to parameterise the Leuven et al. (2018)
+      estuarine depth profile for reaches within L_e of the coast.
+    source: >
+      Nienhuis, J.H., Ashton, A.D., Roos, P.C., Hulscher, S.J.M.H., Giosan, L.
+      (2018). Future Change to Tide-Influenced Deltas. Geophysical Research
+      Letters, 45, 3499-3507. https://doi.org/10.1029/2018GL077638
+    provider: openpyxl
+    file_format: xlsx
+    file_path: Nienhuis_prisms/delta_characteristics_72_deltas.xlsx
+    primary_key: "#"
+    fields_of_interest:
+      "#":
+        type: string
+        description: Delta identifier (integer, sometimes with letter suffix e.g. '6a').
+      Name:
+        type: string
+        description: Delta name (e.g. 'Amazon', 'Mississippi').
+      Lat:
+        type: Real
+        units: degrees_north
+        description: Representative latitude of the delta centre.
+      Lon:
+        type: Real
+        units: degrees_east
+        description: Representative longitude of the delta centre.
+      Q_river (m3s-1):
+        type: Real
+        units: m3 s-1
+        description: Mean annual river discharge at the delta apex.
+      L (m):
+        type: Real
+        units: m
+        description: >
+          Estuary length L_e (m) -- distance from the mouth to the tidal
+          limit. Reaches with dist_out <= L_e are treated as estuarine
+          by the Leuven et al. (2018) depth model.
+      a (m):
+        type: Real
+        units: m
+        description: Tidal amplitude at the mouth (m).
+      w (s-1):
+        type: Real
+        units: rad s-1
+        description: Tidal angular frequency (omega, radians per second).
+      P (m3):
+        type: Real
+        units: m3
+        description: >
+          Tidal prism (m3) -- volume of water exchanged per tidal cycle.
+          Used in the O'Brien (1969) relation A0 = C * P^alpha to compute
+          the cross-sectional area at the estuary mouth.
+      w_mouth_obs (m):
+        type: Real
+        units: m
+        description: Observed total mouth width summed across all distributaries (m).
+    notes: >
+      Used exclusively by src/estuarine_depth.py (load_nienhuis,
+      match_basin_to_delta) in rule add_estuarine_depth. Matching is by
+      spatial proximity: the Nienhuis delta Lat/Lon must fall within the
+      basin's delta_polygon bbox or within a configurable buffer distance
+      (river_processing.estuarine_depth.max_match_dist_km). If no match
+      is found, the rule falls back silently to the existing power-law
+      rivdph for all reaches.

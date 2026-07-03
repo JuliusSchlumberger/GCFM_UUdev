@@ -1,13 +1,15 @@
 """
-09_create_rstart.py — Run a 10-day SFINCS spin-up to produce a restart file.
+14_run_spinup.py — Run a short SFINCS spin-up to produce a restart file.
 
 The main model's forcing files (sfincs.bzs, sfincs.dis) begin with a constant
 lead period at bankfull discharge and 0 m water level before ramping up to the
-event peak.  The spin-up runs SFINCS for the first `spinup_days` of that lead
-period so the river network fills to a steady state.  The resulting restart file
-(sfincs.rst) is written to spinup/ inside the main model directory; the main
-model's sfincs.inp already references 'rstfile = spinup/sfincs.rst' so SFINCS
-will automatically read it when the user starts the actual event run.
+event peak.  The spin-up runs SFINCS for the first `spinup_days` (config:
+sfincs.spinup.spinup_days) of that lead period so the river network fills to
+a steady state.  The resulting restart file is written to spinup/ inside the
+main model directory as sfincs.YYYYMMDD.HHMMSS.rst (SFINCS v2.3 naming,
+timestamp = tref + spinup_days); the main model's sfincs.inp already
+references this file via 'rstfile = spinup/<filename>' so SFINCS will
+automatically read it when the user starts the actual event run.
 
 Strategy
 --------
@@ -20,31 +22,49 @@ Strategy
 
 Outputs
 -------
-spinup/sfincs.rst   SFINCS binary restart file at t = spinup_days.
+spinup/sfincs.YYYYMMDD.HHMMSS.rst   SFINCS binary restart file at t = spinup_days.
 """
 
-import os
 import subprocess
 import sys
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import cast
+
+import geopandas as gpd
+from shapely.geometry import Polygon
 
 from src.log import setup_logging
+from src.plots import plot_max_inundation_map
+from src.postprocessing import compute_max_inundation
 
 log = setup_logging(snakemake.log[0])
 
 # ── params ────────────────────────────────────────────────────────────────────
-sfincs_root       = Path(snakemake.params.sfincs_root)
-spinup_days       = snakemake.params.spinup_days
-sfincs_exe        = Path(snakemake.params.sfincs_exe)
-rst_fname         = snakemake.params.rst_fname  # e.g. sfincs.20000111.000000.rst
-dtmapout_s        = int(snakemake.params.dtmapout_s)
-land_polygons_path = Path(snakemake.input.land_polygons)
+sfincs_root               = Path(snakemake.params.sfincs_root)
+spinup_days               = snakemake.params.spinup_days
+sfincs_exe                = Path(snakemake.params.sfincs_exe)
+rst_fname                 = snakemake.params.rst_fname  # e.g. sfincs.20000111.000000.rst
+dtmapout_s                = int(snakemake.params.dtmapout_s)
+dthisout_s                = int(snakemake.params.dthisout_s)
+velocity_animation_enabled = bool(snakemake.params.velocity_animation_enabled)
+include_subgrid           = bool(snakemake.params.include_subgrid)
+land_polygons_path        = Path(snakemake.input.land_polygons)
+landuse_path              = Path(snakemake.input.landuse)
+river_network_path        = Path(snakemake.input.clean_river_network)
+domain_gpkg_path          = Path(snakemake.input.domain_gpkg)
 spinup_dir        = sfincs_root / "spinup"
 spinup_inp        = spinup_dir / "sfincs.inp"
 
 spinup_dir.mkdir(parents=True, exist_ok=True)
+
+# Load domain polygon in WGS84 for overlay plots.
+_domain_gdf = gpd.read_file(domain_gpkg_path)
+if _domain_gdf.crs is not None and _domain_gdf.crs.to_epsg() != 4326:
+    _domain_gdf = _domain_gdf.to_crs("EPSG:4326")
+_union = _domain_gdf.geometry.union_all()
+domain_poly = cast(Polygon, _union if isinstance(_union, Polygon) else _union.convex_hull)
 
 # ── parse main model sfincs.inp ───────────────────────────────────────────────
 # Read as key=value pairs; SFINCS format uses ' = ' separator.
@@ -70,22 +90,6 @@ log.info(
     f"restart written at t={trstout_sec} s"
 )
 
-# ── list of data files to reference from parent directory ─────────────────────
-# Map sfincs.inp key → filename in the main model directory.
-PARENT_FILES = {
-    "depfile":     "sfincs.dep",
-    "mskfile":     "sfincs.msk",
-    "indexfile":   "sfincs.ind",
-    "manningfile": "sfincs.manning",
-    "inifile":     "sfincs.ini",
-    "sbgfile":     "sfincs.sbg",
-    "srcfile":     "sfincs.src",
-    "disfile":     "sfincs.dis",
-    "bndfile":     "sfincs.bnd",
-    "bzsfile":     "sfincs.bzs",
-    "obsfile":     "sfincs.obs",  # needed for sfincs_his.nc → validation plot
-}
-
 # ── write spinup sfincs.inp ───────────────────────────────────────────────────
 def fmt_dt(dt: datetime) -> str:
     return dt.strftime("%Y%m%d %H%M%S")
@@ -103,8 +107,9 @@ lines += [
     f"{'tstart':<20} = {fmt_dt(tref)}",
     f"{'tstop':<20} = {fmt_dt(tstop_spinup)}",
     f"{'trstout':<20} = {trstout_sec}",           # write restart at spinup end
-    f"{'dthisout':<20} = 3600",                   # hourly obs-point output → sfincs_his.nc
-    # dtmapout from config: controls how often zs snapshots are written → animation frame rate
+    # dthisout/dtmapout from config: obs-point output interval and zs snapshot
+    # interval (the latter controls animation frame rate) during spin-up.
+    f"{'dthisout':<20} = {dthisout_s}",
     f"{'dtmapout':<20} = {dtmapout_s}",
     # dtmaxout = simulation duration: write max-envelope (zsmax) at spinup end for inundation map.
     f"{'dtmaxout':<20} = {trstout_sec}",
@@ -113,13 +118,13 @@ lines += [
 
 # Physics — carry over from main model (keep same numerics)
 for key in ("alpha", "huthresh", "advection", "viscosity", "nuvisc", "coriolis",
-            "baro", "rhoa", "rhow", "pavbnd", "btfilter", "latitude"):
+            "baro", "rhoa", "rhow", "pavbnd", "btfilter", "latitude", "zsini"):
     if key in cfg:
         lines.append(f"{key:<20} = {cfg[key]}")
 
-# Output storage — disable everything for speed
+# Output storage — storevel enabled only when velocity animation is requested
 lines += [
-    f"{'storevel':<20} = 0",
+    f"{'storevel':<20} = {'1' if velocity_animation_enabled else '0'}",
     f"{'storevelmax':<20} = 0",
     f"{'storecumprcp':<20} = 0",
     f"{'storemeteo':<20} = 0",
@@ -138,16 +143,22 @@ lines += [
     f"{'outputformat':<20} = net",
 ]
 
-# Data files — reference parent directory with ../
-# Skip empty files (e.g. placeholder sfincs.sbg written when include_subgrid=false)
-for key, fname in PARENT_FILES.items():
-    fpath = sfincs_root / fname
+# Data files — forward every "*file" entry from the main model's sfincs.inp,
+# referencing the parent directory with ../.  Works unchanged for both grid
+# types: regular models reference depfile/mskfile/indexfile/.../sbgfile,
+# quadtree models reference qtrfile (+ncinifile/manningfile as netcdf) — none
+# of the filenames need to be hardcoded.
+# rstfile is excluded: setting it would make SFINCS try to READ it at startup,
+# but it doesn't exist yet for this cold-start spin-up.
+# Skip empty files (e.g. placeholder sfincs_subgrid.nc written when
+# include_subgrid=false).
+for key, value in cfg.items():
+    if not key.endswith("file") or key == "rstfile":
+        continue
+    fpath = sfincs_root / value
     if fpath.exists() and fpath.stat().st_size > 0:
-        lines.append(f"{key:<20} = ../{fname}")
-        log.info(f"  referencing: ../{fname}")
-    elif key in cfg:
-        # Main model references it but via a different name — use verbatim
-        lines.append(f"{key:<20} = ../{cfg[key]}")
+        lines.append(f"{key:<20} = ../{value}")
+        log.info(f"  referencing: ../{value}")
 
 with open(spinup_inp, "w") as fh:
     fh.write("\n".join(lines) + "\n")
@@ -158,13 +169,7 @@ log.info(f"Spinup sfincs.inp written: {spinup_inp}")
 # Resolve and validate the executable path before attempting to launch.
 sfincs_exe = sfincs_exe.resolve()
 
-n_threads = snakemake.threads
-log.info(f"Running SFINCS: {sfincs_exe} (OMP_NUM_THREADS={n_threads})")
-
-# Pass OMP_NUM_THREADS so SFINCS uses the number of threads Snakemake reserved
-# for this job (set via threads: in the rule and config["sfincs"]["rstart"]["threads"]).
-env = os.environ.copy()
-env["OMP_NUM_THREADS"] = str(n_threads)
+log.info(f"Running SFINCS: {sfincs_exe}")
 
 # Stream stdout and stderr line-by-line so output appears in the terminal
 # immediately (via sys.stderr) AND is written to the Snakemake log file.
@@ -175,7 +180,6 @@ proc = subprocess.Popen(
     stderr=subprocess.PIPE,
     text=True,
     bufsize=1,   # line-buffered
-    env=env,
 )
 
 def _forward(pipe, log_fn):
@@ -287,80 +291,21 @@ else:
 
 # ── max inundation depth map ──────────────────────────────────────────────────
 # sfincs_map.nc is created by SFINCS because dtmaxout = trstout_sec.
-# We read zsmax (max water surface) and zb (bed level) from it to produce a
-# grid-resolution inundation depth plot.  Rule 10 reads sfincs_map.nc directly
-# via hydromt_sfincs for the high-resolution downscaled sanity-check map.
-
-map_path             = spinup_dir / "sfincs_map.nc"
+# compute_max_inundation downscales zsmax-dep to (sub)grid resolution and
+# masks sea via the land-use raster — grid-type agnostic (handles quadtree's
+# UgridDataArray zsmax natively via downscale_floodmap). Rule 10 uses the same
+# pair of functions for its sanity-check inundation map.
 plot_inundation_path = Path(snakemake.output.plot_max_inundation)
 
-if not map_path.exists():
-    log.warning(f"No map file at {map_path} — creating empty inundation plot sentinel")
+da_hmax, _da_dep = compute_max_inundation(
+    spinup_dir, sfincs_root, landuse_path, hmin=0.0, include_subgrid=include_subgrid,
+)
+if da_hmax is None:
+    log.warning("No max inundation data available — creating empty plot sentinel")
     plot_inundation_path.touch()
 else:
-    try:
-        ds_map = xr.open_dataset(map_path, decode_times=False)
-        log.info(f"sfincs_map.nc variables: {list(ds_map.data_vars)}")
-
-        hmax = None
-
-        # Try hmax directly
-        for _var in ("hmax", "h_max"):
-            if _var in ds_map:
-                _h = ds_map[_var].values
-                # Take maximum over the timemax dimension (not just the last step)
-                hmax = _h.max(axis=0) if _h.ndim == 3 else _h
-                log.info(f"Using '{_var}' for max inundation depth")
-                break
-
-        # Fall back to zsmax − zb
-        if hmax is None:
-            zsmax_arr = None
-            zb_arr = None
-            for _var in ("zsmax", "zs_max"):
-                if _var in ds_map:
-                    _zs = ds_map[_var].values
-                    # max over the timemax dimension gives the true envelope maximum
-                    zsmax_arr = _zs.max(axis=0) if _zs.ndim == 3 else _zs
-                    log.info(f"Using '{_var}' for max water surface elevation")
-                    break
-            for _var in ("zb", "dep"):
-                if _var in ds_map:
-                    _zb = ds_map[_var].values
-                    zb_arr = _zb.squeeze() if _zb.ndim > 2 else _zb
-                    log.info(f"Using '{_var}' for bed level")
-                    break
-
-            if zsmax_arr is not None and zb_arr is not None:
-                nodata = (zsmax_arr < -9990) | (zb_arr < -9990)
-                hmax = np.where(nodata, np.nan, np.maximum(zsmax_arr - zb_arr, 0.0))
-
-        if hmax is None:
-            log.warning(
-                f"Cannot extract max inundation depth from {map_path}. "
-                f"Available vars: {list(ds_map.data_vars)}"
-            )
-            plot_inundation_path.touch()
-        else:
-            x0_val   = float(cfg.get("x0", 0))
-            y0_val   = float(cfg.get("y0", 0))
-            dx_val   = float(cfg.get("dx", 1))
-            dy_val   = float(cfg.get("dy", 1))
-            mmax_val = int(cfg["mmax"]) if "mmax" in cfg else hmax.shape[-1]
-            nmax_val = int(cfg["nmax"]) if "nmax" in cfg else hmax.shape[-2]
-
-            from src.plots import plot_max_inundation_depth
-            extent = (x0_val, x0_val + mmax_val * dx_val,
-                      y0_val, y0_val + nmax_val * dy_val)
-            plot_max_inundation_depth(
-                hmax, extent, cfg["epsg"], str(plot_inundation_path),
-                basin_id=Path(sfincs_root).parent.name,
-                osm_land_path=str(land_polygons_path),
-            )
-            log.info(f"Max inundation plot written: {plot_inundation_path}")
-
-        ds_map.close()
-
-    except Exception as exc:
-        log.warning(f"Max inundation extraction failed: {exc}")
-        plot_inundation_path.touch()
+    plot_max_inundation_map(
+        da_hmax, domain_poly, str(land_polygons_path), str(river_network_path),
+        str(plot_inundation_path), basin_id=sfincs_root.parent.name, run_label="spinup",
+    )
+    log.info(f"Max inundation plot written: {plot_inundation_path}")

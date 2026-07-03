@@ -15,23 +15,34 @@ and ``deseasonalize_for_decorr``
 (default True) — see ``analyse_cell`` / ``_search_threshold`` for how each is
 used and what it defaults to when absent from the YAML.
 
-ToDo (bias correction) — NOT implemented
------------------------------------------
-GloFAS is currently treated as truth, and reported return levels carry
-unquantified structural uncertainty from the GloFAS reanalysis itself. Where
-an observed gauge exists on the main stem near the delta apex (e.g. GRDC —
-Global Runoff Data Centre), apply empirical quantile mapping over the
-overlapping period: build the empirical CDF of GloFAS and of the gauge, and
-remap GloFAS values so their distribution matches the gauge's — with
-particular attention to the upper tail (flood-relevant quantiles), not just
-the bulk distribution. Where no gauge exists, "GloFAS-as-truth" must remain
-documented as an explicit limitation of the analysis.
+Bias correction against GRDC gauges
+------------------------------------
+GloFAS is a reanalysis and carries unquantified structural uncertainty.
+Where an observed gauge exists on the main stem near the delta apex (e.g.
+GRDC — Global Runoff Data Centre) and the overlapping record with GloFAS is
+long enough (``boundary_forcings.bias_correction.min_overlap_days``),
+``bias_correct_discharge`` applies empirical quantile mapping over the
+overlapping period: empirical CDFs of GloFAS and the gauge are built from
+the overlap sample, and the full GloFAS record is remapped to match the
+gauge's distribution. Values outside the overlap's quantile range (in
+particular the upper, flood-relevant tail) are linearly extrapolated using
+the outermost quantile-pair slope rather than clamped, so the correction
+does not flatten flood peaks that exceed anything seen in the overlap.
+Where no gauge is found within
+``boundary_forcings.river.grdc_search_radius_km``, or the overlap is too
+short, "GloFAS-as-truth" remains the documented limitation (logged by the
+caller, not an error).
 
 Public API
 ----------
 EVAResult              – dataclass holding all outputs for one grid-cell run.
 analyse_cell(times, values, eva_cfg, label) -> EVAResult
 plot_cell_diagnostics(times, values, eva_cfg, output_path, label) -> EVAResult
+empirical_quantile_map(source_overlap, target_overlap, source_full, n_quantiles=200) -> np.ndarray
+compute_grdc_correlation(glofas_times, glofas_values, grdc_times, grdc_values, min_overlap_days, label, tail_percentile=90.0) -> dict | None
+bias_correct_discharge(glofas_times, glofas_values, grdc_times, grdc_values, cfg, label) -> tuple[np.ndarray, dict | None]
+plot_bias_correction(glofas_times, glofas_values, diagnostics, output_path, label) -> None
+plot_grdc_overview(domain_poly, river_gdf, crossings_gdf, grdc_stations, highlight_crossing_idx, highlight_station_id, diagnostics, output_path, label) -> None
 """
 
 from __future__ import annotations
@@ -45,9 +56,13 @@ from pathlib import Path
 from pyextremes import EVA
 import pymannkendall as mk
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 from scipy import stats
+from shapely.geometry import Polygon
+
+from src.plots import map_background
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +99,11 @@ class EVAResult:
     q_rp100: float = np.nan
     q_rp2_ci: tuple[float, float] = (np.nan, np.nan)
     q_rp100_ci: tuple[float, float] = (np.nan, np.nan)
+
+    # discharge at an arbitrary requested return period (e.g. an existing
+    # flood-protection design standard), from the POT/GPD fit -- see
+    # analyse_cell's protection_rp argument. NaN unless requested.
+    q_protection: float = np.nan
 
     # POT diagnostics
     pot_threshold: float = np.nan
@@ -139,6 +159,267 @@ def _to_series(times: np.ndarray, values: np.ndarray) -> pd.Series:
     )
     s = s[~s.index.duplicated(keep="first")].sort_index()
     return s.dropna()
+
+
+# ── GRDC bias correction ──────────────────────────────────────────────────────
+
+
+def _overlap_series(
+    glofas_times: np.ndarray,
+    glofas_values: np.ndarray,
+    grdc_times: np.ndarray,
+    grdc_values: np.ndarray,
+) -> tuple[pd.Series, pd.Series]:
+    """Align a GloFAS cell series and a GRDC station series to shared dates.
+
+    Both inputs are passed through ``_to_series`` (dedup'd, sorted,
+    NaN-dropped), then restricted to the intersection of their valid-data
+    dates.
+
+    Returns:
+        (glofas_overlap, grdc_overlap), two pd.Series sharing the same
+        DatetimeIndex, sorted ascending. May be empty if the records do not
+        overlap.
+    """
+    g = _to_series(glofas_times, glofas_values)
+    r = _to_series(grdc_times, grdc_values)
+    common_idx = g.index.intersection(r.index)
+    return g.loc[common_idx], r.loc[common_idx]
+
+
+def empirical_quantile_map(
+    source_overlap: np.ndarray,
+    target_overlap: np.ndarray,
+    source_full: np.ndarray,
+    n_quantiles: int = 200,
+) -> np.ndarray:
+    """Bias-correct ``source_full`` via empirical quantile mapping.
+
+    Empirical quantiles of ``source_overlap`` and ``target_overlap`` (paired
+    by date, same length) are built at ``n_quantiles`` evenly spaced
+    probability levels. ``source_full`` (the entire source record, a
+    superset of ``source_overlap``) is then mapped through this quantile
+    pairing via ``np.interp``.
+
+    ``np.interp`` clamps out-of-range inputs to the boundary output value,
+    which would flatten exactly the flood-relevant upper tail when
+    ``source_full`` contains values beyond the overlap sample's maximum (or
+    minimum). Instead, values outside ``[src_q[0], src_q[-1]]`` are linearly
+    extrapolated using the slope of the outermost quantile-pair segment on
+    the corresponding side. A degenerate (zero-width) outermost segment
+    falls back to an additive offset carried from that boundary.
+
+    The result is floored at zero (discharge non-negativity).
+
+    Args:
+        source_overlap: Source (GloFAS) values during the overlap period.
+        target_overlap: Target (GRDC) values during the overlap period,
+            paired by date with ``source_overlap`` (same length/order).
+        source_full: Full-record source values to be corrected (superset of
+            ``source_overlap``).
+        n_quantiles: Number of evenly spaced probability levels used to build
+            the empirical quantile pairing.
+
+    Returns:
+        np.ndarray, same shape as ``source_full``.
+    """
+    source_full = np.asarray(source_full, dtype=float)
+    probs = np.linspace(0.0, 1.0, n_quantiles)
+    src_q = np.quantile(source_overlap, probs)
+    tgt_q = np.quantile(target_overlap, probs)
+
+    corrected = np.interp(source_full, src_q, tgt_q)
+
+    hi_mask = source_full > src_q[-1]
+    if hi_mask.any():
+        dx, dy = src_q[-1] - src_q[-2], tgt_q[-1] - tgt_q[-2]
+        if dx > 0:
+            corrected[hi_mask] = tgt_q[-1] + (dy / dx) * (
+                source_full[hi_mask] - src_q[-1]
+            )
+        else:
+            corrected[hi_mask] = source_full[hi_mask] + (tgt_q[-1] - src_q[-1])
+
+    lo_mask = source_full < src_q[0]
+    if lo_mask.any():
+        dx, dy = src_q[1] - src_q[0], tgt_q[1] - tgt_q[0]
+        if dx > 0:
+            corrected[lo_mask] = tgt_q[0] + (dy / dx) * (
+                source_full[lo_mask] - src_q[0]
+            )
+        else:
+            corrected[lo_mask] = source_full[lo_mask] + (tgt_q[0] - src_q[0])
+
+    return np.clip(corrected, 0.0, None)
+
+
+def compute_grdc_correlation(
+    glofas_times: np.ndarray,
+    glofas_values: np.ndarray,
+    grdc_times: np.ndarray,
+    grdc_values: np.ndarray,
+    min_overlap_days: int = 0,
+    label: str = "",
+    tail_percentile: float = 90.0,
+) -> dict | None:
+    """Tail-focused GloFAS-vs-GRDC overlap correlation diagnostics.
+
+    Unlike ``bias_correct_discharge``, this is independent of
+    ``boundary_forcings.bias_correction.enabled`` — it is the basis for the
+    EQM fit in ``bias_correct_discharge``, and is also used directly by the
+    standalone GRDC-inspection test, which reports the raw correlation
+    regardless of whether the correction itself is applied.
+
+    The headline ``correlation_raw`` is restricted to overlap days where GRDC
+    discharge is at or above ``tail_percentile`` of its own overlap
+    distribution — this pipeline only cares about GloFAS/GRDC agreement at
+    flood-relevant high flows, and an all-days Pearson r is dominated by the
+    many low/moderate-flow days, which would otherwise mask a poor fit in the
+    tail (or vice versa). The all-days correlation is still computed and
+    returned as ``correlation_full_raw`` for reference/plotting context.
+
+    Args:
+        glofas_times, glofas_values: Full-record GloFAS cell series.
+        grdc_times, grdc_values: Full-record GRDC station series (e.g. from
+            ``river_forcing.load_grdc_series``, with -999 already mapped to NaN).
+        min_overlap_days: Minimum overlapping valid days required; below this,
+            ``None`` is returned.
+        label: Identifier used in log messages.
+        tail_percentile: Percentile (0-100) of the GRDC overlap distribution
+            used as the tail threshold for the headline correlation.
+
+    Returns:
+        ``None`` if the overlap is shorter than ``min_overlap_days``, else a
+        dict with ``grdc_overlap_days``, ``correlation_raw`` (tail-focused),
+        ``correlation_full_raw`` (all-days, for reference), ``tail_percentile``,
+        ``tail_threshold``, ``tail_n_days``, ``tail_mask``, ``glofas_overlap``,
+        ``grdc_overlap``, ``glofas_overlap_times``.
+    """
+    tag = f"[{label}] " if label else ""
+    g_overlap, r_overlap = _overlap_series(
+        glofas_times, glofas_values, grdc_times, grdc_values
+    )
+    n_overlap = len(g_overlap)
+
+    if n_overlap < min_overlap_days:
+        log.info(
+            f"{tag}GRDC overlap = {n_overlap} d (< {min_overlap_days}) — "
+            f"insufficient for correlation"
+        )
+        return None
+
+    g_vals, r_vals = g_overlap.values, r_overlap.values
+    corr_full = float(np.corrcoef(g_vals, r_vals)[0, 1])
+
+    tail_threshold = float(np.percentile(r_vals, tail_percentile))
+    tail_mask = r_vals >= tail_threshold
+    n_tail = int(tail_mask.sum())
+    if n_tail >= 2:
+        corr_tail = float(np.corrcoef(g_vals[tail_mask], r_vals[tail_mask])[0, 1])
+    else:
+        corr_tail = float("nan")
+        log.warning(
+            f"{tag}fewer than 2 overlap days at/above the p{tail_percentile:g} "
+            f"GRDC tail threshold ({n_tail}) — tail correlation undefined"
+        )
+
+    return {
+        "grdc_overlap_days": n_overlap,
+        "correlation_raw": corr_tail,
+        "correlation_full_raw": corr_full,
+        "tail_percentile": float(tail_percentile),
+        "tail_threshold": tail_threshold,
+        "tail_n_days": n_tail,
+        "tail_mask": tail_mask,
+        "glofas_overlap": g_vals,
+        "grdc_overlap": r_vals,
+        "glofas_overlap_times": g_overlap.index.values,
+    }
+
+
+def bias_correct_discharge(
+    glofas_times: np.ndarray,
+    glofas_values: np.ndarray,
+    grdc_times: np.ndarray,
+    grdc_values: np.ndarray,
+    cfg: dict,
+    label: str = "",
+) -> tuple[np.ndarray, dict | None]:
+    """Bias-correct a GloFAS cell series against a matched GRDC station.
+
+    Args:
+        glofas_times, glofas_values: Full-record GloFAS cell series.
+        grdc_times, grdc_values: Full-record GRDC station series (e.g. from
+            ``river_forcing.load_grdc_series``, with -999 already mapped to NaN).
+        cfg: ``boundary_forcings.bias_correction`` config dict
+            (keys: ``enabled``, ``min_overlap_days``, ``tail_percentile``).
+        label: Identifier used in log messages.
+
+    Returns:
+        (corrected_values, diagnostics):
+          corrected_values: np.ndarray, same shape as ``glofas_values``.
+              Equal to ``glofas_values`` unchanged if correction is skipped
+              (disabled, or overlap below ``min_overlap_days``).
+          diagnostics: ``None`` if skipped, else a dict with the keys from
+              ``compute_grdc_correlation`` (``correlation_raw``/
+              ``correlation_corrected`` are tail-focused, see that function's
+              docstring) plus ``correlation_full_corrected`` (all-days, for
+              reference) and ``corrected_overlap`` — consumed by
+              ``plot_bias_correction`` and by the caller when populating
+              ``river_forcing.nc`` provenance variables.
+    """
+    glofas_values = np.asarray(glofas_values, dtype=float)
+
+    if not bool(_c(cfg, "enabled", True)):
+        return glofas_values, None
+
+    min_overlap_days = int(_c(cfg, "min_overlap_days", 730))
+    tail_percentile = float(_c(cfg, "tail_percentile", 90.0))
+    diagnostics = compute_grdc_correlation(
+        glofas_times,
+        glofas_values,
+        grdc_times,
+        grdc_values,
+        min_overlap_days,
+        label=label,
+        tail_percentile=tail_percentile,
+    )
+    if diagnostics is None:
+        return glofas_values, None
+
+    corrected_full = empirical_quantile_map(
+        source_overlap=diagnostics["glofas_overlap"],
+        target_overlap=diagnostics["grdc_overlap"],
+        source_full=glofas_values,
+    )
+
+    g_full_series = _to_series(glofas_times, glofas_values)
+    overlap_index = pd.DatetimeIndex(diagnostics["glofas_overlap_times"])
+    corrected_overlap = (
+        pd.Series(corrected_full, index=g_full_series.index).loc[overlap_index].values
+    )
+    grdc_overlap = diagnostics["grdc_overlap"]
+    tail_mask = diagnostics["tail_mask"]
+    corr_corrected_full = float(np.corrcoef(corrected_overlap, grdc_overlap)[0, 1])
+    if tail_mask.sum() >= 2:
+        corr_corrected_tail = float(
+            np.corrcoef(corrected_overlap[tail_mask], grdc_overlap[tail_mask])[0, 1]
+        )
+    else:
+        corr_corrected_tail = float("nan")
+
+    diagnostics["correlation_corrected"] = corr_corrected_tail
+    diagnostics["correlation_full_corrected"] = corr_corrected_full
+    diagnostics["corrected_overlap"] = corrected_overlap
+
+    tag = f"[{label}] " if label else ""
+    log.info(
+        f"{tag}GRDC bias correction: {diagnostics['grdc_overlap_days']} d overlap "
+        f"({diagnostics['tail_n_days']} d at/above p{tail_percentile:g} GRDC tail) — "
+        f"tail r: {diagnostics['correlation_raw']:.3f} -> {corr_corrected_tail:.3f}  "
+        f"(all-days r: {diagnostics['correlation_full_raw']:.3f} -> {corr_corrected_full:.3f})"
+    )
+    return corrected_full, diagnostics
 
 
 def _deseasonalize_for_decorr(s: pd.Series) -> pd.Series:
@@ -405,22 +686,30 @@ def analyse_cell(
     values: np.ndarray,
     eva_cfg: dict,
     label: str = "",
+    protection_rp: float | None = None,
 ) -> EVAResult:
     """Run the full EVA pipeline on one cell's daily discharge series.
 
     Args:
-        times:   Daily time coordinate array (numpy datetime64 or numeric).
-        values:  Discharge values aligned with ``times`` (may contain NaN).
-        eva_cfg: Plain dict from config["boundary_forcings"]["eva"].
-        label:   Optional identifier used in log messages.
+        times:         Daily time coordinate array (numpy datetime64 or numeric).
+        values:        Discharge values aligned with ``times`` (may contain NaN).
+        eva_cfg:       Plain dict from config["boundary_forcings"]["river"]["eva"].
+        label:         Optional identifier used in log messages.
+        protection_rp: If given, also evaluate the POT/GPD fit at this return
+                       period (yr) and store it as ``res.q_protection`` --
+                       reuses the already-fitted GPD model, no extra fitting.
+                       Used for the existing flood-protection-level
+                       correction (top-level protection_levels config);
+                       NaN if the POT/GPD fit itself failed.
 
     Returns:
         EVAResult. On failure of either model, NaN fields remain and ``ok``
         is False — a bad cell never aborts a whole domain.
     """
-    # NOTE — GloFAS is treated as truth in this function; no gauge-based bias
-    # correction is applied. See the module docstring's "ToDo (bias
-    # correction)" block for the planned empirical-quantile-mapping approach.
+    # NOTE — this function is bias-correction agnostic: if a GRDC gauge match
+    # was found, the caller (07_get_boundary_forcings.py) already replaced
+    # ``values`` with the bias-corrected series via bias_correct_discharge()
+    # before calling analyse_cell. See the module docstring for details.
     res = EVAResult()
     s = _to_series(times, values)
     res.n_valid_days = int(s.size)
@@ -576,6 +865,8 @@ def analyse_cell(
 
             eva_pot.fit_model(fit_method)
             res.q_rp100 = _rv(eva_pot, rp_fl)
+            if protection_rp is not None:
+                res.q_protection = _rv(eva_pot, protection_rp)
             gpd_params = eva_pot.model.fit_parameters
             res.pot_shape = float(gpd_params.get("c", np.nan))
 
@@ -743,3 +1034,431 @@ def _plot_decade_trend(ax, amax: pd.Series, res: EVAResult) -> None:
         if np.isfinite(res.trend_pvalue)
         else "AMAX by decade"
     )
+
+
+# ── GRDC diagnostic plot panels (shared by plot_bias_correction and plot_grdc_overview) ──
+
+_SEASON_MAP = {
+    12: "DJF",
+    1: "DJF",
+    2: "DJF",
+    3: "MAM",
+    4: "MAM",
+    5: "MAM",
+    6: "JJA",
+    7: "JJA",
+    8: "JJA",
+    9: "SON",
+    10: "SON",
+    11: "SON",
+}
+_SEASON_COLORS = {
+    "DJF": "tab:blue",
+    "MAM": "tab:green",
+    "JJA": "tab:red",
+    "SON": "tab:orange",
+}
+
+
+def _plot_raw_scatter(
+    ax,
+    g_ov: np.ndarray,
+    r_ov: np.ndarray,
+    r_tail: float,
+    r_full: float,
+    tail_mask: np.ndarray,
+    tail_percentile: float,
+    lims: tuple[float, float],
+) -> None:
+    """
+    GloFAS-vs-GRDC scatter with 1:1 line; tail days (>= tail_percentile of
+    GRDC) highlighted, with both the tail-focused (headline) and all-days
+    Pearson r in the title.
+    """
+    ax.scatter(
+        g_ov[~tail_mask],
+        r_ov[~tail_mask],
+        s=8,
+        alpha=0.35,
+        c="steelblue",
+        label="Below tail",
+    )
+    ax.scatter(
+        g_ov[tail_mask],
+        r_ov[tail_mask],
+        s=16,
+        alpha=0.8,
+        c="crimson",
+        label=f"Tail (≥ p{tail_percentile:g})",
+    )
+    ax.plot(lims, lims, "k--", lw=1, label="1:1")
+    ax.set_xlim(lims)
+    ax.set_ylim(lims)
+    ax.set_xlabel("GloFAS raw (m³ s⁻¹)")
+    ax.set_ylabel("GRDC (m³ s⁻¹)")
+    ax.set_title(
+        f"Raw GloFAS vs GRDC  (tail r = {r_tail:.3f}; all-days r = {r_full:.3f})"
+    )
+    ax.legend(loc="upper left", fontsize=8)
+
+
+def _plot_seasonal_scatter(
+    ax,
+    g_ov: np.ndarray,
+    r_ov: np.ndarray,
+    t_ov: pd.DatetimeIndex,
+    lims: tuple[float, float],
+) -> None:
+    """GloFAS-vs-GRDC scatter coloured by season, with per-season Pearson r in the legend."""
+    seasons = pd.Series(t_ov.month).map(_SEASON_MAP).values
+    for s_name, s_color in _SEASON_COLORS.items():
+        m = seasons == s_name
+        if m.any():
+            if m.sum() >= 2:
+                r_season = float(np.corrcoef(g_ov[m], r_ov[m])[0, 1])
+                s_label = f"{s_name} (r = {r_season:.2f})"
+            else:
+                s_label = s_name
+            ax.scatter(g_ov[m], r_ov[m], s=8, alpha=0.5, c=s_color, label=s_label)
+    ax.plot(lims, lims, "k--", lw=1)
+    ax.set_xlim(lims)
+    ax.set_ylim(lims)
+    ax.set_xlabel("GloFAS raw (m³ s⁻¹)")
+    ax.set_ylabel("GRDC (m³ s⁻¹)")
+    ax.set_title("By season")
+    ax.legend(loc="upper left", fontsize=8, ncol=2)
+
+
+def _plot_overlap_timeseries(
+    ax, t_ov: pd.DatetimeIndex, g_ov: np.ndarray, r_ov: np.ndarray, r_tail: float
+) -> None:
+    """Overlap-period time series of GloFAS raw and GRDC, on twin y-axes."""
+    ax.plot(t_ov, g_ov, color="tab:blue", lw=0.7, label="GloFAS raw")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("GloFAS raw (m³ s⁻¹)", color="tab:blue")
+    ax.tick_params(axis="y", labelcolor="tab:blue")
+
+    ax2 = ax.twinx()
+    ax2.plot(t_ov, r_ov, color="tab:orange", lw=0.7, label="GRDC")
+    ax2.set_ylabel("GRDC (m³ s⁻¹)", color="tab:orange")
+    ax2.tick_params(axis="y", labelcolor="tab:orange")
+
+    ax.set_title(f"Overlap period: GloFAS raw vs GRDC  (tail r = {r_tail:.3f})")
+    ax.legend(loc="upper left", fontsize=8)
+    ax2.legend(loc="upper right", fontsize=8)
+
+
+# ── GRDC bias-correction diagnostic plot ──────────────────────────────────────
+
+
+def plot_bias_correction(
+    glofas_times: np.ndarray,
+    glofas_values: np.ndarray,
+    diagnostics: dict,
+    output_path: str | Path,
+    label: str = "",
+) -> None:
+    """Render the 2x3 GRDC bias-correction diagnostic figure.
+
+    Panels:
+        (0,0) raw GloFAS-vs-GRDC scatter with 1:1 line, tail days (>= the
+              configured GRDC tail percentile) highlighted, and both the
+              tail-focused (headline) and all-days Pearson r in the title.
+        (0,1) same scatter, points coloured by season (DJF/MAM/JJA/SON).
+        (0,2) overlap-period time series of GloFAS raw and GRDC, on twin
+              y-axes so both series remain visible regardless of scale.
+        (1,0) empirical CDFs of GloFAS raw, GRDC, and GloFAS corrected
+              (log-x to emphasise the flood-relevant upper tail).
+        (1,1) corrected-GloFAS-vs-GRDC scatter (mirrors (0,0)), tail days
+              highlighted, tail-focused and all-days Pearson r after
+              correction.
+        (1,2) full-record time series of raw vs corrected GloFAS, with GRDC
+              overlaid on its observation window.
+
+    Args:
+        glofas_times, glofas_values: Full-record raw GloFAS cell series (the
+            same series passed into ``bias_correct_discharge``).
+        diagnostics: Non-``None`` dict returned by ``bias_correct_discharge``,
+            with a ``grdc_station_id`` key added by the caller.
+        output_path: PNG output path.
+        label: Identifier for the figure title and log message.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    g_ov = np.asarray(diagnostics["glofas_overlap"], dtype=float)
+    r_ov = np.asarray(diagnostics["grdc_overlap"], dtype=float)
+    c_ov = np.asarray(diagnostics["corrected_overlap"], dtype=float)
+    t_ov = pd.to_datetime(diagnostics["glofas_overlap_times"])
+    tail_mask = diagnostics["tail_mask"]
+    tail_pct = diagnostics["tail_percentile"]
+    r_raw = diagnostics["correlation_raw"]
+    r_raw_full = diagnostics["correlation_full_raw"]
+    r_corr = diagnostics["correlation_corrected"]
+    r_corr_full = diagnostics["correlation_full_corrected"]
+    n_overlap = diagnostics["grdc_overlap_days"]
+    station_id = diagnostics.get("grdc_station_id", "?")
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 11))
+    fig.suptitle(
+        f"GRDC bias correction — {label}  (station {station_id}, {n_overlap} d overlap)",
+        fontsize=13,
+        y=0.98,
+    )
+
+    lims = (0.0, float(max(g_ov.max(), r_ov.max(), c_ov.max())) * 1.05)
+
+    _plot_raw_scatter(
+        axes[0, 0], g_ov, r_ov, r_raw, r_raw_full, tail_mask, tail_pct, lims
+    )
+    _plot_seasonal_scatter(axes[0, 1], g_ov, r_ov, t_ov, lims)
+    _plot_overlap_timeseries(axes[0, 2], t_ov, g_ov, r_ov, r_raw)
+
+    # (1,0) empirical CDFs (log-x for upper-tail emphasis)
+    ax = axes[1, 0]
+    for data, lbl, color in (
+        (g_ov, "GloFAS raw", "tab:blue"),
+        (r_ov, "GRDC", "tab:orange"),
+        (c_ov, "GloFAS corrected", "tab:green"),
+    ):
+        x = np.sort(data)
+        y = np.arange(1, len(x) + 1) / len(x)
+        ax.plot(x, y, label=lbl, color=color, lw=1.5)
+    ax.set_xlabel("Discharge (m³ s⁻¹)")
+    ax.set_ylabel("Empirical CDF")
+    ax.set_title("Empirical CDFs (overlap period)")
+    ax.legend(loc="lower right", fontsize=8)
+    ax.set_xscale("log")
+
+    # (1,1) corrected scatter (mirrors (0,0))
+    ax = axes[1, 1]
+    ax.scatter(
+        c_ov[~tail_mask],
+        r_ov[~tail_mask],
+        s=8,
+        alpha=0.35,
+        c="seagreen",
+        label="Below tail",
+    )
+    ax.scatter(
+        c_ov[tail_mask],
+        r_ov[tail_mask],
+        s=16,
+        alpha=0.8,
+        c="crimson",
+        label=f"Tail (≥ p{tail_pct:g})",
+    )
+    ax.plot(lims, lims, "k--", lw=1, label="1:1")
+    ax.set_xlim(lims)
+    ax.set_ylim(lims)
+    ax.set_xlabel("GloFAS corrected (m³ s⁻¹)")
+    ax.set_ylabel("GRDC (m³ s⁻¹)")
+    ax.set_title(
+        f"Corrected GloFAS vs GRDC  (tail r = {r_corr:.3f}; all-days r = {r_corr_full:.3f})"
+    )
+    ax.legend(loc="upper left", fontsize=8)
+
+    # (1,2) full-record time series: raw vs corrected, GRDC overlay
+    ax = axes[1, 2]
+    corrected_full = empirical_quantile_map(
+        source_overlap=g_ov,
+        target_overlap=r_ov,
+        source_full=np.asarray(glofas_values, dtype=float),
+    )
+    t_full = pd.to_datetime(np.asarray(glofas_times))
+    ax.plot(
+        t_full, glofas_values, color="tab:blue", lw=0.5, alpha=0.6, label="GloFAS raw"
+    )
+    ax.plot(
+        t_full,
+        corrected_full,
+        color="tab:green",
+        lw=0.5,
+        alpha=0.8,
+        label="GloFAS corrected",
+    )
+    ax.plot(t_ov, r_ov, color="tab:orange", lw=0.8, label="GRDC (obs. window)")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Discharge (m³ s⁻¹)")
+    ax.set_title("Full record: raw vs corrected GloFAS")
+    ax.legend(loc="upper left", fontsize=8)
+
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=130)
+    plt.close(fig)
+    log.info(f"Wrote bias-correction diagnostic plot: {output_path}")
+
+
+# ── GRDC station/correlation overview plot (standalone inspection) ────────────
+
+
+def plot_grdc_overview(
+    domain_poly: Polygon,
+    osm_land_path: str,
+    river_gdf: gpd.GeoDataFrame,
+    crossings_gdf: gpd.GeoDataFrame,
+    grdc_stations: gpd.GeoDataFrame,
+    highlight_crossing_idx: int,
+    highlight_station_id: int,
+    diagnostics: dict,
+    output_path: str | Path,
+    label: str = "",
+    water_bodies_path: str | None = None,
+) -> None:
+    """Render a 2x2 GRDC-vs-GloFAS correlation overview figure.
+
+    Unlike ``plot_bias_correction``, this does not require the bias
+    correction itself to have been applied — ``diagnostics`` is the dict
+    returned by ``compute_grdc_correlation`` (raw overlap only), so this plot
+    can be produced regardless of ``boundary_forcings.bias_correction.enabled``.
+
+    Panels:
+        (0,0) domain map: model domain outline, river network, all
+              crossing/boundary-forcing points (active vs inactive), and
+              GRDC stations in view, with the current crossing/station pair
+              highlighted.
+        (0,1) raw GloFAS-vs-GRDC scatter with 1:1 line, tail days (>= the
+              configured GRDC tail percentile) highlighted, and both the
+              tail-focused (headline) and all-days Pearson r in the title.
+        (1,0) same scatter, points coloured by season (DJF/MAM/JJA/SON), with
+              per-season r in the legend.
+        (1,1) overlap-period time series of GloFAS raw and GRDC, on twin
+              y-axes.
+
+    Args:
+        domain_poly: Model domain polygon (WGS84).
+        osm_land_path: Path to the OSM land polygons used as a map background
+            (see ``src.plots.map_background``).
+        river_gdf: River network GeoDataFrame (WGS84).
+        crossings_gdf: One row per river crossing, with a ``has_glofas`` bool
+            column and point geometry (WGS84).
+        grdc_stations: GRDC station table from ``river_forcing.load_grdc_stations``.
+        highlight_crossing_idx: Row index into ``crossings_gdf`` for the
+            crossing being inspected.
+        highlight_station_id: GRDC station ``id`` matched to that crossing.
+        diagnostics: Dict returned by ``compute_grdc_correlation``.
+        output_path: PNG output path.
+        label: Identifier for the figure title and log message.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    g_ov = np.asarray(diagnostics["glofas_overlap"], dtype=float)
+    r_ov = np.asarray(diagnostics["grdc_overlap"], dtype=float)
+    t_ov = pd.to_datetime(diagnostics["glofas_overlap_times"])
+    tail_mask = diagnostics["tail_mask"]
+    tail_pct = diagnostics["tail_percentile"]
+    r_raw = diagnostics["correlation_raw"]
+    r_raw_full = diagnostics["correlation_full_raw"]
+    n_overlap = diagnostics["grdc_overlap_days"]
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 11))
+    fig.suptitle(
+        f"GRDC-GloFAS correlation — {label}  (station {highlight_station_id}, {n_overlap} d overlap)",
+        fontsize=13,
+        y=0.98,
+    )
+
+    # (0,0) domain map
+    ax = axes[0, 0]
+    station_pt = grdc_stations.loc[
+        grdc_stations["id"] == highlight_station_id, "geometry"
+    ].iloc[0]
+    crossing_pt = crossings_gdf.geometry.iloc[highlight_crossing_idx]
+
+    map_background(
+        ax,
+        domain_poly,
+        osm_land_path,
+        margin_frac=0.15,
+        water_bodies_path=water_bodies_path,
+    )
+    bx, by = domain_poly.exterior.xy
+    ax.plot(bx, by, color="black", linewidth=2, zorder=2, label="Model domain")
+
+    # Widen the view if the matched GRDC station falls outside the domain bbox.
+    xlim = (min(ax.get_xlim()[0], station_pt.x), max(ax.get_xlim()[1], station_pt.x))
+    ylim = (min(ax.get_ylim()[0], station_pt.y), max(ax.get_ylim()[1], station_pt.y))
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
+    map_bounds = (xlim[0], ylim[0], xlim[1], ylim[1])
+
+    river_gdf.plot(ax=ax, color="steelblue", linewidth=0.8, zorder=1)
+
+    if not crossings_gdf.empty:
+        active = crossings_gdf["has_glofas"].astype(bool)
+        if active.any():
+            crossings_gdf[active].plot(
+                ax=ax,
+                color="limegreen",
+                markersize=40,
+                zorder=3,
+                label="Crossing (active)",
+            )
+        if (~active).any():
+            crossings_gdf[~active].plot(
+                ax=ax,
+                color="grey",
+                markersize=40,
+                marker="x",
+                zorder=3,
+                label="Crossing (inactive)",
+            )
+
+    grdc_in_view = grdc_stations.cx[
+        map_bounds[0] : map_bounds[2], map_bounds[1] : map_bounds[3]
+    ]
+    if not grdc_in_view.empty:
+        grdc_in_view.plot(
+            ax=ax,
+            color="purple",
+            markersize=70,
+            marker="*",
+            zorder=3,
+            alpha=0.7,
+            label="GRDC station",
+        )
+
+    ax.scatter(
+        [crossing_pt.x],
+        [crossing_pt.y],
+        s=180,
+        facecolors="none",
+        edgecolors="red",
+        linewidths=2,
+        zorder=4,
+        label="This crossing",
+    )
+    ax.scatter(
+        [station_pt.x],
+        [station_pt.y],
+        s=180,
+        facecolors="none",
+        edgecolors="orange",
+        linewidths=2,
+        zorder=4,
+        label="Matched GRDC station",
+    )
+
+    ax.set_title("Domain context")
+    ax.legend(loc="best", fontsize=7)
+
+    lims = (0.0, float(max(g_ov.max(), r_ov.max())) * 1.05)
+    _plot_raw_scatter(
+        axes[0, 1], g_ov, r_ov, r_raw, r_raw_full, tail_mask, tail_pct, lims
+    )
+    _plot_seasonal_scatter(axes[1, 0], g_ov, r_ov, t_ov, lims)
+    _plot_overlap_timeseries(axes[1, 1], t_ov, g_ov, r_ov, r_raw)
+
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=130)
+    plt.close(fig)
+    log.info(f"Wrote GRDC overview plot: {output_path}")

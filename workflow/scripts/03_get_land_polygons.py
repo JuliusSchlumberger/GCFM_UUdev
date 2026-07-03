@@ -1,7 +1,7 @@
 """
-03g_get_land_polygons.py — Clip OSM land polygons to the domain bounding box.
+03_get_land_polygons.py — Clip OSM land polygons to the domain bounding box.
 
-The clipped file is passed to the SFINCS mask setup (rule 08 / build_sfincs.py)
+The clipped file is passed to the SFINCS mask setup (rule 13 / build_sfincs.py)
 as a catalog source under the key 'local_land_polygons'.  Active-domain edge
 cells NOT covered by land become waterlevel boundary cells (mask=2), which
 represents the coastal / open-water perimeter of the model domain.

@@ -3,6 +3,81 @@ GCFM_UU — Reference Memory
 ================================================================================
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SNAKEMAKE CLI QUICK REFERENCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Base invocation (conda is not on PATH — see "Conda environment" below):
+  & "C:\Users\Schlu005\AppData\Local\miniforge3\Scripts\conda.exe" ^
+    run -n hmt_sfincs_dev snakemake <target> --cores N [flags...]
+
+Named targets (defined in workflow/Snakefile — see section 2):
+  all          — default target if none given: preprocess + build, every
+                 discovered basin (rules 01-16)
+  preprocess   — rules 01-12 only (everything up to and including the
+                 upstream-boundary check), every discovered basin
+  build        — rules 13-16 only (SFINCS build, spin-up, sanity checks,
+                 main event run) — assumes preprocess outputs already exist
+
+Key flags:
+  --cores N          Required. Max parallel jobs. N=1 is fine for a single
+                      basin (the DAG is a long linear chain per basin
+                      anyway); use a higher N when running multiple basins
+                      so independent basins' jobs can run concurrently.
+  -n, --dry-run       Preview the DAG (which jobs, in what order, and WHY
+                      each is scheduled) without executing anything. Always
+                      dry-run after editing rules/config before a real run.
+  --forceall          Force every scheduled job to re-execute even if its
+                      outputs already exist and look up to date. Combine
+                      with a restricted target (see target_basins below) to
+                      force-rerun just one basin without touching others.
+  --forcerun RULE     Force only a specific named rule (and everything
+                      downstream of it) to rerun, leaving unrelated
+                      up-to-date outputs alone — narrower than --forceall.
+  --until RULE        Run the DAG only up to and including RULE, then stop
+                      (e.g. --until build_sfincs to assemble the SFINCS
+                      input files without actually executing the solver).
+  --config KEY=VALUE  Override/extend a config.yml value from the CLI for
+                      this run only (parsed as YAML, so lists/numbers work:
+                      --config target_basins="[2433835]"). Does not modify
+                      config.yml on disk. See "RUNNING A SINGLE BASIN" in
+                      section 14 for the basin-restriction use of this.
+  --rerun-triggers mtime
+                      By default Snakemake also reruns a job when its CODE
+                      or PARAMS changed since the last run (provenance
+                      tracking), even if the output file's mtime looks
+                      current — this is usually what you want, but if a
+                      formatting-only script edit is triggering unwanted
+                      reruns, this flag switches to mtime-only triggering.
+                      (Alternative for one specific output file: snakemake
+                      --cleanup-metadata <outfile> wipes its provenance
+                      record without touching the file itself.)
+  --keep-going        Continue running other, independent jobs if one job
+                      fails, instead of stopping the whole run immediately —
+                      useful when running several basins at once and one
+                      basin's data has a problem.
+  --unlock            Release a stale ".snakemake/locks" lock left behind
+                      by a crashed/killed run before you can run again.
+  -p, --printshellcmds
+                      Print the actual shell command each job runs (mainly
+                      useful for the SFINCS solver invocations in rules 14/16).
+  --rulegraph / --dag
+                      Print the DAG in Graphviz dot format (pipe to `dot -Tpng`
+                      to render) — needs graphviz installed.
+
+Everyday examples:
+  Dry-run everything:
+    snakemake -n --cores 1
+  Dry-run just the build stage:
+    snakemake -n build --cores 1
+  Force a full real rerun of ONE basin only (see section 14 for how
+  target_basins works and how BASINS is normally discovered):
+    snakemake build --cores 1 --config target_basins="[2433835]" --forceall
+  Rerun only from build_sfincs onward (e.g. after a config.yml change to
+  `sfincs`) without redoing preprocessing:
+    snakemake build --cores 1 --forcerun build_sfincs
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. PROJECT OVERVIEW
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -101,7 +176,11 @@ Config-conditional blocks:
 RULE SUMMARY (in DAG order):
   00  common.smk     — catalogue helper (CATALOGUE / catalogue_path), wildcard
                         constraints, BASINS list, config validation (quadtree
-                        requires subgrid; boundary_setup.mode enum check)
+                        requires subgrid; boundary_setup.mode enum check).
+                        BASINS is auto-discovered from delta_polygons but can
+                        be restricted via an optional CLI-only config
+                        override, target_basins (not a config.yml key) — see
+                        "RUNNING A SINGLE BASIN" below.
   01  separate_deltas — clip delta polygon per basin_id (BasinID2)
   02  modeldomain    — domain bbox, UTM CRS, domain.gpkg (mode: "basins" or
                         "delta_polygon")
@@ -646,25 +725,34 @@ RIVER FORCING steps:
            - find_nearest_grdc_station() within grdc_search_radius_km (15 km)
              of the crossing's inside-domain point.
            - If found: load_grdc_series() + compute_grdc_correlation() —
-             always computes the raw GloFAS/GRDC overlap correlation
-             (diagnostics dict), INDEPENDENT of bias_correction.enabled.
-             Requires min_overlap_days (730 d / ~2 yr); below that, or if no
-             station within radius, returns None (logged).
+             always computes GloFAS/GRDC overlap correlation diagnostics,
+             INDEPENDENT of bias_correction.enabled. Requires min_overlap_days
+             (730 d / ~2 yr); below that, or if no station within radius,
+             returns None (logged).
+           - TAIL-FOCUSED CORRELATION: correlation_raw (and, from
+             bias_correct_discharge(), correlation_corrected) are restricted
+             to overlap days where GRDC discharge is at/above
+             bias_correction.tail_percentile (default 90.0) of its own
+             overlap distribution — NOT the all-days Pearson r — since this
+             pipeline only cares about GloFAS/GRDC agreement at
+             flood-relevant high flows. The all-days correlation is still
+             computed and returned as correlation_full_raw /
+             correlation_full_corrected, for reference/plotting context
+             (shown alongside the tail r in plot_bias_correction and
+             plot_grdc_overview's scatter panels, with tail days
+             highlighted). This is the only place tail_percentile is
+             configured (boundary_forcings.river.bias_correction).
            - bias_correct_discharge() wraps compute_grdc_correlation(): only
              if bias_correction.enabled is True (currently FALSE by default)
              AND correlation diagnostics were returned, runs
              empirical_quantile_map() (EQM, n_quantiles=200) with LINEAR TAIL
              EXTRAPOLATION. Otherwise GloFAS series unchanged, diagnostics=None.
-           - TODO (in config.yml and the script): (a) the current GRDC
-             extract covers only the 8 basins in the 8_polygons.json
-             delta-polygon test set (Mississippi, Zambezi, Ebro, Calvert,
-             Mangoky, Vijose, Taiwan, Rhine-Meuse) — a global GRDC extract
-             would let this run automatically for basins outside that test
-             set instead of falling back to GloFAS-as-truth; (b)
-             compute_grdc_correlation reports a single overall Pearson
-             r — it should focus on the upper tail (POT/annual-maxima
-             correlation) instead, since only flood-relevant high flows
-             actually matter for this forcing pipeline.
+           - TODO (in config.yml and the script): the current GRDC extract
+             covers only the 8 basins in the 8_polygons.json delta-polygon
+             test set (Mississippi, Zambezi, Ebro, Calvert, Mangoky, Vijose,
+             Taiwan, Rhine-Meuse) — a global GRDC extract would let this run
+             automatically for basins outside that test set instead of
+             falling back to GloFAS-as-truth.
   Step 6:  EVA on (bias-corrected or raw) GloFAS discharge → bankfull +
            flood return periods
   Step 6b: [protection_levels.enabled] Subtract the netted riverine
@@ -1177,6 +1265,19 @@ MDT EXTRAPOLATION:
   corrected). Load with 5° margin (mdt_load_margin_deg) to ensure sufficient
   offshore reference pixels.
 
+RUNNING A SINGLE BASIN:
+  BASINS (00_common.smk) is auto-discovered from the delta_polygons dataset
+  and not directly configurable in config.yml, but can be restricted per-run
+  via an optional CLI-only --config override, target_basins (a list of
+  basin_id ints). If unset, BASINS is unchanged (all discovered basins) —
+  fully backward compatible. Works with the existing named targets
+  (preprocess/build/all) directly, no per-file target list needed:
+    snakemake build --cores N --config target_basins="[2433835]" --forceall
+  --forceall forces every job for that basin to re-execute even if its
+  outputs look up to date; drop it to only rerun what's missing/stale.
+  Unknown basin_ids raise a ValueError at config-parse time (before the DAG
+  is built) rather than silently producing an empty/wrong DAG.
+
 SNAKEMAKE OUTPUT SYNC:
   Always keep _PREPROCESS_OUTPUTS / _BUILD_OUTPUTS in Snakefile in sync with
   rule outputs, including the config-conditional blocks (river conditioning,
@@ -1274,8 +1375,23 @@ GITHUB COLLABORATION TOOLING:
   ruff --fix). Verified against the real environment: it correctly caught
   drift (several packages installed since the last static export —
   scikit-image, tifffile, imageio, openpyxl, among others) and correctly
-  restored from a deliberately-corrupted file. Needs $CONDA_EXE set or
-  `conda` on PATH to run.
+  restored from a deliberately-corrupted file.
+  The hook uses `language: python` (NOT "system") deliberately — a bare
+  `python` entry under "system" does not reliably resolve when git invokes
+  hooks outside an activated conda shell (e.g. from an IDE's git
+  integration): it can fall through to the Windows Store's python
+  app-execution-alias stub and fail with exit code 9009, aborting the whole
+  commit (this looks like "everything got skipped" but ruff/pydocstyle/etc.
+  actually ran fine — only the new hook was broken). find_conda() in the
+  script also falls back to standard per-user miniforge3/miniconda3/
+  anaconda3 install paths if CONDA_EXE isn't set and conda isn't on PATH,
+  for the same reason.
+  Separately: .git/hooks/pre-commit itself had a stale hardcoded
+  INSTALL_PYTHON pointing at the hydromt-sfincs-dev env (wrong/old) instead
+  of hmt_sfincs_dev — fixed by re-running `pre-commit install` from the
+  correct env. If pre-commit hooks ever behave inconsistently between a
+  manual `pre-commit run` and an actual `git commit`, check
+  .git/hooks/pre-commit's INSTALL_PYTHON first.
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

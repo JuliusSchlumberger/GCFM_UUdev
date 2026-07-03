@@ -6,8 +6,6 @@ import numpy as np
 from src.domain import load_domain
 from src.log import setup_logging
 from src.plots import (
-    plot_hydraulic_relations,
-    plot_longitudinal_profile,
     plot_river_depth,
     plot_river_network_width_discharge,
 )
@@ -31,12 +29,12 @@ hg_alpha = snakemake.params.hg_a * snakemake.params.hg_c
 hg_beta  = snakemake.params.hg_b + snakemake.params.hg_f
 log.info(f"Hydraulic geometry: alpha={hg_alpha:.4f}, beta={hg_beta:.4f}")
 
-# ── load clean network (discharge already propagated by rule 05) ──────────────
+# ── load clean network (discharge already propagated by rule 08) ──────────────
 
 rivers = gpd.read_file(snakemake.input.clean_river_network)
 log.info(f"Loaded {len(rivers)} reaches (bankfull_discharge_acc pre-computed)")
 
-# Seed reach IDs stored by rule 05 as the 'is_seed' flag
+# Seed reach IDs stored by rule 08 as the 'is_seed' flag
 seed_reach_ids: set[str] = set(
     rivers.loc[rivers["is_seed"].astype(bool), "reach_id"].astype(str)
 ) if "is_seed" in rivers.columns else set()
@@ -89,21 +87,12 @@ plot_river_depth(
     osm_land_path=snakemake.input.land_polygons,
     output_path=snakemake.output.plot_river_depth,
 )
-plot_hydraulic_relations(
-    rivers_wgs=rivers_wgs,
-    output_path=snakemake.output.plot_hydraulic_relations,
-)
 plot_river_network_width_discharge(
     rivers_wgs=rivers_wgs,
     bbox_poly=domain_poly,
     osm_land_path=snakemake.input.land_polygons,
     seed_reach_ids=seed_reach_ids,
     output_path=snakemake.output.plot_river_network_width_discharge,
-)
-plot_longitudinal_profile(
-    rivers_wgs=rivers_wgs,
-    seed_reach_ids=seed_reach_ids,
-    output_path=snakemake.output.plot_longitudinal_profile,
 )
 
 profiler.stop()

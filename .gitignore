@@ -12,6 +12,8 @@ results/
 
 # Project outputs
 model_runs/
+/tests/output/
+figs/
 
 # IDE
 .idea/

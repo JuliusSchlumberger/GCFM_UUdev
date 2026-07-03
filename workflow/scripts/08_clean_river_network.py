@@ -11,6 +11,8 @@ from src.river_network import (
     accumulate_discharge,
     build_downstream_adjacency,
     collect_downstream_main_paths,
+    fix_tjunction_tails,
+    normalize_channel_widths,
 )
 
 
@@ -43,6 +45,11 @@ log.info(f"Domain WGS84 bounds: {wgs84_bounds}, CRS: {domain_crs}")
 rivers = gpd.read_file(snakemake.input.spec_river_network)
 log.info(f"Loaded {len(rivers)} reaches")
 
+# Fix T-junction topology: reaches whose start lies on another reach's interior
+# rather than at its true endpoint, leaving a short (~18-111 m) dangling tail
+# that fragments the merged-line connectivity used by burn_river_rect.
+rivers = fix_tjunction_tails(rivers)
+
 crossings = load_forcing_crossings(
     snakemake.input.river_forcing,
     discharge_variable=snakemake.params.discharge_variable,
@@ -61,6 +68,19 @@ rivers_clean = rivers[rivers["reach_id"].map(_norm_id).isin(reachable)].copy()
 rivers_clean["linked_to_source"] = True
 rivers_clean["is_seed"] = rivers_clean["reach_id"].map(_norm_id).isin(set(seed_q.keys()))
 log.info(f"Retained {len(rivers_clean)}/{len(rivers)} reaches")
+
+# ── fix width/max_width attributes, then choose the canonical 'width' ─────────
+# Some SWORD reaches have max_width < width (swapped back), or a max_width
+# tens-hundreds of times their own width (erroneous, clipped) -- see
+# normalize_channel_widths. The resulting 'width' is what every downstream
+# width-dependent step uses (discharge propagation here, hydraulic depth,
+# quadtree refinement buffer, SFINCS rivwth), per river_processing.width_column.
+
+rivers_clean = normalize_channel_widths(
+    rivers_clean,
+    width_column=snakemake.params.width_column,
+    max_ratio=snakemake.params.max_width_to_width_ratio,
+)
 
 # ── discharge propagation ─────────────────────────────────────────────────────
 # Propagate seed bankfull discharges downstream through the clean network.

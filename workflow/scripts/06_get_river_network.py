@@ -171,6 +171,7 @@ log.info(f"Written: {snakemake.output.spec_river_network} ({len(clipped_rivers)}
 plot_river_network(
     snakemake.output.spec_river_network, domain_poly,
     snakemake.input.land_polygons, snakemake.output.plot_river_network,
+    water_bodies_path=snakemake.input.spec_landuse,
 )
 profiler.stop()
 log.info("Done")

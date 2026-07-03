@@ -42,6 +42,71 @@ def resample_to_utm_array(
     return dest
 
 
+def reproject_nan_aware(
+    source: np.ndarray,
+    src_transform,
+    src_crs,
+    dst_shape: tuple[int, int],
+    dst_transform,
+    dst_crs,
+    resampling=None,
+) -> np.ndarray:
+    """
+    Coverage-weighted reproject of a NaN-as-nodata array.
+
+    Resamples ``value * valid`` and ``valid`` (a 0/1 mask) separately, then
+    divides, instead of relying on the warp backend's own nodata handling.
+    A destination pixel only comes out NaN when its entire receptive field
+    on the source grid is nodata; a pixel near the edge of a NaN region is
+    reweighted from its valid neighbours only, instead of plain bilinear/
+    cubic resampling propagating NaN in from any single invalid contributing
+    source pixel — which erodes/blurs real data right at nodata edges (a
+    domain-polygon boundary, a DEM tile gap, the land/sea split, etc).
+
+    Args:
+        source:                 float32 array, NaN = nodata.
+        src_transform, src_crs: source grid georeferencing.
+        dst_shape:              (height, width) of the destination grid.
+        dst_transform, dst_crs: destination grid georeferencing.
+        resampling:             rasterio.warp.Resampling enum; defaults to bilinear.
+
+    Returns:
+        float32 array, shape ``dst_shape``, NaN where the destination pixel
+        has no valid source coverage at all.
+    """
+    from rasterio.warp import reproject as _rp, Resampling as _RS
+
+    resampling = resampling if resampling is not None else _RS.bilinear
+
+    valid = (~np.isnan(source)).astype(np.float32)
+    filled = np.where(valid > 0, source, np.float32(0.0)).astype(np.float32)
+
+    dst_value = np.zeros(dst_shape, dtype=np.float32)
+    dst_weight = np.zeros(dst_shape, dtype=np.float32)
+    _rp(
+        source=filled,
+        destination=dst_value,
+        src_transform=src_transform,
+        src_crs=src_crs,
+        dst_transform=dst_transform,
+        dst_crs=dst_crs,
+        resampling=resampling,
+    )
+    _rp(
+        source=valid,
+        destination=dst_weight,
+        src_transform=src_transform,
+        src_crs=src_crs,
+        dst_transform=dst_transform,
+        dst_crs=dst_crs,
+        resampling=resampling,
+    )
+    with np.errstate(invalid="ignore", divide="ignore"):
+        dst = dst_value / dst_weight
+    dst[dst_weight <= 1e-6] = np.nan
+    return dst.astype(np.float32)
+
+
 def load_raster_to_utm_array(
     src_path: str | Path,
     wgs84_bounds: tuple[float, float, float, float],
@@ -103,20 +168,22 @@ def load_raster_to_utm_array(
     return dest
 
 
-def find_deltadtm_tiles(
+def find_fathomdem_tiles(
     topo_dir: str | Path,
     bounds: tuple[float, float, float, float],
 ) -> list[str]:
     """
-    Return paths of existing DeltaDTM v1.1 tiles covering the given WGS84 bounds.
+    Return paths of existing FathomDEM tiles covering the given WGS84 bounds.
 
-    DeltaDTM v1.1 tiles follow the naming convention
-    ``DeltaDTM_v1_1_{N/S}{lat:02d}{E/W}{|lon|:03d}_GOCO06s_MDT.tif``.
-    The vertical datum is already corrected to local MSL (GOCO06s + MDT subtraction),
-    so no further datum correction is needed when using this product.
+    FathomDEM tiles follow the (lowercase) naming convention
+    ``{n/s}{lat:02d}{e/w}{lon:03d}.tif`` (e.g. ``n00e010.tif``,
+    ``s01w090.tif``). Matched here with uppercase N/E/S/W, which also
+    resolves on case-insensitive filesystems (e.g. Windows/NTFS).
+    Tiles that do not exist on disk (e.g. ocean-only cells) are silently
+    skipped with a debug log entry.
 
     Args:
-        topo_dir: Directory containing DeltaDTM v1.1 .tif tiles.
+        topo_dir: Directory containing FathomDEM .tif tiles.
         bounds:   (lon_min, lat_min, lon_max, lat_max) in WGS84.
 
     Returns:
@@ -128,43 +195,7 @@ def find_deltadtm_tiles(
         for lon in range(math.floor(lon_min), math.ceil(lon_max)):
             ns = "N" if lat >= 0 else "S"
             ew = "E" if lon >= 0 else "W"
-            fname = (
-                f"DeltaDTM_v1_1_{ns}{abs(lat):02d}{ew}{abs(lon):03d}_GOCO06s_MDT.tif"
-            )
-            fpath = Path(topo_dir) / fname
-            if fpath.exists():
-                tiles.append(str(fpath))
-            else:
-                log.debug(f"Tile absent (likely ocean): {fname}")
-    return tiles
-
-
-def find_diluviumdem_tiles(
-    topo_dir: str | Path,
-    bounds: tuple[float, float, float, float],
-) -> list[str]:
-    """
-    Return paths of existing DiluviumDEM tiles covering the given WGS84 bounds.
-
-    DiluviumDEM tiles follow the naming convention
-    ``DiluviumDEM_N{lat:02d}_00_{E/W}{|lon|:03d}_00.tif``.
-    Tiles that do not exist on disk (e.g. ocean-only cells) are silently skipped
-    with a debug log entry.
-
-    Args:
-        topo_dir: Directory containing DiluviumDEM .tif tiles.
-        bounds:   (lon_min, lat_min, lon_max, lat_max) in WGS84.
-
-    Returns:
-        List of absolute file path strings for existing tiles.
-    """
-    lon_min, lat_min, lon_max, lat_max = bounds
-    tiles: list[str] = []
-    for lat in range(math.floor(lat_min), math.ceil(lat_max)):
-        for lon in range(math.floor(lon_min), math.ceil(lon_max)):
-            ns = "N" if lat >= 0 else "S"
-            ew = "E" if lon >= 0 else "W"
-            fname = f"DiluviumDEM_{ns}{abs(lat):02d}_00_{ew}{abs(lon):03d}_00.tif"
+            fname = f"{ns}{abs(lat):02d}{ew}{abs(lon):03d}.tif"
             fpath = Path(topo_dir) / fname
             if fpath.exists():
                 tiles.append(str(fpath))
@@ -261,6 +292,77 @@ def clip_raster(
         )
     with rasterio.open(out_path, "w", **out_meta) as dst:
         dst.write(out_data)
+
+
+def reproject_to_reference_grid(
+    src_path: str | Path,
+    wgs84_bounds: tuple[float, float, float, float],
+    ref_meta: dict,
+    resampling=None,
+) -> tuple[np.ndarray, dict]:
+    """
+    Clip a global raster to wgs84_bounds, then reproject it onto the exact
+    grid described by ref_meta (height, width, transform, crs).
+
+    Used to put landuse.tif (and, by inheritance, roughness.tif -- reclassified
+    pixel-for-pixel from it) on the same UTM working grid as
+    elevation_merged.tif/zsini.tif, instead of each staying on its own
+    independent native-resolution WGS84 grid. Left unaligned, every downstream
+    consumer (hydromt's model build, compute_max_inundation's water-body mask)
+    would have to reproject landuse independently, risking a land/sea split
+    that disagrees with the one already baked into elevation_merged.tif/zsini.tif
+    from OSM land polygons.
+
+    Args:
+        src_path:     Path to the global source raster (single GeoTIFF).
+        wgs84_bounds: (lon_min, lat_min, lon_max, lat_max) -- clip extent,
+                      same convention as clip_raster.
+        ref_meta:     Reference grid spec (e.g. an opened elevation_merged.tif's
+                      .meta) -- must contain 'height', 'width', 'transform', 'crs'.
+        resampling:   rasterio.warp.Resampling enum; defaults to nearest
+                      (appropriate for categorical land-use codes -- avoids
+                      inventing fractional/blended class values).
+
+    Returns:
+        (data, out_meta): reprojected array (same dtype/nodata as the
+        source) and a GeoTIFF meta dict ready for rasterio.open(..., "w").
+    """
+    from rasterio.warp import reproject as _rp, Resampling as _RS
+
+    resampling = resampling if resampling is not None else _RS.nearest
+
+    with rasterio.open(src_path) as src:
+        src_nodata = src.nodata
+        src_dtype = src.dtypes[0]
+        src_crs = src.crs
+        geom = [box(*wgs84_bounds).__geo_interface__]
+        clipped, clipped_transform = rio_mask(src, geom, crop=True, all_touched=True)
+
+    fill = src_nodata if src_nodata is not None else 0
+    dst = np.full((ref_meta["height"], ref_meta["width"]), fill, dtype=src_dtype)
+    _rp(
+        source=clipped[0],
+        destination=dst,
+        src_transform=clipped_transform,
+        src_crs=src_crs,
+        dst_transform=ref_meta["transform"],
+        dst_crs=ref_meta["crs"],
+        src_nodata=src_nodata,
+        dst_nodata=src_nodata,
+        resampling=resampling,
+    )
+
+    out_meta = {
+        "driver": "GTiff",
+        "dtype": src_dtype,
+        "count": 1,
+        "height": ref_meta["height"],
+        "width": ref_meta["width"],
+        "crs": ref_meta["crs"],
+        "transform": ref_meta["transform"],
+        "nodata": src_nodata,
+    }
+    return dst, out_meta
 
 
 def _tile_intersects(fp: Path, bbox) -> bool:

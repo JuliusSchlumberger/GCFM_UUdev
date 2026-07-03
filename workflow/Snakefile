@@ -10,69 +10,105 @@ configfile: "./config/config.yml"
 include: "rules/00_common.smk"
 
 # ---- Rules ----
+# Included in true DAG/topological order -- see each rule's own docstring
+# for its actual predecessors/successors. Rules 09a/09b form one
+# unconditional sequential chain (09b always runs right after 09a) -- rule 10
+# is the actual independent branch, parallel to that chain. Both feed rule 11.
 include: "rules/01_separate_deltas.smk"
 include: "rules/02_modeldomain.smk"
-include: "rules/03_static_model_data.smk"
-include: "rules/04_boundary_forcings.smk"
-include: "rules/05_clean_river_network.smk"
-include: "rules/06_river_depth.smk"
-include: "rules/07_testing.smk"
-include: "rules/08_build_sfincs.smk"
-include: "rules/09_create_rstart.smk"
-include: "rules/10_sanity_checks.smk"
+include: "rules/03_land_polygons.smk"
+include: "rules/04_protection_levels.smk"
+include: "rules/05_static_terrain_data.smk"
+include: "rules/06_river_network.smk"
+include: "rules/07_boundary_forcings.smk"
+include: "rules/08_clean_river_network.smk"
+include: "rules/09a_river_depth.smk"
+include: "rules/09b_estuarine_depth.smk"
+include: "rules/10_condition_elevation.smk"
+include: "rules/11_river_preburn.smk"
+include: "rules/12_testing.smk"
+include: "rules/13_build_sfincs.smk"
+include: "rules/14_run_spinup.smk"
+include: "rules/15_sanity_checks.smk"
+include: "rules/16_run_event.smk"
 
 # ── Shared output lists (used by named targets and rule all) ─────────────────
 
 _PREPROCESS_OUTPUTS = [
-    expand(results_path("{basin_id}/inputs/delta_polygon.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/{basin_id}_delta_polygon.gpkg"), basin_id=BASINS),
     expand(results_path("{basin_id}/inputs/domain/domain_bbox.json"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/domain.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/landuse.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/roughness.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/land_polygons.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/elevation_merged.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/zsini.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/01_elevation.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/river_network.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/02_landuse.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/03_roughness.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/04_river_network.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/{basin_id}_domain.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/{basin_id}_land_polygons.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/protection_levels.json"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/04_protection_levels.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/{basin_id}_elevation_merged.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/05a_elevation.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/{basin_id}_landuse.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/{basin_id}_zsini.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/05b_landuse.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/{basin_id}_roughness.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/05c_roughness.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/{basin_id}_river_network.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/06_river_network.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/inputs/forcing/surge_forcing.nc"), basin_id=BASINS),
     expand(results_path("{basin_id}/inputs/forcing/river_forcing.nc"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/05a_forcing_locations.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/05b_forcing_timeseries.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/05c_forcing_eva.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/river_network_clean.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/06a_river_clean.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/06b_river_discharge.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/river_network_processed.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/07a_river_depth.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/07b_river_hydraulics.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/07c_river_width_q.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/07d_river_profile.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/08a_discharge_check.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/plots/08b_upstream_boundary_check.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/07_forcing_locations.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/07_forcing_timeseries.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/07_forcing_eva.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/07_bias_correction"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/07_surge_correction.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/{basin_id}_river_network_clean.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/08_river_clean.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/08_river_discharge.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/inputs/domain/{basin_id}_river_network_processed.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/09a_river_depth.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/09a_river_width_q.png"), basin_id=BASINS),
+    # river_network_estuarine.gpkg and its plot are always produced by
+    # add_estuarine_depth (09b), which always follows add_river_depth (09a)
+    # regardless of estuarine_depth.enabled -- 09a/09b are a sequential
+    # chain, not a fork:
+    expand(results_path("{basin_id}/inputs/domain/{basin_id}_river_network_estuarine.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/09b_river_hydraulics.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/input_data/12_upstream_boundary_check.png"), basin_id=BASINS),
+    *(expand(results_path("{basin_id}/inputs/domain/{basin_id}_elevation_conditioned.tif"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/visuals/input_data/10_condition_elevation.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/inputs/domain/{basin_id}_zbed_anchors.gpkg"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/visuals/input_data/11_river_preburn.png"), basin_id=BASINS)
+      if config["river_processing"]["conditioning"]["enabled"] else []),
 ]
 
 _BUILD_OUTPUTS = [
     expand(results_path("{basin_id}/sfincs/sfincs.inp"), basin_id=BASINS),
-    *(expand(results_path("{basin_id}/sfincs/sfincs.sbg"), basin_id=BASINS)
+    *(expand(results_path("{basin_id}/sfincs/sfincs_subgrid.nc"), basin_id=BASINS)
       if config["sfincs"]["subgrid"]["enabled"] else []),
+    *(expand(results_path("{basin_id}/sfincs/{basin_id}_refinement_polygons.gpkg"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/visuals/sfincs_build/01b_refinement_zones.png"), basin_id=BASINS)
+      if config["sfincs"]["grid"]["quadtree"]["enabled"] else []),
     *(expand(results_path("{basin_id}/sfincs/spinup/" + RST_FNAME), basin_id=BASINS)
-      + expand(results_path("{basin_id}/sfincs/spinup/validation_spinup.png"), basin_id=BASINS)
       + expand(results_path("{basin_id}/sfincs/spinup/sfincs_map.nc"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/sfincs/spinup/validation_max_inundation.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/sfincs/sanity/01_inundation_ratio.png"), basin_id=BASINS)
-      if config["sfincs"]["rstart"]["enabled"] else []),
+      + expand(results_path("{basin_id}/visuals/model_runs/spinup/validation_spinup.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/visuals/model_runs/spinup/validation_max_inundation.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/visuals/model_runs/spinup/01_inundation_ratio.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/visuals/model_runs/spinup/03_velocity_animation.mp4"), basin_id=BASINS)
+      # run_event (rule 16) needs rule 14's restart file, same gate as the
+      # spin-up/sanity outputs directly above:
+      + expand(results_path("{basin_id}/sfincs/sfincs_map.nc"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/visuals/model_runs/main_run/01_inundation_ratio.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/visuals/model_runs/main_run/02_flood_animation.mp4"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/visuals/model_runs/main_run/03_velocity_animation.mp4"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/visuals/model_runs/main_run/flood_timeseries.csv"), basin_id=BASINS)
+      if config["sfincs"]["spinup"]["enabled"] else []),
 ]
 
 # ── Named partial-pipeline targets ───────────────────────────────────────────
 
 rule preprocess:
     """
-    Run only the preprocessing pipeline (rules 01–07):
-    basin separation, domain, terrain & bathymetry, land use, roughness,
-    boundary forcings, river network, depth, and validation.
+    Run only the preprocessing pipeline (rules 01–12):
+    basin separation, domain, land polygons, protection levels, terrain &
+    bathymetry, land use, roughness, river network, boundary forcings,
+    network cleaning, depth, estuarine depth / river conditioning / preburn,
+    and the upstream-boundary validation check.
 
     Usage:  snakemake preprocess --cores N
     """
@@ -81,7 +117,8 @@ rule preprocess:
 
 rule build:
     """
-    Run only the SFINCS model build and spinup restart (rules 08–09).
+    Run the SFINCS model build, spin-up, spin-up sanity checks, and the main
+    flood-event simulation with its own sanity checks (rules 13–16).
     Preprocessing outputs must already exist.
 
     Usage:  snakemake build --cores N

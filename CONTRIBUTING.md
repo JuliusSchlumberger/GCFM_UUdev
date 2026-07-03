@@ -170,9 +170,43 @@ configures how the built model consumes it. Before adding a new key:
   solver (`run_spinup`, `run_event`) do — point that config value at your
   own local copy.
 
-## Claude Code memory (optional, if you use Claude Code)
+## Setting up pre-commit (one-time, after cloning)
 
-`ClaudeCode_memory.txt` at the repo root is a living reference an AI
+`.pre-commit-config.yaml` being in the repo does **nothing by itself** —
+it only takes effect once you've run, from inside `hmt_sfincs_dev`:
+
+```bash
+pre-commit install
+```
+
+This writes the actual git hook to `.git/hooks/pre-commit` (a
+per-clone file, not tracked by git — every fresh clone needs this run once).
+Without it, `git commit` won't trigger any checks at all; they'll only run
+if you invoke `pre-commit run` manually.
+
+To confirm it's active:
+
+```bash
+pre-commit run --all-files
+```
+
+should list every hook (`ruff format`, `ruff check`, `pyright`, `pydocstyle`,
+`sync environment.yml with hmt_sfincs_dev`, etc.) as `Passed`/`Failed`, not
+silently do nothing. You can also make a throwaway commit and check that the
+hooks' output appears before it completes.
+
+**If hooks behave differently between a manual `pre-commit run` and an
+actual `git commit`** (e.g. some hooks silently don't run, or one fails with
+a "Python was not found" / exit-code-9009-style error): check
+`.git/hooks/pre-commit`'s `INSTALL_PYTHON` line — it hardcodes the exact
+interpreter path pre-commit was installed from at `pre-commit install` time.
+If it points at the wrong/an old conda env (this has happened once already
+on this repo — it was pointing at a stale, differently-named env), rerun
+`pre-commit install` from inside `hmt_sfincs_dev` to refresh it.
+
+## Reference memory (optional, if you use Claude Code)
+
+`Reference_memory.txt` at the repo root is a living reference an AI
 assistant maintains across sessions on this project — current pipeline
 structure, config schema, known issues, rationale for non-obvious design
 choices. It's not a substitute for code comments and isn't required reading

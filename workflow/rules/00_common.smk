@@ -3,14 +3,9 @@ from src.io import general_path as _gen_path
 import geopandas as gpd
 
 CATALOGUE = load_catalogue(config["data_catalogue"])
-TESTING_CATALOGUE = load_catalogue(config.get("testing_data_catalogue",
-                                               "./config/testing_data_catalogue.yml"))
 
 def catalogue_path(name):
     return raw_input_path(CATALOGUE, name)
-
-def testing_catalogue_path(name):
-    return raw_input_path(TESTING_CATALOGUE, name)
 
 def general_path(name):
     return _gen_path(CATALOGUE, name)
@@ -27,6 +22,19 @@ def list_basins(name):
 
 BASINS = list_basins("delta_polygons")
 
+# Optional CLI override to restrict a run to specific basin(s), e.g. for
+# testing a single delta without re-running the full multi-basin fleet:
+#   snakemake build --cores N --config target_basins="[2433835]" --forceall
+if config.get("target_basins"):
+    _target_basins = [int(b) for b in config["target_basins"]]
+    _unknown = sorted(set(_target_basins) - set(BASINS))
+    if _unknown:
+        raise ValueError(
+            f"target_basins {_unknown} not found among discovered BASINS "
+            f"(from delta_polygons) — check the basin_id(s)"
+        )
+    BASINS = _target_basins
+
 RESULTS_DIR = config["results_dir"]
 
 def results_path(pattern):
@@ -34,3 +42,16 @@ def results_path(pattern):
 
 wildcard_constraints:
     basin_id = r"\d+"
+
+if config["sfincs"]["grid"]["quadtree"]["enabled"] and not config["sfincs"]["subgrid"]["enabled"]:
+    raise ValueError(
+        "sfincs.grid.quadtree.enabled requires sfincs.subgrid.enabled = true "
+        "(quadtree postprocessing relies on the subgrid dep_subgrid.tif reference raster)"
+    )
+
+_FORCING_MODES = ("compound", "coastal_only", "river_only")
+if config["boundary_setup"]["mode"] not in _FORCING_MODES:
+    raise ValueError(
+        f"boundary_setup.mode = {config['boundary_setup']['mode']!r} is not valid "
+        f"— must be one of {_FORCING_MODES}"
+    )

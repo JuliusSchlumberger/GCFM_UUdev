@@ -29,6 +29,7 @@ log.info(f"Written: {snakemake.output.spec_roughness}")
 plot_roughness(
     snakemake.output.spec_roughness, domain_poly,
     snakemake.input.land_polygons, snakemake.output.plot_roughness,
+    water_bodies_path=snakemake.input.spec_landuse,
 )
 profiler.stop()
 log.info("Done")

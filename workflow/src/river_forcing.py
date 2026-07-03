@@ -8,7 +8,7 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import xarray as xr
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 
 from src.surge import sinusoidal_wave
 from src.extreme_values import EVAResult
@@ -48,6 +48,37 @@ def has_downstream_in_domain(rch_id_dn_raw, domain_reach_ids: set[str]) -> bool:
 # ── inside-domain source location resolution ─────────────────────────────────
 
 
+def _domain_entry_point(line, domain_poly: Polygon) -> Point | None:
+    """
+    Return the point where `line` first enters `domain_poly`, walking from
+    the line's start coordinate towards its end. None if `line` never enters
+    the domain at all.
+
+    Clips `line` to `domain_poly` (interior, not just the exterior ring) and
+    picks whichever piece of the clipped geometry starts earliest along the
+    original line (via `line.project()`), so a reach that dips in and out of
+    the domain multiple times still resolves to its first entry, not an
+    arbitrary one.
+    """
+    clipped = line.intersection(domain_poly)
+    if clipped.is_empty:
+        return None
+    if clipped.geom_type == "Point":
+        return clipped
+    if clipped.geom_type == "MultiPoint":
+        return min(clipped.geoms, key=line.project)
+    if clipped.geom_type == "LineString":
+        pieces = [clipped]
+    elif clipped.geom_type == "MultiLineString":
+        pieces = list(clipped.geoms)
+    else:
+        return None
+    candidates = [Point(piece.coords[0]) for piece in pieces if len(piece.coords) > 0]
+    if not candidates:
+        return None
+    return min(candidates, key=line.project)
+
+
 def resolve_inside_domain_reaches(
     crossings: gpd.GeoDataFrame,
     river_gdf: gpd.GeoDataFrame,
@@ -55,23 +86,25 @@ def resolve_inside_domain_reaches(
     max_hops: int = 30,
 ) -> gpd.GeoDataFrame:
     """
-    Walk downstream from each crossing reach to find the reach whose centroid
-    lies inside the domain polygon AND whose lakeflag is not 1 (sea/reservoir).
-    Returns a copy of `crossings` with:
+    Walk downstream from each crossing reach to find the point where the
+    river network first actually enters the domain polygon -- i.e. the
+    domain boundary clipped through the crossing reach's own geometry, not a
+    reach vertex somewhere further downstream. Returns a copy of `crossings`
+    with:
 
-    - geometry updated to the inside-domain reach centroid (crossing point used
-      as fallback when no qualifying reach is found within max_hops)
-    - inside_reach_id: reach_id of the found inside-domain reach (None on fallback)
-    - width, max_width, lakeflag: attributes of the inside-domain reach (if
-      present in river_gdf), overwriting the corresponding attributes of the
-      crossing reach
+    - geometry updated to that domain-entry point (crossing point used as
+      fallback when no reach within max_hops ever enters the domain)
+    - inside_reach_id: reach_id of the reach whose geometry the entry point
+      lies on (None on fallback)
+    - width, max_width: attributes of that reach (if present in river_gdf),
+      overwriting the corresponding attributes of the crossing reach
 
-    Reaches inside the domain with lakeflag == 1 are skipped and the walk
-    continues downstream until a non-lake/sea reach is found.
-
-    The geometry update ensures that both the visible_on_grid filter (width of
-    the inside-domain reach) and the GloFAS radius search use the same
-    representative inside-domain position.
+    Most crossings resolve on the very first hop (the crossing reach itself
+    enters the domain at the same point find_boundary_crossings found).
+    Walking downstream is only needed for a reach that merely touches the
+    domain boundary without any of its length lying inside it (e.g. the
+    boundary crossing is its very last vertex) -- in that case, the next
+    downstream reach is checked instead.
 
     Args:
         crossings:   GeoDataFrame from find_boundary_crossings.
@@ -87,9 +120,7 @@ def resolve_inside_domain_reaches(
         if rid:
             reach_lookup[rid] = row
 
-    topo_attrs = [
-        a for a in ("width", "max_width", "lakeflag") if a in river_gdf.columns
-    ]
+    topo_attrs = [a for a in ("width", "max_width") if a in river_gdf.columns]
 
     new_geoms: list = []
     inside_reach_ids: list = []
@@ -112,20 +143,11 @@ def resolve_inside_domain_reaches(
                 break
             visited.add(current)
             reach_row = reach_lookup[current]
-            centroid = reach_row.geometry.interpolate(0.5, normalized=True)
-            if domain_poly.contains(centroid):
-                try:
-                    lf = int(float(str(reach_row.get("lakeflag", 0) or 0)))
-                except (ValueError, TypeError):
-                    lf = 0
-                if lf != 1:
-                    found_geom = centroid
-                    found_reach = reach_row
-                    break
-                log.debug(
-                    f"Crossing {i}: reach {current} inside domain but "
-                    f"lakeflag=1 (sea/reservoir); continuing downstream"
-                )
+            entry_point = _domain_entry_point(reach_row.geometry, domain_poly)
+            if entry_point is not None:
+                found_geom = entry_point
+                found_reach = reach_row
+                break
             dn_raw = str(reach_row.get("rch_id_dn", "") or "").strip().strip("[]")
             if not dn_raw or dn_raw.lower() in ("nan", "none", "<na>"):
                 break
@@ -149,167 +171,14 @@ def resolve_inside_domain_reaches(
             for a in topo_attrs:
                 inside_attr_vals[a].append(crossing_row.get(a))
             log.warning(
-                f"Crossing {i} (reach_id={start_id}): no inside-domain reach with "
-                f"lakeflag≠1 found within {max_hops} hops; using crossing point as fallback"
+                f"Crossing {i} (reach_id={start_id}): no reach entering the "
+                f"domain found within {max_hops} hops; using crossing point "
+                f"as fallback"
             )
 
     result = crossings.copy()
     result["geometry"] = new_geoms
     result["inside_reach_id"] = inside_reach_ids
-    for a in topo_attrs:
-        result[a] = inside_attr_vals[a]
-    return result
-
-
-# ── DEM elevation filter ─────────────────────────────────────────────────────
-
-
-def resolve_dem_elevation_reach(
-    crossings: gpd.GeoDataFrame,
-    river_gdf: gpd.GeoDataFrame,
-    elev_threshold: float,
-    domain_poly: Polygon,
-    max_hops: int = 50,
-) -> gpd.GeoDataFrame:
-    """
-    Walk downstream from the inside-domain reach to find a reach whose
-    max_elevation is within the valid DEM range (≤ elev_threshold).
-
-    Should be called after resolve_inside_domain_reaches.  Updates geometry,
-    inside_reach_id, and topographic attributes (width, max_width, lakeflag,
-    max_elevation) to the newly-found reach.  Adds boolean column
-    `within_dem_range` — False when no qualifying reach is found within
-    max_hops.
-
-    Args:
-        crossings:       GeoDataFrame returned by resolve_inside_domain_reaches.
-        river_gdf:       Clipped river network (EPSG:4326) with max_elevation column.
-        elev_threshold:  Maximum accepted elevation (clip_elevation_m + buffer_m).
-        domain_poly:     Shapely Polygon of the domain (EPSG:4326).
-        max_hops:        Maximum downstream hops before marking as out of range.
-    """
-    import pandas as pd  # noqa: F401 – used via type hints only
-
-    if "max_elevation" not in river_gdf.columns:
-        log.warning(
-            "river_gdf has no 'max_elevation' column — "
-            "DEM elevation filter skipped; all crossings marked within_dem_range=True"
-        )
-        result = crossings.copy()
-        result["within_dem_range"] = True
-        return result
-
-    reach_lookup: dict[str, "pd.Series"] = {}
-    for _, row in river_gdf.iterrows():
-        rid = _norm_reach_id(row.get("reach_id"))
-        if rid:
-            reach_lookup[rid] = row
-
-    topo_attrs = [
-        a
-        for a in ("width", "max_width", "lakeflag", "max_elevation")
-        if a in river_gdf.columns
-    ]
-
-    new_geoms: list = []
-    new_inside_ids: list = []
-    within_range: list[bool] = []
-    inside_attr_vals: dict[str, list] = {a: [] for a in topo_attrs}
-
-    for i, (_, crossing_row) in enumerate(crossings.iterrows()):
-        start_id = _norm_reach_id(crossing_row.get("inside_reach_id"))
-        if start_id is None:
-            start_id = _norm_reach_id(crossing_row.get("reach_id"))
-
-        start_row = reach_lookup.get(start_id) if start_id else None
-        if start_row is None:
-            new_geoms.append(crossing_row.geometry)
-            new_inside_ids.append(crossing_row.get("inside_reach_id"))
-            within_range.append(False)
-            for a in topo_attrs:
-                inside_attr_vals[a].append(crossing_row.get(a))
-            if start_id:
-                log.warning(
-                    f"Crossing {i}: inside_reach_id={start_id} not found in river "
-                    f"network — marked outside DEM elevation range"
-                )
-            continue
-
-        # Fast-path: starting reach already within threshold
-        start_elev = float(start_row.get("max_elevation", np.nan) or np.nan)
-        if not np.isfinite(start_elev) or start_elev <= elev_threshold:
-            new_geoms.append(crossing_row.geometry)
-            new_inside_ids.append(crossing_row.get("inside_reach_id"))
-            within_range.append(True)
-            for a in topo_attrs:
-                inside_attr_vals[a].append(crossing_row.get(a))
-            continue
-
-        # Walk downstream until we find a reach that is inside the domain,
-        # not a lake, and has max_elevation <= elev_threshold.
-        current = start_id
-        visited: set[str] = set()
-        found_geom = None
-        found_reach = None
-
-        for _ in range(max_hops):
-            if not current or current in visited or current not in reach_lookup:
-                break
-            visited.add(current)
-            reach_row = reach_lookup[current]
-
-            centroid = reach_row.geometry.interpolate(0.5, normalized=True)
-            if domain_poly.contains(centroid):
-                try:
-                    lf = int(float(str(reach_row.get("lakeflag", 0) or 0)))
-                except (ValueError, TypeError):
-                    lf = 0
-                if lf != 1:
-                    elev = float(reach_row.get("max_elevation", np.nan) or np.nan)
-                    if not np.isfinite(elev) or elev <= elev_threshold:
-                        found_geom = centroid
-                        found_reach = reach_row
-                        break
-
-            dn_raw = str(reach_row.get("rch_id_dn", "") or "").strip().strip("[]")
-            if not dn_raw or dn_raw.lower() in ("nan", "none", "<na>"):
-                break
-            current = None
-            for token in dn_raw.split(","):
-                normed = _norm_reach_id(token.strip())
-                if normed:
-                    current = normed
-                    break
-
-        if found_geom is not None and found_reach is not None:
-            new_geoms.append(found_geom)
-            new_inside_ids.append(_norm_reach_id(found_reach.get("reach_id")))
-            within_range.append(True)
-            for a in topo_attrs:
-                inside_attr_vals[a].append(found_reach.get(a))
-            found_elev = float(found_reach.get("max_elevation", np.nan) or np.nan)
-            log.debug(
-                f"Crossing {i}: walked to reach "
-                f"{_norm_reach_id(found_reach.get('reach_id'))} "
-                f"(max_elevation={found_elev:.1f} m ≤ {elev_threshold:.1f} m)"
-            )
-        else:
-            new_geoms.append(crossing_row.geometry)
-            new_inside_ids.append(crossing_row.get("inside_reach_id"))
-            within_range.append(False)
-            for a in topo_attrs:
-                inside_attr_vals[a].append(crossing_row.get(a))
-            log.warning(
-                f"Crossing {i} (reach_id={_norm_reach_id(crossing_row.get('reach_id'))}): "
-                f"no reach with max_elevation ≤ {elev_threshold:.1f} m found within "
-                f"{max_hops} hops (start elevation {start_elev:.1f} m) — "
-                f"crossing marked outside DEM elevation range"
-            )
-
-    result = crossings.copy()
-    result["geometry"] = new_geoms
-    result["inside_reach_id"] = new_inside_ids
-    result["within_dem_range"] = within_range
     for a in topo_attrs:
         result[a] = inside_attr_vals[a]
     return result
@@ -388,6 +257,106 @@ def find_best_glofas_cell(
     flat_best = int(np.argmax(np.where(qualified, mean_q, -np.inf)))
     i_lat, i_lon = divmod(flat_best, len(lon_arr))
     return i_lat, i_lon
+
+
+# ── GRDC gauge matching ───────────────────────────────────────────────────────
+
+
+def load_grdc_stations(path: str | Path) -> gpd.GeoDataFrame:
+    """
+    Load GRDC station metadata as a point GeoDataFrame.
+
+    Only the station-dimensioned variables are read (not the (time, id)
+    ``runoff_mean`` array), so this is cheap regardless of the time
+    dimension's size.
+
+    Args:
+        path: Path to GRDC-Daily.nc.
+
+    Returns:
+        GeoDataFrame (EPSG:4326), one row per station, geometry =
+        Point(geo_x, geo_y). Includes an 'id' column plus whichever of
+        'river_name', 'station_name', 'area', 'country' are present.
+    """
+    with xr.open_dataset(path) as ds:
+        ids = ds["id"].values
+        lons = ds["geo_x"].values.astype(float)
+        lats = ds["geo_y"].values.astype(float)
+        data: dict = {"id": ids}
+        for var in ("river_name", "station_name", "area", "country"):
+            if var in ds:
+                values = ds[var].values
+                data[var] = values.astype(str) if values.dtype.kind == "U" else values
+
+    return gpd.GeoDataFrame(
+        data, geometry=gpd.points_from_xy(lons, lats), crs="EPSG:4326"
+    )
+
+
+def find_nearest_grdc_station(
+    stations_gdf: gpd.GeoDataFrame,
+    pt_lon: float,
+    pt_lat: float,
+    radius_m: float,
+    utm_crs: str,
+) -> int | None:
+    """
+    Find the nearest GRDC station within radius_m of (pt_lon, pt_lat).
+
+    Mirrors find_best_glofas_cell's UTM-projection-distance pattern: both the
+    query point and all station locations are projected to utm_crs so
+    distance is plain Euclidean metres.
+
+    Args:
+        stations_gdf: GeoDataFrame from load_grdc_stations.
+        pt_lon, pt_lat: Inside-domain source point (degrees).
+        radius_m: Search radius in metres.
+        utm_crs: Domain UTM CRS (e.g. 'EPSG:32636').
+
+    Returns:
+        Station 'id' (int) of the nearest station within radius, or None if
+        stations_gdf is empty or no station is within radius_m.
+    """
+    if stations_gdf.empty:
+        return None
+
+    from pyproj import Transformer
+
+    to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
+    pt_x, pt_y = to_utm.transform(pt_lon, pt_lat)
+    sta_x, sta_y = to_utm.transform(
+        stations_gdf.geometry.x.values, stations_gdf.geometry.y.values
+    )
+
+    dist_m = np.sqrt((sta_x - pt_x) ** 2 + (sta_y - pt_y) ** 2)
+    i_min = int(np.argmin(dist_m))
+    if dist_m[i_min] > radius_m:
+        return None
+    return int(stations_gdf["id"].values[i_min])
+
+
+def load_grdc_series(
+    path: str | Path, station_id: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Load the full daily discharge series for one GRDC station.
+
+    The dataset's -999.0 missing-value sentinel is converted to NaN.
+
+    Args:
+        path: Path to GRDC-Daily.nc.
+        station_id: GRDC station 'id' (as returned by find_nearest_grdc_station).
+
+    Returns:
+        (times, values): times as np.ndarray[datetime64[ns]], values as
+        np.ndarray[float64] with -999 -> NaN. NaN-dropping is left to
+        downstream alignment (e.g. extreme_values._to_series).
+    """
+    with xr.open_dataset(path) as ds:
+        times = ds["time"].values
+        values = ds["runoff_mean"].sel(id=station_id).values.astype(float)
+
+    return times, np.where(values == -999.0, np.nan, values)
 
 
 # ── boundary crossings ────────────────────────────────────────────────────────
@@ -533,10 +502,22 @@ def build_river_dataset(
     results: list[EVAResult | None],
     rp_bankfull: float,
     rp_flood: float,
+    bias_corrected: np.ndarray,
+    grdc_station_id: np.ndarray,
+    grdc_correlation: np.ndarray,
+    grdc_overlap_days: np.ndarray,
 ) -> xr.Dataset:
     """Assemble the river forcing dataset with synthetic sinusoidal waves rising
     from RP=2 (bankfull) to RP=100 (flood), plus EVA diagnostic variables.
 
+    Args:
+        bias_corrected: int8 array, 1 if the GloFAS cell feeding this crossing
+            was bias-corrected against a GRDC gauge before EVA.
+        grdc_station_id: int64 array, matched GRDC station 'id', or -1 if none.
+        grdc_correlation: float array, Pearson r (raw GloFAS vs GRDC) over the
+            overlap period, or NaN if no correction was applied.
+        grdc_overlap_days: float array, number of overlapping valid days used
+            for bias correction, or NaN if no correction was applied.
     """
     n_cross = len(crossings)
     discharge_matrix = np.full((n_cross, len(times)), np.nan)
@@ -570,8 +551,8 @@ def build_river_dataset(
 
     # Store inside_reach_id only for crossings that passed all filters.
     # has_glofas=True encapsulates enters_domain AND visible_on_grid AND
-    # within_dem_range AND EVA convergence; filtered-out crossings get ""
-    # so rule 05 never accidentally seeds from them.
+    # EVA convergence; filtered-out crossings get "" so rule 08 never
+    # accidentally seeds from them.
     if "inside_reach_id" in crossings.columns:
         inside_reach_ids_arr = np.array(
             [
@@ -655,6 +636,34 @@ def build_river_dataset(
             ),
             "glofas_cell_lon": (["crossing"], cell_lon, {"units": "degrees_east"}),
             "glofas_cell_lat": (["crossing"], cell_lat, {"units": "degrees_north"}),
+            # ── GRDC bias-correction provenance ──
+            "bias_corrected": (
+                ["crossing"],
+                bias_corrected.astype(np.int8),
+                {
+                    "long_name": "1 if GloFAS discharge was bias-corrected against a GRDC gauge"
+                },
+            ),
+            "grdc_station_id": (
+                ["crossing"],
+                grdc_station_id.astype(np.int64),
+                {
+                    "long_name": "Matched GRDC station id (GRDC-Daily.nc 'id'); -1 if none"
+                },
+            ),
+            "grdc_correlation": (
+                ["crossing"],
+                grdc_correlation,
+                {"long_name": "Pearson r, raw GloFAS vs GRDC over the overlap period"},
+            ),
+            "grdc_overlap_days": (
+                ["crossing"],
+                grdc_overlap_days,
+                {
+                    "units": "days",
+                    "long_name": "Number of overlapping valid days used for bias correction",
+                },
+            ),
         },
         coords={
             "longitude": (["crossing"], cross_lons, {"units": "degrees_east"}),
@@ -679,7 +688,7 @@ def load_forcing_crossings(
     cannot parse as a CF datetime.
 
     Args:
-        forcing_path:       Path to river_forcing.nc produced by rule 04.
+        forcing_path:       Path to river_forcing.nc produced by rule 07.
         discharge_variable: If provided (e.g. 'bankfull_discharge'), the
                             corresponding values are included in the returned
                             GeoDataFrame as the 'bankfull_q' column.  Pass
@@ -723,11 +732,11 @@ def snap_crossings_to_reaches(
     """
     Build the seed-discharge dict from pre-computed inside_reach_ids.
 
-    The inside_reach_id for each crossing was resolved in rule 04 by
-    resolve_inside_domain_reaches + resolve_dem_elevation_reach and stored in
-    river_forcing.nc.  Only crossings that passed all filters (enters_domain,
-    visible_on_grid, within_dem_range, EVA convergence) carry a non-empty
-    inside_reach_id — they arrive here already filtered via load_forcing_crossings.
+    The inside_reach_id for each crossing was resolved in rule 07 by
+    resolve_inside_domain_reaches and stored in river_forcing.nc.  Only
+    crossings that passed all filters (enters_domain, visible_on_grid, EVA
+    convergence) carry a non-empty inside_reach_id — they arrive here
+    already filtered via load_forcing_crossings.
 
     When multiple crossings map to the same reach_id only the largest
     bankfull_q is kept.
@@ -751,7 +760,7 @@ def snap_crossings_to_reaches(
     if "inside_reach_id" not in crossings.columns:
         log.warning(
             "snap_crossings_to_reaches: no 'inside_reach_id' column — "
-            "re-run rule 04 to regenerate river_forcing.nc"
+            "re-run rule 07 to regenerate river_forcing.nc"
         )
         return {}
 
