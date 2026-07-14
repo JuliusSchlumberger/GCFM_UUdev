@@ -23,15 +23,31 @@ rule build_sfincs:
         # Optional: zbed anchor points — only present when conditioning enabled.
         # Using an empty list [] as the disabled fallback (Snakemake convention
         # for optional inputs that feed a lambda in the script).
+        # Unused (not passed to hydromt_sfincs's burn_river_rect) when
+        # burn_rivers is enabled instead -- see river_burned_dem below.
         zbed_anchors      = lambda wildcards: (
             results_path(f"{wildcards.basin_id}/inputs/domain/{wildcards.basin_id}_zbed_anchors.gpkg")
             if config["river_processing"]["conditioning"]["enabled"]
+            else []
+        ),
+        # Optional: channel-only, native-resolution burned DEM (rule
+        # burn_river_dem) — only present when burn_rivers is enabled.  Fed to
+        # hydromt_sfincs as a higher-priority elevation_list entry ahead of
+        # elevation_merged, bypassing burn_river_rect entirely (see
+        # 11b_burn_river_dem.smk for why).
+        river_burned_dem  = lambda wildcards: (
+            results_path(f"{wildcards.basin_id}/inputs/domain/{wildcards.basin_id}_river_burned_dem.tif")
+            if config["river_processing"]["burn_rivers"]["enabled"]
             else []
         ),
         roughness         = results_path("{basin_id}/inputs/domain/{basin_id}_roughness.tif"),
         land_polygons     = results_path("{basin_id}/inputs/domain/{basin_id}_land_polygons.gpkg"),
         # Always use the estuarine-depth network (see add_estuarine_depth rule).
         river_network     = results_path("{basin_id}/inputs/domain/{basin_id}_river_network_estuarine.gpkg"),
+        # Points where a non-seed, non-mouth reach crosses the delta polygon
+        # outline (rule clean_river_network) -- registered as an SFINCS
+        # outflow boundary (mask=3) below. Always produced (possibly empty).
+        delta_outflow_points = results_path("{basin_id}/inputs/domain/{basin_id}_delta_outflow_points.gpkg"),
         zsini             = results_path("{basin_id}/inputs/domain/{basin_id}_zsini.tif"),
         surge_forcing     = results_path("{basin_id}/inputs/forcing/surge_forcing.nc"),
         river_forcing     = results_path("{basin_id}/inputs/forcing/river_forcing.nc"),
@@ -48,6 +64,7 @@ rule build_sfincs:
         } if config["sfincs"]["grid"]["quadtree"]["enabled"] else {}),
     params:
         preburn_enabled    = config["river_processing"]["conditioning"]["enabled"],
+        burn_rivers_enabled = config["river_processing"]["burn_rivers"]["enabled"],
         resolution         = config["sfincs"]["grid"]["resolution"],
         include_subgrid    = config["sfincs"]["subgrid"]["enabled"],
         include_rstart     = config["sfincs"]["spinup"]["enabled"],
@@ -61,11 +78,12 @@ rule build_sfincs:
         dthisout           = config["sfincs"]["simulation"]["dthisout"],
         storevelmax        = config["sfincs"]["simulation"]["storevelmax"],
         storetwet          = config["sfincs"]["simulation"]["storetwet"],
-        velocity_animation_enabled = config["sfincs"]["sanity_checks"]["velocity_animation"]["enabled"],
         forcing_mode       = config["boundary_setup"]["mode"],
+        design_rp_river_yr = config["boundary_setup"]["design_rp_river_yr"],
         compound_lag_hr    = config["boundary_setup"]["compound"]["lag_hr"],
         flat_boundary_point_spacing_m = config["boundary_setup"]["flat_boundary_point_spacing_m"],
         waterlevel_buffer_m = config["boundary_setup"]["waterlevel_buffer_m"],
+        outflow_buffer_m = config["boundary_setup"]["outflow_buffer_m"],
         n_top_crossings    = config["sfincs"]["observation_points"]["n_top_crossings"],
         n_per_crossing     = config["sfincs"]["observation_points"]["n_per_crossing"],
         max_downstream_hops = config["sfincs"]["observation_points"]["max_downstream_hops"],

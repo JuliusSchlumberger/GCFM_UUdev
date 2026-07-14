@@ -4,6 +4,7 @@ import geopandas as gpd
 
 from src.estuarine_depth import (
     compute_estuarine_depths,
+    enforce_mouth_depth_monotonic,
     load_nienhuis,
     match_basin_to_delta,
 )
@@ -59,11 +60,19 @@ if enabled:
             convergence_ratio_k=snakemake.params.convergence_ratio_k,
             blend_fraction=snakemake.params.blend_fraction,
             min_depth_m=snakemake.params.min_depth_m,
-            width_column=snakemake.params.width_column,
         )
 else:
     # Disabled: pass network through unchanged, no estuarine columns added.
     rivers_out = rivers.copy()
+
+# ── mouth depth monotonicity ───────────────────────────────────────────────────
+# Applied unconditionally (not just when the estuarine model ran): a mouth
+# shouldn't be shallower than its own power-law estimate or the reach
+# feeding it, whether that shallowing came from the estuarine model's
+# O'Brien-relation estimate (and/or its min_depth_m floor) or -- in the
+# disabled/no-delta-match case -- would just be a plain power-law
+# discontinuity at the outlet.
+rivers_out = enforce_mouth_depth_monotonic(rivers_out)
 
 # ── write river_network_estuarine.gpkg ────────────────────────────────────────
 

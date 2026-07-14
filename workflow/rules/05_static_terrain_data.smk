@@ -35,8 +35,6 @@ rule get_elevation:
         elevation_merged = results_path("{basin_id}/inputs/domain/{basin_id}_elevation_merged.tif"),
         plot_elevation   = results_path("{basin_id}/visuals/input_data/05a_elevation.png"),
     params:
-        work_res_m          = config["terrain"]["work_res_m"],
-        mdt_variable        = config["datum_correction"]["mdt_variable"],
         mdt_load_margin_deg = config["datum_correction"]["mdt_load_margin_deg"],
     log:
         "logs/{basin_id}/05a_elevation.log"

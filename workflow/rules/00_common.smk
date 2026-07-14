@@ -1,8 +1,26 @@
+import os
+
 from src.io import load_catalogue, catalogue_entry,read_geometry, raw_input_path
 from src.io import general_path as _gen_path
 import geopandas as gpd
 
 CATALOGUE = load_catalogue(config["data_catalogue"])
+
+# ── local machine overrides ──────────────────────────────────────────────────
+# results_dir, the raw-data catalogue root, and the SFINCS executable path
+# are inherently machine-specific -- hand-editing them in config.yml /
+# data_catalogue.yml (both git-tracked, shared files) means every `git pull`
+# either overwrites your own local paths with whoever committed last, or
+# creates a merge conflict. Setting these three environment variables once
+# (see CONTRIBUTING.md "Local machine paths") overrides the committed values
+# without ever touching a tracked file again; unset, the committed defaults
+# below are used as before.
+if os.environ.get("GCFM_RESULTS_DIR"):
+    config["results_dir"] = os.environ["GCFM_RESULTS_DIR"]
+if os.environ.get("GCFM_RAW_DATA_ROOT"):
+    CATALOGUE["meta"]["root"] = os.environ["GCFM_RAW_DATA_ROOT"]
+if os.environ.get("GCFM_SFINCS_EXE"):
+    config["sfincs"]["simulation"]["sfincs_exe"] = os.environ["GCFM_SFINCS_EXE"]
 
 def catalogue_path(name):
     return raw_input_path(CATALOGUE, name)
@@ -47,6 +65,17 @@ if config["sfincs"]["grid"]["quadtree"]["enabled"] and not config["sfincs"]["sub
     raise ValueError(
         "sfincs.grid.quadtree.enabled requires sfincs.subgrid.enabled = true "
         "(quadtree postprocessing relies on the subgrid dep_subgrid.tif reference raster)"
+    )
+
+if (
+    config["river_processing"]["burn_rivers"]["enabled"]
+    and not config["river_processing"]["conditioning"]["enabled"]
+):
+    raise ValueError(
+        "river_processing.burn_rivers.enabled requires "
+        "river_processing.conditioning.enabled = true (burn_rivers burns the "
+        "zbed_anchors.gpkg profile computed by rule burn_river_bed, which "
+        "itself requires conditioning to be enabled)"
     )
 
 _FORCING_MODES = ("compound", "coastal_only", "river_only")

@@ -10,7 +10,7 @@ Provides per-cell estimation of return-period discharges using pyextremes:
 All EVA parameters are read from a plain dict (``eva_cfg``) matching the
 ``boundary_forcings.eva`` section of the project config YAML, including the
 newer optional knobs ``min_years_high_confidence`` (default 40.0),
-``peaks_per_year_min`` (default 3.0), ``threshold_min_pct`` (default 50.0),
+``peaks_per_year_min`` (default 1.0), ``threshold_min_pct`` (default 50.0),
 and ``deseasonalize_for_decorr``
 (default True) — see ``analyse_cell`` / ``_search_threshold`` for how each is
 used and what it defaults to when absent from the YAML.
@@ -29,7 +29,7 @@ particular the upper, flood-relevant tail) are linearly extrapolated using
 the outermost quantile-pair slope rather than clamped, so the correction
 does not flatten flood peaks that exceed anything seen in the overlap.
 Where no gauge is found within
-``boundary_forcings.river.grdc_search_radius_km``, or the overlap is too
+``boundary_forcings.river.bias_correction.grdc_search_radius_km``, or the overlap is too
 short, "GloFAS-as-truth" remains the documented limitation (logged by the
 caller, not an error).
 
@@ -113,6 +113,7 @@ class EVAResult:
     pot_n_peaks: int = 0
     pot_threshold_status: str = "none"
     pot_shape: float = np.nan
+    pot_scale: float = np.nan
     pot_ks_pvalue: float = np.nan
 
     # AMAX diagnostics
@@ -465,6 +466,92 @@ def _rv(eva_instance, rp: float) -> float:
     return float(result)
 
 
+def gpd_return_value(
+    threshold: float,
+    scale: float,
+    shape: float,
+    peaks_per_year: float,
+    return_period: float,
+) -> float:
+    """Discharge for an arbitrary return period from an already-fitted GPD.
+
+    Reconstructs pyextremes' own POT/GPD return-value formula directly from
+    the fitted parameters (pot_threshold/pot_scale/pot_shape/pot_peaks_per_year
+    -- e.g. as saved in river_forcing.nc), with no need to re-fit or re-touch
+    the raw discharge series. Matches _gpd_boot_ci's own formula exactly
+    (confirmed against pyextremes.eva.EVA.get_return_value's source: exceedance
+    probability = 1/(return_period * peaks_per_year), evaluated via
+    scipy.stats.genpareto.ppf on the exceedances distribution -- fit with
+    floc=0 -- then shifted back up by the threshold).
+
+    Args:
+        threshold:      POT threshold (m³/s) -- pot_threshold.
+        scale:          Fitted GPD scale parameter -- pot_scale.
+        shape:          Fitted GPD shape parameter (c) -- pot_shape.
+        peaks_per_year: Declustered peaks per year at that threshold --
+                        pot_peaks_per_year.
+        return_period:  Return period (years) to evaluate.
+
+    Returns:
+        Discharge (m³/s) for the requested return period, or NaN if any
+        input isn't finite.
+    """
+    inputs = (threshold, scale, shape, peaks_per_year, return_period)
+    if not all(np.isfinite(v) for v in inputs):
+        return np.nan
+    p = max(0.0, 1.0 - 1.0 / (peaks_per_year * return_period))
+    return float(threshold + stats.genpareto.ppf(p, shape, scale=scale))
+
+
+# Standard return-period list stored per crossing in river_forcing.nc
+# (discharge_rp_table) -- 5-yr steps from 5 to 1000 yr, then 1000-yr steps to
+# 10000 yr, plus the sub-5yr bankfull-adjacent points (1, 1.5, 2 yr). Fixed,
+# not configurable: this is a reference table meant to be interpolated at an
+# arbitrary requested return period (see build_design_discharge_matrix in
+# river_forcing.py), not a set of independently tunable knobs.
+STANDARD_RETURN_PERIODS_YR: np.ndarray = np.array(
+    sorted(
+        set(
+            [1.0, 1.5, 2.0]
+            + [float(x) for x in range(5, 1001, 5)]
+            + [float(x) for x in range(1000, 10001, 1000)]
+        )
+    )
+)
+
+
+def gpd_return_value_table(
+    threshold: float,
+    scale: float,
+    shape: float,
+    peaks_per_year: float,
+    return_periods: np.ndarray = STANDARD_RETURN_PERIODS_YR,
+) -> np.ndarray:
+    """Discharge at every return period in ``return_periods`` from an
+    already-fitted GPD -- vectorized sibling of ``gpd_return_value``, same
+    formula, no re-fitting.
+
+    Args:
+        threshold:      POT threshold (m³/s) -- pot_threshold.
+        scale:          Fitted GPD scale parameter -- pot_scale.
+        shape:          Fitted GPD shape parameter (c) -- pot_shape.
+        peaks_per_year: Declustered peaks per year at that threshold --
+                        pot_peaks_per_year.
+        return_periods: Return periods (years) to evaluate, default
+                        STANDARD_RETURN_PERIODS_YR.
+
+    Returns:
+        np.ndarray, same shape as ``return_periods`` -- all-NaN if any of
+        threshold/scale/shape/peaks_per_year isn't finite.
+    """
+    return_periods = np.asarray(return_periods, dtype=float)
+    inputs = (threshold, scale, shape, peaks_per_year)
+    if not all(np.isfinite(v) for v in inputs):
+        return np.full(return_periods.shape, np.nan)
+    p = np.clip(1.0 - 1.0 / (peaks_per_year * return_periods), 0.0, None)
+    return threshold + stats.genpareto.ppf(p, shape, scale=scale)
+
+
 # ── sequential bootstrap CIs (no multiprocessing — safe on Windows/Snakemake) ─
 
 
@@ -589,14 +676,20 @@ def _search_threshold(
     (default 50.0) caps how far down the threshold may go.
 
     Returns (fitted EVA instance, (threshold, peaks_per_year, status)) or
-    (last_eva, last_tuple) flagged 'reject' if no iteration met the criterion.
+    (last_eva, last_tuple) flagged with the specific rejection reason
+    ('reject: ppy<min' or 'reject: ppy>max') if no iteration met the
+    criterion, so it's visible (e.g. in the diagnostic plot title) whether
+    the threshold search ran out of room lowering the threshold (too few
+    independent peaks even at a low percentile -- typical of slow,
+    large-basin rivers) or raising it (too many peaks even at a high
+    percentile).
     """
     thr_start = float(_c(cfg, "threshold_start_pct", 90.0))
     thr_step = float(_c(cfg, "threshold_step_pct", 1.0))
     thr_max = float(_c(cfg, "threshold_max_pct", 99.5))
     thr_min = float(_c(cfg, "threshold_min_pct", 50.0))
     max_iter = int(_c(cfg, "threshold_max_iter", 30))
-    ppy_min = float(_c(cfg, "peaks_per_year_min", 3.0))
+    ppy_min = float(_c(cfg, "peaks_per_year_min", 1.0))
     ppy_max = float(_c(cfg, "peaks_per_year_max", 5.0))
     _fit_method = str(_c(cfg, "fit_method", "Lmoments"))  # reserved for future use
 
@@ -609,7 +702,12 @@ def _search_threshold(
         eva.get_extremes("POT", threshold=thr, r=f"{r_days}D")
         ppy = len(eva.extremes) / record_years
 
-        status = "good" if ppy_min <= ppy <= ppy_max else "reject"
+        if ppy_min <= ppy <= ppy_max:
+            status = "good"
+        elif ppy < ppy_min:
+            status = "reject: ppy<min"
+        else:
+            status = "reject: ppy>max"
 
         log.info(
             f"{tag}threshold iter {it}/{max_iter}: "
@@ -868,7 +966,16 @@ def analyse_cell(
             if protection_rp is not None:
                 res.q_protection = _rv(eva_pot, protection_rp)
             gpd_params = eva_pot.model.fit_parameters
-            res.pot_shape = float(gpd_params.get("c", np.nan))
+            # pyextremes picks between "genpareto" and "expon" candidate
+            # distributions by AIC (see EVA.fit_model). "expon" has no shape
+            # parameter at all -- it IS the GPD with shape fixed at 0 (the
+            # c -> 0 limit of the GPD family) -- so a missing "c" key means
+            # shape=0 was selected as the better fit, not that fitting failed.
+            res.pot_shape = float(gpd_params.get("c", 0.0))
+            # Saved alongside pot_threshold/pot_shape/pot_peaks_per_year so a
+            # downstream consumer can compute the discharge for an arbitrary
+            # return period later without re-fitting -- see gpd_return_value.
+            res.pot_scale = float(gpd_params.get("scale", np.nan))
 
             # Per-fit sanity check (advisory): |shape| > 0.5 is implausible for
             # river-discharge tails and usually signals a poorly conditioned
@@ -995,6 +1102,20 @@ def plot_cell_diagnostics(
             _plot_decade_trend(axes[1, 1], eva_bm.extremes, res)
     except Exception as e:
         axes[1, 0].text(0.5, 0.5, f"AMAX plot failed:\n{e}", ha="center", va="center")
+
+    # pyextremes's plot_extremes() (top-left) calls fig.autofmt_xdate()
+    # internally, which assumes every subplot shares ONE date x-axis and
+    # hides tick labels/xlabel on every row except the last -- but this
+    # figure's four axes each have their OWN independent x-axis (time,
+    # return period x2, decade), not a shared date axis, so that call
+    # incorrectly hides both top-row axes' tick numbers (their xlabel text
+    # gets set again by each panel's own plotting call afterwards, which is
+    # why only the tick NUMBERS were missing, not the axis labels).
+    axes[0, 0].set_xlabel("date-time")
+    for row_ax in (axes[0, 0], axes[0, 1]):
+        row_ax.xaxis.set_tick_params(labelbottom=True)
+        for lbl in row_ax.get_xticklabels():
+            lbl.set_visible(True)
 
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     output_path = Path(output_path)

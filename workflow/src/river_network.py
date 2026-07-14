@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-import math
+import re
 from collections import deque
 from pathlib import Path
 
@@ -42,54 +42,6 @@ def _as_linestring(geom):
             return None
         return max(parts, key=lambda g: g.length)
     return geom
-
-
-def _end_direction_vec(
-    line,
-    from_start: bool,
-    simplify_tol: float = 1e-3,
-) -> np.ndarray | None:
-    """Return a unit vector at one end of a (simplified) LineString.
-
-    from_start=True  → vector pointing forward from the first coord (downstream arm).
-    from_start=False → vector pointing backward from the last coord (upstream reach).
-
-    Both vectors point away from the junction, so a straight-through reach
-    produces antiparallel vectors with dot-product = –1  (angle = 180°).
-    Returns None if fewer than 2 distinct coords remain after simplification.
-    """
-    line = _as_linestring(line)
-    if line is None:
-        return None
-    simp = line.simplify(simplify_tol, preserve_topology=False)
-    simp = _as_linestring(simp) or line
-    coords = list(simp.coords)
-    if len(coords) < 2:
-        coords = list(line.coords)
-    if len(coords) < 2:
-        return None
-    if from_start:
-        ax, ay = coords[0][:2]
-        bx, by = coords[1][:2]
-        vec = np.array([bx - ax, by - ay], dtype=float)
-    else:
-        ax, ay = coords[-2][:2]
-        bx, by = coords[-1][:2]
-        vec = np.array([ax - bx, ay - by], dtype=float)  # back from junction
-    norm = math.sqrt(vec[0] ** 2 + vec[1] ** 2)
-    return vec / norm if norm > 0 else None
-
-
-def _angle_factor(angle_deg: float, min_factor: float = 0.1) -> float:
-    """Map junction angle to a discharge-weighting factor.
-
-    angle_deg = 180 → straight continuation → 1.0
-    angle_deg =  90 → perpendicular turn   → min_factor
-    angle_deg <  90 → acute / U-turn       → min_factor
-    """
-    if angle_deg >= 90.0:
-        return min_factor + (1.0 - min_factor) * (angle_deg - 90.0) / 90.0
-    return min_factor
 
 
 def collect_downstream_main_paths(
@@ -228,7 +180,11 @@ def build_downstream_adjacency(
     """
     Parse the 'rch_id_dn' column to build a downstream adjacency map.
 
-    'rch_id_dn' is stored as a stringified list "[id1, id2, ...]".
+    'rch_id_dn' is stored as a Python-list-repr string, e.g.
+    "[id1, id2]" (SWORD v17c's convention; splitting on comma-or-whitespace
+    below is deliberately also robust to a plain whitespace-separated
+    string, e.g. "id1 id2", in case a future source uses that convention
+    instead).
     Only reach IDs that exist within the provided GeoDataFrame are retained;
     references outside the domain are silently dropped.
 
@@ -250,7 +206,7 @@ def build_downstream_adjacency(
         if pd.notna(dn_raw):
             s = str(dn_raw).strip().strip("[]")
             if s:
-                for token in s.split(","):
+                for token in re.split(r"[,\s]+", s):
                     normed = normalize_reach_id(token.strip())
                     if normed and normed in all_ids:
                         dn_ids.append(normed)
@@ -417,18 +373,13 @@ def accumulate_discharge(
     min_width_m: float,
 ) -> np.ndarray:
     """
-    Iterative width-and-angle-weighted downstream flow accumulation.
+    Iterative width-weighted downstream flow accumulation.
 
     Starting from seed reaches whose discharge is known from the boundary
-    forcing, propagates discharge one hop downstream per iteration.  At
-    bifurcations the upstream discharge is split in proportion to
-    ``width × angle_factor`` for each receiving arm.  The angle_factor is 1.0
-    for a straight continuation (180°), scales linearly to 0.1 at 90°, and
-    stays at 0.1 for more acute deflections.  At confluences contributions
-    from all upstream reaches accumulate via addition.
-
-    Angle factors are computed once from the simplified reach geometries before
-    the iteration loop.
+    forcing, propagates discharge one hop downstream per iteration. At
+    bifurcations the upstream discharge is split proportional to each
+    receiving arm's width. At confluences contributions from all upstream
+    reaches accumulate via addition.
 
     Args:
         rivers:       Cleaned river network GeoDataFrame with 'reach_id',
@@ -462,33 +413,6 @@ def accumulate_discharge(
         for i, rid in enumerate(rids)
     }
 
-    # Pre-compute angle correction factors for bifurcations (len(dn) > 1).
-    geoms = rivers.geometry
-    angle_factors: dict[int, np.ndarray] = {}
-    for i, rid in enumerate(rids):
-        dn = adj_idx.get(i, [])
-        if len(dn) <= 1:
-            continue
-        up_vec = _end_direction_vec(geoms.iloc[i], from_start=False)
-        af: list[float] = []
-        for j in dn:
-            dn_vec = _end_direction_vec(geoms.iloc[j], from_start=True)
-            if up_vec is None or dn_vec is None:
-                af.append(1.0)
-            else:
-                cos_a = float(np.clip(np.dot(up_vec, dn_vec), -1.0, 1.0))
-                af.append(_angle_factor(math.degrees(math.acos(cos_a))))
-        angle_factors[i] = np.array(af, dtype=float)
-
-    if angle_factors:
-        all_af = np.concatenate(list(angle_factors.values()))
-        log.info(
-            f"Angle correction pre-computed for {len(angle_factors)} bifurcations "
-            f"({len(all_af)} arms); "
-            f"mean factor = {all_af.mean():.3f}, "
-            f"min = {all_af.min():.3f}, max = {all_af.max():.3f}"
-        )
-
     q = np.zeros(len(rids))
     seed_mask = np.zeros(len(rids), dtype=bool)
     for rid, val in seed_q.items():
@@ -511,13 +435,8 @@ def accumulate_discharge(
             if not dn:
                 continue
             w_dn = widths[dn]
-            if i in angle_factors:
-                combined = w_dn * angle_factors[i]
-                total = combined.sum()
-                shares = combined / total if total > 0 else np.ones(len(dn)) / len(dn)
-            else:
-                total_w = w_dn.sum()
-                shares = w_dn / total_w if total_w > 0 else np.ones(len(dn)) / len(dn)
+            total_w = w_dn.sum()
+            shares = w_dn / total_w if total_w > 0 else np.ones(len(dn)) / len(dn)
             for j, d in enumerate(dn):
                 next_q[d] += q[i] * shares[j]
 
@@ -566,6 +485,279 @@ def compute_hydraulic_depth(
     return depth
 
 
+def identify_delta_outflow_points(
+    rivers: gpd.GeoDataFrame,
+    delta_polygon,
+) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
+    """
+    Identify river reaches that cross the delta polygon's OUTLINE (the
+    boundary ring, not its filled interior) but are neither the seed
+    (inflow boundary point) nor a mouth (network-terminal outflow point)
+    there, and mark their outline-crossing location as a hydrodynamic
+    outflow boundary point -- a place where flow genuinely exits the
+    modelled river network into the delta plain (e.g. a distributary
+    channel not itself flagged as a network-terminal "mouth"), rather
+    than a data artefact to discard.
+
+    Reaches entirely inside or entirely outside the delta polygon never
+    qualify, regardless of 'is_seed'/mouth status -- only a reach whose
+    geometry actually crosses the boundary line is a candidate at all
+    (confirmed for basin 4267691: only 4/312 raw reaches cross the outline,
+    3 of which are exactly its 3 known seed reaches; checking against the
+    filled polygon instead flagged 127/147 reaches -- almost the entire
+    network -- which was not the intent).
+
+    A qualifying reach -- crosses the delta outline, 'is_seed' is False,
+    isn't a mouth (no downstream neighbour in-network), AND isn't a
+    bifurcation (a reach with >1 downstream neighbour is always a valid,
+    ordinary network junction, never treated as an outflow location) --
+    is KEPT UNCHANGED in the network (no removal, no rch_id_dn rewriting),
+    flagged via a new 'is_delta_outflow' column, and its exact intersection
+    point(s) with the delta outline are collected into a separate output
+    GeoDataFrame for use as an SFINCS outflow boundary (mask=3). Must run
+    AFTER 'is_seed' has been assigned.
+
+    Args:
+        rivers:        River network with 'reach_id', 'rch_id_dn', 'is_seed'
+                       columns and a geometry column.
+        delta_polygon: Shapely geometry or GeoDataFrame of the delta
+                       boundary (any CRS -- reprojected to match ``rivers``
+                       internally). Only its outline (.boundary) is used.
+
+    Returns:
+        (rivers, outflow_points): ``rivers`` is the input GeoDataFrame with
+        an added boolean 'is_delta_outflow' column (otherwise unchanged);
+        ``outflow_points`` is a GeoDataFrame (columns: 'reach_id',
+        geometry -- Point, same CRS as ``rivers``) with one row per
+        outline-crossing point (a reach whose geometry crosses the outline
+        more than once contributes more than one row). Empty (but
+        correctly-shaped) when no reach qualifies.
+    """
+    if hasattr(delta_polygon, "crs"):
+        if delta_polygon.crs is not None and delta_polygon.crs != rivers.crs:
+            delta_polygon = delta_polygon.to_crs(rivers.crs)
+        delta_geom = delta_polygon.geometry.union_all()
+    else:
+        delta_geom = delta_polygon
+    delta_outline = delta_geom.boundary
+
+    downstream_adj = build_downstream_adjacency(rivers)
+    mouth_ids = {rid for rid, dns in downstream_adj.items() if not dns}
+
+    rivers = rivers.copy()
+    rids = rivers["reach_id"].apply(normalize_reach_id)
+    is_seed = (
+        rivers["is_seed"].fillna(False).astype(bool)
+        if "is_seed" in rivers.columns
+        else False
+    )
+    crosses_outline = rivers.geometry.intersects(delta_outline)
+
+    is_bifurcation = rids.map(lambda rid: len(downstream_adj.get(rid, [])) > 1)
+    qualifying_mask = (
+        crosses_outline.to_numpy()
+        & ~np.asarray(is_seed)
+        & ~rids.isin(mouth_ids)
+        & ~is_bifurcation.to_numpy()
+    )
+    rivers["is_delta_outflow"] = qualifying_mask
+
+    empty_points = gpd.GeoDataFrame(
+        {"reach_id": pd.Series(dtype=str)}, geometry=[], crs=rivers.crs
+    )
+    if not qualifying_mask.any():
+        log.info("identify_delta_outflow_points: no qualifying reach(es) found")
+        return rivers, empty_points
+
+    records = []
+    for rid, geom in zip(rids[qualifying_mask], rivers.geometry[qualifying_mask]):
+        crossing = geom.intersection(delta_outline)
+        points = list(crossing.geoms) if hasattr(crossing, "geoms") else [crossing]
+        for pt in points:
+            if pt.is_empty:
+                continue
+            # A tangential intersection can degenerate to a LineString/point
+            # cluster rather than a clean Point -- reduce to its centroid so
+            # the output is always a single Point per crossing.
+            pt = pt if isinstance(pt, Point) else pt.centroid
+            records.append({"reach_id": rid, "geometry": pt})
+
+    outflow_points = gpd.GeoDataFrame(records, crs=rivers.crs)
+    log.info(
+        f"identify_delta_outflow_points: {int(qualifying_mask.sum())} reach(es) "
+        f"flagged 'is_delta_outflow' (cross delta outline, not seed, not "
+        f"mouth, not a bifurcation) -> {len(outflow_points)} outflow point(s)"
+    )
+    return rivers, outflow_points
+
+
+def remove_reaches_with_missing_width(
+    rivers: gpd.GeoDataFrame,
+    nodata_value: float = -9999.0,
+) -> gpd.GeoDataFrame:
+    """
+    Handle SWORD reaches with missing (nodata_value) 'width'/'max_width'.
+
+    Must run BEFORE fix_width_max_width_order/clip_anomalous_max_width:
+    fix_width_max_width_order's swap condition (max_width < width) fires
+    unconditionally whenever max_width is the nodata sentinel (nodata_value
+    < any real width), silently moving the valid value into max_width and
+    leaving 'width' corrupted with the sentinel instead -- confirmed to
+    already be happening (basin 1248635: 10 reaches with max_width=-9999
+    and a valid width in the raw network end up with width=-9999 after that
+    swap runs).
+
+    * Exactly one of the two is missing: the reach's channel geometry is
+      still known from the other value, so both columns are set to it.
+    * Both are missing (no channel-width information at all): the reach is
+      removed, along with the unbranched chain of neighbouring reaches
+      extending downstream to the next confluence (a reach with >1 upstream
+      neighbour) and upstream to the next bifurcation (a reach with >1
+      downstream neighbour) -- a missing width usually reflects a broader
+      data gap (e.g. a masked/obscured river segment in the SWORD source
+      imagery) affecting the whole unbranched stretch, not just one reach.
+
+    Args:
+        rivers:       River network with 'reach_id', 'rch_id_dn', 'width',
+                      and 'max_width' columns.
+        nodata_value: SWORD's missing-value sentinel.
+
+    Returns:
+        Copy of ``rivers`` with the fixed/removed reaches applied.
+    """
+    rivers = rivers.copy()
+    width = rivers["width"].to_numpy(dtype=float)
+    max_width = rivers["max_width"].to_numpy(dtype=float)
+    width_missing = np.isclose(width, nodata_value)
+    max_width_missing = np.isclose(max_width, nodata_value)
+
+    only_width_missing = width_missing & ~max_width_missing
+    only_max_missing = ~width_missing & max_width_missing
+    rivers.loc[only_width_missing, "width"] = rivers.loc[
+        only_width_missing, "max_width"
+    ]
+    rivers.loc[only_max_missing, "max_width"] = rivers.loc[only_max_missing, "width"]
+    if only_width_missing.any() or only_max_missing.any():
+        log.info(
+            f"remove_reaches_with_missing_width: filled {int(only_width_missing.sum())} "
+            f"width={nodata_value:g} and {int(only_max_missing.sum())} "
+            f"max_width={nodata_value:g} reach(es) from the other (valid) column"
+        )
+
+    both_missing = width_missing & max_width_missing
+    bad_ids = {
+        normalize_reach_id(rid)
+        for rid in rivers.loc[both_missing, "reach_id"]
+        if normalize_reach_id(rid) is not None
+    }
+    if not bad_ids:
+        return rivers
+
+    downstream_adj = build_downstream_adjacency(rivers)
+    upstream_adj: dict[str, list[str]] = {rid: [] for rid in downstream_adj}
+    for rid, dns in downstream_adj.items():
+        for dn in dns:
+            upstream_adj.setdefault(dn, []).append(rid)
+
+    to_remove: set[str] = set()
+    for rid in bad_ids:
+        to_remove.add(rid)
+        # downstream: stop before a confluence (next reach fed by >1 upstream)
+        cur = rid
+        while len(downstream_adj.get(cur, [])) == 1:
+            nxt = downstream_adj[cur][0]
+            if len(upstream_adj.get(nxt, [])) != 1 or nxt in to_remove:
+                break
+            to_remove.add(nxt)
+            cur = nxt
+        # upstream: stop before a bifurcation (prev reach splits into >1 downstream)
+        cur = rid
+        while len(upstream_adj.get(cur, [])) == 1:
+            prev = upstream_adj[cur][0]
+            if len(downstream_adj.get(prev, [])) != 1 or prev in to_remove:
+                break
+            to_remove.add(prev)
+            cur = prev
+
+    rivers = rivers[
+        ~rivers["reach_id"].apply(normalize_reach_id).isin(to_remove)
+    ].copy()
+    log.warning(
+        f"remove_reaches_with_missing_width: removed {len(to_remove)} reach(es) with no "
+        f"width/max_width data at all ({len(bad_ids)} directly affected, "
+        f"{len(to_remove) - len(bad_ids)} more in the same unbranched chain)"
+    )
+    return rivers
+
+
+def enforce_mouth_width_monotonic(
+    rivers: gpd.GeoDataFrame,
+    width_column: str = "width",
+) -> gpd.GeoDataFrame:
+    """
+    Ensure each river mouth's width is at least as large as its upstream
+    neighbour's -- channels don't narrow immediately before the outlet;
+    where SWORD's own attributes show otherwise (e.g. a mouth obscured by
+    tidal flats/vegetation in the source imagery), treat it as an artifact
+    and raise the mouth's width to match.
+
+    Mouths are reaches with no downstream neighbour in-network (same
+    definition used elsewhere, e.g. 12_test_upstream_boundary.py). A mouth
+    with multiple upstream neighbours (a confluence right at the outlet) is
+    compared against the WIDEST of them.
+
+    Args:
+        rivers:       River network with 'reach_id', 'rch_id_dn', and
+                      width_column columns.
+        width_column: Canonical width column to enforce (default 'width').
+                      'max_width' is raised alongside if it would otherwise
+                      fall below the new width.
+
+    Returns:
+        Copy of ``rivers`` with mouth widths raised where needed.
+    """
+    downstream_adj = build_downstream_adjacency(rivers)
+    upstream_adj: dict[str, list[str]] = {rid: [] for rid in downstream_adj}
+    for rid, dns in downstream_adj.items():
+        for dn in dns:
+            upstream_adj.setdefault(dn, []).append(rid)
+
+    rivers = rivers.copy()
+    rids = rivers["reach_id"].apply(normalize_reach_id)
+    width_by_rid = dict(zip(rids, rivers[width_column]))
+
+    mouth_ids = [rid for rid, dns in downstream_adj.items() if not dns]
+    n_raised = 0
+    for rid in mouth_ids:
+        ups = upstream_adj.get(rid, [])
+        upstream_width = max(
+            (
+                width_by_rid[u]
+                for u in ups
+                if u in width_by_rid and pd.notna(width_by_rid[u])
+            ),
+            default=None,
+        )
+        if upstream_width is None:
+            continue
+        mouth_mask = rids == rid
+        mouth_width = rivers.loc[mouth_mask, width_column].iloc[0]
+        if pd.notna(mouth_width) and mouth_width < upstream_width:
+            rivers.loc[mouth_mask, width_column] = upstream_width
+            if "max_width" in rivers.columns:
+                mw = rivers.loc[mouth_mask, "max_width"].iloc[0]
+                if pd.isna(mw) or mw < upstream_width:
+                    rivers.loc[mouth_mask, "max_width"] = upstream_width
+            n_raised += 1
+
+    if n_raised:
+        log.info(
+            f"enforce_mouth_width_monotonic: raised width for {n_raised} mouth "
+            f"reach(es) to match their (wider) upstream neighbour"
+        )
+    return rivers
+
+
 def fix_width_max_width_order(rivers: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """
     Swap 'width' and 'max_width' wherever max_width < width.
@@ -594,47 +786,6 @@ def fix_width_max_width_order(rivers: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     rivers.loc[invalid, "max_width"] = width_vals
     log.warning(
         f"width/max_width swapped for {n_invalid}/{len(rivers)} reach(es) (max_width < width)"
-    )
-    return rivers
-
-
-def clip_anomalous_max_width(
-    rivers: gpd.GeoDataFrame, max_ratio: float = 10.0
-) -> gpd.GeoDataFrame:
-    """
-    Clip 'max_width' down to max_ratio * 'width' wherever it exceeds that.
-
-    Some SWORD reaches report a 'max_width' tens to hundreds of times their
-    own 'width' (e.g. 504x in one observed case: width=63 m, max_width=
-    31,770 m) -- far beyond plausible single-reach channel variability, so
-    treated as erroneous rather than real. Left uncapped, this blows up
-    anything buffering by max_width/2 (quadtree river refinement) into
-    multi-kilometre patches far from the actual channel, rather than a
-    buffer that tracks the centerline.
-
-    Args:
-        rivers:    River network with 'width' and 'max_width' columns. Rows
-                   where 'width' is missing/non-positive are left unchanged
-                   (nothing to clip relative to).
-        max_ratio: Maximum allowed max_width / width ratio before clipping.
-
-    Returns:
-        Copy of ``rivers`` with 'max_width' clipped wherever it exceeded
-        max_ratio * width; unchanged otherwise.
-    """
-    width = rivers["width"]
-    max_width = rivers["max_width"]
-    anomalous = (width > 0) & (max_width > max_ratio * width)
-    n_anomalous = int(anomalous.sum())
-    if n_anomalous == 0:
-        return rivers
-
-    worst_ratio = float((max_width[anomalous] / width[anomalous]).max())
-    rivers = rivers.copy()
-    rivers.loc[anomalous, "max_width"] = max_ratio * width[anomalous]
-    log.warning(
-        f"max_width clipped for {n_anomalous}/{len(rivers)} reach(es) "
-        f"(max_width > {max_ratio:.0f}x width; worst observed ratio was {worst_ratio:.0f}x)"
     )
     return rivers
 
@@ -676,7 +827,6 @@ def select_width_column(
 def normalize_channel_widths(
     rivers: gpd.GeoDataFrame,
     width_column: str = "width",
-    max_ratio: float = 10.0,
 ) -> gpd.GeoDataFrame:
     """
     Fix SWORD's width/max_width inconsistencies, then select which one
@@ -685,9 +835,7 @@ def normalize_channel_widths(
 
     Bundles, in order:
       1. fix_width_max_width_order -- swap where max_width < width.
-      2. clip_anomalous_max_width  -- clip max_width to max_ratio * width
-                                      where it's an outlier.
-      3. select_width_column       -- overwrite 'width' with width_column's
+      2. select_width_column       -- overwrite 'width' with width_column's
                                       (now-corrected) values.
 
     Must be applied independently wherever a river network is read from its
@@ -700,14 +848,12 @@ def normalize_channel_widths(
         rivers:       River network with 'width' and 'max_width' columns.
         width_column: Which (corrected) column becomes 'width' -- "width" or
                       "max_width". Passed through to select_width_column.
-        max_ratio:    Passed through to clip_anomalous_max_width.
 
     Returns:
         Copy of ``rivers`` with 'width'/'max_width' fixed and 'width' set to
         the configured choice.
     """
     rivers = fix_width_max_width_order(rivers)
-    rivers = clip_anomalous_max_width(rivers, max_ratio=max_ratio)
     rivers = select_width_column(rivers, width_column=width_column)
     return rivers
 

@@ -40,8 +40,8 @@ rule run_spinup:
         rst_fname                 = RST_FNAME,
         dtmapout_s                = config["sfincs"]["spinup"]["dtmapout_s"],
         dthisout_s                 = config["sfincs"]["spinup"]["dthisout_s"],
-        velocity_animation_enabled = config["sfincs"]["sanity_checks"]["velocity_animation"]["enabled"],
         include_subgrid            = config["sfincs"]["subgrid"]["enabled"],
+        timeout_s                 = config["sfincs"]["simulation"]["timeout_s"],
     log:
         "logs/{basin_id}/14_run_spinup.log"
     script:

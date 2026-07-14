@@ -5,7 +5,8 @@ exclude: |
     output/|
     .*/src/input_processing/data/|
     .*/src/modelling_framework/static_data/|
-    workflow/scripts/
+    workflow/scripts/|
+    Leuven_et_al/
   )
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit

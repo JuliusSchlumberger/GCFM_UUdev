@@ -48,8 +48,8 @@ sfincs_exe                = Path(snakemake.params.sfincs_exe)
 rst_fname                 = snakemake.params.rst_fname  # e.g. sfincs.20000111.000000.rst
 dtmapout_s                = int(snakemake.params.dtmapout_s)
 dthisout_s                = int(snakemake.params.dthisout_s)
-velocity_animation_enabled = bool(snakemake.params.velocity_animation_enabled)
 include_subgrid           = bool(snakemake.params.include_subgrid)
+timeout_s                 = int(snakemake.params.timeout_s)
 land_polygons_path        = Path(snakemake.input.land_polygons)
 landuse_path              = Path(snakemake.input.landuse)
 river_network_path        = Path(snakemake.input.clean_river_network)
@@ -122,9 +122,9 @@ for key in ("alpha", "huthresh", "advection", "viscosity", "nuvisc", "coriolis",
     if key in cfg:
         lines.append(f"{key:<20} = {cfg[key]}")
 
-# Output storage — storevel enabled only when velocity animation is requested
+# Output storage — spin-up needs none of these instantaneous/diagnostic fields.
 lines += [
-    f"{'storevel':<20} = {'1' if velocity_animation_enabled else '0'}",
+    f"{'storevel':<20} = 0",
     f"{'storevelmax':<20} = 0",
     f"{'storecumprcp':<20} = 0",
     f"{'storemeteo':<20} = 0",
@@ -193,14 +193,23 @@ t_out = threading.Thread(target=_forward, args=(proc.stdout, log.info))
 t_err = threading.Thread(target=_forward, args=(proc.stderr, log.warning))
 t_out.start()
 t_err.start()
-t_out.join()
-t_err.join()
 
+# proc.wait() must run BEFORE joining the reader threads: t_out.join()/
+# t_err.join() block unconditionally until SFINCS's own stdout/stderr pipes
+# close, which only happens once it exits on its own -- so calling them
+# first made the timeout below unreachable until the process had already
+# finished, silently defeating it. Killing the process here closes its
+# pipes, which is what lets the reader threads finish and join() return.
 try:
-    proc.wait(timeout=7200)   # 2-hour total timeout
+    proc.wait(timeout=timeout_s)
 except subprocess.TimeoutExpired:
     proc.kill()
-    raise RuntimeError("SFINCS spin-up exceeded 2-hour timeout")
+    t_out.join()
+    t_err.join()
+    raise RuntimeError(f"SFINCS spin-up exceeded {timeout_s}s timeout")
+
+t_out.join()
+t_err.join()
 
 if proc.returncode != 0:
     raise RuntimeError(

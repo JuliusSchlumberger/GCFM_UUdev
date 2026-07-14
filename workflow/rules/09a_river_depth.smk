@@ -5,11 +5,6 @@ rule add_river_depth:
     the coast -- 09a/09b together form one sequential depth-estimation chain,
     not a fork. Rule 10 (condition_elevation) is the actual independent branch,
     parallel to the 09a->09b chain; both feed rule 11 (burn_river_bed).
-
-    TODO: bifurcation discharge splitting (accumulate_discharge in
-    src/river_network.py) weights each downstream arm by width * angle_factor.
-    This has not been sensitivity-tested against alternatives -- see the note
-    in config.yml's river_processing.hydraulic_geometry section.
     """
     input:
         spec_basins_meta    = results_path("{basin_id}/inputs/domain/domain_bbox.json"),

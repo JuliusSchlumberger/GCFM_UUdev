@@ -57,7 +57,9 @@ import xarray as xr
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
+from src.plots import reproject_max_for_plot
 from src.postprocessing import compute_max_inundation
+from src.river_forcing import build_design_discharge_matrix
 from hydromt_sfincs import SfincsModel
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -124,9 +126,6 @@ spinup_days = sfincs_cfg["spinup"]["spinup_days"]
 spinup_dtmapout = sfincs_cfg["spinup"]["dtmapout_s"]
 spinup_dthisout = sfincs_cfg["spinup"]["dthisout_s"]
 spinup_timeout_s = sfincs_cfg["spinup"]["timeout_s"]
-velocity_animation_enabled = sfincs_cfg["sanity_checks"]["velocity_animation"][
-    "enabled"
-]
 min_inundation_depth_m = sfincs_cfg["sanity_checks"]["min_inundation_depth_m"]
 
 # ── scenario-independent inputs, loaded once ───────────────────────────────────
@@ -157,14 +156,15 @@ crossings_gdf = gpd.GeoDataFrame(
     ),
     crs="EPSG:4326",
 )
+design_rp_river_yr = float(config["boundary_setup"]["design_rp_river_yr"])
 dis_df_production = pd.DataFrame(
-    data=river_ds.discharge.values[active, :].T,
+    data=build_design_discharge_matrix(river_ds, active, design_rp_river_yr).T,
     index=river_times,
     columns=range(n_active),
 )
 log.info(
-    f"Loaded production discharge: {n_active} crossing(s), "
-    f"max Q = {dis_df_production.to_numpy().max():.1f} m3/s"
+    f"Built production discharge (design RP={design_rp_river_yr:g} yr): "
+    f"{n_active} crossing(s), max Q = {dis_df_production.to_numpy().max():.1f} m3/s"
 )
 
 rivers = gpd.read_file(river_network_path)
@@ -354,7 +354,7 @@ def run_spinup(sfincs_root: Path) -> Path:
             lines.append(f"{key:<20} = {cfg[key]}")
 
     lines += [
-        f"{'storevel':<20} = {'1' if velocity_animation_enabled else '0'}",
+        f"{'storevel':<20} = 0",
         f"{'storevelmax':<20} = 0",
         f"{'storecumprcp':<20} = 0",
         f"{'storemeteo':<20} = 0",
@@ -491,7 +491,11 @@ if hmax_by_scale:
             ax.axis("off")
             continue
 
-        da_wgs = da_hmax_scale.squeeze().rio.reproject("EPSG:4326")
+        # reproject_max_for_plot reprojects directly at a coarse resolution
+        # with max-value resampling -- reprojecting at native (subgrid)
+        # resolution first can produce tens of millions of pixels, which
+        # blows up matplotlib's imshow/RGBA rendering.
+        da_wgs = reproject_max_for_plot(da_hmax_scale.squeeze())
         arr = da_wgs.values.astype(np.float32)
         left, bottom, right, top = da_wgs.rio.bounds()
         im = ax.imshow(

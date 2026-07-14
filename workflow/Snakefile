@@ -26,6 +26,7 @@ include: "rules/09a_river_depth.smk"
 include: "rules/09b_estuarine_depth.smk"
 include: "rules/10_condition_elevation.smk"
 include: "rules/11_river_preburn.smk"
+include: "rules/11b_burn_river_dem.smk"
 include: "rules/12_testing.smk"
 include: "rules/13_build_sfincs.smk"
 include: "rules/14_run_spinup.smk"
@@ -70,11 +71,15 @@ _PREPROCESS_OUTPUTS = [
     expand(results_path("{basin_id}/inputs/domain/{basin_id}_river_network_estuarine.gpkg"), basin_id=BASINS),
     expand(results_path("{basin_id}/visuals/input_data/09b_river_hydraulics.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/visuals/input_data/12_upstream_boundary_check.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/visuals/bifurcation_calibration_options"), basin_id=BASINS),
     *(expand(results_path("{basin_id}/inputs/domain/{basin_id}_elevation_conditioned.tif"), basin_id=BASINS)
       + expand(results_path("{basin_id}/visuals/input_data/10_condition_elevation.png"), basin_id=BASINS)
       + expand(results_path("{basin_id}/inputs/domain/{basin_id}_zbed_anchors.gpkg"), basin_id=BASINS)
       + expand(results_path("{basin_id}/visuals/input_data/11_river_preburn.png"), basin_id=BASINS)
       if config["river_processing"]["conditioning"]["enabled"] else []),
+    *(expand(results_path("{basin_id}/inputs/domain/{basin_id}_river_burned_dem.tif"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/visuals/input_data/11b_river_burn.png"), basin_id=BASINS)
+      if config["river_processing"]["burn_rivers"]["enabled"] else []),
 ]
 
 _BUILD_OUTPUTS = [
@@ -89,13 +94,11 @@ _BUILD_OUTPUTS = [
       + expand(results_path("{basin_id}/visuals/model_runs/spinup/validation_spinup.png"), basin_id=BASINS)
       + expand(results_path("{basin_id}/visuals/model_runs/spinup/validation_max_inundation.png"), basin_id=BASINS)
       + expand(results_path("{basin_id}/visuals/model_runs/spinup/01_inundation_ratio.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/model_runs/spinup/03_velocity_animation.mp4"), basin_id=BASINS)
       # run_event (rule 16) needs rule 14's restart file, same gate as the
       # spin-up/sanity outputs directly above:
       + expand(results_path("{basin_id}/sfincs/sfincs_map.nc"), basin_id=BASINS)
       + expand(results_path("{basin_id}/visuals/model_runs/main_run/01_inundation_ratio.png"), basin_id=BASINS)
       + expand(results_path("{basin_id}/visuals/model_runs/main_run/02_flood_animation.mp4"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/model_runs/main_run/03_velocity_animation.mp4"), basin_id=BASINS)
       + expand(results_path("{basin_id}/visuals/model_runs/main_run/flood_timeseries.csv"), basin_id=BASINS)
       if config["sfincs"]["spinup"]["enabled"] else []),
 ]
