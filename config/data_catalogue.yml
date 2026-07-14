@@ -117,13 +117,35 @@ datasets:
 
 
   - name: river_network
-  # TODO: add more details and correct information what specific paramters are used for.
-    description:  # add once known — likely SWORD (SWOT River Database) based on field schema
-    source:  # add DOI / publication reference once known
+    # SWORD (SWOT River Database) v17c, "unpublished" custom export, reach-
+    # level layer -- MANUALLY CORRECTED variant: for a set of specific
+    # tributaries, main_side and width/max_width were adjusted based on
+    # Google Earth imagery and expert knowledge, to improve discharge-
+    # partitioning behaviour at bifurcations SWORD's own attributes get
+    # wrong. This modified file is now the pipeline's DEFAULT river network
+    # source (rule get_river_network reads this entry directly). The
+    # unmodified original is kept as the separate `river_network_original`
+    # entry (used for comparison in tests/test_bifurcation_calibration_
+    # options.py). Geometry and rch_id_up/rch_id_dn topology are UNCHANGED
+    # from the original -- only attribute values differ for the adjusted
+    # reaches (confirmed: identical feature count/schema between the two).
+    #
+    # NOTE: earlier in this project's history the catalogue briefly pointed
+    # at the official SWORD v17b global release instead (SWORD/
+    # sword_v17b_global.gpkg) -- that was a mismatch (this project has
+    # always actually used v17c) and has been rolled back. v17c carries a
+    # richer field set than the official v17b release, including
+    # main_path_id, is_mainstem_edge, path_seg_pos, rch_id_up_main/
+    # rch_id_dn_main, hydro_dist_out, hydro_dist_hw, subnetwork_id,
+    # continent, etc. -- all restored below. rch_id_up/rch_id_dn are a
+    # Python-list-repr string (e.g. "[id1, id2]"), NOT the whitespace-
+    # separated convention v17b uses.
+    description: SWORD (SWOT River Database) v17c "unpublished" export, global reach-level vector river network, manually corrected for specific bifurcating tributaries.
+    source: "Derived from SWORD (SWOT River Database) v17c (unpublished export; see raw_data/SWORD/v17c_release_notes.pdf and v17c_variable_reference.pdf) with manual attribute corrections based on Google Earth imagery and expert knowledge."
     provider: ogr
     file_format: GeoPackage
-    file_path: SWORD_global_unpublished.gpkg
-    layer_name: merged_rivers
+    file_path: SWORD/SWORD_global_v17c_unpublished_modified.gpkg
+    layer_name: global_edges
     storage: GPKG
     encoding: UTF-8
     crs:
@@ -160,19 +182,64 @@ datasets:
       lakeflag:
         type: Integer
         description: "GRWL water body identifier for each reach: 0 – river, 1 – lake/reservoir, 2 – canal, 3 – tidally influenced river."
+      rch_id_up:
+        type: String
+        length: 80
+        description: IDs of upstream reaches (presented as list "[rch_id_up1, rch_id_up2,...]").
       rch_id_dn:
         type: String
         length: 80
-        description:  IDs of downstream reaches (presented as list [rch_id_dn1, rch_id_dn2,...])
-      main_path_id:
-        type: Integer64
-        description: ID of the main path of the river arm to which the reach belongs (multiple reaches can share the same main_path_id if they belong to the same river arm)
-      path_seg_pos:
-        type: Integer64
-        description: position within main path of river arm (0 = most upstream, increasing downstream)
+        description: IDs of downstream reaches (presented as list "[rch_id_dn1, rch_id_dn2,...]").
       slope:
         type: Real
         description:  # add once known — likely reach slope, units to confirm (m/m or m/km)
+      main_side:
+        type: Integer
+        description: "SWORD's own primary-vs-secondary channel classification: 0 = reach is part of the main channel/mainstem; 1 or 2 = reach is a secondary/side channel."
+      main_path_id:
+        type: Integer64
+        description: ID of the main path of the river arm to which the reach belongs (multiple reaches can share the same main_path_id if they belong to the same river arm). Used as the same-river-arm grouping key at bifurcations (src.river_network.trace_seed_mainstem_paths, compute_river_elevation_profile), together with is_mainstem_edge.
+      is_mainstem_edge:
+        type: Integer
+        description: Flags whether a reach is part of the SWORD-identified mainstem (vs. a distributary/side-channel edge). Tie-breaker at bifurcations when more than one downstream candidate shares main_path_id.
+      path_seg_pos:
+        type: Integer64
+        description: position within main path of river arm (0 = most upstream, increasing downstream)
+
+  - name: river_network_original
+    # Unmodified SWORD v17c "unpublished" export -- same schema/feature
+    # count as `river_network`, but WITHOUT the manual main_side/width
+    # corrections. Used for the "before" comparison scenario in
+    # tests/test_bifurcation_calibration_options.py; not read by any
+    # production rule (rule get_river_network reads `river_network`, the
+    # modified/default version).
+    description: SWORD (SWOT River Database) v17c "unpublished" export, global reach-level vector river network, unmodified.
+    source: "SWORD (SWOT River Database) v17c (unpublished export; see raw_data/SWORD/v17c_release_notes.pdf and v17c_variable_reference.pdf)."
+    provider: ogr
+    file_format: GeoPackage
+    file_path: SWORD/SWORD_global_v17c_unpublished.gpkg
+    layer_name: global_edges
+    storage: GPKG
+    encoding: UTF-8
+    crs:
+      epsg: 4326
+      name: WGS 84
+      type: Geographic (2D)
+      units: degrees
+      datum: World Geodetic System 1984 ensemble (EPSG:6326)
+      accuracy_m: 2
+    geometry:
+      type: LineString
+      geometry_column: geom
+    feature_count: 248672
+    coverage:
+      latitude_range: [-52.0002, 82.3108]
+      longitude_range: [-179.9999, 179.9999]
+    primary_key: fid
+    fields_of_interest:
+      # Same schema as `river_network` -- see that entry for full field
+      # documentation. main_side and width/max_width are the fields that
+      # differ (uncorrected) relative to `river_network`.
 
   - name: coastal_bathymetry
     description: Global terrain model for ocean and land providing elevation in meters on a 15 arc-second interval grid. Bathymetry over oceans plus land topography in one continuous grid.
@@ -537,7 +604,7 @@ datasets:
       Used by src/river_forcing.py (load_grdc_stations, find_nearest_grdc_station,
       load_grdc_series) and src/extreme_values.py (bias_correct_discharge,
       compute_grdc_correlation) in rule get_boundary_forcings (07). Search
-      radius: boundary_forcings.river.grdc_search_radius_km. TODO:
+      radius: boundary_forcings.river.bias_correction.grdc_search_radius_km. TODO:
       downloading a global GRDC extract (vs. the current 8-test-delta
       extract) would let the correlation diagnostic and bias correction run
       automatically for basins outside the current test set instead of

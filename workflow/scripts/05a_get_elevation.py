@@ -87,8 +87,7 @@ out_plot_path  = snakemake.output.plot_elevation
 # under visuals/input_data/).
 plots_dir = Path(out_plot_path).parent
 
-work_res_m           = snakemake.params.work_res_m
-mdt_variable         = snakemake.params.mdt_variable
+mdt_variable         = "mdt"  # sole variable in data_catalogue's mdt_cnes_cls22 source
 mdt_load_margin_deg  = float(snakemake.params.mdt_load_margin_deg)
 
 log.info("Topography source: FathomDEM (mandatory EGM2008 → GOCO06s datum correction)")
@@ -99,6 +98,29 @@ wgs84_bounds, domain_crs_str, domain_poly = load_domain(
 )
 utm_crs = CRS.from_string(domain_crs_str)
 log.info(f"Domain WGS84 bounds: {wgs84_bounds}, UTM CRS: {utm_crs.to_string()}")
+
+# ── 1. Merge FathomDEM tiles ──────────────────────────────────────────────────
+tiles = find_fathomdem_tiles(topo_tiles_dir, wgs84_bounds)
+if not tiles:
+    raise FileNotFoundError(
+        "No FathomDEM tiles found for domain. Check the data catalogue path."
+    )
+log.info(f"Found {len(tiles)} FathomDEM tile(s)")
+
+# Working resolution: auto-derived from FathomDEM's own native pixel size
+# (fixed at 1 arcsecond globally, see data_catalogue.yml) rather than a
+# separately configured value. Converted to metres via the north-south
+# (latitude) WGS84 arc-length constant -- this is what "1 arcsecond ~= 30 m"
+# already refers to, and (unlike the east-west/longitude direction, which
+# shrinks toward the poles) barely varies with latitude, so every basin gets
+# a consistent, predictable pixel size regardless of location.
+with rasterio.open(tiles[0]) as _tile_src:
+    native_deg_res = abs(_tile_src.res[1])
+work_res_m = native_deg_res * 111_320.0
+log.info(
+    f"Working resolution auto-derived from FathomDEM native pixel size "
+    f"({native_deg_res:.6f} deg): {work_res_m:.2f} m"
+)
 
 # Build the UTM output grid directly from the domain's own bounds so that
 # the elevation/bathymetry rasters are pixel-perfect with the SFINCS model
@@ -112,7 +134,7 @@ w_utm = math.ceil((_b["xmax"] - _b["xmin"]) / work_res_m)
 h_utm = math.ceil((_b["ymax"] - _b["ymin"]) / work_res_m)
 transform_utm = _rast_from_origin(_b["xmin"], _b["ymax"], work_res_m, work_res_m)
 log.info(
-    f"UTM output grid: {w_utm}×{h_utm} px @ {work_res_m} m, "
+    f"UTM output grid: {w_utm}×{h_utm} px @ {work_res_m:.2f} m, "
     f"origin ({_b['xmin']:.1f}, {_b['ymax']:.1f}) [{domain_crs_str}]"
 )
 
@@ -133,14 +155,6 @@ dem_meta = dict(
     crs=utm_crs, transform=transform_utm,
     nodata=-9999.0, compress="deflate", tiled=True,
 )
-
-# ── 1. Merge FathomDEM tiles ──────────────────────────────────────────────────
-tiles = find_fathomdem_tiles(topo_tiles_dir, wgs84_bounds)
-if not tiles:
-    raise FileNotFoundError(
-        "No FathomDEM tiles found for domain. Check the data catalogue path."
-    )
-log.info(f"Found {len(tiles)} FathomDEM tile(s)")
 
 with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tf:
     tmp_topo = tf.name

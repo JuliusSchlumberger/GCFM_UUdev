@@ -26,8 +26,8 @@ import numpy as np
 from shapely.geometry import Polygon
 
 from src.log import setup_logging
-from src.plots import animate_flood_progression, animate_velocity, plot_inundation_check
-from src.postprocessing import compute_flood_progression, compute_max_inundation, compute_velocity_timeseries
+from src.plots import animate_flood_progression, plot_inundation_check
+from src.postprocessing import compute_flood_progression, compute_max_inundation
 
 log = setup_logging(snakemake.log[0])
 
@@ -39,12 +39,10 @@ river_network_path = Path(snakemake.input.clean_river_network)
 domain_gpkg_path   = Path(snakemake.input.domain_gpkg)
 plot_out_path      = Path(snakemake.output.plot_inundation_ratio)
 animation_out_path      = Path(snakemake.output.animation_flood_progress)
-velocity_anim_out_path  = Path(snakemake.output.animation_velocity)
 sfincs_root             = Path(snakemake.params.sfincs_root)
 threshold_m             = float(snakemake.params.min_inundation_depth_m)
 include_subgrid         = bool(snakemake.params.include_subgrid)
 animation_fps           = int(snakemake.params.animation_fps)
-velocity_animation_enabled = bool(snakemake.params.velocity_animation_enabled)
 
 # Load domain polygon in WGS84 for overlay plots.
 _domain_gdf = gpd.read_file(domain_gpkg_path)
@@ -113,9 +111,7 @@ if sfincs_map_nc_path.stat().st_size == 0:
     log.warning("sfincs_map.nc is empty — skipping flood animation")
     animation_out_path.touch()
 else:
-    da_h = compute_flood_progression(
-        spinup_dir, sfincs_root, landuse_path, include_subgrid=include_subgrid,
-    )
+    da_h = compute_flood_progression(spinup_dir, landuse_path)
     if da_h is None:
         log.warning(
             "compute_flood_progression returned None (no 'zs' in sfincs_map.nc) — "
@@ -132,33 +128,3 @@ else:
             fps=animation_fps,
         )
         log.info(f"Flood animation written: {animation_out_path}")
-
-# ── animation: flow velocity ──────────────────────────────────────────────────
-# Reads instantaneous u/v from spinup sfincs_map.nc (requires storevel = 1 in
-# the spinup inp, which rule 14 sets when velocity_animation.enabled: true).
-velocity_anim_out_path.parent.mkdir(parents=True, exist_ok=True)
-if not velocity_animation_enabled:
-    log.info("Velocity animation disabled (velocity_animation.enabled: false) — writing sentinel")
-    velocity_anim_out_path.touch()
-elif sfincs_map_nc_path.stat().st_size == 0:
-    log.warning("sfincs_map.nc is empty — skipping velocity animation")
-    velocity_anim_out_path.touch()
-else:
-    uv = compute_velocity_timeseries(spinup_dir, sfincs_root, include_subgrid=include_subgrid)
-    if uv is None:
-        log.warning(
-            "No velocity data (u/v) found in sfincs_map.nc — "
-            "re-run rule 14 with velocity_animation.enabled: true to store u/v output"
-        )
-        velocity_anim_out_path.touch()
-    else:
-        da_u, da_v = uv
-        animate_velocity(
-            da_u, da_v, domain_poly,
-            str(land_polygons_path), str(river_network_path),
-            str(velocity_anim_out_path),
-            basin_id=basin_id,
-            run_label="spinup",
-            fps=animation_fps,
-        )
-        log.info(f"Velocity animation written: {velocity_anim_out_path}")

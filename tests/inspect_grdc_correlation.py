@@ -44,8 +44,10 @@ GRDC_PATH = Path("D:/GCFM_UU/raw_data/GRDC/GRDC-Daily.nc")
 with open(REPO_ROOT / "config" / "config.yml") as f:
     config = yaml.safe_load(f)
 river_cfg = config["boundary_forcings"]["river"]
-glofas_variable = river_cfg["glofas_variable"]
-grdc_radius_m = float(river_cfg["grdc_search_radius_km"]) * 1000.0
+glofas_variable = (
+    "dis24"  # sole variable in data_catalogue's river_discharge (GloFAS v4) source
+)
+grdc_radius_m = float(river_cfg["bias_correction"]["grdc_search_radius_km"]) * 1000.0
 min_overlap_days = int(river_cfg["bias_correction"]["min_overlap_days"])
 results_dir_root = Path(config["results_dir"])
 

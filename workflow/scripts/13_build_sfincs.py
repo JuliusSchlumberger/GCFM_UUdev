@@ -38,6 +38,8 @@ consistent across modes):
 """
 
 import logging
+import math
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -51,8 +53,11 @@ import numpy as np
 import xarray as xr
 import yaml
 from scipy.ndimage import label as _ndimage_label
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
+from shapely.ops import nearest_points
 from hydromt_sfincs import SfincsModel
+
+from src.river_forcing import build_design_discharge_matrix
 
 plt.ioff()
 
@@ -75,9 +80,14 @@ elevation_merged_path = Path(snakemake.input.elevation_merged)
 roughness_path        = Path(snakemake.input.roughness)
 land_polygons_path    = Path(snakemake.input.land_polygons)
 river_network_path    = Path(snakemake.input.river_network)
+delta_outflow_points_path = Path(snakemake.input.delta_outflow_points)
 zsini_path            = Path(snakemake.input.zsini)
 surge_forcing_path    = Path(snakemake.input.surge_forcing)
 river_forcing_path    = Path(snakemake.input.river_forcing)
+burn_rivers_enabled   = snakemake.params.burn_rivers_enabled
+river_burned_dem_path = (
+    Path(snakemake.input.river_burned_dem) if burn_rivers_enabled else None
+)
 
 inputs_dir        = Path(snakemake.params.inputs_dir)
 sfincs_root       = Path(snakemake.params.sfincs_root)
@@ -92,11 +102,12 @@ dtmaxout          = snakemake.params.dtmaxout
 dthisout          = snakemake.params.dthisout
 storevelmax       = snakemake.params.storevelmax
 storetwet         = snakemake.params.storetwet
-velocity_animation_enabled = bool(snakemake.params.velocity_animation_enabled)
 forcing_mode      = snakemake.params.forcing_mode
+design_rp_river_yr = float(snakemake.params.design_rp_river_yr)
 compound_lag_hr   = float(snakemake.params.compound_lag_hr)
 flat_boundary_point_spacing_m = snakemake.params.flat_boundary_point_spacing_m
 waterlevel_buffer_m = snakemake.params.waterlevel_buffer_m
+outflow_buffer_m   = snakemake.params.outflow_buffer_m
 n_top_crossings    = snakemake.params.n_top_crossings
 n_per_crossing     = snakemake.params.n_per_crossing
 max_downstream_hops = snakemake.params.max_downstream_hops
@@ -179,6 +190,14 @@ if baseline_m != 0.0:
 else:
     _zsini_uri = str(zsini_path.relative_to(inputs_dir))
 
+# ── delta-outline outflow points ──────────────────────────────────────────────
+# Rule clean_river_network's identify_delta_outflow_points always produces this
+# file, but it is typically empty (0 features) -- only register/consume it
+# when it actually has points, so an empty file never reaches hydromt_sfincs.
+delta_outflow_gdf = gpd.read_file(delta_outflow_points_path)
+delta_outflow_enabled = not delta_outflow_gdf.empty
+log.info(f"Delta-outline outflow points: {len(delta_outflow_gdf)}")
+
 # ── data catalog ──────────────────────────────────────────────────────────────
 # HydroMT v1.3.1 catalog schema: 'uri' (not 'path'), driver string name,
 # no 'filesystem' or 'crs' top-level fields (Pydantic forbids extras).
@@ -190,6 +209,13 @@ local_catalog = {
         "uri": str(elevation_merged_path),   # absolute — lives under sfincs_root
         "driver": "rasterio",
     },
+    **({
+        "local_river_burned": {
+            "data_type": "RasterDataset",
+            "uri": str(river_burned_dem_path),
+            "driver": "rasterio",
+        },
+    } if burn_rivers_enabled else {}),
     "local_roughness": {
         "data_type": "RasterDataset",
         "uri": str(roughness_path),       # relative to inputs_dir
@@ -200,6 +226,13 @@ local_catalog = {
         "uri": str(land_polygons_path),  # relative to inputs_dir
         "driver": "pyogrio",
     },
+    **({
+        "local_delta_outflow_points": {
+            "data_type": "GeoDataFrame",
+            "uri": str(delta_outflow_points_path),
+            "driver": "pyogrio",
+        },
+    } if delta_outflow_enabled else {}),
     "local_zsini": {
         "data_type": "RasterDataset",
         "uri": _zsini_uri,
@@ -209,6 +242,17 @@ local_catalog = {
 with open(local_catalog_path, "w") as fh:
     yaml.dump(local_catalog, fh, sort_keys=False)
 log.info(f"Data catalog written: {local_catalog_path}")
+
+# When burn_rivers is enabled, 'local_river_burned' (channel-only, native
+# resolution) takes priority over 'local_elevation_merged' wherever it has
+# valid data (hydromt_sfincs's elevation_list/merge_multi_dataarrays merges
+# by priority: first source wins, later sources fill gaps) — so ocean/
+# floodplain/gap cells transparently fall back to the existing DEM.
+elevation_list = (
+    [{"elevation": "local_river_burned"}, {"elevation": "local_elevation_merged"}]
+    if burn_rivers_enabled
+    else [{"elevation": "local_elevation_merged"}]
+)
 
 # ── load domain boundary ────────────────────────────────────────────────────────
 delta_domain = gpd.read_file(domain_path)
@@ -269,7 +313,7 @@ else:
 # ── 2. Elevation ──────────────────────────────────────────────────────────────
 elevation_component = sf.quadtree_elevation if quadtree_enabled else sf.elevation
 elevation_component.create(
-    elevation_list=[{"elevation": "local_elevation_merged"}],
+    elevation_list=elevation_list,
 )
 log.info("Elevation set from 'local_elevation_merged'")
 
@@ -308,6 +352,26 @@ mask_component.create_boundary(
 )
 log.info("Waterlevel boundary set: edge cells not on land → mask=2")
 
+# ── 4b. Mask: delta-outline outflow boundary ─────────────────────────────────
+# Reaches that cross the delta polygon's outline but are neither seed nor
+# mouth (identify_delta_outflow_points, rule clean_river_network) are genuine
+# places where flow exits the modelled network -- registered as a free
+# outflow boundary (mask=3, no prescribed water level) at that location,
+# rather than being dropped from the network. include_polygon_buffer turns
+# each point into a small polygon so at least one grid cell is captured
+# regardless of exactly where within a cell the point falls.
+if delta_outflow_enabled:
+    mask_component.create_boundary(
+        btype="outflow",
+        include_polygon="local_delta_outflow_points",
+        include_polygon_buffer=outflow_buffer_m,
+        reset_bounds=False,
+    )
+    log.info(
+        f"Outflow boundary set: {len(delta_outflow_gdf)} delta-outline "
+        f"crossing(s), {outflow_buffer_m:.0f} m buffer → mask=3"
+    )
+
 # ── 5. Initial conditions ──────────────────────────────────────────────────────
 # zsini.tif (rule 05b) has two values: 0.0 for sea cells (not on OSM land
 # polygons) and -9999 nodata for land cells.  When baseline_m != 0 the
@@ -321,6 +385,17 @@ if quadtree_enabled:
     # valid xugrid.OverlapRegridder method in the installed xugrid version (valid: "mean",
     # "harmonic_mean", ...) — override explicitly to work around this hydromt_sfincs bug.
     initial_conditions_component.create(ini="local_zsini", reproj_method="mean")
+    # Second, separate hydromt_sfincs bug: create() sets config key "ncinifile"
+    # (SfincsQuadtreeInitialConditions.create()), but SfincsQuadtreeGrid.write()
+    # (the code that actually writes the netCDF) looks up "inifile" (no "nc"
+    # prefix) to decide whether/where to write the "ini" variable — a key-name
+    # mismatch means the carefully-computed spatially-varying initial water
+    # level is silently NEVER written for a quadtree build; SFINCS falls back
+    # to its own uniform default with no warning. Set the key write() actually
+    # reads, matching the same filename create() already put in "ncinifile".
+    # (This is removed again from the final sfincs.inp after sf.write(), once
+    # it has served its purpose -- see the write() section below.)
+    sf.config.update({"inifile": sf.config.get("ncinifile")})
 else:
     initial_conditions_component.create(ini="local_zsini")
 # HydroMT hardcodes zsini=0.0 in sfincs.inp after create().  Override to
@@ -376,9 +451,6 @@ sf.config.update({
     "dthisout":    dthisout,
     "storevelmax": storevelmax,
     "storetwet":   storetwet,
-    # Instantaneous u/v output, needed for rule 16's (run_event) velocity
-    # animation — same flag rule 14 (run_spinup) sets for its own spinup.inp.
-    "storevel":    1 if velocity_animation_enabled else 0,
     "baro":        0,           # no wind/atmosphere data
 })
 log.info("Simulation config set (tstart=tref placeholder, updated before write)")
@@ -396,14 +468,20 @@ rivers = gpd.read_file(river_network_path)
 rivers["rivwth"] = rivers["width"].fillna(1.0).astype(float)
 rivers["rivdph"] = rivers["rivdph"].clip(lower=0.0).astype(float)
 
-# When river conditioning is enabled, rule 11 (burn_river_bed) has
-# pre-computed smooth bed anchor points (zbed_anchors.gpkg) with absolute
-# rivbed [m+REF] values. These are passed directly to burn_river_rect as
-# gdf_zb, which interpolates along merged river lines and only lowers the
-# subgrid DEM where rivbed < DEM.
+# When river conditioning is enabled (and burn_rivers is NOT), rule 11
+# (burn_river_bed) has pre-computed smooth bed anchor points
+# (zbed_anchors.gpkg) with absolute rivbed [m+REF] values. These are passed
+# directly to burn_river_rect as gdf_zb, which interpolates along merged
+# river lines and only lowers the subgrid DEM where rivbed < DEM.
 # rivdph is completely bypassed when gdf_zb is provided — no need to zero it.
+#
+# When burn_rivers IS enabled, the channel is already correctly burned into
+# 'local_river_burned' (see elevation_list above) — burn_river_rect is
+# skipped entirely (river_list=[] below) rather than running it a second
+# time on an already-burned raster, since it's the actual source of the
+# per-tile contamination artifact this feature exists to avoid.
 zbed_gdf = None
-if preburn_enabled:
+if preburn_enabled and not burn_rivers_enabled:
     zbed_path = snakemake.input.zbed_anchors
     if zbed_path:   # empty list [] when disabled
         zbed_gdf = gpd.read_file(zbed_path)
@@ -431,13 +509,18 @@ if include_subgrid:
         f"rivdph [{rivers['rivdph'].min():.2f}–{rivers['rivdph'].max():.2f} m]"
     )
     subgrid_component = sf.quadtree_subgrid if quadtree_enabled else sf.subgrid
-    river_entry = {"centerlines": rivers}
-    if zbed_gdf is not None:
-        river_entry["gdf_zb"] = zbed_gdf
+    if burn_rivers_enabled:
+        river_list = []
+        log.info("burn_rivers enabled — skipping burn_river_rect (channel already burned)")
+    else:
+        river_entry = {"centerlines": rivers}
+        if zbed_gdf is not None:
+            river_entry["gdf_zb"] = zbed_gdf
+        river_list = [river_entry]
     subgrid_component.create(
-        elevation_list=[{"elevation": "local_elevation_merged"}],
+        elevation_list=elevation_list,
         roughness_list=[{"manning": "local_roughness"}],
-        river_list=[river_entry],
+        river_list=river_list,
         nr_subgrid_pixels=nr_subgrid_pixels,
         nr_levels=nr_levels,
         write_dep_tif=True,
@@ -533,9 +616,14 @@ else:
         crs="EPSG:4326",
     )
 
+    # Built here (SFINCS-build time), not precomputed in river_forcing.nc --
+    # looks up the design discharge at design_rp_river_yr from the stored
+    # per-crossing GPD return-value table (log-RP interpolated), applies the
+    # protection-discharge floor, then reconstructs the sinusoidal-wave
+    # hydrograph -- see src.river_forcing.build_design_discharge_matrix.
     # discharge dims: (crossing, time) → transpose to (time, crossing) for DataFrame
     dis_df = pd.DataFrame(
-        data=river_ds.discharge.values[active, :].T,
+        data=build_design_discharge_matrix(river_ds, active, design_rp_river_yr).T,
         index=river_times,
         columns=range(n_active),
     )
@@ -579,11 +667,21 @@ else:
     # Filter crossing points to those within the active SFINCS region.
     # Centroids of inside-domain reaches can land in a cell outside the
     # active-cells polygon (delta_domain); discharge_points.create() clips
-    # locations to that polygon and raises NoDataException when none survive.
-    # A 1-cell buffer prevents false negatives at cell edges.
+    # locations against self.model.region using an UNBUFFERED 'intersects'
+    # check and raises NoDataException when none survive. Its own `buffer=`
+    # parameter does NOT expand that check outward -- it instead restricts
+    # acceptance to a ring near the boundary that is itself clipped back to
+    # the same unbuffered region, so it can never rescue a point that falls
+    # just outside (confirmed by reading hydromt_sfincs' discharge_points.
+    # create(): `region.boundary.buffer(buffer).clip(self.model.region)`).
+    # A 1-cell buffer is used here only to decide which crossings to keep;
+    # any kept point that falls just outside the exact (unbuffered) region
+    # is then snapped onto its boundary (nearest_points; a no-op for points
+    # already inside) so every kept point is guaranteed to satisfy hydromt's
+    # own 'intersects' check regardless of its buffer setting.
     buf_deg = float(resolution) / 111_000.0
-    region_geom = sf.region.to_crs("EPSG:4326").geometry.union_all().buffer(buf_deg)
-    in_region = crossings_gdf.geometry.within(region_geom)
+    region_wgs84 = sf.region.to_crs("EPSG:4326").geometry.union_all()
+    in_region = crossings_gdf.geometry.within(region_wgs84.buffer(buf_deg))
     crossings_filt = crossings_gdf[in_region].copy()
     n_outside = int((~in_region).sum())
     if n_outside:
@@ -595,6 +693,32 @@ else:
     if crossings_filt.empty:
         log.warning("All discharge crossings outside active region — discharge forcing skipped")
     else:
+        # nearest_points() alone is not enough: it returns a point that is
+        # mathematically ON the region boundary, but GEOS's floating-point
+        # arithmetic can place it a hair outside, which then still fails
+        # hydromt's own 'intersects' check inside create() (confirmed live:
+        # a point snapped this way at R=60/n_cells=2 still reported
+        # region.intersects(point) == False). Nudge REGION_SNAP_NUDGE_M
+        # further from the boundary point, towards a point guaranteed to be
+        # inside the region (representative_point()), so the result is
+        # safely interior rather than balanced on a numerically fragile edge.
+        REGION_SNAP_NUDGE_M = 1.0
+        nudge_deg = REGION_SNAP_NUDGE_M / 111_000.0
+        interior_anchor = region_wgs84.representative_point()
+
+        def _snap_into_region(g):
+            if region_wgs84.contains(g):
+                return g
+            boundary_pt = nearest_points(region_wgs84, g)[0]
+            dx = interior_anchor.x - boundary_pt.x
+            dy = interior_anchor.y - boundary_pt.y
+            dist = math.hypot(dx, dy)
+            if dist == 0:
+                return boundary_pt
+            frac = min(nudge_deg / dist, 1.0)
+            return Point(boundary_pt.x + dx * frac, boundary_pt.y + dy * frac)
+
+        crossings_filt["geometry"] = crossings_filt.geometry.apply(_snap_into_region)
         # Pass full dis_df — discharge_points.create() reindexes it to only the
         # columns matching crossings_filt["index"] (the original crossing indices).
         sf.discharge_points.create(
@@ -661,7 +785,7 @@ if n_active >= 1 and not rivers.empty:
             dn_raw = str(row.get("rch_id_dn", "") or "").strip().strip("[]")
             if not dn_raw or dn_raw.lower() in ("nan", "none", "<na>"):
                 break
-            nxt = next((_norm_rid(t.strip()) for t in dn_raw.split(",")
+            nxt = next((_norm_rid(t.strip()) for t in re.split(r"[,\s]+", dn_raw)
                         if _norm_rid(t.strip())), None)
             if not nxt:
                 break
@@ -709,6 +833,22 @@ if include_rstart:
 # ── write ─────────────────────────────────────────────────────────────────────
 sf.write()
 log.info(f"Model written to {sfincs_root}")
+
+if quadtree_enabled:
+    # SfincsQuadtreeGrid.write() only splits the "ini" variable into its own
+    # sfincs_ini.nc when config["inifile"] is set (write()'s generic per-variable
+    # split loop keys off "{var}file", i.e. "inifile" for var="ini" -- it does
+    # NOT check "ncinifile", which is why we set "inifile" earlier). That data
+    # is now correctly written to disk. But the SFINCS kernel itself appears to
+    # treat "inifile" (legacy regular-grid ASCII/binary ini format) and
+    # "ncinifile" (netCDF, for quadtree) as mutually exclusive: leaving BOTH
+    # keys in sfincs.inp pointing at the same netCDF file caused an immediate
+    # access-violation crash at simulation start (observed for basin 4267691).
+    # Drop the now-redundant "inifile" key and re-serialize sfincs.inp so the
+    # kernel only sees "ncinifile", matching the actual file format on disk.
+    sf.config.set("inifile", None)
+    sf.config.write()
+    log.info("Removed redundant 'inifile' key from sfincs.inp (kept 'ncinifile')")
 
 # When subgrid is disabled, sf.write() does not create sfincs_subgrid.nc.
 # Touch a placeholder so Snakemake's output check passes.
@@ -786,9 +926,11 @@ with xr.open_dataset(surge_forcing_path, decode_times=False) as _sds:
 with xr.open_dataset(river_forcing_path, decode_times=False) as _rds:
     _river_times  = _hours_to_dt(_rds.time.values)
     _active_mask  = _rds.has_glofas.values.astype(bool)
-    _dis          = _rds["discharge"].values   # (crossing, time)
-    _dis_active   = _dis[_active_mask, :]
     _n_cross      = int(_active_mask.sum())
+    _dis_active   = (
+        build_design_discharge_matrix(_rds, _active_mask, design_rp_river_yr)
+        if _n_cross > 0 else np.zeros((0, len(_river_times)))
+    )
 
 _tstart_event = tref + timedelta(days=spinup_days) if include_rstart else None
 

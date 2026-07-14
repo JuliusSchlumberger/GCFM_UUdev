@@ -32,6 +32,8 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import Point
 
+from src.river_network import build_downstream_adjacency, normalize_reach_id
+
 log = logging.getLogger(__name__)
 
 
@@ -308,3 +310,90 @@ def compute_estuarine_depths(
         f"({n_est - n_blend} fully estuarine, {n_blend} in blend zone)"
     )
     return out
+
+
+def enforce_mouth_depth_monotonic(
+    rivers: gpd.GeoDataFrame,
+    depth_column: str = "rivdph",
+    powerlaw_column: str = "rivdph_powerlaw",
+) -> gpd.GeoDataFrame:
+    """
+    Ensure each river mouth's depth is at least as deep as the deeper of:
+    its own power-law (Leopold-Maddock) estimate, or its upstream
+    neighbour's final depth -- a river mouth shouldn't act as a shallower
+    sill than the channel feeding it, or than its own non-tidal hydraulic-
+    geometry sizing would suggest.
+
+    Mirrors enforce_mouth_width_monotonic (src.river_network): same mouth
+    definition (reaches with no downstream neighbour in-network) and same
+    confluence handling (compared against the DEEPEST of multiple upstream
+    neighbours). Applied unconditionally, independent of whether the
+    estuarine (Leuven et al.) model actually ran -- when it didn't (disabled,
+    or no Nienhuis delta matched), depth_column and powerlaw_column are
+    already identical, so this reduces to a plain upstream-continuity check;
+    when it did, this catches the case where the O'Brien-relation estimate
+    (and/or its min_depth_m floor) put a single mouth's depth well below
+    what's physically feeding it -- confirmed live (basin 2433835, single-
+    mouth Ebro-matched delta): the exponential-decay estimate came out at
+    ~0.24 m at the mouth (dist_out=199 m), floored to min_depth_m=0.5 m, vs.
+    ~2.3 m in the immediately upstream reach -- a ~1.6 m sill sitting right
+    at the model's downstream boundary.
+
+    Args:
+        rivers:          River network with 'reach_id', 'rch_id_dn',
+                         depth_column, and (optionally) powerlaw_column.
+        depth_column:    Final (possibly estuarine-adjusted) depth column
+                         to enforce (default 'rivdph').
+        powerlaw_column: Pre-estuarine power-law depth column, one of the
+                         floor candidates (default 'rivdph_powerlaw'); if
+                         absent, only the upstream-neighbour candidate is
+                         used.
+
+    Returns:
+        Copy of ``rivers`` with mouth depths raised where needed.
+    """
+    downstream_adj = build_downstream_adjacency(rivers)
+    upstream_adj: dict[str, list[str]] = {rid: [] for rid in downstream_adj}
+    for rid, dns in downstream_adj.items():
+        for dn in dns:
+            upstream_adj.setdefault(dn, []).append(rid)
+
+    rivers = rivers.copy()
+    rids = rivers["reach_id"].apply(normalize_reach_id)
+    depth_by_rid = dict(zip(rids, rivers[depth_column]))
+    has_powerlaw = powerlaw_column in rivers.columns
+
+    mouth_ids = [rid for rid, dns in downstream_adj.items() if not dns]
+    n_raised = 0
+    for rid in mouth_ids:
+        ups = upstream_adj.get(rid, [])
+        upstream_depth = max(
+            (
+                depth_by_rid[u]
+                for u in ups
+                if u in depth_by_rid and pd.notna(depth_by_rid[u])
+            ),
+            default=None,
+        )
+        mouth_mask = rids == rid
+        mouth_depth = rivers.loc[mouth_mask, depth_column].iloc[0]
+        mouth_power = (
+            rivers.loc[mouth_mask, powerlaw_column].iloc[0] if has_powerlaw else None
+        )
+        candidates = [
+            v for v in (upstream_depth, mouth_power) if v is not None and pd.notna(v)
+        ]
+        if not candidates:
+            continue
+        floor = max(candidates)
+        if pd.notna(mouth_depth) and mouth_depth < floor:
+            rivers.loc[mouth_mask, depth_column] = floor
+            n_raised += 1
+
+    if n_raised:
+        log.info(
+            f"enforce_mouth_depth_monotonic: raised depth for {n_raised} mouth "
+            f"reach(es) to match the deeper of their own power-law estimate "
+            f"or their upstream neighbour"
+        )
+    return rivers

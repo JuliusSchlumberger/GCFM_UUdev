@@ -31,9 +31,9 @@ def build_refinement_polygons(
     polygons internally, so they must already match.
 
     River reaches are buffered by ``width * river_buffer_factor`` (``width``
-    is whichever SWORD attribute river_processing.width_column selected as
-    canonical -- see src.river_network.normalize_channel_widths -- so this
-    buffer always matches the SFINCS rivwth burning width); if
+    is SWORD's canonical width column -- see
+    src.river_network.normalize_channel_widths -- so this buffer always
+    matches the SFINCS rivwth burning width); if
     ``coastal_refinement_enabled``, the coastline
     (land polygon boundary) is also buffered by ``coastal_buffer_m``. Overlap
     between the two zones needs no explicit resolution: hydromt_sfincs

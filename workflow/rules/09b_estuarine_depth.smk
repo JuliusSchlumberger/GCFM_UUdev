@@ -35,7 +35,6 @@ rule add_estuarine_depth:
         convergence_ratio_k  = config["river_processing"]["estuarine_depth"]["convergence_ratio_k"],
         blend_fraction       = config["river_processing"]["estuarine_depth"]["blend_fraction"],
         min_depth_m          = config["river_processing"]["estuarine_depth"]["min_depth_m"],
-        width_column         = config["river_processing"]["width_column"],
     log:
         "logs/{basin_id}/09b_estuarine_depth.log"
     script:

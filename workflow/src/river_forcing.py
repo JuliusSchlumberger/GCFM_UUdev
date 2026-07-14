@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import geopandas as gpd
@@ -34,11 +35,17 @@ def _norm_reach_id(x) -> str | None:
 
 
 def has_downstream_in_domain(rch_id_dn_raw, domain_reach_ids: set[str]) -> bool:
-    """Return True if any downstream reach ID in rch_id_dn is present in the domain."""
+    """Return True if any downstream reach ID in rch_id_dn is present in the domain.
+
+    rch_id_dn is a Python-list-repr string per SWORD v17c's convention
+    (e.g. "[id1, id2]"); re.split on comma-or-whitespace is deliberately
+    also robust to a plain whitespace-separated string (e.g. "id1 id2"),
+    in case a future source uses that convention instead.
+    """
     s = str(rch_id_dn_raw).strip().strip("[]")
     if not s or s.lower() in ("nan", "none", "<na>"):
         return False
-    for token in s.split(","):
+    for token in re.split(r"[,\s]+", s):
         normed = _norm_reach_id(token.strip())
         if normed and normed in domain_reach_ids:
             return True
@@ -152,7 +159,7 @@ def resolve_inside_domain_reaches(
             if not dn_raw or dn_raw.lower() in ("nan", "none", "<na>"):
                 break
             current = None
-            for token in dn_raw.split(","):
+            for token in re.split(r"[,\s]+", dn_raw):
                 normed = _norm_reach_id(token.strip())
                 if normed:
                     current = normed
@@ -493,7 +500,8 @@ def build_river_dataset(
     crossings: gpd.GeoDataFrame,
     has_glofas: np.ndarray,
     bankfull_q: np.ndarray,
-    flood_q: np.ndarray,
+    discharge_rp_table: np.ndarray,
+    return_periods: np.ndarray,
     cell_lon: np.ndarray,
     cell_lat: np.ndarray,
     times: np.ndarray,
@@ -501,16 +509,31 @@ def build_river_dataset(
     period_hr: float,
     results: list[EVAResult | None],
     rp_bankfull: float,
-    rp_flood: float,
     bias_corrected: np.ndarray,
     grdc_station_id: np.ndarray,
     grdc_correlation: np.ndarray,
     grdc_overlap_days: np.ndarray,
 ) -> xr.Dataset:
-    """Assemble the river forcing dataset with synthetic sinusoidal waves rising
-    from RP=2 (bankfull) to RP=100 (flood), plus EVA diagnostic variables.
+    """Assemble the river forcing dataset: bankfull discharge (AMAX/GEV),
+    a per-crossing return-period discharge table (POT/GPD), and EVA
+    diagnostic variables.
+
+    Unlike the previous design, this does NOT build the actual discharge
+    timeseries used to force SFINCS -- that's now built at SFINCS-build time
+    (rule 13, see build_design_discharge_matrix below) from bankfull_discharge
+    + a build-time-configurable return period looked up in discharge_rp_table,
+    so changing the design return period no longer requires re-running EVA.
 
     Args:
+        discharge_rp_table: (n_crossing, n_return_period) array -- discharge
+            at each of ``return_periods`` from the fitted POT/GPD curve (see
+            src.extreme_values.gpd_return_value_table), NaN row where GPD
+            didn't converge for that crossing.
+        return_periods: Return periods (years) matching discharge_rp_table's
+            second axis (src.extreme_values.STANDARD_RETURN_PERIODS_YR).
+        times, lead_days, period_hr: stored (not consumed here) so rule 13 can
+            reconstruct the same sinusoidal-wave shape at build time --
+            see build_design_discharge_matrix.
         bias_corrected: int8 array, 1 if the GloFAS cell feeding this crossing
             was bias-corrected against a GRDC gauge before EVA.
         grdc_station_id: int64 array, matched GRDC station 'id', or -1 if none.
@@ -520,12 +543,6 @@ def build_river_dataset(
             for bias correction, or NaN if no correction was applied.
     """
     n_cross = len(crossings)
-    discharge_matrix = np.full((n_cross, len(times)), np.nan)
-    for i in range(n_cross):
-        if has_glofas[i]:
-            discharge_matrix[i] = sinusoidal_wave(
-                bankfull_q[i], flood_q[i], times, lead_days, period_hr
-            )
 
     # Pull diagnostics into per-crossing arrays (NaN where no result).
     def _col(attr: str, default=np.nan):
@@ -550,9 +567,10 @@ def build_river_dataset(
     cross_lats = crossings.geometry.y.values if n_cross > 0 else np.array([])
 
     # Store inside_reach_id only for crossings that passed all filters.
-    # has_glofas=True encapsulates enters_domain AND visible_on_grid AND
-    # EVA convergence; filtered-out crossings get "" so rule 08 never
-    # accidentally seeds from them.
+    # has_glofas=True encapsulates enters_domain AND EVA convergence
+    # (visible_on_grid is informational only -- see 07_get_boundary_forcings.py
+    # Step 4 -- and no longer gates this); filtered-out crossings get "" so
+    # rule 08 never accidentally seeds from them.
     if "inside_reach_id" in crossings.columns:
         inside_reach_ids_arr = np.array(
             [
@@ -566,10 +584,15 @@ def build_river_dataset(
 
     return xr.Dataset(
         {
-            "discharge": (
-                ["crossing", "time"],
-                discharge_matrix,
-                {"units": "m3 s-1", "long_name": "river discharge"},
+            "discharge_rp_table": (
+                ["crossing", "return_period"],
+                discharge_rp_table,
+                {
+                    "units": "m3 s-1",
+                    "long_name": "discharge return-value table (POT/GPD fit), "
+                    "for build-time lookup at an arbitrary design return "
+                    "period -- see build_design_discharge_matrix",
+                },
             ),
             "has_glofas": (
                 ["crossing"],
@@ -582,14 +605,6 @@ def build_river_dataset(
                 {
                     "units": "m3 s-1",
                     "long_name": f"bankfull discharge (AMAX/GEV, RP={rp_bankfull:g} yr)",
-                },
-            ),
-            "flood_discharge": (
-                ["crossing"],
-                flood_q,
-                {
-                    "units": "m3 s-1",
-                    "long_name": f"flood discharge (POT/GPD, RP={rp_flood:g} yr)",
                 },
             ),
             "inside_reach_id": (
@@ -617,6 +632,16 @@ def build_river_dataset(
                 ["crossing"],
                 _col("pot_shape"),
                 {"long_name": "GPD shape parameter (tail)"},
+            ),
+            "gpd_scale": (
+                ["crossing"],
+                _col("pot_scale"),
+                {
+                    "long_name": "GPD scale parameter -- with pot_threshold, "
+                    "gpd_shape, and pot_peaks_per_year, fully determines the "
+                    "fitted return-value curve (see "
+                    "src.extreme_values.gpd_return_value)"
+                },
             ),
             "gev_shape": (
                 ["crossing"],
@@ -669,8 +694,95 @@ def build_river_dataset(
             "longitude": (["crossing"], cross_lons, {"units": "degrees_east"}),
             "latitude": (["crossing"], cross_lats, {"units": "degrees_north"}),
             "time": (["time"], times, {"units": "hours since simulation start"}),
+            "return_period": (
+                ["return_period"],
+                np.asarray(return_periods, dtype=float),
+                {
+                    "units": "years",
+                    "long_name": "return period axis for discharge_rp_table",
+                },
+            ),
+        },
+        attrs={
+            # Not consumed here -- stored so rule 13 can reconstruct the same
+            # sinusoidal-wave shape at build time (build_design_discharge_matrix)
+            # without needing its own copy of these as separate config params.
+            "lead_days": lead_days,
+            "period_hr": period_hr,
         },
     )
+
+
+def build_design_discharge_matrix(
+    river_ds: xr.Dataset,
+    active: np.ndarray,
+    design_rp_yr: float,
+) -> np.ndarray:
+    """
+    Build the discharge timeseries actually fed to SFINCS for the given
+    design return period, from river_forcing.nc's stored bankfull_discharge +
+    discharge_rp_table (+ protection_discharge, if present) -- the SFINCS-
+    build-time counterpart to the old rule-07-time sinusoidal_wave call (see
+    build_river_dataset). Changing design_rp_yr only requires re-running the
+    build (rule 13), not re-running EVA (rule 07).
+
+    Per active crossing:
+      1. Look up the design discharge Q_f at design_rp_yr from
+         discharge_rp_table, log-RP-interpolated between the two bracketing
+         table entries (standard flood-frequency convention; linear
+         interpolation in raw RP-space would be badly skewed given the
+         table's four-orders-of-magnitude span).
+      2. If protection_discharge (Q_p, existing-protection-level correction)
+         is present: floor Q_f at bankfull -- protection contains discharge
+         up to Q_p without modifying the DEM/floodplain, but the channel
+         always carries at least its own bankfull flow (Q_b): Q_f > Q_p ->
+         Q_b + (Q_f - Q_p) (overtopped, excess rides on top of bankfull);
+         Q_b < Q_f <= Q_p -> Q_b (contained, no flood signal); Q_f <= Q_b ->
+         Q_f unchanged.
+      3. Build the hydrograph via sinusoidal_wave(bankfull_q, Q_f,
+         river_ds.time.values, river_ds.attrs["lead_days"],
+         river_ds.attrs["period_hr"]).
+
+    Args:
+        river_ds: Opened river_forcing.nc (xr.Dataset).
+        active:   Boolean mask, len == river_ds.sizes["crossing"] -- which
+                  crossings to build (typically has_glofas).
+        design_rp_yr: Return period (years) to build the event at --
+                  boundary_setup.design_rp_river_yr.
+
+    Returns:
+        (n_active, n_time) np.ndarray, discharge (m3 s-1) per active crossing.
+    """
+    times = river_ds["time"].values
+    bankfull_q = river_ds["bankfull_discharge"].values[active]
+    table = river_ds["discharge_rp_table"].values[active]  # (n_active, n_rp)
+    table_rps = river_ds["return_period"].values
+    lead_days = float(river_ds.attrs["lead_days"])
+    period_hr = float(river_ds.attrs["period_hr"])
+
+    n_active = int(active.sum())
+    log_rp = np.log(design_rp_yr)
+    log_table_rps = np.log(table_rps)
+    design_q = np.array(
+        [np.interp(log_rp, log_table_rps, table[i]) for i in range(n_active)]
+    )
+
+    if "protection_discharge" in river_ds:
+        prot_q = river_ds["protection_discharge"].values[active]
+        overtopped = design_q > prot_q
+        contained = (~overtopped) & (design_q > bankfull_q)
+        design_q = np.where(
+            overtopped,
+            bankfull_q + (design_q - prot_q),
+            np.where(contained, bankfull_q, design_q),
+        )
+
+    discharge_matrix = np.full((n_active, len(times)), np.nan)
+    for i in range(n_active):
+        discharge_matrix[i] = sinusoidal_wave(
+            bankfull_q[i], design_q[i], times, lead_days, period_hr
+        )
+    return discharge_matrix
 
 
 # ── reading from finished river_forcing.nc ────────────────────────────────────
@@ -734,9 +846,10 @@ def snap_crossings_to_reaches(
 
     The inside_reach_id for each crossing was resolved in rule 07 by
     resolve_inside_domain_reaches and stored in river_forcing.nc.  Only
-    crossings that passed all filters (enters_domain, visible_on_grid, EVA
-    convergence) carry a non-empty inside_reach_id — they arrive here
-    already filtered via load_forcing_crossings.
+    crossings that passed all filters (enters_domain, EVA convergence --
+    visible_on_grid is informational only, it no longer gates anything)
+    carry a non-empty inside_reach_id — they arrive here already filtered
+    via load_forcing_crossings.
 
     When multiple crossings map to the same reach_id only the largest
     bankfull_q is kept.

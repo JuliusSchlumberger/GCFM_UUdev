@@ -28,6 +28,9 @@ rule get_boundary_forcings:
         plot_bias_correction = directory(results_path("{basin_id}/visuals/input_data/07_bias_correction")),
         plot_surge_correction = results_path("{basin_id}/visuals/input_data/07_surge_correction.png"),
     params:
+        # shared (surge + river forcing timeseries axis)
+        lead_days = config["boundary_forcings"]["lead_days"],
+        dt_hr = config["boundary_forcings"]["dt_hr"],
         # surge
         min_surge_stations = config["boundary_forcings"]["surge"]["min_stations"],
         max_surge_stations = config["boundary_forcings"]["surge"]["max_stations"],
@@ -35,25 +38,16 @@ rule get_boundary_forcings:
         surge_return_period = config["boundary_forcings"]["surge"]["return_period"],
         search_radii_km = config["boundary_forcings"]["surge"]["search_radii_km"],
         surge_period_hr = config["boundary_forcings"]["surge"]["period_hr"],
-        surge_lead_days = config["boundary_forcings"]["surge"]["lead_days"],
-        surge_dt_hr = config["boundary_forcings"]["surge"]["dt_hr"],
-        mdt_variable = config["datum_correction"]["mdt_variable"],
-        surge_vertical_correction = config["boundary_forcings"]["surge"]["vertical_correction"],
+        mdt_fallback_search_deg = config["datum_correction"]["fallback_search_deg"],
         surge_slr = config["boundary_forcings"]["surge"]["slr"],
         # river
         river_period_hr = config["boundary_forcings"]["river"]["period_hr"],
-        river_lead_days = config["boundary_forcings"]["river"]["lead_days"],
-        river_dt_hr = config["boundary_forcings"]["river"]["dt_hr"],
         glofas_buffer_deg = config["boundary_forcings"]["river"]["glofas_buffer_deg"],
-        glofas_variable = config["boundary_forcings"]["river"]["glofas_variable"],
         eva = config["boundary_forcings"]["river"]["eva"],
+        design_rp_river_yr        = config["boundary_setup"]["design_rp_river_yr"],
         sfincs_resolution          = config["sfincs"]["grid"]["resolution"],
-        sfincs_nr_subgridcells     = config["sfincs"]["subgrid"]["nr_subgrid_pixels"] if config["sfincs"]["subgrid"]["enabled"] == True else 0 ,
         glofas_search_radius_km    = config["boundary_forcings"]["river"]["glofas_search_radius_km"],
         glofas_min_mean_discharge  = config["boundary_forcings"]["river"]["glofas_min_mean_discharge"],
-        width_column               = config["river_processing"]["width_column"],
-        max_width_to_width_ratio   = config["river_processing"]["cleaning"]["max_width_to_width_ratio"],
-        grdc_search_radius_km      = config["boundary_forcings"]["river"]["grdc_search_radius_km"],
         bias_correction            = config["boundary_forcings"]["river"]["bias_correction"],
         protection_levels_enabled  = config["protection_levels"]["enabled"],
     log:

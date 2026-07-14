@@ -18,13 +18,11 @@ rule sanity_checks:
     output:
         plot_inundation_ratio      = results_path("{basin_id}/visuals/model_runs/spinup/01_inundation_ratio.png"),
         animation_flood_progress   = results_path("{basin_id}/visuals/model_runs/spinup/02_flood_animation.mp4"),
-        animation_velocity         = results_path("{basin_id}/visuals/model_runs/spinup/03_velocity_animation.mp4"),
     params:
         sfincs_root                = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs"),
         min_inundation_depth_m     = config["sfincs"]["sanity_checks"]["min_inundation_depth_m"],
         include_subgrid            = config["sfincs"]["subgrid"]["enabled"],
         animation_fps              = config["sfincs"]["sanity_checks"]["animation_fps"],
-        velocity_animation_enabled = config["sfincs"]["sanity_checks"]["velocity_animation"]["enabled"],
     log:
         "logs/{basin_id}/15_sanity_checks.log"
     script:

@@ -11,8 +11,11 @@ from src.river_network import (
     accumulate_discharge,
     build_downstream_adjacency,
     collect_downstream_main_paths,
+    enforce_mouth_width_monotonic,
     fix_tjunction_tails,
+    identify_delta_outflow_points,
     normalize_channel_widths,
+    remove_reaches_with_missing_width,
 )
 
 
@@ -69,18 +72,38 @@ rivers_clean["linked_to_source"] = True
 rivers_clean["is_seed"] = rivers_clean["reach_id"].map(_norm_id).isin(set(seed_q.keys()))
 log.info(f"Retained {len(rivers_clean)}/{len(rivers)} reaches")
 
+# ── delta-outline outflow points (neither seed nor mouth) ────────────────────
+# A reach that crosses the delta polygon's OUTLINE but is neither the seed
+# (the real inflow entry point) nor a mouth is a genuine place where flow
+# exits the modelled network into the delta plain -- it is kept in the 1D
+# network unchanged, flagged 'is_delta_outflow', and its outline-crossing
+# point is registered as an SFINCS outflow boundary (mask=3) in build_sfincs.
+delta_polygon = gpd.read_file(snakemake.input.delta_polygon)
+rivers_clean, outflow_points = identify_delta_outflow_points(rivers_clean, delta_polygon)
+log.info(f"Delta-outline outflow points identified: {len(outflow_points)}")
+
 # ── fix width/max_width attributes, then choose the canonical 'width' ─────────
-# Some SWORD reaches have max_width < width (swapped back), or a max_width
-# tens-hundreds of times their own width (erroneous, clipped) -- see
+# Some SWORD reaches have width/max_width missing (-9999) entirely -- must be
+# handled BEFORE normalize_channel_widths, since its swap step would otherwise
+# treat a missing max_width as "smaller than width" and corrupt 'width' with
+# the sentinel instead (see remove_reaches_with_missing_width's docstring).
+rivers_clean = remove_reaches_with_missing_width(rivers_clean)
+
+# Some SWORD reaches have max_width < width (swapped back) -- see
 # normalize_channel_widths. The resulting 'width' is what every downstream
 # width-dependent step uses (discharge propagation here, hydraulic depth,
-# quadtree refinement buffer, SFINCS rivwth), per river_processing.width_column.
+# quadtree refinement buffer, SFINCS rivwth).
 
-rivers_clean = normalize_channel_widths(
-    rivers_clean,
-    width_column=snakemake.params.width_column,
-    max_ratio=snakemake.params.max_width_to_width_ratio,
-)
+rivers_clean = normalize_channel_widths(rivers_clean)
+
+# River mouths shouldn't be narrower than the reach feeding into them --
+# channels don't narrow immediately before the outlet; where SWORD's own
+# attributes show otherwise (e.g. a mouth obscured by tidal flats/vegetation
+# in the source imagery), raise the mouth's width to match its widest
+# upstream neighbour. Always operates on 'width' (not width_column) --
+# normalize_channel_widths above has already made 'width' the canonical,
+# live column regardless of which original SWORD attribute it was chosen from.
+rivers_clean = enforce_mouth_width_monotonic(rivers_clean)
 
 # ── discharge propagation ─────────────────────────────────────────────────────
 # Propagate seed bankfull discharges downstream through the clean network.
@@ -105,6 +128,10 @@ log.info(
 Path(snakemake.output.clean_river_network).parent.mkdir(parents=True, exist_ok=True)
 rivers_clean.to_file(snakemake.output.clean_river_network, driver="GPKG")
 log.info(f"Written: {snakemake.output.clean_river_network}")
+
+Path(snakemake.output.delta_outflow_points).parent.mkdir(parents=True, exist_ok=True)
+outflow_points.to_file(snakemake.output.delta_outflow_points, driver="GPKG")
+log.info(f"Written: {snakemake.output.delta_outflow_points} ({len(outflow_points)} point(s))")
 
 # ── summary plots ─────────────────────────────────────────────────────────────
 

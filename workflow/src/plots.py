@@ -13,10 +13,12 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
+from rasterio.enums import Resampling
 from rasterio.features import shapes as _rio_shapes
-from rasterio.warp import transform_geom as _transform_geom
+from rasterio.warp import calculate_default_transform, transform_geom as _transform_geom
 import rioxarray  # noqa: F401  — registers the .rio accessor used for reprojection
 import xarray as xr
+import xugrid as xu
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from shapely.geometry import Polygon, shape as _shape
@@ -690,6 +692,98 @@ def plot_protection_levels(
     cb.set_label("Design protection return period (yr)")
     fig.suptitle("FLOPROS existing flood protection standard (WRI geogunit_107)")
     _save(fig, output_path)
+
+
+def plot_global_protection_map(
+    flopros_df,
+    countries_gdf: gpd.GeoDataFrame,
+    riverine_output_path: str,
+    coastal_output_path: str,
+    iso_column: str = "ISO_A3_EH",
+    agg: str = "median",
+) -> None:
+    """
+    Two separate world choropleths -- one riverine, one coastal -- of FLOPROS
+    design flood protection return period (years), aggregated to country
+    level. Both share the same (log) colorscale so they remain directly
+    comparable even though they're saved as separate figures.
+
+    Each country's value is the `agg` (default: median, robust to outlier
+    sub-national units) of its Riverine/Coastal FLOPROS design RP across all
+    its geounits that DO carry a value for that hazard. Countries with no
+    FLOPROS value for a hazard anywhere are left NaN and rendered grey -- no
+    default/fallback value is guessed here (unlike the per-basin pipeline's
+    fallback chain in protection_levels.identify_dominant_protection, which
+    exists to guarantee a usable RP for the forcing correction, not to
+    faithfully represent "no known standard").
+
+    Args:
+        flopros_df:           Output of protection_levels.load_flopros_table()
+                               -- must have an "ISO" column plus
+                               "Riverine"/"Coastal".
+        countries_gdf:         World country polygons (e.g. Natural Earth
+                               admin_0_countries) with an ISO3 code column.
+        riverine_output_path:  Output PNG path for the riverine map.
+        coastal_output_path:   Output PNG path for the coastal map.
+        iso_column:            Column in countries_gdf holding the ISO3 code
+                               to join on (Natural Earth's "ISO_A3" is -99 for
+                               a handful of countries, e.g. France/Norway --
+                               "ISO_A3_EH" doesn't have that gap).
+        agg:                   Aggregation applied within each country
+                               ("median", "mean", "max", ...).
+    """
+    country_agg = flopros_df.groupby("ISO")[["Riverine", "Coastal"]].agg(agg)
+    merged = countries_gdf.merge(
+        country_agg, how="left", left_on=iso_column, right_index=True
+    )
+
+    finite_vals = merged[["Riverine", "Coastal"]].to_numpy(dtype=float)
+    finite_vals = finite_vals[np.isfinite(finite_vals)]
+    max_rp = max(100.0, float(finite_vals.max())) if finite_vals.size else 100.0
+    norm = mcolors.LogNorm(vmin=1.0, vmax=max_rp)
+    cmap = plt.get_cmap("YlOrRd").copy()
+
+    # World map extent is much wider than tall (360x145 deg); geopandas locks
+    # the axes to equal aspect, so a figsize not matching that ratio leaves
+    # large blank margins around the (aspect-shrunk) map that bbox_inches=
+    # "tight" can't crop away (it's the axes' allocated box, not just its
+    # drawn content). figsize is sized to match the map's own aspect ratio
+    # plus fixed headroom for the title/colorbar.
+    map_aspect = (85 - -60) / (180 - -180)  # lat span / lon span
+    fig_w_in = 14.0
+    fig_h_in = fig_w_in * map_aspect + 1.3  # + title/colorbar headroom
+
+    output_paths = {"Riverine": riverine_output_path, "Coastal": coastal_output_path}
+    for hazard, output_path in output_paths.items():
+        fig, ax = plt.subplots(figsize=(fig_w_in, fig_h_in), constrained_layout=True)
+        merged.plot(
+            column=hazard,
+            ax=ax,
+            cmap=cmap,
+            norm=norm,
+            missing_kwds={"color": "#d0d0d0", "label": "No FLOPROS data"},
+            edgecolor="#888888",
+            linewidth=0.2,
+        )
+        n_with_data = int(merged[hazard].notna().sum())
+        ax.set_title(
+            f"{hazard} flood protection standard\n"
+            f"{n_with_data}/{len(merged)} countries with FLOPROS data ({agg} of sub-national units)"
+        )
+        ax.set_xlim(-180, 180)
+        ax.set_ylim(-60, 85)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+        sm.set_array([])
+        cbar = fig.colorbar(
+            sm, ax=ax, orientation="horizontal", fraction=0.05, pad=0.02, shrink=0.5
+        )
+        cbar.set_label("Design protection return period (years)")
+        _save(fig, output_path)
 
 
 def plot_river_network(
@@ -1977,30 +2071,52 @@ def plot_refinement_zones(
     _save(fig, output_path)
 
 
-def _downsample_wgs_dataarray(
-    da_wgs: xr.DataArray, max_px: int = _PLOT_MAX_PX
+def reproject_max_for_plot(
+    da: xr.DataArray,
+    dst_crs: str = "EPSG:4326",
+    max_px: int = _PLOT_MAX_PX,
+    resampling: Resampling = Resampling.max,
 ) -> xr.DataArray:
     """
-    Stride a reprojected (…, y, x) DataArray down so its spatial grid has at
-    most ``max_px`` pixels, mirroring the downsampling read_raster_for_plot()
-    applies to plain GeoTIFF reads.
+    Reproject ``da`` (in its own native/projected CRS) to ``dst_crs`` directly
+    at a resolution coarse enough to keep the output spatial grid at or below
+    ``max_px`` total pixels, aggregating with ``resampling`` (max by default)
+    rather than reprojecting at native resolution and stride-decimating
+    afterward.
 
-    Reprojecting a fine-resolution raster (e.g. a quadtree run's subgrid,
-    down to ~1.5 m pixels) to WGS84 for a whole delta domain can produce tens
-    of thousands of pixels per side. Handing that straight to imshow/
-    FuncAnimation can exhaust memory well before it would ever be visually
-    distinguishable at plot resolution (matplotlib's Agg renderer allocates
-    an RGBA buffer sized to the full data array). Non-spatial dimensions
-    (e.g. ``time``) are left untouched.
+    Reprojecting a fine-resolution SFINCS run raster (e.g. a quadtree run's
+    subgrid, down to ~1.5 m pixels, or compute_max_inundation's own
+    subgrid-resolution output) to WGS84 for a whole delta domain can produce
+    tens of thousands of pixels per side. Two problems with doing that
+    reproject at native resolution first and only downsampling afterward
+    (this function's predecessor, _downsample_wgs_dataarray): (a) the
+    reproject call itself still momentarily allocates the huge full-
+    resolution intermediate array (observed: an 11627x19827 single-band
+    array during reprojection, then a 4-channel float64 RGBA buffer during
+    imshow -- ~6.9 GiB -- once handed to matplotlib), and (b) picking every
+    Nth pixel post-hoc can alias away isolated peak values entirely, which
+    matters for a MAX-inundation map. Reprojecting directly at the coarse
+    target resolution with max-resampling avoids the large intermediate
+    altogether and guarantees the true max within each output pixel survives
+    the downsampling.
+
+    ``calculate_default_transform`` is metadata-only (no pixel data is read
+    or reprojected) and is used only to estimate the "natural" 1:1 output
+    resolution, which is then coarsened (if needed) to hit the max_px budget.
+
+    Non-spatial dimensions (e.g. ``time``) are reprojected slice-by-slice by
+    rioxarray automatically and need no special handling here.
     """
-    y_dim, x_dim = da_wgs.rio.y_dim, da_wgs.rio.x_dim
-    total = da_wgs.sizes[y_dim] * da_wgs.sizes[x_dim]
-    if total <= max_px:
-        return da_wgs
-    factor = math.ceil(math.sqrt(total / max_px))
-    return da_wgs.isel(
-        {y_dim: slice(None, None, factor), x_dim: slice(None, None, factor)}
+    dst_transform, dst_width, dst_height = calculate_default_transform(
+        da.rio.crs, dst_crs, da.rio.width, da.rio.height, *da.rio.bounds()
     )
+    total_px = dst_width * dst_height
+    factor = math.sqrt(total_px / max_px) if total_px > max_px else 1.0
+    # dst_transform.a = the "natural" (1:1) pixel size in dst_crs units that
+    # calculate_default_transform picked; scale it up by `factor` to hit the
+    # max_px budget.
+    target_res = dst_transform.a * factor
+    return da.rio.reproject(dst_crs, resolution=target_res, resampling=resampling)
 
 
 # ── run-output diagnostic plots (rules 14-15: run_spinup, sanity_checks) ──────
@@ -2032,8 +2148,7 @@ def plot_max_inundation_map(
     """
     # Reproject from the model's metric UTM grid to EPSG:4326.  Use imshow with
     # explicit extent rather than da.plot() to guarantee north-up orientation.
-    da_wgs = da_hmax.squeeze().rio.reproject("EPSG:4326")
-    da_wgs = _downsample_wgs_dataarray(da_wgs)
+    da_wgs = reproject_max_for_plot(da_hmax.squeeze())
     y_dim = da_wgs.rio.y_dim
     x_dim = da_wgs.rio.x_dim
     if da_wgs.dims[0] != y_dim:
@@ -2097,8 +2212,34 @@ def plot_max_inundation_map(
     _save(fig, output_path)
 
 
+def _mesh_overlay_setup(
+    da_mesh: xu.UgridDataArray,
+    domain_poly: Polygon,
+    land_polygons_path: str,
+    river_network_path: str,
+):
+    """
+    Common setup for mesh-native (quadtree) animations: the mesh's own native
+    CRS/bounds, and the land/river/domain overlay layers reprojected to that
+    CRS via ``_overlay_layers``.
+
+    Plots the mesh directly in its native (projected, e.g. UTM) CRS rather
+    than reprojecting to WGS84 like every raster-based plot in this module —
+    xugrid has no simple ``.rio.reproject()`` equivalent for a mesh's
+    topology (unlike a raster, reprojecting would mean rebuilding every cell
+    polygon in the new CRS), so it's the overlays that get reprojected here
+    instead, onto the mesh's own CRS.
+    """
+    crs = da_mesh.ugrid.grid.crs
+    bounds = da_mesh.ugrid.total_bounds  # (xmin, ymin, xmax, ymax), native CRS
+    land, rivers, domain_gdf = _overlay_layers(
+        crs, bounds, domain_poly, land_polygons_path, river_network_path
+    )
+    return crs, bounds, land, rivers, domain_gdf
+
+
 def animate_flood_progression(
-    da_h: xr.DataArray,
+    da_h: xr.DataArray | xu.UgridDataArray,
     domain_poly: Polygon,
     land_polygons_path: str,
     river_network_path: str,
@@ -2111,14 +2252,27 @@ def animate_flood_progression(
     Animate the progression of land-surface flooding over a SFINCS run
     (output of ``postprocessing.compute_flood_progression``), saved as an MP4.
 
-    The land outline, river network, and domain boundary are drawn once as a
-    static background; an imshow layer of instantaneous water depth (already
-    masked to non-water land-use areas) is then updated for each time step.
+    For a REGULAR grid, the land outline, river network, and domain boundary
+    are drawn once as a static background; an imshow layer of instantaneous
+    water depth (already masked to non-water land-use areas) is then updated
+    for each time step.
+
+    For a QUADTREE run, ``da_h`` arrives as a mesh-native ``xu.UgridDataArray``
+    (unmasked — see ``postprocessing.compute_flood_progression``) and is
+    rendered directly as mesh cell polygons (``.ugrid.plot()``, a
+    ``matplotlib.collections.PolyCollection``) updated per frame via
+    ``set_array()`` — this never rasterizes the mesh, which for a large
+    quadtree domain is what previously risked exhausting memory (see
+    ``src.postprocessing``'s ``_coarsen_for_memory`` / mosaic history).
 
     Args:
-        da_h:               Instantaneous land-surface water depth DataArray
-                            with a ``time`` dimension; NaN = dry / water / outside
-                            domain.  Must carry CRS metadata (``rio.crs``).
+        da_h:               Instantaneous land-surface water depth with a
+                            ``time`` dimension; NaN = dry / water / outside
+                            domain (regular-grid case only — the quadtree case
+                            is unmasked). Regular-grid arrays must carry CRS
+                            metadata (``rio.crs``); quadtree arrays must carry
+                            mesh CRS metadata (``ugrid.grid.crs`` — see
+                            ``postprocessing._ensure_ugrid_crs``).
         domain_poly:        Domain polygon in WGS84 (from ``load_domain``).
         land_polygons_path: Path to the OSM land polygons geopackage.
         river_network_path: Path to the clipped river network geopackage.
@@ -2136,10 +2290,67 @@ def animate_flood_progression(
         Path(output_path).touch()
         return
 
+    if isinstance(da_h, xu.UgridDataArray):
+        _, bounds, land, rivers, domain_gdf = _mesh_overlay_setup(
+            da_h, domain_poly, land_polygons_path, river_network_path
+        )
+
+        vals = da_h.values
+        valid = vals[~np.isnan(vals)]
+        vmax = float(np.percentile(valid, 99)) if len(valid) > 0 else 1.0
+        vmax = max(vmax, 0.01)
+
+        fig, ax = plt.subplots(figsize=(10, 8))
+        _draw_overlays(ax, land, rivers, domain_gdf, zorder=1)
+        coll = da_h.isel(time=0).ugrid.plot(
+            ax=ax, cmap="Blues", vmin=0, vmax=vmax, zorder=2
+        )
+        cb = fig.colorbar(coll, ax=ax, fraction=0.03, pad=0.04, extend="max")
+        cb.set_label("Water depth (m)")
+
+        xmin, ymin, xmax, ymax = bounds
+        _margin = max(xmax - xmin, ymax - ymin) * 0.3
+        ax.set_xlim(xmin - _margin, xmax + _margin)
+        ax.set_ylim(ymin - _margin, ymax + _margin)
+        ax.set_xlabel("Easting (m)")
+        ax.set_ylabel("Northing (m)")
+        ax.set_aspect("equal")
+        ax.grid(True, alpha=0.3, linewidth=0.5)
+        ax.legend(
+            handles=_OVERLAY_LEGEND_HANDLES,
+            loc="lower right",
+            framealpha=0.9,
+            fontsize=8,
+        )
+
+        title_prefix = "Flood progression"
+        if run_label:
+            title_prefix = f"{title_prefix} — {run_label}"
+        if basin_id:
+            title_prefix = f"{title_prefix} | {basin_id}"
+        title_artist = ax.set_title(title_prefix)
+
+        times = da_h["time"].values
+        n_frames = da_h.sizes["time"]
+
+        def _update_mesh(i):
+            coll.set_array(da_h.isel(time=i).values.ravel())
+            title_artist.set_text(
+                f"{title_prefix}\n{np.datetime_as_string(times[i], unit='m')}"
+            )
+            return coll, title_artist
+
+        anim = FuncAnimation(fig, _update_mesh, frames=n_frames, blit=False)
+        out_path = Path(output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        anim.save(str(out_path), writer=FFMpegWriter(fps=fps))
+        plt.close(fig)
+        log.info(f"Written: {output_path}")
+        return
+
     # Reproject from the model's metric UTM grid to EPSG:4326 so this animation
     # shares the same lon/lat reference frame as every other diagnostic plot.
-    da_wgs = da_h.rio.reproject("EPSG:4326")
-    da_wgs = _downsample_wgs_dataarray(da_wgs)
+    da_wgs = reproject_max_for_plot(da_h)
     land, rivers, domain_gdf = _overlay_layers(
         da_wgs.rio.crs,
         da_wgs.rio.bounds(),
@@ -2207,182 +2418,6 @@ def animate_flood_progression(
 
     anim = FuncAnimation(fig, _update, frames=n_frames, blit=False)
 
-    out_path = Path(output_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    anim.save(str(out_path), writer=FFMpegWriter(fps=fps))
-    plt.close(fig)
-    log.info(f"Written: {output_path}")
-
-
-def animate_velocity(
-    da_u: xr.DataArray,
-    da_v: xr.DataArray,
-    domain_poly: Polygon,
-    land_polygons_path: str,
-    river_network_path: str,
-    output_path: str,
-    basin_id: str = "",
-    run_label: str = "",
-    fps: int = 2,
-) -> None:
-    """
-    Animate flow speed (colour scale) and direction (normalised quiver arrows)
-    from SFINCS spin-up velocity output, saved as an MP4.
-
-    da_u and da_v must carry CRS metadata and a ``time`` dimension (from
-    ``src.postprocessing.compute_velocity_timeseries``).  Staggered grids
-    (da_u.shape != da_v.shape) are trimmed to the common spatial extent.
-    u/v are reprojected to WGS84 as scalars — the resulting angular error is
-    negligible (<1°) for typical river-delta domains, which is acceptable for
-    a spin-up sanity check.  Arrow lengths are normalised to unit length so
-    the colour scale carries the magnitude information.
-
-    Args:
-        da_u:               x-velocity DataArray (time, *, *) with CRS metadata.
-        da_v:               y-velocity DataArray (time, *, *) with CRS metadata.
-        domain_poly:        Domain polygon in WGS84.
-        land_polygons_path: Path to OSM land polygons GeoPackage.
-        river_network_path: Path to river network GeoPackage.
-        output_path:        Destination MP4 path.
-        basin_id:           Basin identifier for the title.
-        run_label:          Optional run label for the title.
-        fps:                Frames per second.
-    """
-    from matplotlib.animation import FFMpegWriter, FuncAnimation
-
-    if "time" not in da_u.dims:
-        log.warning("animate_velocity: da_u has no 'time' dimension — skipping")
-        Path(output_path).touch()
-        return
-
-    # ── Align staggered grids ──────────────────────────────────────────────────
-    # SFINCS stores u at x-faces and v at y-faces; trim to common (ny, nx).
-    if da_u.shape[1:] != da_v.shape[1:]:
-        u_sdims = [d for d in da_u.dims if d != "time"]
-        v_sdims = [d for d in da_v.dims if d != "time"]
-        ny = min(da_u.sizes[u_sdims[0]], da_v.sizes[v_sdims[0]])
-        nx = min(da_u.sizes[u_sdims[1]], da_v.sizes[v_sdims[1]])
-        da_u = da_u.isel({u_sdims[0]: slice(ny), u_sdims[1]: slice(nx)})
-        da_v = da_v.isel({v_sdims[0]: slice(ny), v_sdims[1]: slice(nx)})
-
-    # ── Speed + reproject to WGS84 ────────────────────────────────────────────
-    # Speed is a scalar — reprojection is exact.  u/v reprojected as scalars
-    # (direction slightly rotated by UTM→WGS84 transform, acceptable here).
-    da_speed = (da_u**2 + da_v**2) ** 0.5
-    da_speed.name = "speed"
-    da_speed_wgs = _downsample_wgs_dataarray(da_speed.rio.reproject("EPSG:4326"))
-    da_u_wgs = _downsample_wgs_dataarray(da_u.rio.reproject("EPSG:4326"))
-    da_v_wgs = _downsample_wgs_dataarray(da_v.rio.reproject("EPSG:4326"))
-
-    # ── Colour scale & quiver stride ──────────────────────────────────────────
-    all_vals = da_speed_wgs.values
-    valid = all_vals[~np.isnan(all_vals)]
-    vmax_speed = float(np.percentile(valid, 99)) if len(valid) > 0 else 1.0
-    vmax_speed = max(vmax_speed, 0.001)
-
-    x_wgs = da_speed_wgs["x"].values
-    y_wgs = da_speed_wgs["y"].values
-    extent_wgs = (
-        float(x_wgs.min()),
-        float(x_wgs.max()),
-        float(y_wgs.min()),
-        float(y_wgs.max()),
-    )
-    origin = "upper" if y_wgs[0] > y_wgs[-1] else "lower"
-
-    ny_wgs, nx_wgs = da_speed_wgs.shape[1:]
-    stride = max(1, min(ny_wgs, nx_wgs) // 15)
-    Xq, Yq = np.meshgrid(x_wgs[::stride], y_wgs[::stride])
-
-    # ── Overlay layers ─────────────────────────────────────────────────────────
-    land, rivers, domain_gdf = _overlay_layers(
-        da_speed_wgs.rio.crs,
-        da_speed_wgs.rio.bounds(),
-        domain_poly,
-        land_polygons_path,
-        river_network_path,
-    )
-    lon_min, lat_min, lon_max, lat_max = domain_poly.bounds
-    _margin = max(lon_max - lon_min, lat_max - lat_min) * 0.3
-
-    # ── Figure setup ──────────────────────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(10, 8))
-    if not land.empty:
-        land.plot(ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
-    if not rivers.empty:
-        rivers.plot(ax=ax, color="steelblue", linewidth=0.6, zorder=3)
-    domain_gdf.boundary.plot(ax=ax, color="black", linewidth=1.5, zorder=4)
-
-    im = ax.imshow(
-        np.full(da_speed_wgs.shape[1:], np.nan),
-        cmap="plasma",
-        vmin=0,
-        vmax=vmax_speed,
-        extent=extent_wgs,
-        origin=origin,
-        zorder=2,
-        alpha=0.85,
-    )
-    cb = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.04, extend="max")
-    cb.set_label("Flow speed (m/s)")
-
-    def _normalised_uv(i):
-        u_q = da_u_wgs.isel(time=i).values[::stride, ::stride]
-        v_q = da_v_wgs.isel(time=i).values[::stride, ::stride]
-        spd = np.sqrt(u_q**2 + v_q**2)
-        with np.errstate(invalid="ignore"):
-            u_n = np.where(spd > 0, u_q / spd, 0.0)
-            v_n = np.where(spd > 0, v_q / spd, 0.0)
-        return np.nan_to_num(u_n), np.nan_to_num(v_n)
-
-    u_n0, v_n0 = _normalised_uv(0)
-    quiv = ax.quiver(
-        Xq,
-        Yq,
-        u_n0,
-        v_n0,
-        scale=20,
-        scale_units="inches",
-        width=0.003,
-        headwidth=4,
-        color="black",
-        alpha=0.55,
-        zorder=5,
-    )
-
-    ax.set_xlim(lon_min - _margin, lon_max + _margin)
-    ax.set_ylim(lat_min - _margin, lat_max + _margin)
-    ax.set_xlabel("Longitude (°)")
-    ax.set_ylabel("Latitude (°)")
-    ax.set_aspect("equal")
-    ax.grid(True, alpha=0.3, linewidth=0.5)
-    ax.legend(
-        handles=_OVERLAY_LEGEND_HANDLES, loc="lower right", framealpha=0.9, fontsize=8
-    )
-
-    title_prefix = "Flow velocity"
-    if run_label:
-        title_prefix = f"{title_prefix} — {run_label}"
-    if basin_id:
-        title_prefix = f"{title_prefix} | {basin_id}"
-    title_artist = ax.set_title(title_prefix)
-
-    times = da_speed_wgs["time"].values
-    n_frames = da_speed_wgs.sizes["time"]
-
-    def _update(i):
-        im.set_data(da_speed_wgs.isel(time=i).values)
-        u_n, v_n = _normalised_uv(i)
-        quiv.set_UVC(u_n, v_n)
-        t_str = (
-            np.datetime_as_string(times[i], unit="m")
-            if np.issubdtype(times.dtype, np.datetime64)
-            else f"t = {float(times[i]):.0f} s"
-        )
-        title_artist.set_text(f"{title_prefix}\n{t_str}")
-        return im, quiv, title_artist
-
-    anim = FuncAnimation(fig, _update, frames=n_frames, blit=False)
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     anim.save(str(out_path), writer=FFMpegWriter(fps=fps))
@@ -2665,8 +2700,7 @@ def plot_inundation_check(
     # Reproject from the model's metric UTM grid to EPSG:4326.  Use explicit
     # imshow with extent rather than da.plot() to guarantee north-up orientation
     # regardless of how downscale_floodmap orders the spatial dimensions.
-    da_wgs = da_hmax.squeeze().rio.reproject("EPSG:4326")
-    da_wgs = _downsample_wgs_dataarray(da_wgs)
+    da_wgs = reproject_max_for_plot(da_hmax.squeeze())
     y_dim = da_wgs.rio.y_dim
     x_dim = da_wgs.rio.x_dim
     if da_wgs.dims[0] != y_dim:

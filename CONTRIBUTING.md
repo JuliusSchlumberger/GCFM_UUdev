@@ -167,8 +167,65 @@ configures how the built model consumes it. Before adding a new key:
   `config.yml`) is a separately licensed/downloaded binary, not part of the
   conda environment or this repo. Rules that only *assemble* SFINCS input
   files (`build_sfincs`) don't need it; rules that actually *run* the
-  solver (`run_spinup`, `run_event`) do — point that config value at your
-  own local copy.
+  solver (`run_spinup`, `run_event`) do — point at your own local copy via
+  `GCFM_SFINCS_EXE`, not by editing `config.yml` directly (see "Local
+  machine paths" below).
+
+## Local machine paths (one-time, after cloning)
+
+Three settings are inherently specific to your own machine, not something
+the codebase can know for you:
+
+- `results_dir` (`config.yml`) — where pipeline outputs get written.
+- the data catalogue root (`data_catalogue.yml`'s `meta.root`) — where raw
+  input data lives locally.
+- `sfincs.simulation.sfincs_exe` (`config.yml`) — your local SFINCS binary.
+
+All three are still committed in `config.yml` / `data_catalogue.yml` with
+whichever value the last person to touch those files happened to have
+locally. **Don't hand-edit them there** — every `git pull` that brings in
+an unrelated change to either file will either silently reset your local
+value back to theirs, or turn an unrelated pull into a merge conflict on a
+line that has nothing to do with the actual change.
+
+Instead, set three environment variables once, and leave the committed
+files alone entirely — `workflow/rules/00_common.smk` reads these at
+startup and overrides the committed value when present, falling back to it
+otherwise:
+
+| Variable | Overrides |
+|---|---|
+| `GCFM_RESULTS_DIR` | `config.yml`'s `results_dir` |
+| `GCFM_RAW_DATA_ROOT` | `data_catalogue.yml`'s `meta.root` |
+| `GCFM_SFINCS_EXE` | `config.yml`'s `sfincs.simulation.sfincs_exe` |
+
+**PowerShell** (persists across sessions — set once, restart your terminal):
+
+```powershell
+[Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+[Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+[Environment]::SetEnvironmentVariable("GCFM_SFINCS_EXE", "C:\path\to\sfincs.exe", "User")
+```
+
+Or for the current session only (until you close the terminal):
+
+```powershell
+$env:GCFM_RESULTS_DIR = "D:\your\results\path"
+$env:GCFM_RAW_DATA_ROOT = "D:\your\raw_data\path"
+$env:GCFM_SFINCS_EXE = "C:\path\to\sfincs.exe"
+```
+
+Verify they're picked up with a dry run — the printed input/output paths
+should reflect your own directories, not whatever happens to be committed:
+
+```powershell
+snakemake preprocess -n --cores 1
+```
+
+If you ever need to check what's actually committed as the fallback default
+(e.g. to confirm the override is even necessary), just read the plain value
+out of `config.yml`/`data_catalogue.yml` — the env vars only take effect
+when set, they don't change what's on disk.
 
 ## Setting up pre-commit (one-time, after cloning)
 

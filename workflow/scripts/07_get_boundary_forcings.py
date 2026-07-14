@@ -6,14 +6,17 @@ import numpy as np
 
 from src.domain import load_domain
 from src.extreme_values import (
+    STANDARD_RETURN_PERIODS_YR,
     EVAResult,
     analyse_cell,
     bias_correct_discharge,
+    gpd_return_value_table,
     plot_bias_correction,
     plot_cell_diagnostics,
 )
 from src.log import setup_logging
 from src.river_forcing import (
+    build_design_discharge_matrix,
     build_river_dataset,
     find_best_glofas_cell,
     find_boundary_crossings,
@@ -101,9 +104,9 @@ if protection_levels_enabled:
 
 log.info("--- Surge forcing ---")
 
-surge_lead    = snakemake.params.surge_lead_days
+surge_lead    = snakemake.params.lead_days
 surge_period  = snakemake.params.surge_period_hr
-surge_dt      = snakemake.params.surge_dt_hr
+surge_dt      = snakemake.params.dt_hr
 return_period = snakemake.params.surge_return_period
 
 stations = load_coastrp_stations(snakemake.input.surge_data, return_period)
@@ -120,35 +123,27 @@ stations = select_nearest_stations(
 log.info(f"Most distant selected station: {stations['dist_m'].max() / 1000:.1f} km")
 
 # ── vertical-reference correction (MDT: local MSL -> GOCO06s geoid) ──────────
-# Meaningful because the coastal DEM (FathomDEM) is always referenced to
-# GOCO06s via the mandatory datum correction in 05a_get_elevation.py. Mirrors
-# the sign convention used there to re-reference GEBCO to GOCO06s (gebco -= mdt).
-vc_cfg = snakemake.params.surge_vertical_correction
-mdt_correction_active = bool(vc_cfg["enabled"])
-mdt_da = load_mdt(snakemake.input.mdt_data, snakemake.params.mdt_variable)
-stations = apply_mdt_correction(stations, mdt_da, vc_cfg["fallback_search_deg"])
+# Mandatory, not optional: the coastal DEM (FathomDEM) is always referenced
+# to GOCO06s via the mandatory datum correction in 05a_get_elevation.py, so
+# leaving the surge boundary in local MSL would put the DEM and the water-
+# level forcing in inconsistent vertical references. Mirrors the sign
+# convention used in 05a to re-reference GEBCO to GOCO06s (gebco -= mdt).
+mdt_fallback_search_deg = float(snakemake.params.mdt_fallback_search_deg)
+mdt_da = load_mdt(snakemake.input.mdt_data)
+stations = apply_mdt_correction(stations, mdt_da, mdt_fallback_search_deg)
 n_nan_mdt = int(stations["mdt"].isna().sum())
 if n_nan_mdt:
     log.warning(
         f"{n_nan_mdt}/{len(stations)} surge station(s) have no valid MDT within "
-        f"+/-{vc_cfg['fallback_search_deg']} deg; mdt set to 0 for these"
+        f"+/-{mdt_fallback_search_deg} deg; mdt set to 0 for these"
     )
     stations["mdt"] = stations["mdt"].fillna(0.0)
-    stations["rp_level"] = stations["rp_level_raw"] - stations["mdt"]
-    baseline_m = float(stations['mdt'].mean())
-if mdt_correction_active:
-    log.info(
-        f"MDT vertical correction applied (local MSL -> GOCO06s): "
-        f"delta = [{(-stations['mdt']).min():.3f}, {(-stations['mdt']).max():.3f}] m"
-    )
-    baseline_m = float(stations['mdt'].mean())
-else:
-    log.info(
-        f"MDT vertical correction disabled (vertical_correction.enabled=False); "
-        f"rp_level unchanged, mdt recorded for diagnostics"
-    )
-    stations["rp_level"] = stations["rp_level_raw"]
-    baseline_m = float(0.0)
+stations["rp_level"] = stations["rp_level_raw"] - stations["mdt"]
+baseline_m = float(stations["mdt"].mean())
+log.info(
+    f"MDT vertical correction applied (local MSL -> GOCO06s): "
+    f"delta = [{(-stations['mdt']).min():.3f}, {(-stations['mdt']).max():.3f}] m"
+)
 # ── SLR fingerprint scenario ───────────────────────────────────────────────
 slr_cfg = snakemake.params.surge_slr
 if slr_cfg["enabled"] and slr_cfg["slr_m"] != 0:
@@ -169,12 +164,13 @@ else:
     stations["slr_fingerprint"] = np.nan
     stations["slr_m"] = 0.0
 
-# Read river timing params early so we can compute the shared total duration
-# before building the surge time axis.  They are re-used (same values) when the
-# river section starts below.
-river_lead   = snakemake.params.river_lead_days
+# River shares lead_days/dt_hr with surge (build_time_axis's single, shared
+# time axis); only period_hr genuinely differs (tidal-like vs. river event
+# wave duration). Read early so we can compute the shared total duration
+# before building the surge time axis.
+river_lead   = surge_lead
 river_period = snakemake.params.river_period_hr
-river_dt     = snakemake.params.river_dt_hr
+river_dt     = surge_dt
 
 forcing_total_hr = max(surge_lead * 24 + surge_period, river_lead * 24 + river_period)
 log.info(
@@ -279,15 +275,23 @@ log.info(f"Wrote surge correction diagnostic plot: {snakemake.output.plot_surge_
 log.info("--- River forcing ---")
 
 eva_cfg         = dict(snakemake.params.eva)
-sfincs_grid_res = float(snakemake.params.sfincs_resolution)
-subgrid_nr_cels = int(snakemake.params.sfincs_nr_subgridcells)
-sfincs_res      = float(sfincs_grid_res/(subgrid_nr_cels **0.5)) if subgrid_nr_cels > 0 else sfincs_grid_res
-width_column    = snakemake.params.width_column
+# boundary_setup.design_rp_river_yr (not boundary_forcings.river.eva -- lives
+# with the other build-time SFINCS settings) drives the diagnostic q_rp100/
+# CI/plot-vertical-line under the same "rp_fl" key analyse_cell already reads
+# -- doesn't change analyse_cell itself, just which RP those diagnostics
+# reflect (the actual production discharge_rp_table below is computed at
+# every standard RP regardless, independent of this value).
+eva_cfg["rp_fl"] = float(snakemake.params.design_rp_river_yr)
+# Main grid resolution only -- subgrid does not change what cell size SFINCS
+# actually solves the hydrodynamics on, so it has no bearing on whether a
+# crossing is "visible" at the model's own resolution (see Step 4 below,
+# which is diagnostic-only in any case and no longer excludes anything).
+sfincs_res      = float(snakemake.params.sfincs_resolution)
 glofas_radius_m = float(snakemake.params.glofas_search_radius_km) * 1000.0
 glofas_min_q    = float(snakemake.params.glofas_min_mean_discharge)
-glofas_variable = snakemake.params.glofas_variable
-grdc_radius_m   = float(snakemake.params.grdc_search_radius_km) * 1000.0
+glofas_variable = "dis24"  # sole variable in data_catalogue's river_discharge (GloFAS v4) source
 bias_cfg        = dict(snakemake.params.bias_correction)
+grdc_radius_m   = float(bias_cfg["grdc_search_radius_km"]) * 1000.0
 
 grdc_stations = load_grdc_stations(snakemake.input.grdc_data)
 log.info(f"  Loaded GRDC station table: {len(grdc_stations)} station(s)")
@@ -299,9 +303,7 @@ if river_gdf.crs is not None and river_gdf.crs != domain_gdf.crs:
 # Same width/max_width fix + canonical-column choice as rule clean_river_network
 # (this rule reads river_network.gpkg independently and earlier in the DAG, so
 # it can't just inherit the cleaned network's already-fixed 'width').
-river_gdf = normalize_channel_widths(
-    river_gdf, width_column=width_column, max_ratio=snakemake.params.max_width_to_width_ratio,
-)
+river_gdf = normalize_channel_widths(river_gdf)
 
 domain_reach_ids = set(str(rid) for rid in river_gdf["reach_id"].dropna())
 
@@ -361,11 +363,19 @@ else:
             f"  Excluded (rch_id_dn not in domain): reach_id(s) = {excluded_ids}"
         )
 
-    # ── Step 4: Filter — visible_on_grid ─────────────────────────────────────
+    # ── Step 4: visible_on_grid (diagnostic only -- does NOT gate anything) ──
     # Uses the inside-domain reach's 'width' (set by resolve_inside_domain_reaches;
-    # already the river_processing.width_column choice, via normalize_channel_widths
-    # above) compared against the SFINCS grid resolution; reaches narrower than
-    # one grid cell are invisible to the model and receive no forcing.
+    # already the canonical value, via normalize_channel_widths above) compared
+    # against the SFINCS grid resolution. This USED TO also gate
+    # Step 5 (a crossing narrower than one grid cell was skipped entirely), but
+    # that coupled river-network cleaning (rule 08's BFS seed set, and therefore
+    # which reaches survive at all) to the SFINCS grid/subgrid/quadtree
+    # configuration -- a narrow crossing failing this check at a fine
+    # resolution could strand and drop an entire otherwise-valid downstream
+    # branch, purely because of this width heuristic rather than any genuine
+    # network issue. Kept only as an informational column (used by the
+    # diagnostic plot) -- Step 5 now runs for every enters_domain crossing
+    # regardless of width.
     w_col = "width"
     if w_col in crossings.columns:
         crossings["visible_on_grid"] = (
@@ -380,25 +390,24 @@ else:
 
     n_visible = int((crossings["enters_domain"] & crossings["visible_on_grid"]).sum())
     log.info(
-        f"Step 4 — visible_on_grid ({w_col} >= {sfincs_res:.0f} m): "
+        f"Step 4 — visible_on_grid ({w_col} >= {sfincs_res:.0f} m), informational only: "
         f"{n_visible}/{n_enters} entering crossing(s) wide enough for the grid"
     )
     if n_visible < n_enters:
         too_narrow = crossings["enters_domain"] & ~crossings["visible_on_grid"]
         narrow_widths = crossings.loc[too_narrow, w_col].tolist()
         log.info(
-            f"  Excluded (too narrow): {w_col} = {[f'{w:.0f}' for w in narrow_widths]} m"
+            f"  Narrower than grid resolution (NOT excluded): {w_col} = "
+            f"{[f'{w:.0f}' for w in narrow_widths]} m"
         )
 
     # ── Step 5: GloFAS matching ───────────────────────────────────────────────
-    # For each qualifying crossing (enters_domain AND visible_on_grid), search
-    # within glofas_radius_m for GloFAS cells whose mean discharge exceeds
-    # glofas_min_q.  Among qualifying cells, pick the one with the highest
-    # mean discharge.  Run EVA on that cell; mark has_glofas=True only when
-    # RP2 is finite (EVA converged).
-    n_qualifying = int(
-        (crossings["enters_domain"] & crossings["visible_on_grid"]).sum()
-    )
+    # For each qualifying crossing (enters_domain -- visible_on_grid no longer
+    # gates this, see Step 4), search within glofas_radius_m for GloFAS cells
+    # whose mean discharge exceeds glofas_min_q.  Among qualifying cells, pick
+    # the one with the highest mean discharge.  Run EVA on that cell; mark
+    # has_glofas=True only when RP2 is finite (EVA converged).
+    n_qualifying = int(crossings["enters_domain"].sum())
     log.info(
         f"Step 5 — GloFAS matching: "
         f"radius = {glofas_radius_m / 1000:.1f} km, "
@@ -432,7 +441,7 @@ else:
     cell_lon   = np.full(n, np.nan)
     cell_lat   = np.full(n, np.nan)
     bankfull_q   = np.full(n, np.nan)
-    flood_q      = np.full(n, np.nan)
+    discharge_rp_table = np.full((n, len(STANDARD_RETURN_PERIODS_YR)), np.nan)
     protection_q = np.full(n, np.nan)
     results      = [None] * n
 
@@ -446,9 +455,15 @@ else:
 
     eva_cache: dict[tuple[int, int], EVAResult] = {}
     bias_cache: dict[tuple[int, int], dict | None] = {}
+    # Final (bias-corrected where applicable) series actually fed to
+    # analyse_cell, keyed the same way as eva_cache/bias_cache -- reused for
+    # the EVA diagnostic plot below so it re-fits on the SAME data the
+    # reported bankfull/flood/protection discharges came from, rather than
+    # silently re-fetching raw (pre-bias-correction) GloFAS values.
+    ts_cache: dict[tuple[int, int], np.ndarray] = {}
 
     for i, row in enumerate(crossings.itertuples()):
-        if not (row.enters_domain and row.visible_on_grid):
+        if not row.enters_domain:
             continue
 
         pt_lon = row.geometry.x
@@ -501,6 +516,7 @@ else:
                     f"{grdc_radius_m / 1000:.1f} km — GloFAS-as-truth retained"
                 )
             bias_cache[(i_lat, i_lon)] = bc_diag
+            ts_cache[(i_lat, i_lon)] = ts
 
             eva = analyse_cell(
                 times_arr, ts, eva_cfg, label=label,
@@ -520,12 +536,21 @@ else:
         cell_lon[i]   = float(lon_arr[i_lon])
         cell_lat[i]   = float(lat_arr[i_lat])
         bankfull_q[i] = eva.q_rp2
-        flood_q[i]    = eva.q_rp100 if np.isfinite(eva.q_rp100) else eva.q_rp2
+        # Full return-period discharge table from the already-fitted POT/GPD
+        # curve -- no re-fitting. Replaces the old single flood_discharge
+        # (RP=eva.rp_fl) scalar; the actual design discharge used to build
+        # the model is now looked up from this table at SFINCS-build time
+        # (boundary_setup.design_rp_river_yr), see
+        # src.river_forcing.build_design_discharge_matrix.
+        discharge_rp_table[i] = gpd_return_value_table(
+            eva.pot_threshold, eva.pot_scale, eva.pot_shape, eva.pot_peaks_per_year,
+        )
         if protection_levels_enabled:
             protection_q[i] = eva.q_protection if np.isfinite(eva.q_protection) else 0.0
         log.info(
             f"  {label}: GloFAS ({lat_arr[i_lat]:.3f}°N, {lon_arr[i_lon]:.3f}°E)  "
-            f"Q_bankfull = {bankfull_q[i]:.1f} m³/s  Q_flood = {flood_q[i]:.1f} m³/s"
+            f"Q_bankfull = {bankfull_q[i]:.1f} m³/s  "
+            f"Q_rp{eva_cfg['rp_fl']:g} (diagnostic) = {eva.q_rp100:.1f} m³/s"
         )
 
         bc_diag = bias_cache.get((i_lat, i_lon))
@@ -543,18 +568,21 @@ else:
 
 t_river  = build_time_axis(river_lead, river_period, river_dt, total_hr=forcing_total_hr)
 river_ds = build_river_dataset(
-    crossings, has_glofas, bankfull_q, flood_q, cell_lon, cell_lat,
-    t_river, river_lead, river_period, results,
+    crossings, has_glofas, bankfull_q, discharge_rp_table, STANDARD_RETURN_PERIODS_YR,
+    cell_lon, cell_lat, t_river, river_lead, river_period, results,
     rp_bankfull=eva_cfg.get("rp_bf", 2),
-    rp_flood=eva_cfg.get("rp_fl", 100),
     bias_corrected=bias_corrected_arr,
     grdc_station_id=grdc_station_id_arr,
     grdc_correlation=grdc_correlation_arr,
     grdc_overlap_days=grdc_overlap_days_arr,
 )
 
+# protection_discharge/protection_rp_yr stay simple per-crossing scalars,
+# written here as before -- the actual protection-floor CORRECTION (applying
+# them against the design discharge) now happens at SFINCS-build time (rule
+# 13), on the scalar design discharge looked up from discharge_rp_table, not
+# on a full timeseries here -- see src.river_forcing.build_design_discharge_matrix.
 if protection_levels_enabled:
-    river_ds["discharge_uncorrected"] = river_ds["discharge"]
     river_ds["protection_discharge"] = (
         ["crossing"],
         protection_q,
@@ -568,14 +596,11 @@ if protection_levels_enabled:
         float(riverine_rp_yr),
         {"units": "yr", "long_name": "FLOPROS riverine protection return period used"},
     )
-    river_ds["discharge"] = np.clip(
-        river_ds["discharge"] - river_ds["protection_discharge"], 0.0, None
-    )
     if protection_q.size > 0 and np.isfinite(protection_q).any():
         log.info(
-            f"Protection-level correction applied to river discharge: discharge -= "
+            f"Protection discharge (RP{riverine_rp_yr:g} yr) stored: range "
             f"[{np.nanmin(protection_q):.1f}, {np.nanmax(protection_q):.1f}] m³/s "
-            f"(RP{riverine_rp_yr:g} yr), clamped at 0"
+            f"-- correction itself applied at SFINCS-build time"
         )
     else:
         log.info(
@@ -589,6 +614,17 @@ log.info(
     f"Written river forcing ({len(crossings)} crossings, "
     f"{int(has_glofas.sum())} with GloFAS): {snakemake.output.river_forcing}"
 )
+
+# Preview discharge at the currently configured design_rp_river_yr, for the
+# summary timeseries plot only -- NOT written to river_forcing.nc (the file
+# above is already saved). Mirrors exactly what rule 13 will build at this
+# design RP, including the protection-discharge floor.
+if int(has_glofas.sum()) > 0:
+    preview_matrix = np.full((len(crossings), len(t_river)), np.nan)
+    preview_matrix[has_glofas] = build_design_discharge_matrix(
+        river_ds, has_glofas, eva_cfg["rp_fl"]
+    )
+    river_ds["discharge"] = (["crossing", "time"], preview_matrix)
 
 # ── summary plots ─────────────────────────────────────────────────────────────
 
@@ -610,26 +646,36 @@ plot_forcing_timeseries(
     output_path=snakemake.output.plot_timeseries,
 )
 
-# ── EVA diagnostic plot for the widest active crossing ────────────────────────
-
+# ── EVA diagnostic plot for the most hydrologically significant active
+#    crossing (highest design-flood discharge) ────────────────────────────────
+# Previously picked by raw SWORD reach "width" -- width does not reliably
+# track actual GloFAS-matched discharge magnitude (a crossing's width and the
+# accumulated flow at its matched GloFAS cell can diverge, e.g. distributary
+# vs. mainstem reaches), so this could diagnose a minor crossing while a
+# much larger one (with a much larger protection-level discharge threshold)
+# went unplotted -- exactly the mismatch that made 07_forcing_eva.png look
+# implausible next to 07_forcing_timeseries.png's protection-discharge lines.
+# Selecting by flood_q directly ties this diagnostic to the same quantity
+# that drives the actual forcing and protection-level correction.
 active_idx = [i for i, g in enumerate(has_glofas) if g]
 if active_idx:
-    w_col_diag = "width"
-    if w_col_diag in crossings.columns:
-        widths = [float(crossings.iloc[i].get(w_col_diag) or 0) for i in active_idx]
-        diag_i = active_idx[int(np.argmax(widths))]
-    else:
-        diag_i = active_idx[0]
+    # eva.q_rp100 reflects design_rp_river_yr (injected into eva_cfg["rp_fl"]
+    # above), so this still ties the diagnostic to the same quantity driving
+    # the actual forcing/protection-level correction.
+    diag_i = active_idx[int(np.argmax([results[i].q_rp100 for i in active_idx]))]
 
     i_lat, i_lon = int(cell_i_lat[diag_i]), int(cell_i_lon[diag_i])
     diag_label = (
         f"crossing{diag_i}_cell({cell_lat[diag_i]:.3f},{cell_lon[diag_i]:.3f})"
     )
+    # Reuse the SAME (bias-corrected, if applicable) series analyse_cell was
+    # actually fit on for this cell -- re-fetching raw glofas_clip here would
+    # silently re-fit on different data than what bankfull_discharge/
+    # discharge_rp_table/protection_discharge were computed from whenever GRDC
+    # bias correction was applied to this cell.
     plot_cell_diagnostics(
         times=glofas_clip[time_dim].values,
-        values=glofas_clip[glofas_variable]
-               .isel({lat_dim: i_lat, lon_dim: i_lon})
-               .values.astype(float),
+        values=ts_cache[(i_lat, i_lon)],
         eva_cfg=eva_cfg,
         output_path=snakemake.output.plot_eva_diagnostics,
         label=diag_label,

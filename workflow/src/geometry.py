@@ -2,28 +2,6 @@ import geopandas as gpd
 from shapely.geometry import box
 
 
-def select_intersecting(
-    candidates: gpd.GeoDataFrame, reference: gpd.GeoDataFrame
-) -> gpd.GeoDataFrame:
-    """Return rows of `candidates` whose geometry intersects `reference`."""
-    if candidates.crs != reference.crs:
-        reference = reference.to_crs(candidates.crs)
-    # spatial join is faster than a naive intersects loop on large datasets
-    joined = gpd.sjoin(
-        candidates,
-        reference[["geometry"]],
-        how="inner",
-        predicate="intersects",
-    )
-    return candidates.loc[joined.index.unique()].copy()
-
-
-def merge_geometries(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Dissolve all features into a single geometry, preserving CRS."""
-    dissolved = gdf.dissolve()
-    return dissolved[["geometry"]]
-
-
 def pick_utm_crs(gdf: gpd.GeoDataFrame) -> str:
     """Pick an appropriate UTM CRS from the centroid of a (lat/lon) GeoDataFrame."""
     # Project to centroid in geographic coords, then derive UTM zone

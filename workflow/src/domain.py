@@ -49,11 +49,10 @@ def load_domain(
     """
     Load domain metadata and return the WGS84 clipping bounds, CRS, and domain polygon.
 
-    The metadata JSON (domain_bbox.json) holds the clipping bbox bounds regardless
-    of domain mode.  The actual domain polygon — bbox in 'basins' mode, delta polygon
-    in 'delta_polygon' mode — is read from domain.gpkg when ``domain_gpkg_path`` is
-    provided; otherwise the bbox polygon derived from the JSON bounds is used as a
-    fallback.
+    The metadata JSON (domain_bbox.json) holds the clipping bbox bounds. The
+    actual domain polygon (the delta polygon) is read from domain.gpkg when
+    ``domain_gpkg_path`` is provided; otherwise the bbox polygon derived from
+    the JSON bounds is used as a fallback.
 
     Args:
         meta_path:        Path to domain_bbox.json.
