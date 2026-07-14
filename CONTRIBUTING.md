@@ -32,29 +32,96 @@ folder" split — plan branches around that:
 ## Branching model
 
 - `main` is always the current, working state of the model. Nobody pushes to
-  `main` directly — all changes land via pull request (PR). This repo is
-  private, so branch protection isn't available on our current GitHub plan —
-  the PR checklist and CI check are the actual enforcement mechanism, not a
-  merge block. Treat a green CI run + checked-off checklist as the bar for
-  merging, not a formality.
+  `main` directly — all changes land via pull request (PR). The repo is now
+  public, so GitHub branch protection rules are available for free — this
+  needs to be turned on explicitly (it isn't automatic just from making the
+  repo public); until it is, nothing actually blocks a direct push to `main`,
+  so treat the PR-only rule as a personal discipline commitment for now. To
+  enable real enforcement: repo **Settings → Branches → Add branch
+  protection rule**, branch name pattern `main`, enable "Require a pull
+  request before merging" and "Require status checks to pass before merging"
+  (select the CI job(s) from `.github/workflows/ci.yml`). Once set up, a
+  green CI run + checked-off PR checklist becomes an actual merge
+  requirement, not just a convention.
 - Create one branch per pipeline stage or task, off the latest `main`:
   `feature/<short-description>` (e.g. `feature/discharge-eva`) for new rules
-  or capabilities, `fix/<short-description>` for bug fixes.
+  or capabilities, `fix/<short-description>` for bug fixes. `adaptation_
+  modelling` and `improve_base_model` are the two current working branches.
 - Keep branches short-lived (days, not weeks). Open a PR early — even as a
   draft — if you want feedback before the work is finished. A long-lived
   branch against a DAG this interconnected accumulates conflicts fast.
-- Update your branch from `main` regularly while you're the only one working
-  on it:
+- Update your branch from `main` regularly — see the exact commands in
+  "Step-by-step: branch, work, sync, push, PR" below. Rebase while you're
+  still the only one working on the branch; switch to merging once it's
+  pushed and someone else may have pulled it, so shared history doesn't get
+  rewritten.
 
-  ```bash
-  git fetch origin
-  git rebase origin/main
-  ```
+## Step-by-step: branch, work, sync, push, PR
 
-  Resolve conflicts locally, in small increments, rather than letting them
-  pile up. Once a PR is open and someone else may have looked at or pulled
-  your branch, switch to `git merge origin/main` instead of rebasing, so we
-  don't rewrite shared history.
+Concrete commands for the whole cycle, from creating your branch through
+opening the PR. `adaptation_modelling` and `improve_base_model` already
+exist as the two working branches for this project — substitute your actual
+branch name below.
+
+**1. Create your branch, off the latest `main`:**
+
+```bash
+git checkout main
+git pull origin main
+git checkout -b adaptation_modelling   # or: git checkout adaptation_modelling, if it already exists
+```
+
+**2. Work on it** — edit files, then stage and commit as usual:
+
+```bash
+git add <files>
+git commit -m "Short imperative summary of this change"
+```
+
+Commit as often as makes sense to you locally — there's no requirement to
+squash before pushing (see "Pull requests" below for what happens at merge
+time).
+
+**3. Pull updates from `main`** while you're the only one working on your
+branch (i.e. before you've pushed it, or before anyone else has pulled it):
+
+```bash
+git fetch origin
+git rebase origin/main
+```
+
+If `main` moved since you branched, this replays your commits on top of the
+latest `main` — resolve any conflicts it reports, `git add` the resolved
+files, then `git rebase --continue`. Once your branch is pushed and the
+other person may have looked at or pulled it, switch to `git merge
+origin/main` instead of rebasing (rebasing rewrites commit hashes, which
+breaks anyone else's copy of the branch).
+
+**4. Push your branch to GitHub:**
+
+```bash
+git push -u origin adaptation_modelling
+```
+
+The `-u` is only needed the first time you push this branch — it links your
+local branch to `origin/adaptation_modelling` so plain `git push`/`git pull`
+work afterward without naming the branch each time.
+
+**5. Open the pull request.** After `git push`, the terminal prints a direct
+link, e.g.:
+
+```
+remote: Create a pull request for 'adaptation_modelling' on GitHub by visiting:
+remote:      https://github.com/JuliusSchlumberger/GCFM_UUdev/pull/new/adaptation_modelling
+```
+
+Open that link (or go to the repo on GitHub — it shows a "Compare & pull
+request" banner for any recently-pushed branch), set the base branch to
+`main`, and fill in the PR template. If you have the `gh` CLI installed, `gh
+pr create` does the same thing from the terminal.
+
+Repeat steps 2-4 for every further round of changes on the same branch — the
+PR updates automatically with each push, no need to reopen it.
 
 ## Config changes
 
