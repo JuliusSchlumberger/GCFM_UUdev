@@ -8,10 +8,18 @@ name: CI
 # check, without needing any data:
 #   - formatting / lint / docstrings, via the same pre-commit hooks used
 #     locally (ruff-format, ruff-check, pyright, pydocstyle)
-#   - syntax errors and broken `from src.X import Y` references, via
-#     tests/check_code_health.py -- this catches a class of bug that neither
-#     pre-commit nor a dry-run would catch (a broken import only fails the
-#     first time that specific script actually executes)
+# The sync-environment-yml local hook is SKIPPED here: it shells out to
+# `conda env export -n hmt_sfincs_dev`, which only makes sense on a dev's own
+# machine where that named env actually exists -- this runner has no conda
+# at all, so the hook can never succeed here (see tools/sync_environment.py).
+#
+# There is NO code-health/import-check job here anymore -- it required
+# building the real pipeline environment from environment.yml on this
+# ubuntu-latest runner, but environment.yml is a full `conda env export`
+# from a Windows dev machine (exact win-64 build hashes plus Windows-only
+# packages like pywin32/vc/vs2015_runtime), so it cannot solve on Linux at
+# all. Run `python tests/check_code_health.py` locally (see CONTRIBUTING.md)
+# until environment.yml's cross-platform portability is revisited.
 # Before merging, also actually dry-run `snakemake -n preprocess`/`build`
 # locally against real data -- see CONTRIBUTING.md's PR checklist.
 
@@ -24,23 +32,11 @@ on:
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
+    env:
+      SKIP: sync-environment-yml
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - uses: pre-commit/action@v3.0.1
-
-  code-health:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up pipeline conda environment
-        uses: conda-incubator/setup-miniconda@v3
-        with:
-          environment-file: environment.yml
-          miniforge-version: latest
-          use-mamba: true
-      - name: Run syntax + import-resolution check
-        shell: bash -el {0}
-        run: python tests/check_code_health.py
