@@ -1,4 +1,5 @@
 data_catalogue: ./config/data_catalogue.yml
+scenarios_file: ./config/scenarios.yml
 
 profiling:
   enabled: false   # set to true to write line-level timing reports next to each log file
@@ -157,7 +158,7 @@ sfincs:
     dthisout:      600           # time-series output at observation points (s) -- MAIN EVENT run only
     storevelmax:     0           # write maximum flow velocity (0=off, 1=on)
     storetwet:       0           # write inundation duration / time-wet (0=off, 1=on)
-    sfincs_exe: C:/Users/Schlu005\GCFM_UU\delta_model\software\SFINCS_v2.3.0_mt_Faber_release_exe\sfincs.exe
+    sfincs_exe: C:\Users\2899043\PhD\SFINCS_software\SFINCS_v2.3.0_mt_Faber_release_exe\sfincs.exe
     timeout_s: 68400             # max wall-clock time for a SFINCS subprocess (s, 19 h) --
                                   # shared by both the spin-up and main event runs
 
