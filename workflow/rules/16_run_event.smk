@@ -12,25 +12,25 @@
 
 rule run_event:
     input:
-        sfincs_inp           = results_path("{basin_id}/sfincs/sfincs.inp"),
-        rstart               = results_path("{basin_id}/sfincs/spinup/" + RST_FNAME),
+        sfincs_inp           = results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs.inp"),
+        rstart               = results_path("{basin_id}/scenarios/{scenario}/sfincs/spinup/" + RST_FNAME),
         land_polygons        = results_path("{basin_id}/inputs/domain/{basin_id}_land_polygons.gpkg"),
         landuse              = results_path("{basin_id}/inputs/domain/{basin_id}_landuse.tif"),
         domain_gpkg          = results_path("{basin_id}/inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network  = results_path("{basin_id}/inputs/domain/{basin_id}_river_network_clean.gpkg"),
     output:
-        sfincs_map_nc              = results_path("{basin_id}/sfincs/sfincs_map.nc"),
-        plot_inundation_ratio      = results_path("{basin_id}/visuals/model_runs/main_run/01_inundation_ratio.png"),
-        animation_flood_progress   = results_path("{basin_id}/visuals/model_runs/main_run/02_flood_animation.mp4"),
-        flood_timeseries_csv       = results_path("{basin_id}/visuals/model_runs/main_run/flood_timeseries.csv"),
+        sfincs_map_nc              = results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs_map.nc"),
+        plot_inundation_ratio      = results_path("{basin_id}/scenarios/{scenario}/visuals/01_inundation_ratio.png"),
+        animation_flood_progress   = results_path("{basin_id}/scenarios/{scenario}/visuals/02_flood_animation.mp4"),
+        flood_timeseries_csv       = results_path("{basin_id}/scenarios/{scenario}/visuals/flood_timeseries.csv"),
     params:
-        sfincs_root                = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs"),
+        sfincs_root                = lambda wildcards: results_path(f"{wildcards.basin_id}/scenarios/{wildcards.scenario}/sfincs"),
         sfincs_exe                 = config["sfincs"]["simulation"]["sfincs_exe"],
         timeout_s                  = config["sfincs"]["simulation"]["timeout_s"],
         min_inundation_depth_m     = config["sfincs"]["sanity_checks"]["min_inundation_depth_m"],
         include_subgrid            = config["sfincs"]["subgrid"]["enabled"],
         animation_fps              = config["sfincs"]["sanity_checks"]["animation_fps"],
     log:
-        "logs/{basin_id}/16_run_event.log"
+        "logs/{basin_id}/scenarios/{scenario}/16_run_event.log"
     script:
         "../scripts/16_run_event.py"

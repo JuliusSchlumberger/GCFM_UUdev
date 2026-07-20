@@ -75,6 +75,8 @@ Everyday examples:
   Rerun only from build_sfincs onward (e.g. after a config.yml change to
   `sfincs`) without redoing preprocessing:
     snakemake build --cores 1 --forcerun build_sfincs
+  Run specific flood scenarios:
+    snakemake build --cores 1 --config target_basins="[2433835]" target_scenarios="['coast_100']"
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -113,7 +115,7 @@ Conda environment: hmt_sfincs_dev
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-2. PIPELINE STRUCTURE (rules 00–16, in true DAG/topological order)
+2. PIPELINE STRUCTURE (rules 00–17, in true DAG/topological order)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Rule files, included by workflow/Snakefile in this exact order:
@@ -124,9 +126,9 @@ Rule files, included by workflow/Snakefile in this exact order:
   09a_river_depth.smk → 09b_estuarine_depth.smk → 10_condition_elevation.smk →
   11_river_preburn.smk → 11b_burn_river_dem.smk → 12_testing.smk →
   13_build_sfincs.smk → 14_run_spinup.smk → 15_sanity_checks.smk →
-  16_run_event.smk
+  16_run_event.smk → 17_flood_metrics.smk
 
-Scripts:      workflow/scripts/01_*.py … 16_*.py (mirrors rule-file numbering,
+Scripts:      workflow/scripts/01_*.py … 17_*.py (mirrors rule-file numbering,
               including the 05a/05b/05c and 09a/09b sub-letters below)
 Shared src:   workflow/src/  — see section 9 for the full module list
 
@@ -163,7 +165,7 @@ DAG shape, not a strictly linear chain:
 
 Named aggregate targets in Snakefile:
   - `preprocess`  → _PREPROCESS_OUTPUTS (rules 01–12)
-  - `build`       → _BUILD_OUTPUTS (rules 13–16)
+  - `build`       → _BUILD_OUTPUTS (rules 13–17)
   - `all`         → both (default target)
 
 _PREPROCESS_OUTPUTS / _BUILD_OUTPUTS are the canonical output lists; any new
@@ -187,11 +189,21 @@ Config-conditional blocks:
 RULE SUMMARY (in DAG order):
   00  common.smk     — catalogue helper (CATALOGUE / catalogue_path), wildcard
                         constraints, BASINS list, config validation (quadtree
-                        requires subgrid; boundary_setup.mode enum check).
+                        requires subgrid; the old boundary_setup.mode enum
+                        check was removed with the scenario axis).
                         BASINS is auto-discovered from delta_polygons but can
                         be restricted via an optional CLI-only config
                         override, target_basins (not a config.yml key) — see
                         "RUNNING A SINGLE BASIN" below.
+                        Also the scenario axis: loads scenarios_file
+                        (config/scenarios.yml), validates each scenario's
+                        surge_rp (COAST-RP tabulated values only) and
+                        river_rp (2–1000 yr), defines scenario_params(name)
+                        and the {scenario} wildcard constraint. Reserved
+                        name "default" (not in scenarios.yml) replays
+                        config.yml's boundary_setup; SCENARIOS comes from
+                        the CLI-only target_scenarios override, else
+                        ["default"].
   01  separate_deltas — clip delta polygon per basin_id (BasinID2)
   02  modeldomain    — domain bbox, UTM CRS, domain.gpkg. Domain is ALWAYS
                         the delta polygon itself (reprojected to
@@ -300,6 +312,20 @@ RULE SUMMARY (in DAG order):
                         event's own sanity-check-style diagnostics
                         (inundation-ratio map, flood/velocity animations)
                         plus a per-timestep flooded-area/flood-volume CSV.
+  17  flood_metrics   — calculated flood metrics per scenario from rule
+                        16's finished event run; cheap postprocessing only,
+                        never re-runs SFINCS. Writes
+                        scenarios/{scenario}/metrics/max_flood_depth.tif
+                        (downscaled max-depth GeoTIFF — input for later
+                        flood-source attribution / adaptation measures) and
+                        flood_metrics.csv (one row of scalar risk metrics
+                        via postprocessing.compute_risk_metrics; column
+                        names match legacy analyse.py risk_metrics.csv).
+                        Config: metrics.hmin, metrics.urban_landuse_code.
+
+NOTE: rules 13–17 (and their visuals) are scenario-aware — all their outputs
+live under {basin_id}/scenarios/{scenario}/ (see sections 9 and 12). Rules
+01–12 are scenario-free and shared by all scenarios.
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -599,6 +625,17 @@ sfincs — rules 13, 14, 15, 16:
     entirely now that it's empty.)
   sanity_checks.{min_inundation_depth_m, animation_fps} — shared by rule 15
     (spin-up's own diagnostics) and rule 16 (the event run's diagnostics).
+
+Scenario / metrics keys (adaptation_modelling):
+  scenarios_file — path to config/scenarios.yml: named scenarios as
+    (surge_rp, river_rp) pairs, null = mean conditions for that driver.
+    Selected per run via the CLI-only target_scenarios override
+    (snakemake build --config target_scenarios="['baseline','coast_100']");
+    without it only the reserved "default" scenario (config.yml's own
+    boundary_setup) runs. Validation lives in 00_common.smk.
+  metrics.hmin — min depth (m) for a pixel to count as flooded in rule 17.
+  metrics.urban_landuse_code — landuse code for urban areas (50)(rule 17's
+    urban-exposure metrics).
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1115,8 +1152,18 @@ the same comparison methodology for ad-hoc/manual runs outside Snakemake.
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-9. SFINCS MODEL BUILD, SPIN-UP, SANITY CHECKS & EVENT RUN (rules 13-16)
+9. SFINCS MODEL BUILD, SPIN-UP, SANITY CHECKS, EVENT RUN & METRICS (rules 13-17)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Scenario axis: rules 13–17 all carry the {scenario} wildcard; every output
+lives under {basin_id}/scenarios/{scenario}/. Rule 13 resolves the
+scenario's forcings itself — scenario_params() gives (mode, surge_rp,
+river_rp), then discharge is rebuilt via
+river_forcing.build_design_discharge_matrix() (design_rp_yr=None → constant
+bankfull hydrograph) and surge via surge.build_design_surge_matrix()
+(None → flat tide-only baseline; otherwise exact lookup in
+surge_forcing.nc's storm_tide_rp_table — no interpolation). Changing a
+scenario RP therefore only re-runs the build (13) onward, never rule 07.
 
 13_build_sfincs.py: resolves target_crs via hydromt.gis.parse_crs("utm",
 bbox=...) before building refinement polygons, then branches each of the 6
@@ -1370,7 +1417,9 @@ src/io.py                — shared I/O utilities
 src/log.py               — setup_logging(): file + console handler
 src/plots.py             — all diagnostic plot functions (see section 10)
 src/postprocessing.py    — SFINCS output processing, flood extent calculation
-                            (used by rules 14, 15)
+                            (used by rules 14, 15, 16); compute_risk_metrics():
+                            scalar flood-risk metrics from a downscaled flood
+                            map, legacy analyse.py-compatible columns (rule 17)
 src/profiling.py         — ScriptProfiler: wraps functions with timing logs
 src/protection_levels.py — FLOPROS × WRI geounit dominant-protection lookup;
                             used by rule 04
@@ -1386,7 +1435,9 @@ src/river_conditioning.py — enforce_river_monotonicity(): topological
 src/river_forcing.py      — resolve_inside_domain_reaches() (domain-entry-
                             point clipping), GloFAS snapping, GRDC station
                             lookup, river forcing NetCDF construction; used
-                            by rule 07
+                            by rule 07. build_design_discharge_matrix()
+                            (used by rule 13) accepts design_rp_yr=None →
+                            constant bankfull hydrograph (mean river)
 src/river_network.py      — adjacency, BFS, accumulate_discharge() (width×
                             angle), compute_hydraulic_depth(), width
                             normalization, _sample_line_cells(); see
@@ -1396,7 +1447,13 @@ src/river_preburn.py      — compute_river_bed_points(): per-DEM-pixel
                             burning; used by rule 11
 src/surge.py               — CoastRP EVA, surge station selection, IDW
                             interpolation, MDT vertical correction, AR6 SLR
-                            fingerprint; used by rule 07
+                            fingerprint; used by rule 07. surge_forcing.nc
+                            now also stores the full COAST-RP table
+                            (storm_tide_rp_table, mirrors
+                            discharge_rp_table); build_design_surge_matrix()
+                            (used by rule 13) rebuilds the per-station wave
+                            at any tabulated RP, None → flat tide-only
+                            baseline
 
 IMPORT VERIFICATION NOTE: `ast.parse` and `snakemake -n` only catch syntax
 errors and DAG-shape problems — neither catches a broken `from src.X import
@@ -1424,6 +1481,16 @@ diagnostics, 13_build_sfincs.py's figs/ plots) — both derive their directory
 from an already-tracked snakemake.output.X path (plots_dir / figs_dir) so
 they automatically follow wherever the rule's output: block points, rather
 than hardcoding "visuals/..." a second time.
+
+SCENARIO PATHS (adaptation_modelling): everything produced by rules 13–17
+lives under {basin_id}/scenarios/{scenario}/ — the tree below reflects
+this. Rules 01–12 outputs (inputs/, the preprocessing visuals) are
+scenario-free and shared by all scenarios. The former visuals/model_runs/
+layer was INTENTIONALLY dropped in the move: spinup plots now sit in
+scenarios/{scenario}/visuals/spinup/, and the event run's outputs sit
+directly in scenarios/{scenario}/visuals/ (rule 16's
+01_inundation_ratio.png only avoids colliding with rule 15's because the
+spin-up one is inside visuals/spinup/ — don't "tidy" this).
 
 D:/GCFM_UU/results/{basin_id}/
 ├── inputs/
@@ -1475,21 +1542,10 @@ D:/GCFM_UU/results/{basin_id}/
 │       └── glofas_clip.nc            ← rule 07 output
 │         # forcing/*.nc are NOT prefixed either (out of the {basin_id}_
 │         # prefix scope, which covers .gpkg/.tif only — see section 4/11).
-├── sfincs/
-│   ├── sfincs.inp                 ← MAIN EVENT config (rule 13); already
-│   │                                 configured for rule 16's run (tstart =
-│   │                                 spin-up end, tstop = forcing end,
-│   │                                 rstfile = rule 14's restart file)
-│   ├── sfincs_subgrid.nc          ← real subgrid file (if subgrid enabled);
-│   │                                 0-byte placeholder otherwise
-│   ├── sfincs_map.nc              ← rule 16's own map output (event run;
-│   │                                 distinct from spinup/sfincs_map.nc below)
-│   ├── {basin_id}_refinement_polygons.gpkg   ← quadtree mode only (rule 13)
-│   └── spinup/                    ← rule 14, run_spinup
-│       ├── sfincs_map.nc
-│       └── sfincs.YYYYMMDD.HHMMSS.rst
-└── visuals/                       ← ALL plots/animations/CSVs live here,
-    │                                 separate from the raw data above
+├── visuals/                       ← ONLY the scenario-free preprocessing
+    │                                 diagnostics remain here (rules 04–12);
+    │                                 all rule 13–17 plots moved into
+    │                                 scenarios/{scenario}/visuals/ below
     ├── input_data/                 ← rules 04-12 (preprocessing diagnostics)
     │   ├── 04_protection_levels.png
     │   ├── 05a_elevation.png
@@ -1518,35 +1574,58 @@ D:/GCFM_UU/results/{basin_id}/
     │   ├── 11_river_preburn.png        ← opt-in (rule 11)
     │   ├── 11b_river_burn.png          ← opt-in (rule 11b, NEW — river_processing.burn_rivers)
     │   └── 12_upstream_boundary_check.png  ← tracked output (rule 12, test_upstream_boundary)
-    ├── bifurcation_calibration_options/  ← NEW; tracked output (rule 12,
-    │                                        test_bifurcation_calibration_options), sibling
-    │                                        of input_data/ not inside it — one {root_rid}.png
-    │                                        per bifurcation compared (see section 8)
-    ├── sfincs_build/               ← rule 13 (build_sfincs's own diagnostics)
-    │   ├── 01_grid.png
-    │   ├── 01b_refinement_zones.png  ← quadtree mode only
-    │   ├── 02_elevation.png
-    │   ├── 03_mask.png
-    │   ├── 04_roughness.png
-    │   ├── 05_forcing.png            ← untracked side-effect plot (not in
-    │   │                                the rule's output:, just follows figs_dir)
-    │   └── 06_zsini.png              ← untracked side-effect plot (same as above)
-    └── model_runs/
-        ├── spinup/                 ← rule 14's own plots + rule 15's sanity
-        │   │                          checks, both analysing the spin-up's
-        │   │                          own sfincs/spinup/sfincs_map.nc
-        │   ├── validation_spinup.png         ← rule 14
-        │   ├── validation_max_inundation.png ← rule 14
-        │   ├── 01_inundation_ratio.png       ← rule 15
-        │   └── 02_flood_animation.mp4        ← rule 15
-        └── main_run/               ← rule 16 (run_event)'s own diagnostics,
-                                        analysing sfincs/sfincs_map.nc
-            ├── 01_inundation_ratio.png
-            ├── 02_flood_animation.mp4
-            └── flood_timeseries.csv       ← per-timestep flooded_area_km2,
-                                               flood_volume_m3 (flood_volume_m3's
-                                               max = the true peak total flood
-                                               volume — see section 9)
+    └── bifurcation_calibration_options/  ← NEW; tracked output (rule 12,
+                                             test_bifurcation_calibration_options), sibling
+                                             of input_data/ not inside it — one {root_rid}.png
+                                             per bifurcation compared (see section 8)
+└── scenarios/{scenario}/          ← everything from rules 13–17 (one full
+    │                                 copy per scenario; "default" for a
+    │                                 plain `snakemake build`)
+    ├── sfincs/
+    │   ├── sfincs.inp                 ← MAIN EVENT config (rule 13); already
+    │   │                                 configured for rule 16's run (tstart =
+    │   │                                 spin-up end, tstop = forcing end,
+    │   │                                 rstfile = rule 14's restart file)
+    │   ├── sfincs_subgrid.nc          ← real subgrid file (if subgrid enabled);
+    │   │                                 0-byte placeholder otherwise
+    │   ├── sfincs_map.nc              ← rule 16's own map output (event run;
+    │   │                                 distinct from spinup/sfincs_map.nc below)
+    │   ├── {basin_id}_refinement_polygons.gpkg   ← quadtree mode only (rule 13)
+    │   └── spinup/                    ← rule 14, run_spinup
+    │       ├── sfincs_map.nc
+    │       └── sfincs.YYYYMMDD.HHMMSS.rst
+    ├── visuals/
+    │   ├── sfincs_build/           ← rule 13 (build_sfincs's own diagnostics)
+    │   │   ├── 01_grid.png
+    │   │   ├── 01b_refinement_zones.png  ← quadtree mode only
+    │   │   ├── 02_elevation.png
+    │   │   ├── 03_mask.png
+    │   │   ├── 04_roughness.png
+    │   │   ├── 05_forcing.png            ← untracked side-effect plot (not in
+    │   │   │                                the rule's output:, just follows figs_dir)
+    │   │   └── 06_zsini.png              ← untracked side-effect plot (same as above)
+    │   ├── spinup/                 ← rule 14's own plots + rule 15's sanity
+    │   │   │                          checks, both analysing the spin-up's
+    │   │   │                          own sfincs/spinup/sfincs_map.nc
+    │   │   ├── validation_spinup.png         ← rule 14
+    │   │   ├── validation_max_inundation.png ← rule 14
+    │   │   ├── 01_inundation_ratio.png       ← rule 15
+    │   │   └── 02_flood_animation.mp4        ← rule 15
+    │   │   # rule 16's diagnostics sit DIRECTLY in visuals/ — the old
+    │   │   # model_runs/{spinup,main_run}/ layer was intentionally dropped
+    │   ├── 01_inundation_ratio.png       ← rule 16 (event run, analysing
+    │   ├── 02_flood_animation.mp4           sfincs/sfincs_map.nc)
+    │   └── flood_timeseries.csv          ← per-timestep flooded_area_km2,
+    │                                        flood_volume_m3 (flood_volume_m3's
+    │                                        max = the true peak total flood
+    │                                        volume — see section 9)
+    └── metrics/                   ← rule 17, flood_metrics (NEW)
+        ├── max_flood_depth.tif       ← downscaled max-depth GeoTIFF (hmin
+        │                                threshold applied) — input for later
+        │                                flood-source attribution / adaptation
+        └── flood_metrics.csv         ← one row of scalar risk metrics
+                                         (compute_risk_metrics, legacy
+                                         analyse.py-compatible columns)
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

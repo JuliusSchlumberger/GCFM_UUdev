@@ -18,13 +18,14 @@ import pandas as pd
 import rioxarray  # noqa: F401 -- registers the .rio accessor used below
 import xarray as xr
 import xugrid as xu
+import geopandas as gpd
 
 from hydromt_sfincs import SfincsModel
 from hydromt_sfincs import utils as sfincs_utils
 
 # Copernicus LC100 land-use codes that represent water bodies (see _LC_NAMES
 # in src.plots): 80 = "Inland water", 200 = "Sea".
-WATER_LANDUSE_CODES: tuple[int, ...] = (0, 200)  # (80, 200)
+WATER_LANDUSE_CODES: tuple[int, ...] = (80, 200)  # (80, 200)
 
 # Memory budget for area/volume STATISTICS (compute_max_inundation,
 # compute_flood_timeseries_stats) rather than _coarsen_for_memory's
@@ -416,3 +417,52 @@ def compute_flood_timeseries_stats(
     return pd.DataFrame(
         {"time": times, "flooded_area_km2": area_km2, "flood_volume_m3": volume_m3}
     )
+
+
+# NOTE: KL added
+def compute_risk_metrics(
+    da_hmax: xr.DataArray,
+    da_dep: xr.DataArray,
+    landuse_path: str | Path,
+    delta_polygon_path: str | Path,
+    urban_code: int = 50,
+) -> dict:
+    """
+    Scalar flood-risk metrics from a downscaled flood map.
+
+    ``da_hmax``/``da_dep`` as returned by ``compute_max_inundation`` (already
+    land-masked, so areas are shares of the land domain). Column names match
+    the legacy analyse.py risk_metrics.csv so downstream adaptation measures
+    (e.g. retreat) can consume them unchanged.
+    """
+    import rioxarray as rxr
+
+    res_x, res_y = da_dep.raster.res
+    pixel_area_m2 = abs(res_x * res_y)
+    land_area_km2 = int(da_dep.notnull().sum()) * pixel_area_m2 / 1e6
+
+    da_lu = rxr.open_rasterio(str(landuse_path)).squeeze(drop=True)
+    da_lu = da_lu.raster.reproject_like(da_dep, method="nearest")
+    urban_mask = (da_lu == urban_code).values & da_dep.notnull().values
+    urban_area_km2 = int(urban_mask.sum()) * pixel_area_m2 / 1e6
+
+    flooded = da_hmax.notnull().values
+    flooded_area_km2 = float(flooded.sum()) * pixel_area_m2 / 1e6
+    urban_exposed_km2 = float((urban_mask & flooded).sum()) * pixel_area_m2 / 1e6
+    volume_m3 = float((da_hmax.fillna(0.0) * pixel_area_m2).sum())
+
+    delta = gpd.read_file(str(delta_polygon_path))
+    model_domain_area_km2 = float(delta.to_crs(da_dep.raster.crs).area.sum()) / 1e6
+
+    return {
+        "model_domain_km2": round(model_domain_area_km2, 2),
+        "land_area_km2": round(land_area_km2, 2),
+        "urban_area_km2": round(urban_area_km2, 2),
+        "flooded_area_km2": round(flooded_area_km2, 2),
+        "flood_extent_pct": round(flooded_area_km2 / land_area_km2 * 100, 2),
+        "urban_exposed_km2": round(urban_exposed_km2, 2),
+        "mean_depth_m": round(float(da_hmax.mean()), 2),
+        "max_depth_m": round(float(da_hmax.max()), 2),
+        "volume_m3": round(volume_m3, 0),
+        "volume_km3": round(volume_m3 / 1e9, 4),
+    }
