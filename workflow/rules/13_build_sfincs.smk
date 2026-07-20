@@ -52,15 +52,15 @@ rule build_sfincs:
         surge_forcing     = results_path("{basin_id}/inputs/forcing/surge_forcing.nc"),
         river_forcing     = results_path("{basin_id}/inputs/forcing/river_forcing.nc"),
     output:
-        sfincs_inp     = results_path("{basin_id}/sfincs/sfincs.inp"),
-        sfincs_subgrid = results_path("{basin_id}/sfincs/sfincs_subgrid.nc"),
-        plot_grid      = results_path("{basin_id}/visuals/sfincs_build/01_grid.png"),
-        plot_elevation = results_path("{basin_id}/visuals/sfincs_build/02_elevation.png"),
-        plot_mask      = results_path("{basin_id}/visuals/sfincs_build/03_mask.png"),
-        plot_roughness = results_path("{basin_id}/visuals/sfincs_build/04_roughness.png"),
+        sfincs_inp     = results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs.inp"),
+        sfincs_subgrid = results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs_subgrid.nc"),
+        plot_grid      = results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/01_grid.png"),
+        plot_elevation = results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/02_elevation.png"),
+        plot_mask      = results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/03_mask.png"),
+        plot_roughness = results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/04_roughness.png"),
         **({
-            "refinement_polygons": results_path("{basin_id}/sfincs/{basin_id}_refinement_polygons.gpkg"),
-            "plot_refinement": results_path("{basin_id}/visuals/sfincs_build/01b_refinement_zones.png"),
+            "refinement_polygons": results_path("{basin_id}/scenarios/{scenario}/sfincs/{basin_id}_refinement_polygons.gpkg"),
+            "plot_refinement": results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/01b_refinement_zones.png"),
         } if config["sfincs"]["grid"]["quadtree"]["enabled"] else {}),
     params:
         preburn_enabled    = config["river_processing"]["conditioning"]["enabled"],
@@ -78,8 +78,11 @@ rule build_sfincs:
         dthisout           = config["sfincs"]["simulation"]["dthisout"],
         storevelmax        = config["sfincs"]["simulation"]["storevelmax"],
         storetwet          = config["sfincs"]["simulation"]["storetwet"],
-        forcing_mode       = config["boundary_setup"]["mode"],
-        design_rp_river_yr = config["boundary_setup"]["design_rp_river_yr"],
+        # forcing_mode       = config["boundary_setup"]["mode"],
+        # design_rp_river_yr = config["boundary_setup"]["design_rp_river_yr"],
+        forcing_mode       = lambda wildcards: scenario_params(wildcards.scenario)["mode"],
+        design_rp_river_yr = lambda wildcards: scenario_params(wildcards.scenario)["river_rp"],
+        design_rp_surge_yr = lambda wildcards: scenario_params(wildcards.scenario)["surge_rp"],
         compound_lag_hr    = config["boundary_setup"]["compound"]["lag_hr"],
         flat_boundary_point_spacing_m = config["boundary_setup"]["flat_boundary_point_spacing_m"],
         waterlevel_buffer_m = config["boundary_setup"]["waterlevel_buffer_m"],
@@ -88,7 +91,7 @@ rule build_sfincs:
         n_per_crossing     = config["sfincs"]["observation_points"]["n_per_crossing"],
         max_downstream_hops = config["sfincs"]["observation_points"]["max_downstream_hops"],
         inputs_dir         = lambda wildcards: results_path(f"{wildcards.basin_id}/inputs"),
-        sfincs_root        = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs"),
+        sfincs_root        = lambda wildcards: results_path(f"{wildcards.basin_id}/scenarios/{wildcards.scenario}/sfincs"),
         quadtree_enabled   = config["sfincs"]["grid"]["quadtree"]["enabled"],
         river_refinement_level     = config["sfincs"]["grid"]["quadtree"]["river_refinement_level"],
         river_buffer_factor        = config["sfincs"]["grid"]["quadtree"]["river_buffer_factor"],
@@ -96,6 +99,6 @@ rule build_sfincs:
         coastal_refinement_level   = config["sfincs"]["grid"]["quadtree"]["coastal_refinement_level"],
         coastal_buffer_m           = config["sfincs"]["grid"]["quadtree"]["coastal_buffer_m"],
     log:
-        "logs/{basin_id}/13_build_sfincs.log"
+        "logs/{basin_id}/{scenario}/13_build_sfincs.log"
     script:
         "../scripts/13_build_sfincs.py"

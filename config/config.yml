@@ -170,3 +170,8 @@ sfincs:
   sanity_checks:
     min_inundation_depth_m: 0.0  # threshold for counting a cell as flooded in sanity checks
     animation_fps: 2             # frames per second for flood progression animation
+
+# Flood metrics (rule 17)
+metrics:
+  hmin: 0.05                     # min depth (m) for a pixel to count as flooded
+  urban_landuse_code: 50         # landuse code for urban areas in the landuse raster (used for urban flood metrics)
