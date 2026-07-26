@@ -761,21 +761,25 @@ def build_design_discharge_matrix(
     period_hr = float(river_ds.attrs["period_hr"])
 
     n_active = int(active.sum())
-    log_rp = np.log(design_rp_yr)
-    log_table_rps = np.log(table_rps)
-    design_q = np.array(
-        [np.interp(log_rp, log_table_rps, table[i]) for i in range(n_active)]
-    )
-
-    if "protection_discharge" in river_ds:
-        prot_q = river_ds["protection_discharge"].values[active]
-        overtopped = design_q > prot_q
-        contained = (~overtopped) & (design_q > bankfull_q)
-        design_q = np.where(
-            overtopped,
-            bankfull_q + (design_q - prot_q),
-            np.where(contained, bankfull_q, design_q),
+    if design_rp_yr is None:
+        design_q = bankfull_q.copy()  # mean river: constant bankfull hydrograph
+    else:
+        log_rp = np.log(design_rp_yr)
+        log_table_rps = np.log(table_rps)
+        design_q = np.array(
+            [np.interp(log_rp, log_table_rps, table[i]) for i in range(n_active)]
         )
+
+        if "protection_discharge" in river_ds:
+            prot_q = river_ds["protection_discharge"].values[active]
+            overtopped = design_q > prot_q
+            contained = (~overtopped) & (design_q > bankfull_q)
+            design_q = np.where(
+                overtopped,
+                bankfull_q + (design_q - prot_q),
+                np.where(contained, bankfull_q, design_q),
+            )
+            n_active = int(active.sum())
 
     discharge_matrix = np.full((n_active, len(times)), np.nan)
     for i in range(n_active):

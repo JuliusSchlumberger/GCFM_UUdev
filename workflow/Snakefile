@@ -32,6 +32,7 @@ include: "rules/13_build_sfincs.smk"
 include: "rules/14_run_spinup.smk"
 include: "rules/15_sanity_checks.smk"
 include: "rules/16_run_event.smk"
+include: "rules/17_flood_metrics.smk"
 
 # ── Shared output lists (used by named targets and rule all) ─────────────────
 
@@ -83,23 +84,25 @@ _PREPROCESS_OUTPUTS = [
 ]
 
 _BUILD_OUTPUTS = [
-    expand(results_path("{basin_id}/sfincs/sfincs.inp"), basin_id=BASINS),
-    *(expand(results_path("{basin_id}/sfincs/sfincs_subgrid.nc"), basin_id=BASINS)
+    expand(results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs.inp"), basin_id=BASINS, scenario=SCENARIOS),
+    *(expand(results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs_subgrid.nc"), basin_id=BASINS, scenario=SCENARIOS)
       if config["sfincs"]["subgrid"]["enabled"] else []),
-    *(expand(results_path("{basin_id}/sfincs/{basin_id}_refinement_polygons.gpkg"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/sfincs_build/01b_refinement_zones.png"), basin_id=BASINS)
+    *(expand(results_path("{basin_id}/scenarios/{scenario}/sfincs/{basin_id}_refinement_polygons.gpkg"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand(results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/01b_refinement_zones.png"), basin_id=BASINS, scenario=SCENARIOS)
       if config["sfincs"]["grid"]["quadtree"]["enabled"] else []),
-    *(expand(results_path("{basin_id}/sfincs/spinup/" + RST_FNAME), basin_id=BASINS)
-      + expand(results_path("{basin_id}/sfincs/spinup/sfincs_map.nc"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/model_runs/spinup/validation_spinup.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/model_runs/spinup/validation_max_inundation.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/model_runs/spinup/01_inundation_ratio.png"), basin_id=BASINS)
+    *(expand(results_path("{basin_id}/scenarios/{scenario}/sfincs/spinup/" + RST_FNAME), basin_id=BASINS, scenario=SCENARIOS)
+      + expand(results_path("{basin_id}/scenarios/{scenario}/sfincs/spinup/sfincs_map.nc"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand(results_path("{basin_id}/scenarios/{scenario}/visuals/spinup/validation_spinup.png"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand(results_path("{basin_id}/scenarios/{scenario}/visuals/spinup/validation_max_inundation.png"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand(results_path("{basin_id}/scenarios/{scenario}/visuals/spinup/01_inundation_ratio.png"), basin_id=BASINS, scenario=SCENARIOS)
       # run_event (rule 16) needs rule 14's restart file, same gate as the
       # spin-up/sanity outputs directly above:
-      + expand(results_path("{basin_id}/sfincs/sfincs_map.nc"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/model_runs/main_run/01_inundation_ratio.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/model_runs/main_run/02_flood_animation.mp4"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/model_runs/main_run/flood_timeseries.csv"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs_map.nc"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand(results_path("{basin_id}/scenarios/{scenario}/visuals/01_inundation_ratio.png"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand(results_path("{basin_id}/scenarios/{scenario}/visuals/02_flood_animation.mp4"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand(results_path("{basin_id}/scenarios/{scenario}/visuals/flood_timeseries.csv"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand (results_path("{basin_id}/scenarios/{scenario}/metrics/max_flood_depth.tif"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand (results_path("{basin_id}/scenarios/{scenario}/metrics/flood_metrics.csv"), basin_id=BASINS, scenario=SCENARIOS)
       if config["sfincs"]["spinup"]["enabled"] else []),
 ]
 

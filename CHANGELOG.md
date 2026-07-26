@@ -1,11 +1,72 @@
 # Changelog
 
+Newest changes first. See `Reference_memory.txt` for the current, up-to-date
+description of how the pipeline works; this file only describes *what changed
+and why*.
+
+#
+
+# 2026-07-20: scenario assessment + flood metrics table (- KL)
+
+## Scenario axis ({scenario} wildcard, rules 13–17)
+
+The pipeline can now run the same basin under multiple named flood-event
+scenarios without re-running preprocessing (rules 01–12 stay scenario-free).
+
+- New `config/scenarios.yml` (path set by new config key `scenarios_file`)
+  defines named scenarios as (surge_rp, river_rp) pairs; a null RP uses the mean
+  conditions for that driver. Example scenarios: baseline (no design event, mean conditions),
+  coast_100 (100-yr RP coast, mean river discharge), river_100 (100-yr RP river discharge, mean coast),
+  compound_100 (100-yr river discharge and coast).
+- 00_common.smk loads and validates the scenario definitions (surge RPs must
+  be COAST-RP tabulated values; river RPs in [2, 1000] yr), exposes
+  `scenario_params(name)` and a `{scenario}` wildcard constraint. The
+  reserved name `default` replays config.yml's own boundary_setup settings
+  and is what plain `snakemake build` runs; other scenarios are selected via
+  `--config target_scenarios="['baseline','coast_100']"`.
+- All build-and-run outputs (rules 13–16) moved from
+  `{basin_id}/sfincs|visuals/...` to
+  `{basin_id}/scenarios/{scenario}/sfincs|visuals/...`.
+  so that each scenario has its respective output visuals
+- Rule 13 now rebuilds BOTH forcings per scenario without re-running rule 07:
+  discharge via the existing `build_design_discharge_matrix()` (extended:
+  `design_rp_yr=None` → constant bankfull hydrograph), and surge via new
+  `surge.build_design_surge_matrix()` (`None` → flat baseline).
+  To support this, rule 07's surge_forcing.nc now also stores the full
+  COAST-RP table (`storm_tide_rp_table`), mirroring the `discharge_rp_table`.
+  This way, RP's can simply be extracted from the corresponding tables before runs.
+- The `boundary_setup.mode` enum validation in 00_common.smk was removed
+  (commented out) — mode is now effectively always "compound" for named
+  scenarios (i.e. always including both mean river discharge and mean coastal conditions),
+  with per-driver nulls replacing coastal_only/river_only.
+
+## New rule 17 (flood metrics calculations and tables)
+
+Flood metrics are generated per scenario from rule 16's finished event run;
+cheap postprocessing only, never re-runs SFINCS. Outputs under
+`{basin_id}/scenarios/{scenario}/metrics/`: `max_flood_depth.tif` (downscaled
+max-depth GeoTIFF, the input for later flood-source attribution and
+adaptation measures) and `flood_metrics.csv` (one row of scalar metrics:
+flooded/urban-exposed area, extent %, mean/max depth, volume — column names
+match the legacy analyse.py risk_metrics.csv). New config keys:
+`metrics.hmin` (0.05 m flood threshold) and `metrics.urban_landuse_code`
+(50 based on landuse cover codes). Backed by new `postprocessing.compute_risk_metrics()`.
+
+## Fixes
+
+- `postprocessing.WATER_LANDUSE_CODES` corrected from (0, 200) to (80, 200) —
+  code 80 ("Inland water") was intended all along per the adjacent comment;
+  0 is the raster nodata value, so land-masking previously dropped nodata
+  cells instead of permanent inland water.
+
+---
+
+# improve_base_model (merged as PR #1) (- JS)
+
 Summary of functional changes on `improve_base_model` relative to the last
 committed state (`5efcf4e`, "major updates"). This covers a large amount of
 uncommitted work accumulated across many development sessions. Organized by
-theme, not chronologically. See `Reference_memory.txt` for the current,
-up-to-date description of how the pipeline works; this file only describes
-*what changed and why*.
+theme, not chronologically.
 
 ## River discharge design: return-period table instead of a single fixed value
 

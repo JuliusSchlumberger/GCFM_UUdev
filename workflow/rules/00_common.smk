@@ -4,6 +4,9 @@ from src.io import load_catalogue, catalogue_entry,read_geometry, raw_input_path
 from src.io import general_path as _gen_path
 import geopandas as gpd
 
+import re as _re
+import yaml as _yaml
+
 CATALOGUE = load_catalogue(config["data_catalogue"])
 
 # ── local machine overrides ──────────────────────────────────────────────────
@@ -58,8 +61,6 @@ RESULTS_DIR = config["results_dir"]
 def results_path(pattern):
     return f"{RESULTS_DIR}/{pattern}"
 
-wildcard_constraints:
-    basin_id = r"\d+"
 
 if config["sfincs"]["grid"]["quadtree"]["enabled"] and not config["sfincs"]["subgrid"]["enabled"]:
     raise ValueError(
@@ -78,9 +79,56 @@ if (
         "itself requires conditioning to be enabled)"
     )
 
-_FORCING_MODES = ("compound", "coastal_only", "river_only")
-if config["boundary_setup"]["mode"] not in _FORCING_MODES:
-    raise ValueError(
-        f"boundary_setup.mode = {config['boundary_setup']['mode']!r} is not valid "
-        f"— must be one of {_FORCING_MODES}"
-    )
+# NOTE: KL removed
+# _FORCING_MODES = ("compound", "coastal_only", "river_only")
+# if config["boundary_setup"]["mode"] not in _FORCING_MODES:
+#     raise ValueError(
+#         f"boundary_setup.mode = {config['boundary_setup']['mode']!r} is not valid "
+#         f"— must be one of {_FORCING_MODES}"
+#     )
+
+# ── scenario axis ─────────────────────────────────────────────────────────────
+# Scenarios are defined by name in scenarios_file (config/scenarios.yml) and
+# selected as the {scenario} wildcard. The reserved name "default" is not in
+# that file: it replays config.yml's own boundary_setup settings (mode,
+# design_rp_river_yr, surge.return_period) and is what plain `snakemake build`
+# runs when no target_scenarios is given.
+
+_SURGE_RPS = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000)    # COAST-RP tabulated; no interpolation
+_RIVER_RP_MIN, _RIVER_RP_MAX = 2, 1000                     # log-interpolated from discharge_rp_table
+
+with open(config["scenarios_file"]) as _f:
+    SCENARIO_DEFS = _yaml.safe_load(_f) or {}
+
+for _name, _s in SCENARIO_DEFS.items():
+    if _name == "default" or not _re.fullmatch(r"[A-Za-z0-9_-]+", _name):
+        raise ValueError(f"scenario name {_name!r} invalid ('default' is reserved; "
+                         "use letters/digits/_/- only)")
+    _srp, _rrp = _s.get("surge_rp"), _s.get("river_rp")
+    if _srp is not None and _srp not in _SURGE_RPS:
+        raise ValueError(f"{_name}: surge_rp must be a COAST-RP tabulated value {_SURGE_RPS}")
+    if _rrp is not None and not _RIVER_RP_MIN <= _rrp <= _RIVER_RP_MAX:
+        raise ValueError(f"{_name}: river_rp must be in [{_RIVER_RP_MIN}, {_RIVER_RP_MAX}] yr")
+
+def scenario_params(name):
+    """-> dict(mode, surge_rp, river_rp); None RP = mean conditions."""
+    if name == "default":
+        return {
+            "mode":     config["boundary_setup"]["mode"],
+            "surge_rp": config["boundary_forcings"]["surge"]["return_period"],
+            "river_rp": config["boundary_setup"]["design_rp_river_yr"],
+        }
+    s = SCENARIO_DEFS[name]
+    return {"mode": "compound", "surge_rp": s.get("surge_rp"), "river_rp": s.get("river_rp")}
+
+# What to run: CLI override, else just the config.yml-driven default.
+#   snakemake build --config target_scenarios="['baseline','coast_100']"
+SCENARIOS = list(config.get("target_scenarios", ["default"]))
+_unknown = sorted(set(SCENARIOS) - set(SCENARIO_DEFS) - {"default"})
+if _unknown:
+    raise ValueError(f"target_scenarios {_unknown} not defined in {config['scenarios_file']}")
+
+
+wildcard_constraints:
+    basin_id = r"\d+",
+    scenario = r"|".join(sorted(set(SCENARIO_DEFS) | {"default"}))

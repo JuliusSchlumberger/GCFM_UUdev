@@ -58,6 +58,7 @@ from shapely.ops import nearest_points
 from hydromt_sfincs import SfincsModel
 
 from src.river_forcing import build_design_discharge_matrix
+from src.surge import build_design_surge_matrix
 
 plt.ioff()
 
@@ -103,7 +104,8 @@ dthisout          = snakemake.params.dthisout
 storevelmax       = snakemake.params.storevelmax
 storetwet         = snakemake.params.storetwet
 forcing_mode      = snakemake.params.forcing_mode
-design_rp_river_yr = float(snakemake.params.design_rp_river_yr)
+design_rp_river_yr = snakemake.params.design_rp_river_yr # Removed Float 
+design_rp_surge_yr = snakemake.params.design_rp_surge_yr # Added 
 compound_lag_hr   = float(snakemake.params.compound_lag_hr)
 flat_boundary_point_spacing_m = snakemake.params.flat_boundary_point_spacing_m
 waterlevel_buffer_m = snakemake.params.waterlevel_buffer_m
@@ -572,7 +574,7 @@ else:
 
     # water_level dims: (station, time) → transpose to (time, station) for DataFrame
     wl_df = pd.DataFrame(
-        data=surge_ds.water_level.values.T,
+        data=build_design_surge_matrix(surge_ds, design_rp_surge_yr).T,
         index=surge_times,
         columns=range(n_stations),
     )

@@ -84,6 +84,63 @@ def sinusoidal_wave(
     return values
 
 
+def build_design_surge_matrix(
+    surge_ds: xr.Dataset,
+    design_rp_yr: int | None,
+) -> np.ndarray:
+    """
+    Rebuild the per-station water-level timeseries at ``design_rp_yr`` from
+    surge_forcing.nc — the surge counterpart to
+    river_forcing.build_design_discharge_matrix.  Changing the surge RP only
+    re-runs the build (rule 13), never rule 07.
+
+    design_rp_yr=None means mean coastal conditions: zero surge amplitude, a
+    flat timeseries at each station's own baseline (tide-only / calm sea).
+    Otherwise the raw storm-tide is taken from storm_tide_rp_table (exact
+    match against COAST-RP's tabulated RPs — no interpolation) and the same
+    vertical correction rule 07 applied (station_baseline = −mdt + slr_m) is
+    added.  The protection level, if rule 07 stored one, is subtracted in
+    both cases.  At rule 07's own configured RP this reproduces the stored
+    water_level exactly.
+
+    Returns:
+        (n_station, n_time) np.ndarray, water level (m).
+    """
+    n_stations = surge_ds.sizes["station"]
+    baselines = (
+        surge_ds["station_baseline"].values
+        if "station_baseline" in surge_ds
+        else np.full(n_stations, float(surge_ds["baseline_m"].values))
+    )
+    if design_rp_yr is None:
+        rp_level = baselines  # flat: wave from baseline to baseline
+    else:
+        table_rps = surge_ds["table_rp"].values
+        idx = np.nonzero(np.isclose(table_rps, float(design_rp_yr)))[0]
+        if idx.size == 0:
+            raise ValueError(
+                f"surge RP {design_rp_yr} not tabulated in COAST-RP "
+                f"({[int(r) for r in table_rps]})"
+            )
+        rp_level = surge_ds["storm_tide_rp_table"].values[:, idx[0]] + baselines
+    times = surge_ds["time"].values
+    wave = np.stack(
+        [
+            sinusoidal_wave(
+                float(b),
+                float(lvl),
+                times,
+                float(surge_ds.attrs["lead_days"]),
+                float(surge_ds.attrs["period_hr"]),
+            )
+            for b, lvl in zip(baselines, rp_level)
+        ]
+    )
+    if "protection_level" in surge_ds:
+        wave = wave - surge_ds["protection_level"].values[:, None]
+    return wave
+
+
 # ── vertical-reference correction & SLR fingerprint ─────────────────────────────
 # The MDT-based vertical correction and SLR-fingerprint scaling below adapt the
 # methodology developed by Natalia Aleksandrova (notebooks
@@ -638,5 +695,24 @@ def build_surge_dataset(
     for col, attrs in extra_station_vars.items():
         if col in stations.columns:
             ds[col] = (["station"], stations[col].values, attrs)
+
+    # Full COAST-RP table (raw storm-tide at every tabulated RP) —
+    # lets rule 13 rebuild the wave at any tabulated RP without re-running rule 07,
+    # mirroring river_forcing.nc's discharge_rp_table.
+    rp_cols = [
+        c for c in (f"rp_raw_{rp:04d}" for rp in _COASTRP_RPS) if c in stations.columns
+    ]
+    if len(rp_cols) == len(_COASTRP_RPS):
+        ds["storm_tide_rp_table"] = (
+            ["station", "table_rp"],
+            np.column_stack([stations[c].values for c in rp_cols]),
+            {
+                "units": "m",
+                "long_name": "raw COAST-RP storm-tide level per tabulated RP",
+            },
+        )
+        ds = ds.assign_coords(table_rp=np.asarray(_COASTRP_RPS, dtype=float))
+    ds.attrs["lead_days"] = float(lead_days)
+    ds.attrs["period_hr"] = float(period_hr)
 
     return ds
