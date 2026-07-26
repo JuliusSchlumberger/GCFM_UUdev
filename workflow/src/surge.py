@@ -172,9 +172,7 @@ def apply_mdt_correction(
                        found within +/-fallback_deg).
         rp_level:     rp_level_raw - mdt (local MSL -> GOCO06s geoid), matching
                        the sign convention used to re-reference GEBCO to
-                       GOCO06s (gebco -= mdt) in 05a_get_elevation.py. The
-                       caller decides whether to keep this or revert to
-                       rp_level_raw based on vertical_correction.enabled.
+                       GOCO06s (gebco -= mdt) in 05a_get_elevation.py.
     """
     lat_dim = next(d for d in mdt_da.dims if "lat" in d.lower())
     lon_dim = next(d for d in mdt_da.dims if "lon" in d.lower())
@@ -354,9 +352,9 @@ def interpolate_protection_level(
     load_coastrp_stations()).
 
     target_rp_yr is clamped to [min(_COASTRP_RPS), max(_COASTRP_RPS)] --
-    callers needing a wider cap (e.g. top-level protection_levels.
-    max_rp_yr) should apply it before calling this, but COAST-RP itself
-    cannot extrapolate past its own tabulated range regardless.
+    callers needing a wider cap (e.g. top-level flopros_range.max_rp_yr)
+    should apply it before calling this, but COAST-RP itself cannot
+    extrapolate past its own tabulated range regardless.
 
     Args:
         stations:      GeoDataFrame with 'rp_raw_{rp:04d}' columns for every
@@ -512,7 +510,7 @@ def build_surge_dataset(
     regardless of how MDT varies spatially across the selected stations.
     ``baseline_m`` (the mean of those per-station values) is still stored in
     the dataset so rule 13 can initialise sea cells at the same vertical
-    reference (zsini_baseline.tif).
+    reference (zsini.tif).
 
     Args:
         stations:          GeoDataFrame with 'rp_level' and 'dist_m' columns and
@@ -524,7 +522,7 @@ def build_surge_dataset(
         baseline_m:        Mean vertical correction applied to rp_level (m).
                            Equals mean(−MDT + SLR) across selected stations.
                            Stored in the dataset so rule 13 can initialise sea
-                           cells (zsini_baseline.tif).  Defaults to 0.0.
+                           cells (zsini.tif).  Defaults to 0.0.
         station_baselines: Per-station lead-period flat values (m), length
                            equal to ``len(stations)``.  Each entry is the
                            station's own local MSL in model coordinates
@@ -599,7 +597,7 @@ def build_surge_dataset(
                 "Mean vertical correction applied as lead-period baseline "
                 "(mean(−MDT + SLR) across selected stations = calm sea level "
                 "in model coordinates). Read by rule 13 to initialise sea cells "
-                "via zsini_baseline.tif.  Equals 0.0 when both corrections are off."
+                "via zsini.tif.  Equals 0.0 when both corrections are off."
             ),
         },
     )

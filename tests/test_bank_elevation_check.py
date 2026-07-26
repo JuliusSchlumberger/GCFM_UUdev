@@ -4,7 +4,7 @@ bank high enough next to each conditioned river channel, or could water
 spill out of the channel where it isn't supposed to?
 
 For each seed reach's downstream network (same seed/BFS traversal as
-10_condition_elevation.py), samples the centerline at DEM pixel spacing via
+09_condition_elevation.py), samples the centerline at DEM pixel spacing via
 _sample_line_cells, and at every sample point checks two "bank" cells on
 EACH side of the channel: the cell just outside the half-width buffer
 (distance = width/2 from the centerline) and the next cell out (distance =
@@ -225,7 +225,7 @@ else:
     for i, seed in enumerate(seeds):
         ax = axes[i][0]
 
-        # BFS downstream from this seed (same traversal as 10_condition_elevation.py)
+        # BFS downstream from this seed (same traversal as 09_condition_elevation.py)
         dist_from_seed: dict[str, float] = {seed: 0.0}
         queue: deque[str] = deque([seed])
         visit_order: list[str] = [seed]

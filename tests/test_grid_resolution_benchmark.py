@@ -194,29 +194,32 @@ def _mock_config_13(
     basin_id: str, combo: dict, sfincs_root: Path
 ) -> tuple[dict, dict, dict]:
     basin_inputs = RESULTS_DIR / basin_id / "inputs"
-    conditioning_enabled = bool(config["river_processing"]["conditioning"]["enabled"])
-    burn_rivers_enabled = bool(config["river_processing"]["burn_rivers"]["enabled"])
     combo_visuals = sfincs_root.parent / "visuals" / "sfincs_build"
 
+    # Every basin has elevation_conditioned.tif and a directly-burned
+    # river_burned_dem* (from whichever depth-estimation rule ran, both
+    # numbered 10), matching
+    # 13_build_sfincs.smk's unconditional inputs.
     input_d = dict(
         domain_gpkg=str(basin_inputs / "domain" / f"{basin_id}_domain.gpkg"),
         elevation_merged=str(
+            basin_inputs / "domain" / f"{basin_id}_elevation_conditioned.tif"
+        ),
+        river_burned_dem=str(
+            basin_inputs / "domain" / f"{basin_id}_river_burned_dem.tif"
+        ),
+        river_burned_dem_sfincs_grid=str(
+            basin_inputs / "domain" / f"{basin_id}_river_burned_dem_sfincs_grid.tif"
+        ),
+        elevation_conditioned_sfincs_grid=str(
             basin_inputs
             / "domain"
-            / (
-                f"{basin_id}_elevation_conditioned.tif"
-                if conditioning_enabled
-                else f"{basin_id}_elevation_merged.tif"
-            )
+            / f"{basin_id}_elevation_conditioned_sfincs_grid.tif"
         ),
-        zbed_anchors=(
-            str(basin_inputs / "domain" / f"{basin_id}_zbed_anchors.gpkg")
-            if conditioning_enabled
-            else []
-        ),
-        river_burned_dem=(
-            str(basin_inputs / "domain" / f"{basin_id}_river_burned_dem.tif")
-            if burn_rivers_enabled
+        coastal_protection_weir=(
+            str(basin_inputs / "domain" / f"{basin_id}_coastal_protection_weir.gpkg")
+            if config["river_processing"]["depth_method"] == "modelled"
+            and not combo["quadtree_enabled"]
             else []
         ),
         roughness=str(basin_inputs / "domain" / f"{basin_id}_roughness.tif"),
@@ -234,10 +237,15 @@ def _mock_config_13(
     output_d = dict(
         sfincs_inp=str(sfincs_root / "sfincs.inp"),
         sfincs_subgrid=str(sfincs_root / "sfincs_subgrid.nc"),
+        sfincs_weir=str(sfincs_root / "sfincs.weir"),
+        weir_gpkg=str(sfincs_root / f"{basin_id}_coastal_protection_weir.gpkg"),
         plot_grid=str(combo_visuals / "01_grid.png"),
         plot_elevation=str(combo_visuals / "02_elevation.png"),
         plot_mask=str(combo_visuals / "03_mask.png"),
         plot_roughness=str(combo_visuals / "04_roughness.png"),
+        plot_coastal_protection_weir=str(
+            combo_visuals / "07_coastal_protection_weir.png"
+        ),
     )
     if combo["quadtree_enabled"]:
         output_d["refinement_polygons"] = str(
@@ -246,8 +254,7 @@ def _mock_config_13(
         output_d["plot_refinement"] = str(combo_visuals / "01b_refinement_zones.png")
 
     params_d = dict(
-        preburn_enabled=conditioning_enabled,
-        burn_rivers_enabled=burn_rivers_enabled,
+        depth_method=config["river_processing"]["depth_method"],
         resolution=combo["resolution"],
         include_subgrid=combo["subgrid_enabled"],
         include_rstart=bool(config["sfincs"]["spinup"]["enabled"]),
@@ -266,12 +273,12 @@ def _mock_config_13(
         storevelmax=config["sfincs"]["simulation"]["storevelmax"],
         storetwet=config["sfincs"]["simulation"]["storetwet"],
         forcing_mode="compound",  # forced regardless of the current config.yml value
-        compound_lag_hr=config["boundary_setup"]["compound"]["lag_hr"],
-        flat_boundary_point_spacing_m=config["boundary_setup"][
+        compound_lag_hr=config["sfincs"]["boundary_setup"]["compound"]["lag_hr"],
+        flat_boundary_point_spacing_m=config["sfincs"]["boundary_setup"][
             "flat_boundary_point_spacing_m"
         ],
-        waterlevel_buffer_m=config["boundary_setup"]["waterlevel_buffer_m"],
-        outflow_buffer_m=config["boundary_setup"]["outflow_buffer_m"],
+        waterlevel_buffer_m=config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
+        outflow_buffer_m=config["sfincs"]["boundary_setup"]["outflow_buffer_m"],
         n_top_crossings=config["sfincs"]["observation_points"]["n_top_crossings"],
         n_per_crossing=config["sfincs"]["observation_points"]["n_per_crossing"],
         max_downstream_hops=config["sfincs"]["observation_points"][
@@ -285,6 +292,19 @@ def _mock_config_13(
         coastal_refinement_enabled=COASTAL_REFINEMENT_ENABLED,
         coastal_refinement_level=COASTAL_REFINEMENT_LEVEL,
         coastal_buffer_m=config["sfincs"]["grid"]["quadtree"]["coastal_buffer_m"],
+        min_component_cells=config["river_processing"]["river_depth_modelling"][
+            "min_component_cells"
+        ],
+        weir_par1=config["river_processing"]["river_depth_modelling"]["weir_par1"],
+        weir_crest_junction_blend_m=config["river_processing"]["river_depth_modelling"][
+            "weir_crest_junction_blend_m"
+        ],
+        weir_freeboard_m=config["river_processing"]["river_depth_modelling"][
+            "freeboard_m"
+        ],
+        river_crest_dilation_cells=config["river_processing"]["river_depth_modelling"][
+            "river_crest_dilation_cells"
+        ],
     )
     return input_d, output_d, params_d
 

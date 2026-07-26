@@ -427,8 +427,10 @@ nienhuis_delta_characteristics — tidal/morphological characteristics of 72
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Top-level sections: data_catalogue, profiling, results_dir, domain,
-datum_correction, protection_levels, river_processing, boundary_forcings,
-testing, boundary_setup, sfincs. (terrain was removed entirely — see below.)
+datum_correction, terrain, protection_levels, river_processing,
+boundary_forcings, testing, boundary_setup, sfincs. (terrain was removed
+entirely earlier in this branch's history, then reintroduced with a new,
+unrelated key — see below.)
 
 data_catalogue / results_dir / profiling.enabled — global plumbing.
   profiling.enabled is read directly via snakemake.config.get("profiling",
@@ -450,11 +452,24 @@ datum_correction — TOP-LEVEL (not nested under `terrain`) because it is
   fallback_search_deg: +/- deg to search for a valid MDT cell if the
   nearest station is NaN. (mdt_variable was removed — hardcoded "mdt".)
 
-terrain — REMOVED ENTIRELY (rules 05a-05c no longer have their own config
-  section). Its one key, work_res_m (DEM/GEBCO merge working resolution),
-  is now auto-derived from FathomDEM's own native pixel size (read from the
-  first tile, converted via the WGS84 latitude arc-length constant) rather
-  than configured.
+terrain — rule 05a only (05b/05c have no config of their own). Previously
+  removed entirely (its one key, work_res_m, became auto-derived from
+  FathomDEM's own native pixel size — still true, NOT reintroduced), but
+  now REINTRODUCED with a new, unrelated key:
+  gebco_max_depth_m — clamps GEBCO depths (post datum-correction) to at
+    most this many metres below sea level before the FathomDEM/GEBCO hard
+    merge. Motivated by SFINCS's own runtime: its internal time step is set
+    by a CFL condition (dt ~ dx/sqrt(g*h)) shared by the WHOLE domain via
+    its single deepest active cell, so genuinely deep offshore water otherwise
+    slows the entire run for no modelling benefit (SFINCS gets its offshore
+    forcing prescribed at the water-level boundary, not resolved from actual
+    open-ocean bathymetry). Directly interacts with the DeltaDTM ocean clip
+    above (section 5) — that clip lets MORE of GEBCO's real (deeper)
+    bathymetry through where FathomDEM used to wrongly mask it with bogus
+    near-zero values, which is what made this clamp necessary in the first
+    place (confirmed: basin 2433835's merged elevation minimum went from
+    -27.79 m before this clamp existed to exactly -7.00 m after, with
+    default gebco_max_depth_m: 7.0).
 
 protection_levels — TOP-LEVEL (not nested under boundary_forcings) because
   rule 04 depends only on the delta polygon, not on anything else in
@@ -612,6 +627,14 @@ mandatory, not optional.
 Pipeline in 05a_get_elevation.py:
   1.  Merge FathomDEM tiles for the domain → topo_utm (UTM, coverage-weighted
       "nan-aware" resampling; /100 for the raw centimeter storage).
+  1b. Clip topo_utm to NaN wherever the DeltaDTM validity mask (catalogue
+      entry deltadtm_mask) marks a pixel as ocean — src.raster.
+      clip_ocean_from_topo, only mask value 1 counts as ocean (see the
+      catalogue entry's comment for the full, empirically-verified 4-class
+      breakdown; do NOT trust a pasted description from elsewhere without
+      re-verifying against this repo's actual raster). FathomDEM is
+      terrestrial and reports spurious near-zero/shallow "elevation" over
+      open water — this clip lets step 4's merge fall back to GEBCO there.
   2.  Vertical datum correction, EGM2008 → GOCO06s (MANDATORY): add the geoid
       offset N_EGM2008 − N_GOCO06s (pyshtools synthesis) to every valid
       FathomDEM pixel. No MDT subtraction is applied to the DEM itself — only
@@ -623,6 +646,17 @@ Pipeline in 05a_get_elevation.py:
       GEBCO pixels whose receptive field straddles a land-side nodata cell).
       Applied to EVERY valid GEBCO pixel (not just at sea), since GEBCO may
       also fill land-side gaps in step 4.
+  3b. Clamp gebco_utm to a floor of -terrain.gebco_max_depth_m (default
+      7.0 m) — SFINCS's CFL-driven internal time step is set by the whole
+      domain's single deepest active cell, and it gets its offshore forcing
+      prescribed at the boundary rather than resolving open-ocean dynamics
+      itself, so genuinely deep water only costs runtime for no modelling
+      benefit. This interacts directly with step 1b above: the DeltaDTM clip
+      lets MORE of GEBCO's real (deeper) bathymetry through than before (it
+      used to be masked by FathomDEM's bogus near-zero values), which is
+      what made this clamp necessary in the first place — confirmed live,
+      basin 2433835's merged minimum went from -27.79 m (1b alone, no clamp)
+      to exactly -7.00 m (1b + 3b, default depth).
   4.  HARD MERGE (no land-polygon mask, no gradient blend): merged =
       FathomDEM wherever it has valid data, GEBCO everywhere else. Purely
       driven by FathomDEM's own nodata pattern, not an independent land/sea
@@ -1107,7 +1141,7 @@ section 3 — so the two sources' discharge partitioning at every bifurcation
 can be compared side by side. One figure per bifurcation (1 or 2 panels,
 depending on whether the manual correction actually touched that
 bifurcation's neighbourhood) written to
-visuals/bifurcation_calibration_options/{root_rid}.png. Only needs rule 07's
+visuals/input_data/bifurcation_calibration_options/{root_rid}.png. Only needs rule 07's
 river_forcing.nc (for seed crossings/discharges) and the two raw SWORD
 catalogue sources directly — does not depend on rule 06/08's own output.
 Test-side counterpart tests/test_bifurcation_calibration_options.py shares
@@ -1517,11 +1551,11 @@ D:/GCFM_UU/results/{basin_id}/
     │   ├── 10_condition_elevation.png  ← opt-in (rule 10)
     │   ├── 11_river_preburn.png        ← opt-in (rule 11)
     │   ├── 11b_river_burn.png          ← opt-in (rule 11b, NEW — river_processing.burn_rivers)
-    │   └── 12_upstream_boundary_check.png  ← tracked output (rule 12, test_upstream_boundary)
-    ├── bifurcation_calibration_options/  ← NEW; tracked output (rule 12,
-    │                                        test_bifurcation_calibration_options), sibling
-    │                                        of input_data/ not inside it — one {root_rid}.png
-    │                                        per bifurcation compared (see section 8)
+    │   ├── 12_upstream_boundary_check.png  ← tracked output (rule 12, test_upstream_boundary)
+    │   └── bifurcation_calibration_options/  ← NEW; tracked output (rule 12,
+    │                                            test_bifurcation_calibration_options) — one
+    │                                            {root_rid}.png per bifurcation compared
+    │                                            (see section 8)
     ├── sfincs_build/               ← rule 13 (build_sfincs's own diagnostics)
     │   ├── 01_grid.png
     │   ├── 01b_refinement_zones.png  ← quadtree mode only
@@ -1961,6 +1995,60 @@ ENVIRONMENT NAME (resolved):
   CONTRIBUTING.md) — it isn't fully pip-installable from environment.yml
   alone. environment_diff.yml and updated_environment.yml are now redundant
   now that environment.yml is corrected; candidates for removal.
+
+ZSINI BASELINE CONNECTIVITY FIX (fixed — was silently broken on most basins):
+  13_build_sfincs.py shifts zsini's sea cells (0.0 in zsini.tif, rule 05b)
+  to baseline_m (the mean MDT+SLR vertical correction read from
+  surge_forcing.nc) so the model's initial ocean level matches the boundary
+  forcing's own vertical reference. A "connectivity fix" then reverts any
+  sea cell NOT reachable from "the open ocean" back to its own bed
+  elevation (dry start) — meant to stop isolated low-lying ponds/
+  depressions from starting artificially wet.
+  THE BUG: "reachable from the open ocean" used to mean "belongs to a
+  connected-component of sea cells that touches the raster ARRAY's own
+  rectangular edge" (row 0/-1, col 0/-1). This silently assumes the domain
+  polygon's own footprint reaches all the way to its bounding-box raster's
+  edges — false for essentially every basin here (the delta-polygon +
+  domain.delta_buffer_m clip sits well inside a much larger rectangular
+  UTM grid, NaN-padded in the corners — see any 05a_elevation.png). So the
+  array's actual edge pixels are almost always outside-domain nodata, not
+  real sea, and the "edge-touching" component set came out EMPTY (or only
+  accidentally non-empty) for most basins — meaning the fix treated nearly
+  the ENTIRE real open ocean as "isolated" and reverted it to bare bed
+  elevation instead of baseline_m. Confirmed via existing build logs before
+  the fix: basin 2433835 (baseline_m=-0.3955) had 315,243 of ~587k real
+  sea cells wrongly reverted; 4267691 had 235,792; 1248635 had 76,674;
+  2444235 had 42,997; 2209166 had 512. Only 2 of 8 already-built basins
+  (1475442, 620947) happened to have a domain shape where the array edge
+  genuinely coincided with real sea, masking the bug there. Symptom in
+  06_zsini.png (rule 13's own diagnostic plot, visuals/sfincs_build/): the
+  uniform baseline_m color only appeared right at the coast (where real
+  bed elevation happens to be close to baseline_m anyway) while open water
+  further offshore showed each cell's own bed elevation instead of a flat
+  plane — looks exactly like "zsini isn't being set at sea", though the
+  underlying baseline_m computation itself was always correct.
+  THE FIX: replaced "touches the array edge" with "is the SINGLE LARGEST
+  connected sea component" (np.bincount over the scipy.ndimage.label output,
+  excluding background) — geometry-independent, no assumption about where
+  the domain sits within its own bounding-box raster. Verified: basin
+  2433835 now correctly shows uniform -0.3955 m across the entire real
+  ocean, with only 7 genuinely isolated cells (small ponds, landuse classes
+  30/90 — vegetation/wetland, nowhere near open water) reverted to dry.
+  CONSIDERED AND REJECTED: using landuse.tif's landuse==200 ("Sea", see
+  src.plots._LC_NAMES) directly instead of this connectivity approach —
+  checked empirically for basin 2433835 and it's worse on both ends:
+  landuse.tif is reprojected onto the FULL bounding-box grid, not clipped
+  to the domain polygon, so landuse==200 matches 839,298 px but only
+  328,812 of those are actually inside the real domain (the rest is
+  outside-domain territory the pipeline never used to consider "sea" at
+  all); and even restricted to the real domain, landuse==200 MISSES 12,898
+  (3.9%) of the cells OSM/the current fix correctly call "connected open
+  sea" — mostly ones Copernicus's 100 m classifier assigns to landuse=80
+  ("inland water") instead of 200, likely in exactly the complex lagoon/
+  estuary/river-mouth cells common in a delta, where OSM's coastline
+  vector data is more reliable than a coarse global land-cover product.
+  Switching to landuse==200 would have reintroduced a smaller version of
+  the same class of bug just fixed.
 
 MACHINE-SPECIFIC PATHS (RESOLVED via env-var overrides):
   config/data_catalogue.yml's `meta.root: D:/GCFM_UU/raw_data`, config.yml's

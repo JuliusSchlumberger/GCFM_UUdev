@@ -51,7 +51,7 @@ def compute_river_bed_points(
     the merged river centerlines and burn the bed into the subgrid DEM.
 
     Args:
-        rivers:         River network GeoDataFrame (river_network_estuarine.gpkg).
+        rivers:         River network GeoDataFrame (river_network_depth_estimated.gpkg).
                         Must have reach_id and depth_column attributes.
         elevation_path: Conditioned DEM (elevation_conditioned.tif).
         depth_column:   Column name for hydraulic depth (default "rivdph").

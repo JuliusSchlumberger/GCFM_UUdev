@@ -156,7 +156,7 @@ crossings_gdf = gpd.GeoDataFrame(
     ),
     crs="EPSG:4326",
 )
-design_rp_river_yr = float(config["boundary_setup"]["design_rp_river_yr"])
+design_rp_river_yr = float(config["sfincs"]["boundary_setup"]["design_rp_river_yr"])
 dis_df_production = pd.DataFrame(
     data=build_design_discharge_matrix(river_ds, active, design_rp_river_yr).T,
     index=river_times,

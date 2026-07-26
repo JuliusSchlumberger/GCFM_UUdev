@@ -6,9 +6,9 @@ reach) down to wherever that mainstem run ends (mouth/outlet)?
 
 Unlike tests/test_river_burning_sfincs.py (which recomputes the bed-level
 estimation standalone, on the whole unblocked raster, via
-hydromt_sfincs.workflows.bathymetry.burn_river_rect -- useful for
-diagnosing the block-tiling crash but not necessarily identical to what a
-real build actually wrote), this reads the real, final product: each
+hydromt_sfincs.workflows.bathymetry.burn_river_rect -- not necessarily
+identical to what a real build actually wrote), this reads the real, final
+product: each
 basin's sfincs/subgrid/dep_subgrid_lev*.tif (quadtree) or dep_subgrid.tif
 (regular grid). No standalone re-burning logic here at all -- just
 sampling what's actually on disk.

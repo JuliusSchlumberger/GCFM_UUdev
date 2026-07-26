@@ -522,6 +522,7 @@ dependencies:
       - jmespath==1.1.0
       - libpysal==4.14.1
       - line-profiler==5.0.2
+      - lxml==6.1.1
       - multiurl==0.3.7
       - mypy-extensions==1.1.0
       - paramiko==4.0.0
@@ -533,6 +534,7 @@ dependencies:
       - pyflakes==3.4.0
       - pynacl==1.6.2
       - pyshtools==4.14.1
+      - python-docx==1.2.0
       - pytokens==0.4.1
       - s3transfer==0.16.1
       - sphinx-autosummary-accessors==2025.3.1

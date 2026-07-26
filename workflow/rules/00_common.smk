@@ -1,3 +1,4 @@
+import json
 import os
 
 from src.io import load_catalogue, catalogue_entry,read_geometry, raw_input_path
@@ -67,20 +68,9 @@ if config["sfincs"]["grid"]["quadtree"]["enabled"] and not config["sfincs"]["sub
         "(quadtree postprocessing relies on the subgrid dep_subgrid.tif reference raster)"
     )
 
-if (
-    config["river_processing"]["burn_rivers"]["enabled"]
-    and not config["river_processing"]["conditioning"]["enabled"]
-):
-    raise ValueError(
-        "river_processing.burn_rivers.enabled requires "
-        "river_processing.conditioning.enabled = true (burn_rivers burns the "
-        "zbed_anchors.gpkg profile computed by rule burn_river_bed, which "
-        "itself requires conditioning to be enabled)"
-    )
-
 _FORCING_MODES = ("compound", "coastal_only", "river_only")
-if config["boundary_setup"]["mode"] not in _FORCING_MODES:
+if config["sfincs"]["boundary_setup"]["mode"] not in _FORCING_MODES:
     raise ValueError(
-        f"boundary_setup.mode = {config['boundary_setup']['mode']!r} is not valid "
+        f"sfincs.boundary_setup.mode = {config['sfincs']['boundary_setup']['mode']!r} is not valid "
         f"— must be one of {_FORCING_MODES}"
     )

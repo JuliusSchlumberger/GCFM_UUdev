@@ -13,11 +13,12 @@ rule get_boundary_forcings:
             if config["boundary_forcings"]["surge"]["slr"]["enabled"]
             else []
         ),
-        protection_levels = lambda wc: (
-            results_path(f"{wc.basin_id}/inputs/domain/protection_levels.json")
-            if config["protection_levels"]["enabled"]
-            else []
-        ),
+        # Always read (rule get_protection_levels always runs/produces this)
+        # -- coastal_rp_yr feeds the coastal_protection_weir crest (rule 13),
+        # which always runs regardless of river_processing.empirical_estimation.modify_hydrograph;
+        # only the separate riverine-side discharge correction stays gated on
+        # that flag (see 07_get_boundary_forcings.py).
+        protection_levels = results_path("{basin_id}/inputs/domain/protection_levels.json"),
     output:
         river_forcing = results_path("{basin_id}/inputs/forcing/river_forcing.nc"),
         surge_forcing = results_path("{basin_id}/inputs/forcing/surge_forcing.nc"),
@@ -44,12 +45,20 @@ rule get_boundary_forcings:
         river_period_hr = config["boundary_forcings"]["river"]["period_hr"],
         glofas_buffer_deg = config["boundary_forcings"]["river"]["glofas_buffer_deg"],
         eva = config["boundary_forcings"]["river"]["eva"],
-        design_rp_river_yr        = config["boundary_setup"]["design_rp_river_yr"],
-        sfincs_resolution          = config["sfincs"]["grid"]["resolution"],
+        design_rp_river_yr        = config["sfincs"]["boundary_setup"]["design_rp_river_yr"],
+        # Diagnostic-only use (an informational "visible_on_grid" plot
+        # column, doesn't gate anything -- see 07_get_boundary_forcings.py).
+        # Can't use the rule 08b-computed, width-optimized resolution here:
+        # rule clean_river_network (08) depends on THIS rule's river_forcing
+        # output, and 08b depends on 08's bankfull_discharge_acc column --
+        # 07 -> 08b -> 08 -> 07 would be a cycle. Rule build_sfincs (13, the
+        # real consumer) uses the fully computed value; this just needs a
+        # representative static default for an informational annotation.
+        sfincs_resolution          = config["sfincs"]["grid"]["optimize_resolution"]["default_resolution_m"],
         glofas_search_radius_km    = config["boundary_forcings"]["river"]["glofas_search_radius_km"],
         glofas_min_mean_discharge  = config["boundary_forcings"]["river"]["glofas_min_mean_discharge"],
         bias_correction            = config["boundary_forcings"]["river"]["bias_correction"],
-        protection_levels_enabled  = config["protection_levels"]["enabled"],
+        modify_hydrograph          = config["river_processing"]["empirical_estimation"]["modify_hydrograph"],
     log:
         "logs/{basin_id}/07_boundary_forcings.log"
     script:

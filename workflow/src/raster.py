@@ -306,11 +306,11 @@ def reproject_to_reference_grid(
 
     Used to put landuse.tif (and, by inheritance, roughness.tif -- reclassified
     pixel-for-pixel from it) on the same UTM working grid as
-    elevation_merged.tif/zsini.tif, instead of each staying on its own
+    elevation_merged.tif/sea_mask.tif, instead of each staying on its own
     independent native-resolution WGS84 grid. Left unaligned, every downstream
     consumer (hydromt's model build, compute_max_inundation's water-body mask)
     would have to reproject landuse independently, risking a land/sea split
-    that disagrees with the one already baked into elevation_merged.tif/zsini.tif
+    that disagrees with the one already baked into elevation_merged.tif/sea_mask.tif
     from OSM land polygons.
 
     Args:
@@ -363,6 +363,52 @@ def reproject_to_reference_grid(
         "nodata": src_nodata,
     }
     return dst, out_meta
+
+
+def clip_ocean_from_topo(
+    topo_utm: np.ndarray,
+    mask_path: str | Path,
+    wgs84_bounds: tuple[float, float, float, float],
+    ref_meta: dict,
+    ocean_value: int = 1,
+) -> tuple[np.ndarray, int]:
+    """
+    Set FathomDEM pixels to NaN wherever the DeltaDTM validity mask marks
+    them as ocean.
+
+    FathomDEM is a terrestrial DEM, not bathymetry, and reports spurious
+    near-zero/shallow "elevation" over open water instead of nodata --
+    extending seaward well past the coastline. NaN-ing those pixels here
+    lets the later FathomDEM/GEBCO hard merge fall back to GEBCO's real
+    bathymetry there, with no change needed to the merge step itself.
+
+    Only ``ocean_value`` (default 1) is treated as ocean, NOT the mask's
+    nodata value or its other land-related classes (0, 2, 3): those are all
+    land in some form, and nodata (no DeltaDTM tile coverage at all) is NOT
+    reliably ocean, since DeltaDTM's own tile footprint doesn't necessarily
+    reach as far inland as this pipeline's domains do -- see the
+    ``deltadtm_mask`` data_catalogue.yml entry for the full class breakdown.
+
+    Args:
+        topo_utm: FathomDEM array already reprojected to the UTM working
+            grid (NaN = no FathomDEM data). Not modified in place.
+        mask_path: Path to the DeltaDTM mask VRT/GeoTIFF.
+        wgs84_bounds: (lon_min, lat_min, lon_max, lat_max) of the domain.
+        ref_meta: UTM working grid spec (height, width, transform, crs) --
+            same dict used to write elevation_merged.tif.
+        ocean_value: Mask value that means "ocean" (default 1).
+
+    Returns:
+        (topo_clipped, n_clipped): the modified array and the number of
+        previously-valid FathomDEM pixels that were set to NaN (for
+        logging).
+    """
+    mask_utm, _ = reproject_to_reference_grid(mask_path, wgs84_bounds, ref_meta)
+    ocean = mask_utm == ocean_value
+    topo_clipped = topo_utm.copy()
+    n_clipped = int((ocean & ~np.isnan(topo_clipped)).sum())
+    topo_clipped[ocean] = np.nan
+    return topo_clipped, n_clipped
 
 
 def _tile_intersects(fp: Path, bbox) -> bool:

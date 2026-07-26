@@ -243,7 +243,7 @@ else:
     for i, seed in enumerate(seeds):
         ax = axes[i][0]
 
-        # BFS downstream from this seed (same traversal as 10_condition_elevation.py)
+        # BFS downstream from this seed (same traversal as 09_condition_elevation.py)
         dist_from_seed: dict[str, float] = {seed: 0.0}
         queue: deque[str] = deque([seed])
         visit_order: list[str] = [seed]

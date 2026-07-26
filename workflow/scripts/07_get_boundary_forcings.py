@@ -77,27 +77,30 @@ domain_gdf = gpd.GeoDataFrame(geometry=[domain_poly], crs="EPSG:4326")
 domain_utm = domain_gdf.to_crs(domain_crs)
 log.info(f"Domain WGS84 bounds: {wgs84_bounds}, CRS: {domain_crs}")
 
-# ── existing flood-protection level (optional correction) ────────────────────
-# Identified independently in rule get_protection_levels (always runs); only
-# read/applied here when protection_levels.enabled, in
-# which case the corresponding discharge/water-level is subtracted from the
-# river/surge forcing timeseries below (see the "river forcing" and "surge
-# forcing" sections). riverine_rp_yr/coastal_rp_yr stay None when disabled,
-# so no other code path in this script is affected.
-protection_levels_enabled = bool(snakemake.params.protection_levels_enabled)
-riverine_rp_yr = None
-coastal_rp_yr = None
-if protection_levels_enabled:
-    with open(snakemake.input.protection_levels) as f:
-        protection_summary = json.load(f)
-    riverine_rp_yr = float(protection_summary["riverine_rp_yr"])
-    coastal_rp_yr = float(protection_summary["coastal_rp_yr"])
+# ── existing flood-protection level ───────────────────────────────────────────
+# Identified independently in rule get_protection_levels (always runs).
+# coastal_rp_yr is ALWAYS used (see "surge forcing" section below) to
+# compute the GOCO06s-referenced protection CREST elevation
+# (coastal_protection_crest_m, saved unconditionally) that feeds the
+# coastal_protection_weir baked into the model in rule 13 -- that always
+# runs regardless of modify_hydrograph. riverine_rp_yr is a
+# SEPARATE, unrelated mechanism (a discharge-side correction applied in the
+# "river forcing" section below) and stays gated behind
+# modify_hydrograph/None when disabled.
+modify_hydrograph = bool(snakemake.params.modify_hydrograph)
+with open(snakemake.input.protection_levels) as f:
+    protection_summary = json.load(f)
+coastal_rp_yr = float(protection_summary["coastal_rp_yr"])
+riverine_rp_yr = float(protection_summary["riverine_rp_yr"]) if modify_hydrograph else None
+log.info(
+    f"Coastal protection RP={coastal_rp_yr:.1f} yr ({protection_summary['coastal_source']}), "
+    f"dominant unit={protection_summary['dominant_iso']} (id={protection_summary['dominant_geounit_id']}) "
+    f"-- feeds the coastal protection weir crest (always computed below)"
+)
+if modify_hydrograph:
     log.info(
-        f"Protection-level correction enabled: riverine RP={riverine_rp_yr:.1f} yr "
-        f"({protection_summary['riverine_source']}), "
-        f"coastal RP={coastal_rp_yr:.1f} yr ({protection_summary['coastal_source']}), "
-        f"dominant unit={protection_summary['dominant_iso']} "
-        f"(id={protection_summary['dominant_geounit_id']})"
+        f"Riverine protection-level correction enabled: riverine RP={riverine_rp_yr:.1f} yr "
+        f"({protection_summary['riverine_source']})"
     )
 
 # ── surge forcing ─────────────────────────────────────────────────────────────
@@ -201,63 +204,63 @@ surge_ds = build_surge_dataset(
     baseline_m=baseline_m, station_baselines=station_baselines,
 )
 
-_plot_protection_level_raw = None   # passed to plot_surge_corrections below
-if protection_levels_enabled:
-    # The FLOPROS RP is a regional constant for the whole delta; we therefore
-    # use the mean COAST-RP storm-tide value across all selected stations at
-    # that RP as a single representative protection height.  Per-station
-    # interpolation would introduce 10–50 cm spatial variation in COAST-RP
-    # values (exposed vs sheltered locations) that does not reflect actual
-    # defense heights, causing the corrected water-level timeseries to spread
-    # artifically across stations.  The scalar mean keeps the post-correction
-    # spread the same as the original spread (MDT variation, a few cm).
-    protection_level_raw = interpolate_protection_level(stations, coastal_rp_yr)
-    mean_prot_raw = float(protection_level_raw.mean())
-    _plot_protection_level_raw = np.full(len(stations), mean_prot_raw)
-    protection_level = np.full(len(stations), mean_prot_raw)   # uniform across stations
+# Existing flood-protection level -- computed UNCONDITIONALLY (independent
+# of modify_hydrograph): the coastal_protection_weir baked into the
+# model at rule 13 always runs and always needs a crest elevation. A weir
+# provides a real barrier (unlike subtracting a scalar protection height
+# directly from the water_level boundary forcing, which assumes the whole
+# coast sits behind a uniform wall while SFINCS enforces no actual barrier,
+# letting low-lying land below the still-net-positive corrected level flood
+# anyway) -- so water_level itself is never touched here.
+#
+# The FLOPROS RP is a regional constant for the whole delta; we therefore
+# use the mean COAST-RP storm-tide value across all selected stations at
+# that RP as a single representative protection height. Per-station
+# interpolation would introduce 10-50 cm spatial variation in COAST-RP
+# values (exposed vs sheltered locations) that does not reflect actual
+# defense heights.
+protection_level_raw = interpolate_protection_level(stations, coastal_rp_yr)
+mean_prot_raw = float(protection_level_raw.mean())
+protection_level = np.full(len(stations), mean_prot_raw)   # uniform across stations
 
-    surge_ds["water_level_uncorrected"] = surge_ds["water_level"]
-    surge_ds["protection_level"] = (
-        ["station"],
-        protection_level,
-        {
-            "units": "m",
-            "long_name": (
-                f"existing flood-protection level (RP{coastal_rp_yr:g} yr, FLOPROS coastal, "
-                "local MSL — subtracted as-is from GOCO6s water_level timeseries)"
-            ),
-        },
-    )
-    surge_ds["protection_rp_yr"] = (
-        [],
-        float(coastal_rp_yr),
-        {"units": "yr", "long_name": "FLOPROS coastal protection return period used"},
-    )
-    surge_ds["water_level"] = surge_ds["water_level"] - surge_ds["protection_level"]
+# GOCO06s-referenced crest: protection_level_raw/mean_prot_raw above is
+# LOCAL-MSL-referenced (COAST-RP's native datum), but the coastal DEM
+# (FathomDEM) is always GOCO06s-referenced (mandatory correction in
+# 05a_get_elevation.py) -- apply the SAME per-station MDT subtraction
+# rp_level itself gets (rp_level = rp_level_raw - mdt) so the crest is
+# directly comparable to the DEM the weir will be built against.
+coastal_protection_crest_m = mean_prot_raw - float(stations["mdt"].mean())
 
-    # Update baseline_m = mean(MWL − MDT + SLR − prot) so rule 13 initialises
-    # zsini at the correct flat ocean level during spinup.  Without this update,
-    # zsini would be set to the MDT-only baseline (≈ −MDT) while the forcing
-    # lead period sits at −MDT + SLR − prot_raw, causing coastal cells to
-    # flood/drain during spinup.
-    sb = (
-        surge_ds["station_baseline"].values
-        if "station_baseline" in surge_ds
-        else np.full(len(protection_level), float(surge_ds["baseline_m"].values))
-    )
-    effective_baseline_m = float(np.mean(sb - protection_level))
-    surge_ds["baseline_m"] = (
-        [],
-        effective_baseline_m,
-        surge_ds["baseline_m"].attrs,
-    )
-    log.info(
-        f"Protection-level correction applied to surge: water_level -= "
-        f"{mean_prot_raw:.3f} m (mean across {len(stations)} stations, "
-        f"RP{coastal_rp_yr:g} yr; per-station range was "
-        f"[{protection_level_raw.min():.3f}, {protection_level_raw.max():.3f}] m); "
-        f"effective baseline_m updated to {effective_baseline_m:+.4f} m"
-    )
+surge_ds["protection_level"] = (
+    ["station"],
+    protection_level,
+    {
+        "units": "m",
+        "long_name": f"existing flood-protection level (RP{coastal_rp_yr:g} yr, FLOPROS coastal, local MSL)",
+    },
+)
+surge_ds["protection_rp_yr"] = (
+    [],
+    float(coastal_rp_yr),
+    {"units": "yr", "long_name": "FLOPROS coastal protection return period used"},
+)
+surge_ds["coastal_protection_crest_m"] = (
+    [],
+    coastal_protection_crest_m,
+    {
+        "units": "m",
+        "long_name": (
+            f"GOCO06s-referenced coastal protection crest elevation (RP{coastal_rp_yr:g} yr, "
+            "FLOPROS coastal, MDT-corrected) -- the weir crest baked into the model in rule 13"
+        ),
+    },
+)
+log.info(
+    f"Coastal protection crest: raw(local MSL)={mean_prot_raw:+.4f} m -> "
+    f"crest(GOCO06s)={coastal_protection_crest_m:+.4f} m (mean across {len(stations)} stations, "
+    f"RP{coastal_rp_yr:g} yr; per-station range was "
+    f"[{protection_level_raw.min():.3f}, {protection_level_raw.max():.3f}] m)"
+)
 
 Path(snakemake.output.surge_forcing).parent.mkdir(parents=True, exist_ok=True)
 surge_ds.to_netcdf(snakemake.output.surge_forcing)
@@ -266,7 +269,7 @@ log.info(f"Written surge forcing ({len(stations)} stations): {snakemake.output.s
 plot_surge_corrections(
     stations,
     output_path=snakemake.output.plot_surge_correction,
-    protection_level_raw=_plot_protection_level_raw,
+    protection_level_raw=np.full(len(stations), mean_prot_raw),
 )
 log.info(f"Wrote surge correction diagnostic plot: {snakemake.output.plot_surge_correction}")
 
@@ -275,7 +278,7 @@ log.info(f"Wrote surge correction diagnostic plot: {snakemake.output.plot_surge_
 log.info("--- River forcing ---")
 
 eva_cfg         = dict(snakemake.params.eva)
-# boundary_setup.design_rp_river_yr (not boundary_forcings.river.eva -- lives
+# sfincs.boundary_setup.design_rp_river_yr (not boundary_forcings.river.eva -- lives
 # with the other build-time SFINCS settings) drives the diagnostic q_rp100/
 # CI/plot-vertical-line under the same "rp_fl" key analyse_cell already reads
 # -- doesn't change analyse_cell itself, just which RP those diagnostics
@@ -366,16 +369,14 @@ else:
     # ── Step 4: visible_on_grid (diagnostic only -- does NOT gate anything) ──
     # Uses the inside-domain reach's 'width' (set by resolve_inside_domain_reaches;
     # already the canonical value, via normalize_channel_widths above) compared
-    # against the SFINCS grid resolution. This USED TO also gate
-    # Step 5 (a crossing narrower than one grid cell was skipped entirely), but
-    # that coupled river-network cleaning (rule 08's BFS seed set, and therefore
+    # against the SFINCS grid resolution. Deliberately informational only
+    # (used by the diagnostic plot), not a gate on Step 5: gating on it would
+    # couple river-network cleaning (rule 08's BFS seed set, and therefore
     # which reaches survive at all) to the SFINCS grid/subgrid/quadtree
     # configuration -- a narrow crossing failing this check at a fine
     # resolution could strand and drop an entire otherwise-valid downstream
     # branch, purely because of this width heuristic rather than any genuine
-    # network issue. Kept only as an informational column (used by the
-    # diagnostic plot) -- Step 5 now runs for every enters_domain crossing
-    # regardless of width.
+    # network issue.
     w_col = "width"
     if w_col in crossings.columns:
         crossings["visible_on_grid"] = (
@@ -402,8 +403,8 @@ else:
         )
 
     # ── Step 5: GloFAS matching ───────────────────────────────────────────────
-    # For each qualifying crossing (enters_domain -- visible_on_grid no longer
-    # gates this, see Step 4), search within glofas_radius_m for GloFAS cells
+    # For each qualifying crossing (enters_domain -- visible_on_grid does not
+    # gate this, see Step 4), search within glofas_radius_m for GloFAS cells
     # whose mean discharge exceeds glofas_min_q.  Among qualifying cells, pick
     # the one with the highest mean discharge.  Run EVA on that cell; mark
     # has_glofas=True only when RP2 is finite (EVA converged).
@@ -520,7 +521,7 @@ else:
 
             eva = analyse_cell(
                 times_arr, ts, eva_cfg, label=label,
-                protection_rp=riverine_rp_yr if protection_levels_enabled else None,
+                protection_rp=riverine_rp_yr if modify_hydrograph else None,
             )
             eva_cache[(i_lat, i_lon)] = eva
 
@@ -537,15 +538,14 @@ else:
         cell_lat[i]   = float(lat_arr[i_lat])
         bankfull_q[i] = eva.q_rp2
         # Full return-period discharge table from the already-fitted POT/GPD
-        # curve -- no re-fitting. Replaces the old single flood_discharge
-        # (RP=eva.rp_fl) scalar; the actual design discharge used to build
-        # the model is now looked up from this table at SFINCS-build time
-        # (boundary_setup.design_rp_river_yr), see
+        # curve -- no re-fitting. The actual design discharge used to build
+        # the model is looked up from this table at SFINCS-build time
+        # (sfincs.boundary_setup.design_rp_river_yr), see
         # src.river_forcing.build_design_discharge_matrix.
         discharge_rp_table[i] = gpd_return_value_table(
             eva.pot_threshold, eva.pot_scale, eva.pot_shape, eva.pot_peaks_per_year,
         )
-        if protection_levels_enabled:
+        if modify_hydrograph:
             protection_q[i] = eva.q_protection if np.isfinite(eva.q_protection) else 0.0
         log.info(
             f"  {label}: GloFAS ({lat_arr[i_lat]:.3f}°N, {lon_arr[i_lon]:.3f}°E)  "
@@ -577,12 +577,12 @@ river_ds = build_river_dataset(
     grdc_overlap_days=grdc_overlap_days_arr,
 )
 
-# protection_discharge/protection_rp_yr stay simple per-crossing scalars,
-# written here as before -- the actual protection-floor CORRECTION (applying
-# them against the design discharge) now happens at SFINCS-build time (rule
-# 13), on the scalar design discharge looked up from discharge_rp_table, not
-# on a full timeseries here -- see src.river_forcing.build_design_discharge_matrix.
-if protection_levels_enabled:
+# protection_discharge/protection_rp_yr stay simple per-crossing scalars --
+# the actual protection-floor CORRECTION (applying them against the design
+# discharge) happens at SFINCS-build time (rule 13), on the scalar design
+# discharge looked up from discharge_rp_table, not on a full timeseries
+# here -- see src.river_forcing.build_design_discharge_matrix.
+if modify_hydrograph:
     river_ds["protection_discharge"] = (
         ["crossing"],
         protection_q,
@@ -648,15 +648,13 @@ plot_forcing_timeseries(
 
 # ── EVA diagnostic plot for the most hydrologically significant active
 #    crossing (highest design-flood discharge) ────────────────────────────────
-# Previously picked by raw SWORD reach "width" -- width does not reliably
-# track actual GloFAS-matched discharge magnitude (a crossing's width and the
-# accumulated flow at its matched GloFAS cell can diverge, e.g. distributary
-# vs. mainstem reaches), so this could diagnose a minor crossing while a
-# much larger one (with a much larger protection-level discharge threshold)
-# went unplotted -- exactly the mismatch that made 07_forcing_eva.png look
-# implausible next to 07_forcing_timeseries.png's protection-discharge lines.
-# Selecting by flood_q directly ties this diagnostic to the same quantity
-# that drives the actual forcing and protection-level correction.
+# Selected by discharge rather than raw SWORD reach "width": a crossing's
+# width and the accumulated flow at its matched GloFAS cell can diverge
+# (e.g. distributary vs. mainstem reaches), so width could pick a minor
+# crossing while a much larger one (with a much larger protection-level
+# discharge threshold) goes unplotted. Selecting by flood_q directly ties
+# this diagnostic to the same quantity that drives the actual forcing and
+# protection-level correction.
 active_idx = [i for i, g in enumerate(has_glofas) if g]
 if active_idx:
     # eva.q_rp100 reflects design_rp_river_yr (injected into eva_cfg["rp_fl"]

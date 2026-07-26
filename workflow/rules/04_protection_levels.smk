@@ -8,10 +8,12 @@ rule get_protection_levels:
     Depends only on the delta polygon (rule split_delta_polygons, 01), not
     the model domain/river network — it is not "static terrain data" and
     doesn't need to be grouped with elevation/landuse/roughness (rules 05a-05c).
-    Always runs and always produces its outputs; protection_levels.enabled
-    (consumed by rule get_boundary_forcings, 07) only gates whether the
-    identified protection level is actually subtracted from the forcing
-    timeseries.
+    Always runs and always produces its outputs; river_processing.empirical_estimation.modify_hydrograph
+    (consumed by rule get_boundary_forcings, 07, empirical depth_method only)
+    only gates whether the identified protection level is actually subtracted
+    from the forcing timeseries. Rule modelled_depth_estimation (10, modelled
+    depth_method) always consumes this rule's riverine_rp_yr when finite,
+    independent of that toggle.
     """
     input:
         specific_delta  = results_path("{basin_id}/inputs/domain/{basin_id}_delta_polygon.gpkg"),
@@ -23,8 +25,8 @@ rule get_protection_levels:
         protection_levels = results_path("{basin_id}/inputs/domain/protection_levels.json"),
         plot_protection   = results_path("{basin_id}/visuals/input_data/04_protection_levels.png"),
     params:
-        default_rp_yr = config["protection_levels"]["default_rp_yr"],
-        max_rp_yr     = config["protection_levels"]["max_rp_yr"],
+        default_rp_yr = config["flopros_range"]["default_rp_yr"],
+        max_rp_yr     = config["flopros_range"]["max_rp_yr"],
     log:
         "logs/{basin_id}/04_protection_levels.log"
     script:

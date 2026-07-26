@@ -18,12 +18,12 @@ basin-wide, physically-arbitrary factor), this test builds a PHYSICALLY
 MEANINGFUL discharge hydrograph per boundary crossing directly from
 river_forcing.nc's discharge_rp_table (per-crossing GPD return-value table,
 log-RP interpolated) via src.river_forcing.build_design_discharge_matrix --
-the same function rule 13 (build_sfincs) now uses at SFINCS-build time, so
+the same function rule 13 (build_sfincs) uses at SFINCS-build time, so
 each return period's discharge exactly matches what the production pipeline
 would build at that design return period.
 
 This test requires the production build to be in forcing_mode="river_only"
-(config: boundary_setup.mode) -- the real surge/tide boundary is replaced by
+(config: sfincs.boundary_setup.mode) -- the real surge/tide boundary is replaced by
 a flat constant there, so flooded-area differences across return periods
 reflect the river's own contribution only, uncontaminated by coastal
 variability.
@@ -32,11 +32,9 @@ Mapping sfincs.dis columns back to river_forcing.nc's "crossing" dimension:
 13_build_sfincs.py builds the discharge DataFrame from only the
 has_glofas=1 crossings (in their original order -- boolean masking preserves
 order), then further drops any that fall outside the active SFINCS region.
-When none are dropped by that second filter (verified for basin 4267691: all
-3 has_glofas crossings survive, matching sfincs.dis's 3 columns and their
-bankfull_discharge values exactly), dis column j corresponds exactly to
-active_indices[j] where active_indices = np.where(has_glofas)[0]. If the
-counts don't match for some other basin, this script cannot safely infer
+When none are dropped by that second filter, dis column j corresponds
+exactly to active_indices[j] where active_indices = np.where(has_glofas)[0].
+If the counts don't match for some basin, this script cannot safely infer
 which crossings were dropped and falls back to leaving that basin's
 discharge unscaled (scale factor 1.0) with a clear warning, rather than
 guessing.
@@ -97,13 +95,13 @@ FIGS_DIR = REPO_ROOT / "figs" / "discharge_return_period_response"
 EXPERIMENTS_DIR.mkdir(parents=True, exist_ok=True)
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
 
-boundary_mode = config["boundary_setup"]["mode"]
+boundary_mode = config["sfincs"]["boundary_setup"]["mode"]
 if boundary_mode != "river_only":
     raise ValueError(
-        f"boundary_setup.mode={boundary_mode!r} but this test requires the "
+        f"sfincs.boundary_setup.mode={boundary_mode!r} but this test requires the "
         f"production build to already be in 'river_only' mode (flat coastal "
         f"boundary), so that flooded-area differences reflect only the "
-        f"river's own contribution. Set boundary_setup.mode: river_only in "
+        f"river's own contribution. Set sfincs.boundary_setup.mode: river_only in "
         f"config.yml and rebuild the model before running this test."
     )
 
@@ -285,13 +283,12 @@ def write_event_run(scaled_table: np.ndarray, run_dir: Path) -> None:
             fpath = prod_sfincs_root / value
             if fpath.exists() and fpath.stat().st_size > 0:
                 # SFINCS's own ASCII .inp parser mishandles backslashes in
-                # absolute Windows paths (observed: "indexfile" truncated to
-                # just the drive+first path segment, "Index file "D:\GCFM_UU"
-                # not found!"). Forward slashes are accepted identically by
-                # Windows file APIs and avoid the issue entirely -- the same
-                # convention hydromt_sfincs itself never needs to worry about
-                # since production sfincs.inp only ever writes plain relative
-                # filenames (run with cwd=sfincs_root), never absolute paths.
+                # absolute Windows paths, truncating the value at the first
+                # backslash. Forward slashes are accepted identically by
+                # Windows file APIs and avoid the issue -- a case
+                # hydromt_sfincs itself never hits since production
+                # sfincs.inp only ever writes plain relative filenames (run
+                # with cwd=sfincs_root), never absolute paths.
                 lines.append(f"{key:<20} = {fpath.resolve().as_posix()}")
             continue
         lines.append(f"{key:<20} = {value}")
@@ -447,8 +444,7 @@ if hmax_by_rp:
         # inundation's native subgrid-resolution array (e.g. ~25 m with a
         # 20x20 subgrid) at full resolution produces an array with tens of
         # millions of pixels, which blows up matplotlib's imshow/RGBA
-        # rendering (observed: an 11627x19827 array -> a 6.9 GiB float64
-        # allocation and a crash).
+        # rendering.
         da_wgs = reproject_max_for_plot(da_hmax_rp.squeeze())
         arr = da_wgs.values.astype(np.float32)
         left, bottom, right, top = da_wgs.rio.bounds()
