@@ -1,0 +1,29 @@
+# this is the combination of measure.yml that form strategies with measures of specific scales
+
+# config/adaptation_strategies.yml  — THE COMPOSITION (your old strategies_to_run)
+# name = {strategy} wildcard.  scale = the concrete param values, specified HERE.
+# method (pre/post) is chosen at the CLI and validated against measures.yml.
+
+meta:
+  root: D:/GCFM_UU/raw_data
+
+advance:
+  x
+
+NbS_protect_open:
+  x
+
+grey_protect_open:
+  x
+
+protect_closed:
+  measures:
+    coastal_levee: { elevation: 2.0, locations: adaptation/levee.geojson }
+    pumps:         { discharge: 1000 }
+
+accommodate:
+  measures:
+    retreat: { retreat_fraction: 0.5 }
+
+retreat:
+  x

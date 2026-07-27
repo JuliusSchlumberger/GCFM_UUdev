@@ -277,7 +277,8 @@ datasets:
     source: "Buchhorn, M., Smets, B., Bertels, L., De Roo, B., Lesiv, M., Tsendbazar, N.-E., Herold, M., Fritz, S. (2020). Copernicus Global Land Service: Land Cover 100m: collection 3: epoch 2019: Globe. https://doi.org/10.5281/zenodo.3939050. Methodology: Buchhorn et al. (2020), Remote Sensing 12(6), 1044. https://doi.org/10.3390/rs12061044. Product page: https://land.copernicus.eu/global/products/lc"
     provider: gdal
     file_format: GeoTIFF
-    file_path: Copernicus/Copernicus_LandUse.tif
+    # file_path: Copernicus/Copernicus_LandUse.tif
+    file_path: ESA_Worldcover/esa_worldcover_clipped_2433835.tif
     compression: DEFLATE
     producer:
       institution: VITO NV
