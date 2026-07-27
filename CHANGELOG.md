@@ -1,11 +1,345 @@
 # Changelog
 
+Newest changes first. See `Reference_memory.txt` for the current, up-to-date
+description of how the pipeline works; this file only describes *what changed
+and why*.
+
+#
+
+# 2026-07-26: merge `main`, consolidate depth-estimation rules, and get modelled river-depth calibration fully working (- JS)
+
+Everything below covers `improve_base_model` since the "improve_base_model
+(merged as PR #1)" entry further down — a large amount of work (some of it
+already committed in "Renumber depth-estimation/testing rules, restructure
+config, and clean up narrative comments", the rest still uncommitted at the
+time of writing) that hasn't been written up until now. Several items below
+supersede parts of the PR #1 entry (most notably "River DEM burning (new
+feature)", which described a `burn_river_dem` rule that no longer exists in
+this form — see "Depth-estimation rules consolidated" below).
+
+Merged `origin/main` (PR #2, "scenario assessment + flood metrics table",
+see the 2026-07-20 entry below for what it introduced) into
+`improve_base_model`. Both branches had evolved independently since PR #1 —
+`improve_base_model` had renumbered/restructured several rules and config
+sections in the meantime (see the immediately-preceding commit,
+"Renumber depth-estimation/testing rules, restructure config, and clean up
+narrative comments") — so this was a real merge with real conflicts, not a
+fast-forward.
+
+## Conflict resolution highlights
+
+- `sfincs.simulation.sfincs_exe` (`config.yml`): git auto-merged this to the
+  colleague's own personal machine path with **no conflict marker** at all
+  (only one side had touched that specific line) — reverted to the local
+  path. A machine-specific value like this should go through the
+  `GCFM_SFINCS_EXE` env-var override (`00_common.smk`) rather than being
+  hand-edited in a shared, tracked file; worth double-checking after any
+  future merge since git will not flag this kind of collision.
+- Restored `postprocessing.WATER_LANDUSE_CODES = (0, 2000)`. Main's PR
+  "corrected" this to `(80, 200)` (see the 2026-07-20 entry's own Fixes
+  section) but that reverts a deliberate earlier fix: `(0, 2000)`
+  intentionally matches no real land-use class so rivers/ocean stay
+  unmasked in these diagnostics — confirmed intentional in this session's
+  own project notes, not the bug the "fix" assumed it was.
+- Rule `build_sfincs`'s output list (main's scenario refactor) had dropped
+  `sfincs_weir`/`weir_gpkg`/`plot_coastal_protection_weir` from `output:`,
+  and the `river_only_flat_level_m` param entirely, from both
+  `13_build_sfincs.smk` and the `Snakefile`'s own `_BUILD_OUTPUTS` list —
+  all three still actively used by `13_build_sfincs.py`'s script body (the
+  weir outputs would have stopped being tracked by Snakemake; the missing
+  param would have raised `AttributeError` the moment `forcing_mode ==
+  "river_only"`). Restored, moved under `scenarios/{scenario}/` like
+  everything else in that rule.
+- `13b_validate_protection_level.smk` (untouched by main's own PR) still
+  pointed at the pre-scenario flat `{basin_id}/sfincs/` path, now dead
+  since rule 13 writes under `{basin_id}/scenarios/{scenario}/sfincs/`.
+  Repointed at the `default` scenario's own build specifically — protection
+  validation is about the standard/default configuration, not an
+  exploratory scenario. Confirmed safe to do: grid/elevation/mask/weir/
+  roughness/subgrid are byte-identical across every scenario for a given
+  basin (only `sfincs.inp`'s own timing and the `sfincs.dis`/`sfincs.bzs`
+  forcing files vary) — `design_rp_river_yr`/`design_rp_surge_yr` are
+  consumed strictly downstream of weir/grid/mask construction in
+  `13_build_sfincs.py` (sections 9–10, after the weir is built in 4c).
+- `river_forcing.build_design_discharge_matrix`: merged main's new
+  `design_rp_yr=None` → constant-bankfull ("mean conditions") branch with
+  the pre-existing `apply_protection_floor` gating, which main's own
+  version had silently dropped — keeping the floor disabled under
+  `depth_method="modelled"` avoids double-counting protection already
+  represented by the calibrated weir. Also replaced main's inline
+  duplicate of the log-RP interpolation with the existing
+  `interpolate_discharge_at_rp` helper rather than carrying two copies of
+  the same lookup forward.
+
+## Forcing-mode derivation redesign
+
+Main's PR left `mode` a step short of actually being scenario-driven: named
+scenarios always hardcoded `"compound"` regardless of their own RPs (a
+`null` RP fed a "mean conditions" hydrograph/tide rather than the
+`river_only`/`coastal_only` *isolation* its absence was presumably meant to
+signal), and the `default` scenario's own RPs still lived in `config.yml`'s
+old `boundary_setup` keys rather than the new scenario mechanism.
+
+- New `derive_forcing_mode(river_rp, surge_rp)` (`src/river_forcing.py`):
+  both RPs set → `"compound"`; exactly one set → `"river_only"`/
+  `"coastal_only"`; neither → `ValueError` (a scenario needs at least one
+  real driver to build a model at all). Shared by `00_common.smk`'s
+  `scenario_params()` and any standalone script that needs to replicate a
+  scenario's own mode outside Snakemake, so the derivation logic exists in
+  exactly one place.
+- Removed `sfincs.boundary_setup.mode` and
+  `sfincs.boundary_setup.design_rp_river_yr` from `config.yml` entirely —
+  mode is always derived now, never configured directly. `default` is now
+  a real entry in `config/scenarios.yml` (`river_rp: 150`, `surge_rp: 100`
+  — the old values, preserved) instead of a hardcoded special case reading
+  `config.yml`'s old `boundary_setup` keys.
+- Removed the `baseline` scenario (`surge_rp: null, river_rp: null`) from
+  `scenarios.yml` — under the new derivation rule this is invalid (no
+  driver at all) rather than a usable "mean conditions everywhere" case.
+- New `testing.upstream_boundary_check.surge_rp: 100` (must be a COAST-RP
+  tabulated value) — rule 11's own wave-propagation sanity check now looks
+  this RP up directly from `surge_forcing.nc`'s full `storm_tide_rp_table`
+  via new `surge.lookup_storm_tide_at_rp()` (factored out of the existing
+  `build_design_surge_matrix`), decoupled from both rule 07's own
+  station-selection RP and any scenario's own design RP.
+- Rule 07's diagnostic discharge-preview plot and three test scripts
+  (`test_discharge_sensitivity.py`, `test_discharge_return_period_
+  response.py`, `test_grid_resolution_benchmark.py`) now resolve
+  `config.get("target_scenarios", ["default"])[0]` for their own RP/mode
+  references (mirroring `00_common.smk`'s own `SCENARIOS` resolution),
+  instead of hardcoding `"default"` regardless of what's actually targeted.
+  `test_discharge_return_period_response.py` also had its own,
+  independent break from the scenario path move (still reading production
+  build files from the old flat `results/{basin_id}/sfincs/` path) fixed
+  at the same time.
+
+## Also removed in this pass
+
+`tests/test_grid_resolution_benchmark.py` and its exclusively-used helper
+`tests/_snakemake_script_runner.py` (confirmed via repo-wide search: no
+other consumer), plus their output directories
+(`figs/grid_resolution_benchmark/` and
+`D:/GCFM_UU/experiments/grid_resolution_benchmark/`, ~7.5 GB). The
+benchmark's own hand-mocked `snakemake.params`/`snakemake.output` for
+`13_build_sfincs.py` had drifted out of sync with that script's evolving
+interface (missing the `active_mask_enabled`/`active_mask_elevation_
+buffer_m` params and `river_elevation_max` input added earlier this
+branch, on top of the scenario-mechanism params above) and was no longer
+being kept current.
+
+## Depth-estimation rules consolidated: `empirical`/`modelled` as sibling rules, everything else made unconditional
+
+The old `09a_river_depth → 09b_estuarine_depth → 10_condition_elevation →
+11_river_preburn → 11b_burn_river_dem → 12_testing` five-rule chain (all
+individually opt-in via `river_processing.conditioning.enabled` /
+`burn_rivers.enabled`) is gone. Current shape:
+
+- **`condition_elevation` (rule 09, was rule "10") now ALWAYS runs** —
+  `river_processing.conditioning.enabled` was removed entirely, there is no
+  toggle anymore. It only needs rule 08's cleaned network topology (not
+  discharge/depth), so it now runs *before* depth estimation instead of
+  after, and additionally writes a second output resampled onto a new
+  shared SFINCS grid (see "New rules `08b`/`08c`" below) so every later
+  consumer of the conditioned elevation uses the byte-identical raster.
+- **New `river_processing.depth_method: "empirical" | "modelled"`** selects
+  which of two SIBLING rules is *defined at all* — `empirical_depth_
+  estimation` or `modelled_depth_estimation` (both numbered rule 10) —
+  guarded by a module-level `if` in each `.smk` file (not a runtime
+  branch), since both would otherwise declare the same output filenames and
+  Snakemake would raise `AmbiguousRuleException`. Every downstream
+  consumer (rule 11, rule 13) reads the same unified output filenames
+  regardless of which one ran.
+- **River-bed burning is now ALWAYS produced by whichever rule-10 sibling
+  ran** — `river_processing.burn_rivers.enabled` was removed entirely.
+  There is no more standalone `zbed_anchors.gpkg` file: each sibling calls
+  `compute_river_bed_points()` (`src/river_preburn.py`) immediately followed
+  by `burn_river_channel()` (`src/river_burn.py`) in the same script,
+  writing `river_burned_dem.tif` (native resolution, for subgrid) AND a new
+  `river_burned_dem_sfincs_grid.tif` (SFINCS-grid resolution, for the main
+  "dep" layer) directly — no separate preburn/burn-DEM rule, and no more
+  `hydromt_sfincs` `gdf_zb`/`burn_river_rect` path in rule 13 at all.
+- The empirical sibling keeps the Leopold-Maddock power-law depth (now
+  `depth = c · Q^f` directly against `bankfull_discharge_acc`, simplified
+  from the old 4-parameter `a/b/c/f` form) and the optional Nienhuis/O'Brien
+  estuarine blend, both now nested under `river_processing.
+  empirical_estimation` and only relevant when `depth_method == "empirical"`.
+- `testing` (rule "12") is now rule 11 (`11_testing.smk`, containing both
+  `test_upstream_boundary` and `test_bifurcation_calibration_options`) —
+  closing the numbering gap left by the consolidation above.
+
+## New rules `08b`/`08c`: per-basin grid resolution + one shared SFINCS grid
+
+Previously every basin used one fixed `sfincs.grid.resolution`, and rule 09
+(conditioning), rule 10-modelled (calibration), and rule 13 (production
+build) each independently let HydroMT resample onto their own grid.
+
+- `08b_optimize_grid_resolution` (`src/grid_resolution.py`,
+  `compute_optimal_resolution()`): resolution = `max(preferred_target,
+  sqrt(domain_area / max_active_cells))` — preferred_target is either a
+  flat default or, when `sfincs.grid.optimize_resolution.enabled` (default
+  on), derived from the 20th-percentile channel width among
+  discharge-thresholded reaches (`target_cells_per_width`). The
+  `max_active_cells` cell-budget cap always applies as a safety net.
+- `08c_build_sfincs_grid` builds the SFINCS regular grid once from that
+  resolution and persists its transform/shape/CRS
+  (`{basin_id}_sfincs_grid.json`) so rules 09/10-modelled/13 all target the
+  identical grid instead of three independently-resampled, potentially
+  pixel-misaligned copies.
+- New `sfincs.grid.active_mask` (`enabled`, `elevation_buffer_m`): excludes
+  cells far above anything the river ever reaches — ceiling = rule 09's own
+  `river_elevation_max.json` + the buffer. Used by both rule 10-modelled's
+  calibration and rule 13's production build.
+
+## Modelled river-depth calibration: now confirmed working end-to-end
+
+`river_processing.depth_method: "modelled"` (`src/river_depth_calibration.py`,
+`10_depth_estimation_modelled.py`) runs a disposable, confined SFINCS
+calibration model — round 0 isolates every reach behind an artificially
+high (1000 m) wall to split the simulated water rise into channel
+excavation + weir crest, then `n_correction_iterations` further rounds
+re-run the model with the CURRENT excavation + real per-reach crest,
+raising the crest wherever the model's own simulated water level still
+overtops it, until convergence. Earlier this session this had several real
+gaps; all are now fixed and verified (basin 2433835):
+
+- Weir domain-edge/inactive-cell gaps, a native-burn-vs-`channel_mask`
+  consistency constraint, and a subgrid phase-lock issue (the burn was
+  landing on the wrong fine-pixel phase relative to the subgrid's own
+  reference grid) — all three confirmed fixed via direct inspection of
+  `dep_subgrid.tif` (leak reduced to a negligible 11/7671 residual pixels)
+  and the network endpoint-degree graph (only 2 legitimate open-ocean
+  boundary ends remain).
+- **Convergence was only ever checked at centerline cells** — the seed
+  reach's own array-edge/domain-boundary cells (and, structurally, the
+  exact same blind spot already existed for the coastal probe mechanism,
+  which updated its own crest every round but was never actually checked
+  for convergence) could flood well beyond their nominal crest without the
+  loop ever noticing, since the crest there comes only from dilation, never
+  independently verified. Fixed by adding a new **river-boundary land probe
+  set** (land cells within the dilation radius of the channel, mirroring
+  the existing coastal-probe pattern exactly: same
+  `_rasterize_nearest`/`_resolve_map_cell_idx`/`_read_map_zs_at_cells`
+  machinery, same two-case crest-update formula) and requiring **all three**
+  probe sets (centerline, coastal, river-boundary) to be genuinely
+  contained before declaring convergence or accepting the final
+  crest-tightening snap — not just the centerline gap as before. Any
+  basin/reach whose buffered corridor reaches land beyond where its
+  centerline was actually sampled (a clipped reach start, a sharp bend, a
+  narrow headwater) is now protected the same way the coastal boundary
+  already was.
+- `check_convergence()` (the same windowed-flatness check) is now also
+  reused, unmodified, by new rule 13b (below) — one shared convergence
+  definition for both subsystems.
+
+## New rule `13b_validate_protection_level`
+
+Independent side check, not gating rules 14/16 and not gated by them:
+re-simulates two short, steady discharge scenarios (protection-level design
+discharge, and that discharge × `higher_rp_factor`) against the
+ALREADY-BUILT scenario `default` production model — grid/elevation/
+roughness/subgrid/weir referenced via relative paths, not rebuilt (same
+technique `run_spinup` already uses) — to confirm the built model actually
+holds at its own design protection standard rather than merely assuming
+the calibration/weir stack produces one. New config section
+`sfincs.protection_validation`.
+
+## Performance fix: `05a_get_elevation`'s hard-merge fillnodata
+
+Found while investigating why a basin 4267691 preprocessing run appeared
+stalled for ~3 hours: the step-4 hard-merge's "defensive" `fillnodata()`
+call (meant only for the rare case where neither FathomDEM nor GEBCO has
+data for a pixel) was searching with `max_search_distance =
+max(merged.shape)` — effectively the whole raster — because its target
+mask (`np.isnan(merged)`) is computed *before* the `outside_domain` mask is
+applied, and both sources are already NaN everywhere outside the delta
+polygon. For a polygon that doesn't fill its own bounding box (the normal
+case), that made the "rare" fallback run across most of the raster with an
+unbounded search radius, only to have every one of those pixels discarded
+one line later by `merged[outside_domain] = np.nan`. Fixed by capping
+`max_search_distance` to a small constant (100 px) instead of the full
+raster dimension — genuine small interior gaps still fill correctly from
+nearby real data; the outside-domain area now costs a cheap bounded search
+instead of an unbounded one. (Rejected alternative: assigning outside-
+domain pixels a numeric sentinel instead of NaN before the fill — this
+would make `fillnodata` treat them as valid *source* data and risks
+blending a nonsense value into a genuine nearby gap's fill; NaN reliably
+propagates instead.)
+
+## Config renames / relocations
+
+- `protection_levels` (top-level config section) renamed to
+  `flopros_range` — the old name collided in spirit with the unrelated
+  `protection_levels.json` rule-04 output and the `boundary_setup`
+  section's own protection-adjacent keys. There is no `enabled` key on
+  this section (never was one that did anything independent of the
+  riverine/coastal netting logic already in rule 07).
+- `boundary_setup` moved from a config.yml top-level section to
+  `sfincs.boundary_setup` — it configures how rule 13 (a `sfincs`-family
+  rule) consumes forcing, so it belongs alongside the rest of `sfincs.*`.
+
+---
+
+# 2026-07-20: scenario assessment + flood metrics table (- KL)
+
+## Scenario axis ({scenario} wildcard, rules 13–17)
+
+The pipeline can now run the same basin under multiple named flood-event
+scenarios without re-running preprocessing (rules 01–12 stay scenario-free).
+
+- New `config/scenarios.yml` (path set by new config key `scenarios_file`)
+  defines named scenarios as (surge_rp, river_rp) pairs; a null RP uses the mean
+  conditions for that driver. Example scenarios: baseline (no design event, mean conditions),
+  coast_100 (100-yr RP coast, mean river discharge), river_100 (100-yr RP river discharge, mean coast),
+  compound_100 (100-yr river discharge and coast).
+- 00_common.smk loads and validates the scenario definitions (surge RPs must
+  be COAST-RP tabulated values; river RPs in [2, 1000] yr), exposes
+  `scenario_params(name)` and a `{scenario}` wildcard constraint. The
+  reserved name `default` replays config.yml's own boundary_setup settings
+  and is what plain `snakemake build` runs; other scenarios are selected via
+  `--config target_scenarios="['baseline','coast_100']"`.
+- All build-and-run outputs (rules 13–16) moved from
+  `{basin_id}/sfincs|visuals/...` to
+  `{basin_id}/scenarios/{scenario}/sfincs|visuals/...`.
+  so that each scenario has its respective output visuals
+- Rule 13 now rebuilds BOTH forcings per scenario without re-running rule 07:
+  discharge via the existing `build_design_discharge_matrix()` (extended:
+  `design_rp_yr=None` → constant bankfull hydrograph), and surge via new
+  `surge.build_design_surge_matrix()` (`None` → flat baseline).
+  To support this, rule 07's surge_forcing.nc now also stores the full
+  COAST-RP table (`storm_tide_rp_table`), mirroring the `discharge_rp_table`.
+  This way, RP's can simply be extracted from the corresponding tables before runs.
+- The `boundary_setup.mode` enum validation in 00_common.smk was removed
+  (commented out) — mode is now effectively always "compound" for named
+  scenarios (i.e. always including both mean river discharge and mean coastal conditions),
+  with per-driver nulls replacing coastal_only/river_only.
+
+## New rule 17 (flood metrics calculations and tables)
+
+Flood metrics are generated per scenario from rule 16's finished event run;
+cheap postprocessing only, never re-runs SFINCS. Outputs under
+`{basin_id}/scenarios/{scenario}/metrics/`: `max_flood_depth.tif` (downscaled
+max-depth GeoTIFF, the input for later flood-source attribution and
+adaptation measures) and `flood_metrics.csv` (one row of scalar metrics:
+flooded/urban-exposed area, extent %, mean/max depth, volume — column names
+match the legacy analyse.py risk_metrics.csv). New config keys:
+`metrics.hmin` (0.05 m flood threshold) and `metrics.urban_landuse_code`
+(50 based on landuse cover codes). Backed by new `postprocessing.compute_risk_metrics()`.
+
+## Fixes
+
+- `postprocessing.WATER_LANDUSE_CODES` corrected from (0, 200) to (80, 200) —
+  code 80 ("Inland water") was intended all along per the adjacent comment;
+  0 is the raster nodata value, so land-masking previously dropped nodata
+  cells instead of permanent inland water.
+
+---
+
+# improve_base_model (merged as PR #1) (- JS)
+
 Summary of functional changes on `improve_base_model` relative to the last
 committed state (`5efcf4e`, "major updates"). This covers a large amount of
 uncommitted work accumulated across many development sessions. Organized by
-theme, not chronologically. See `Reference_memory.txt` for the current,
-up-to-date description of how the pipeline works; this file only describes
-*what changed and why*.
+theme, not chronologically.
 
 ## River discharge design: return-period table instead of a single fixed value
 

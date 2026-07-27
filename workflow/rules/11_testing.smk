@@ -44,6 +44,7 @@ rule test_upstream_boundary:
         effective_period_fraction    = config["testing"]["upstream_boundary_check"]["effective_period_fraction"],
         channel_manning_n            = config["testing"]["upstream_boundary_check"]["channel_manning_n"],
         amplitude_threshold_fraction = config["testing"]["upstream_boundary_check"]["amplitude_threshold_fraction"],
+        surge_rp                     = config["testing"]["upstream_boundary_check"]["surge_rp"],
         surge_period_hr              = config["boundary_forcings"]["surge"]["period_hr"],
     log:
         "logs/{basin_id}/11_upstream_boundary_check.log"

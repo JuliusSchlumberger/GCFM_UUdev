@@ -440,9 +440,26 @@ merged = np.where(_topo_valid, topo_utm, gebco_utm)
 _remaining = np.isnan(merged)
 if _remaining.any():
     # Defensive fallback: neither FathomDEM nor GEBCO had data for these
-    # pixels (should be rare -- GEBCO is globally complete).
+    # pixels (should be rare -- GEBCO is globally complete). `_remaining`
+    # includes the entire outside-domain_poly area too (topo_utm/gebco_utm
+    # are already NaN there), not just genuine gaps -- for a domain polygon
+    # that doesn't fill its own bounding box, that can be a large fraction
+    # of the raster. max_search_distance is deliberately kept SMALL (unlike
+    # the MDT fillnodata above, which searches proportional to its own tiny
+    # array) so this stays a cheap, bounded search per pixel regardless of
+    # how much outside-domain area it's asked to (uselessly) search from --
+    # an unbounded search here previously took hours on a large basin,
+    # entirely wasted since the next line unconditionally re-masks
+    # outside_domain back to NaN anyway. Genuine gaps are expected to be
+    # small and near real data, so a small bound still fills them correctly.
+    _GAP_FILL_MAX_SEARCH_PX = 100.0
+    log.info(
+        f"Hard-merge gap-fill: {int(_remaining.sum()):,} px need filling "
+        f"(incl. outside-domain area), max_search_distance="
+        f"{_GAP_FILL_MAX_SEARCH_PX:g} px"
+    )
     fillnodata(merged, mask=~_remaining,
-               max_search_distance=float(max(merged.shape)))
+               max_search_distance=_GAP_FILL_MAX_SEARCH_PX)
 # fillnodata's mask only distinguishes "has data" from "no data" -- with no
 # notion of "outside domain_poly", an effectively unlimited max_search_distance
 # would otherwise extrapolate valid elevation all the way out to the

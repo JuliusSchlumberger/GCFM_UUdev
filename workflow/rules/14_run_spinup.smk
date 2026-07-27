@@ -23,18 +23,18 @@ RST_FNAME   = f"sfincs.{_spinup_end.strftime('%Y%m%d.%H%M%S')}.rst"
 
 rule run_spinup:
     input:
-        sfincs_inp           = results_path("{basin_id}/sfincs/sfincs.inp"),
+        sfincs_inp           = results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs.inp"),
         land_polygons        = results_path("{basin_id}/inputs/domain/{basin_id}_land_polygons.gpkg"),
         landuse              = results_path("{basin_id}/inputs/domain/{basin_id}_landuse.tif"),
         domain_gpkg          = results_path("{basin_id}/inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network  = results_path("{basin_id}/inputs/domain/{basin_id}_river_network_clean.gpkg"),
     output:
-        rstart              = results_path("{basin_id}/sfincs/spinup/" + RST_FNAME),
-        sfincs_map_nc       = results_path("{basin_id}/sfincs/spinup/sfincs_map.nc"),
-        plot_spinup         = results_path("{basin_id}/visuals/model_runs/spinup/validation_spinup.png"),
-        plot_max_inundation = results_path("{basin_id}/visuals/model_runs/spinup/validation_max_inundation.png"),
+        rstart              = results_path("{basin_id}/scenarios/{scenario}/sfincs/spinup/" + RST_FNAME),
+        sfincs_map_nc       = results_path("{basin_id}/scenarios/{scenario}/sfincs/spinup/sfincs_map.nc"),
+        plot_spinup         = results_path("{basin_id}/scenarios/{scenario}/visuals/spinup/validation_spinup.png"),
+        plot_max_inundation = results_path("{basin_id}/scenarios/{scenario}/visuals/spinup/validation_max_inundation.png"),
     params:
-        sfincs_root               = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs"),
+        sfincs_root               = lambda wildcards: results_path(f"{wildcards.basin_id}/scenarios/{wildcards.scenario}/sfincs"),
         spinup_days               = config["sfincs"]["spinup"]["spinup_days"],
         sfincs_exe                = config["sfincs"]["simulation"]["sfincs_exe"],
         rst_fname                 = RST_FNAME,
@@ -49,6 +49,6 @@ rule run_spinup:
     # CPU while it's executing -- the run gets the full machine instead.
     threads: workflow.cores
     log:
-        "logs/{basin_id}/14_run_spinup.log"
+        "logs/{basin_id}/scenarios/{scenario}/14_run_spinup.log"
     script:
         "../scripts/14_run_spinup.py"

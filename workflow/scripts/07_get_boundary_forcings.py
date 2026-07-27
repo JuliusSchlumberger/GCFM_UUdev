@@ -278,13 +278,23 @@ log.info(f"Wrote surge correction diagnostic plot: {snakemake.output.plot_surge_
 log.info("--- River forcing ---")
 
 eva_cfg         = dict(snakemake.params.eva)
-# sfincs.boundary_setup.design_rp_river_yr (not boundary_forcings.river.eva -- lives
-# with the other build-time SFINCS settings) drives the diagnostic q_rp100/
-# CI/plot-vertical-line under the same "rp_fl" key analyse_cell already reads
-# -- doesn't change analyse_cell itself, just which RP those diagnostics
+# The "default" scenario's own river_rp (config/scenarios.yml, not
+# boundary_forcings.river.eva) drives the diagnostic q_rp100/CI/plot-
+# vertical-line under the same "rp_fl" key analyse_cell already reads --
+# doesn't change analyse_cell itself, just which RP those diagnostics
 # reflect (the actual production discharge_rp_table below is computed at
-# every standard RP regardless, independent of this value).
-eva_cfg["rp_fl"] = float(snakemake.params.design_rp_river_yr)
+# every standard RP regardless, independent of this value). Falls back to
+# rp_bf (bankfull) if "default" itself has a null river_rp (mean
+# conditions) -- there's no design RP to preview in that case.
+_design_rp_river_yr = snakemake.params.design_rp_river_yr
+if _design_rp_river_yr is None:
+    eva_cfg["rp_fl"] = float(eva_cfg.get("rp_bf", 2))
+    log.info(
+        f"'default' scenario's river_rp is null (mean conditions) -- "
+        f"diagnostic preview uses rp_bf={eva_cfg['rp_fl']:g} yr (bankfull) instead"
+    )
+else:
+    eva_cfg["rp_fl"] = float(_design_rp_river_yr)
 # Main grid resolution only -- subgrid does not change what cell size SFINCS
 # actually solves the hydrodynamics on, so it has no bearing on whether a
 # crossing is "visible" at the model's own resolution (see Step 4 below,
@@ -539,8 +549,8 @@ else:
         bankfull_q[i] = eva.q_rp2
         # Full return-period discharge table from the already-fitted POT/GPD
         # curve -- no re-fitting. The actual design discharge used to build
-        # the model is looked up from this table at SFINCS-build time
-        # (sfincs.boundary_setup.design_rp_river_yr), see
+        # the model is looked up from this table at SFINCS-build time (each
+        # scenario's own river_rp, config/scenarios.yml), see
         # src.river_forcing.build_design_discharge_matrix.
         discharge_rp_table[i] = gpd_return_value_table(
             eva.pot_threshold, eva.pot_scale, eva.pot_shape, eva.pot_peaks_per_year,

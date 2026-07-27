@@ -88,6 +88,13 @@ N_PANELS = 4
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
+with open(REPO_ROOT / "config" / "scenarios.yml") as fh:
+    _scenario_defs = yaml.safe_load(fh)
+# Mirrors 00_common.smk's own SCENARIOS resolution: whatever config.yml's
+# target_scenarios says, else "default". This script doesn't build through
+# Snakemake at all (it drives SFINCS directly), so this is purely about
+# which scenario's own river_rp to use as the "production" baseline below.
+_target_scenario = _scenario_defs[config.get("target_scenarios", ["default"])[0]]
 
 RESULTS_DIR = Path(config["results_dir"])
 EXPERIMENTS_DIR = Path("D:/GCFM_UU/experiments/discharge_sensitivity") / BASIN_ID
@@ -156,14 +163,17 @@ crossings_gdf = gpd.GeoDataFrame(
     ),
     crs="EPSG:4326",
 )
-design_rp_river_yr = float(config["sfincs"]["boundary_setup"]["design_rp_river_yr"])
+design_rp_river_yr = _target_scenario.get("river_rp")
+design_rp_river_yr = (
+    float(design_rp_river_yr) if design_rp_river_yr is not None else None
+)
 dis_df_production = pd.DataFrame(
     data=build_design_discharge_matrix(river_ds, active, design_rp_river_yr).T,
     index=river_times,
     columns=range(n_active),
 )
 log.info(
-    f"Built production discharge (design RP={design_rp_river_yr:g} yr): "
+    f"Built production discharge (design RP={'mean/bankfull' if design_rp_river_yr is None else f'{design_rp_river_yr:g} yr'}): "
     f"{n_active} crossing(s), max Q = {dis_df_production.to_numpy().max():.1f} m3/s"
 )
 

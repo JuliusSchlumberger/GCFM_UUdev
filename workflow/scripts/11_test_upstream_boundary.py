@@ -70,6 +70,7 @@ from src.log import setup_logging
 from src.plots import map_background
 from src.profiling import ScriptProfiler
 from src.river_network import _as_linestring, build_downstream_adjacency, normalize_reach_id
+from src.surge import lookup_storm_tide_at_rp
 
 log = setup_logging(snakemake.log[0])
 profiler = ScriptProfiler(snakemake)
@@ -88,6 +89,7 @@ eff_frac      = float(snakemake.params.effective_period_fraction)
 period_hr     = float(snakemake.params.surge_period_hr)
 channel_n     = float(snakemake.params.channel_manning_n)
 amp_thresh_frac = float(snakemake.params.amplitude_threshold_fraction)
+surge_rp      = snakemake.params.surge_rp
 T_eff_s       = eff_frac * period_hr * 3600.0
 log.info(
     f"Parameters:"
@@ -96,6 +98,7 @@ log.info(
     f"\n  T_eff = {eff_frac} × {period_hr} h × 3600 s/h = {T_eff_s:.0f} s  ({T_eff_s/3600:.2f} h)"
     f"\n  channel_manning_n           = {channel_n}"
     f"\n  amplitude_threshold_fraction = {amp_thresh_frac}"
+    f"\n  surge_rp                    = {surge_rp} yr"
     f"\n  g                           = {G} m/s²"
     f"\n  depth/velocity: calculated per mouth (rivdph; Q_bf/(W×D)), no config floor"
 )
@@ -107,10 +110,13 @@ wgs84_bounds, domain_crs, domain_poly = load_domain(
 log.info(f"Domain: {wgs84_bounds}, CRS: {domain_crs}")
 
 # ── surge stations (per-station amplitude, NOT a domain-wide max) ────────────
+# station_rp is looked up at this check's OWN configured surge_rp (testing.
+# upstream_boundary_check.surge_rp), independent of rule 07's own
+# station-selection RP and of any scenario's design surge RP.
 with xr.open_dataset(snakemake.input.surge_forcing, decode_times=False) as surge_ds:
     station_lons = surge_ds["longitude"].values.astype(float)
     station_lats = surge_ds["latitude"].values.astype(float)
-    station_rp   = surge_ds["rp_level"].values.astype(float)
+    station_rp   = lookup_storm_tide_at_rp(surge_ds, surge_rp).astype(float)
 log.info(
     f"Surge stations: {len(station_rp)}, rp_level range "
     f"[{station_rp.min():.3f}, {station_rp.max():.3f}] m "

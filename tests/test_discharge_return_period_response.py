@@ -23,7 +23,7 @@ each return period's discharge exactly matches what the production pipeline
 would build at that design return period.
 
 This test requires the production build to be in forcing_mode="river_only"
-(config: sfincs.boundary_setup.mode) -- the real surge/tide boundary is replaced by
+('default' scenario's derived mode, config/scenarios.yml) -- the real surge/tide boundary is replaced by
 a flat constant there, so flooded-area differences across return periods
 reflect the river's own contribution only, uncontaminated by coastal
 variability.
@@ -72,7 +72,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
 from src.plots import reproject_max_for_plot
 from src.postprocessing import compute_max_inundation
-from src.river_forcing import build_design_discharge_matrix
+from src.river_forcing import build_design_discharge_matrix, derive_forcing_mode
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
@@ -86,6 +86,14 @@ N_PANELS = 4
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
+with open(REPO_ROOT / "config" / "scenarios.yml") as fh:
+    _scenario_defs = yaml.safe_load(fh)
+# Mirrors 00_common.smk's own SCENARIOS resolution: whatever config.yml's
+# target_scenarios says (run_full_pipeline below passes no CLI override of
+# its own), else "default" -- the actual scenario_build the subprocess
+# `snakemake build` call further down will end up building.
+_target_scenario_name = config.get("target_scenarios", ["default"])[0]
+_target_scenario = _scenario_defs[_target_scenario_name]
 
 RESULTS_DIR = Path(config["results_dir"])
 EXPERIMENTS_DIR = (
@@ -95,14 +103,16 @@ FIGS_DIR = REPO_ROOT / "figs" / "discharge_return_period_response"
 EXPERIMENTS_DIR.mkdir(parents=True, exist_ok=True)
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
 
-boundary_mode = config["sfincs"]["boundary_setup"]["mode"]
+boundary_mode = derive_forcing_mode(
+    _target_scenario.get("river_rp"), _target_scenario.get("surge_rp")
+)
 if boundary_mode != "river_only":
     raise ValueError(
-        f"sfincs.boundary_setup.mode={boundary_mode!r} but this test requires the "
-        f"production build to already be in 'river_only' mode (flat coastal "
-        f"boundary), so that flooded-area differences reflect only the "
-        f"river's own contribution. Set sfincs.boundary_setup.mode: river_only in "
-        f"config.yml and rebuild the model before running this test."
+        f"scenario {_target_scenario_name!r}'s derived mode={boundary_mode!r} but this "
+        f"test requires the production build to already be in 'river_only' mode (flat "
+        f"coastal boundary), so that flooded-area differences reflect only the "
+        f"river's own contribution. Set config/scenarios.yml's {_target_scenario_name!r} "
+        f"entry to surge_rp: null (river_rp set) and rebuild the model before running this test."
     )
 
 
@@ -145,7 +155,9 @@ sfincs_exe = Path(sfincs_cfg["simulation"]["sfincs_exe"]).resolve()
 include_subgrid = sfincs_cfg["subgrid"]["enabled"]
 min_inundation_depth_m = sfincs_cfg["sanity_checks"]["min_inundation_depth_m"]
 
-prod_sfincs_root = RESULTS_DIR / BASIN_ID / "sfincs"
+prod_sfincs_root = (
+    RESULTS_DIR / BASIN_ID / "scenarios" / _target_scenario_name / "sfincs"
+)
 prod_inp_path = prod_sfincs_root / "sfincs.inp"
 landuse_path = RESULTS_DIR / BASIN_ID / "inputs" / "domain" / f"{BASIN_ID}_landuse.tif"
 river_forcing_path = RESULTS_DIR / BASIN_ID / "inputs" / "forcing" / "river_forcing.nc"

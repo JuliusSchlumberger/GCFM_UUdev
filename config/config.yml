@@ -1,4 +1,5 @@
 data_catalogue: ./config/data_catalogue.yml
+scenarios_file: ./config/scenarios.yml
 
 profiling:
   enabled: false   # set to true to write line-level timing reports next to each log file
@@ -37,7 +38,7 @@ river_processing:
     weir_crest_m: 1000.0            # initial channel-confinement weir crest (m) -- effectively never overtopped
     weir_crest_fraction: 0.2        # ROUND 0 ONLY, applied UNIFORMLY to every cell with no magnitude threshold: fraction of the isolated-confinement rise above DEM (period_max_zs - dem_at_point) assigned to the production riverbank weir's crest; the remainder (1 - this) becomes channel excavation depth (rivdph) -- this initial depth/crest split is never revisited again; correction rounds only ever adjust the crest (see weir_crest_junction_blend_m/freeboard_m below). The mouth reach's own separate 2-anchor bed interpolation (see 10_depth_estimation_modelled.py) is what keeps its interior cells smooth.
     n_correction_iterations: 10      # MAXIMUM number of additional coupled-system correction rounds after the initial isolated-confinement calibration (round 0) -- each builds a model with round 0's own (fixed, never revisited) excavation + the CURRENT calibrated crest, and raises the crest wherever the resulting water level leaves less than freeboard_m (below) of margin below it. Corrects for backwater coupling between reaches that round 0's isolated-per-reach confinement can't see. 0 = round 0's own estimate used unchanged. Calibration STOPS EARLY, before reaching this maximum, once (a) the crest already exceeds the period-max water level everywhere (no raw overtopping under that round's own simulation) AND (b) the realized inundated-land-cell count (from the same max-inundation diagnostic already computed every round) has settled to within 10% of round 0's own (near-zero, since round 0 is confined by an effectively un-overtoppable 1000 m wall). That first convergence isn't the final round, though: the raise-only process above can leave real excess margin behind (it never lowers crest while any cell is still overtopped elsewhere), so this spends exactly ONE more round tightening every cell's crest down to period_max_zs + freeboard_m in one shot and re-simulating once to verify it still holds everywhere; if it doesn't, that whole snap is abandoned (not patched cell-by-cell) and the round before it becomes the converged one instead. Any remaining round slot(s) up to this maximum are then backfilled with the converged round's own files (no further SFINCS runtime spent on rounds that can't change the outcome).
-    min_crest_increment_per_round_m: 2.5  # CORRECTION ROUNDS ONLY, overtopped cells (period_max_zs > weir_crest_current): minimum-step-size FLOOR (m) on the crest's own increment -- delta = max(period_max_zs - weir_crest_current, this), i.e. close the full gap if it's larger than this floor, otherwise overshoot on purpose by at least this much, so the crest keeps making real progress toward containment instead of stalling on a residual that never grows enough to matter. Where the cell is already contained (period_max_zs <= weir_crest_current), this floor does not apply at all -- see freeboard_m below for that case instead.
+    min_crest_increment_per_round_m: 5.0  # CORRECTION ROUNDS ONLY, overtopped cells (period_max_zs > weir_crest_current): minimum-step-size FLOOR (m) on the crest's own increment -- delta = max(period_max_zs - weir_crest_current, this), i.e. close the full gap if it's larger than this floor, otherwise overshoot on purpose by at least this much, so the crest keeps making real progress toward containment instead of stalling on a residual that never grows enough to matter. Where the cell is already contained (period_max_zs <= weir_crest_current), this floor does not apply at all -- see freeboard_m below for that case instead.
     # ── weir-building params (used by modelled_depth_estimation every round, and by rule 13's own quadtree fallback)
     min_component_cells: 30           # discard small isolated land islands or water patches below this cell count on either side -- neither gets a weir ring around it
     weir_par1: 0.6                    # SFINCS weir discharge coefficient
@@ -121,6 +122,10 @@ testing: # Diagnostic-only side branch
     amplitude_threshold_fraction: 0.05   # march upstream until amplitude decays
                                           # below this fraction of its LOCAL
                                           # (per-mouth) starting value
+    surge_rp: 100                        # surge return period (yr) used as the per-mouth wave
+                                          # amplitude (A0) for this check -- independent of any
+                                          # scenario's own design RP. Must be a COAST-RP tabulated
+                                          # value: 1,2,5,10,25,50,100,250,500,1000.
 
 # ── SFINCS model build & run (rules 13, 14, 15) ─────────────────────────────
 sfincs:
@@ -128,15 +133,10 @@ sfincs:
     waterlevel_buffer_m: 25000   # search radius for matching surge boundary stations to the
                                   # nearest waterlevel boundary cell (m)
     outflow_buffer_m: 500.0      # buffer radius (m) around each delta-outline outflow point
-    design_rp_river_yr: 150      # return period (yr) of the river discharge the event is built at --
-                                  # looked up (log-RP interpolated) from river_forcing.nc's
-                                  # discharge_rp_table (GPD fit) at build time, see
-                                  # build_design_discharge_matrix in src/river_forcing.py. Changing
-                                  # this value only requires rebuilding (rule 13), not re-running EVA
-                                  # (rule 07).
-    mode: "compound"             # "compound" (real surge + real river discharge)
-                                 # "coastal_only" (real surge, river discharge set to 0).
-                                 # "river_only" (coastal boundary flat constant + real river discharge)
+    # mode/design_rp_river_yr/design_rp_surge_yr are no longer set here --
+    # derived per-scenario from config/scenarios.yml (see scenario_params in
+    # 00_common.smk): both RPs set -> compound; exactly one set -> that
+    # driver alone (river_only/coastal_only); both null -> invalid.
     flat_boundary_point_spacing_m: 5000   # boundary-point spacing along the waterlevel mask, used only when mode="river_only"
     compound:
       lag_hr: 0 # Shifts the river discharge timeseries relative to the surge timeseries
@@ -196,3 +196,8 @@ sfincs:
   sanity_checks:
     min_inundation_depth_m: 0.0  # threshold for counting a cell as flooded in sanity checks
     animation_fps: 1             # frames per second for flood progression animation
+
+# Flood metrics (rule 17)
+metrics:
+  hmin: 0.05                     # min depth (m) for a pixel to count as flooded
+  urban_landuse_code: 50         # landuse code for urban areas in the landuse raster (used for urban flood metrics)

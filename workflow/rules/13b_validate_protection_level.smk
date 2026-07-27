@@ -17,7 +17,7 @@
 
 rule validate_protection_level:
     input:
-        sfincs_inp    = results_path("{basin_id}/sfincs/sfincs.inp"),
+        sfincs_inp    = results_path("{basin_id}/scenarios/default/sfincs/sfincs.inp"),
         river_forcing = results_path("{basin_id}/inputs/forcing/river_forcing.nc"),
         protection_levels = results_path("{basin_id}/inputs/domain/protection_levels.json"),
         land_polygons = results_path("{basin_id}/inputs/domain/{basin_id}_land_polygons.gpkg"),
@@ -30,7 +30,7 @@ rule validate_protection_level:
         plot_max_inundation_higher     = results_path("{basin_id}/visuals/model_runs/protection_validation/higher_rp_max_inundation.png"),
         plot_water_level_higher        = results_path("{basin_id}/visuals/model_runs/protection_validation/higher_rp_water_level.png"),
     params:
-        sfincs_root       = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs"),
+        sfincs_root       = lambda wildcards: results_path(f"{wildcards.basin_id}/scenarios/default/sfincs"),
         sfincs_exe        = config["sfincs"]["simulation"]["sfincs_exe"],
         timeout_s         = config["sfincs"]["simulation"]["timeout_s"],
         include_subgrid   = config["sfincs"]["subgrid"]["enabled"],

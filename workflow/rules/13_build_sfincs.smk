@@ -64,21 +64,21 @@ rule build_sfincs:
         # Per-basin computed resolution (rule 08b) -- see resolution param below.
         grid_resolution   = results_path("{basin_id}/inputs/domain/{basin_id}_grid_resolution.json"),
     output:
-        sfincs_inp     = results_path("{basin_id}/sfincs/sfincs.inp"),
-        sfincs_subgrid = results_path("{basin_id}/sfincs/sfincs_subgrid.nc"),
+        sfincs_inp     = results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs.inp"),
+        sfincs_subgrid = results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs_subgrid.nc"),
         # Placeholder-touched (empty) when the weir is disabled or not
         # applicable (e.g. no ocean cells) for this basin -- same pattern
         # as sfincs_subgrid above when subgrid is disabled.
-        sfincs_weir    = results_path("{basin_id}/sfincs/sfincs.weir"),
-        weir_gpkg      = results_path("{basin_id}/sfincs/{basin_id}_coastal_protection_weir.gpkg"),
-        plot_grid      = results_path("{basin_id}/visuals/sfincs_build/01_grid.png"),
-        plot_elevation = results_path("{basin_id}/visuals/sfincs_build/02_elevation.png"),
-        plot_mask      = results_path("{basin_id}/visuals/sfincs_build/03_mask.png"),
-        plot_roughness = results_path("{basin_id}/visuals/sfincs_build/04_roughness.png"),
-        plot_coastal_protection_weir = results_path("{basin_id}/visuals/sfincs_build/07_coastal_protection_weir.png"),
+        sfincs_weir    = results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs.weir"),
+        weir_gpkg      = results_path("{basin_id}/scenarios/{scenario}/sfincs/{basin_id}_coastal_protection_weir.gpkg"),
+        plot_grid      = results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/01_grid.png"),
+        plot_elevation = results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/02_elevation.png"),
+        plot_mask      = results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/03_mask.png"),
+        plot_roughness = results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/04_roughness.png"),
+        plot_coastal_protection_weir = results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/07_coastal_protection_weir.png"),
         **({
-            "refinement_polygons": results_path("{basin_id}/sfincs/{basin_id}_refinement_polygons.gpkg"),
-            "plot_refinement": results_path("{basin_id}/visuals/sfincs_build/01b_refinement_zones.png"),
+            "refinement_polygons": results_path("{basin_id}/scenarios/{scenario}/sfincs/{basin_id}_refinement_polygons.gpkg"),
+            "plot_refinement": results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/01b_refinement_zones.png"),
         } if config["sfincs"]["grid"]["quadtree"]["enabled"] else {}),
     params:
         depth_method       = config["river_processing"]["depth_method"],
@@ -95,14 +95,19 @@ rule build_sfincs:
         dthisout           = config["sfincs"]["simulation"]["dthisout"],
         storevelmax        = config["sfincs"]["simulation"]["storevelmax"],
         storetwet          = config["sfincs"]["simulation"]["storetwet"],
-        forcing_mode       = config["sfincs"]["boundary_setup"]["mode"],
         # "river_only" flat boundary level: set BELOW terrain.gebco_max_depth_m
         # (the deepest any clamped ocean bed cell can be), so the boundary is
         # guaranteed dry everywhere -- the model's behavior is then driven
         # entirely by river discharge, not by any water entering from the
         # coastal boundary. The extra 0.5 m is a safety margin below the clamp.
         river_only_flat_level_m = -(config["terrain"]["gebco_max_depth_m"] + 0.5),
-        design_rp_river_yr = config["sfincs"]["boundary_setup"]["design_rp_river_yr"],
+        # Resolved per-scenario (see scenario_params in 00_common.smk):
+        # "default" replays config.yml's own sfincs.boundary_setup/surge
+        # settings; named scenarios (config/scenarios.yml) override mode
+        # to "compound" and set their own surge_rp/river_rp.
+        forcing_mode       = lambda wildcards: scenario_params(wildcards.scenario)["mode"],
+        design_rp_river_yr = lambda wildcards: scenario_params(wildcards.scenario)["river_rp"],
+        design_rp_surge_yr = lambda wildcards: scenario_params(wildcards.scenario)["surge_rp"],
         compound_lag_hr    = config["sfincs"]["boundary_setup"]["compound"]["lag_hr"],
         flat_boundary_point_spacing_m = config["sfincs"]["boundary_setup"]["flat_boundary_point_spacing_m"],
         waterlevel_buffer_m = config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
@@ -111,7 +116,7 @@ rule build_sfincs:
         n_per_crossing     = config["sfincs"]["observation_points"]["n_per_crossing"],
         max_downstream_hops = config["sfincs"]["observation_points"]["max_downstream_hops"],
         inputs_dir         = lambda wildcards: results_path(f"{wildcards.basin_id}/inputs"),
-        sfincs_root        = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs"),
+        sfincs_root        = lambda wildcards: results_path(f"{wildcards.basin_id}/scenarios/{wildcards.scenario}/sfincs"),
         quadtree_enabled   = config["sfincs"]["grid"]["quadtree"]["enabled"],
         river_refinement_level     = config["sfincs"]["grid"]["quadtree"]["river_refinement_level"],
         river_buffer_factor        = config["sfincs"]["grid"]["quadtree"]["river_buffer_factor"],
@@ -130,6 +135,6 @@ rule build_sfincs:
         weir_freeboard_m           = config["river_processing"]["river_depth_modelling"]["freeboard_m"],
         river_crest_dilation_cells = config["river_processing"]["river_depth_modelling"]["river_crest_dilation_cells"],
     log:
-        "logs/{basin_id}/13_build_sfincs.log"
+        "logs/{basin_id}/{scenario}/13_build_sfincs.log"
     script:
         "../scripts/13_build_sfincs.py"

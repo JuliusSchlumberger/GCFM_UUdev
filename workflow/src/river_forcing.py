@@ -17,6 +17,25 @@ from src.extreme_values import EVAResult
 log = logging.getLogger(__name__)
 
 
+def derive_forcing_mode(river_rp: float | None, surge_rp: float | None) -> str:
+    """
+    Derive SFINCS forcing mode from which design RPs a scenario sets: both
+    -> "compound"; river_rp only -> "river_only"; surge_rp only ->
+    "coastal_only"; neither -> ValueError (no forcing to drive the model
+    with). Shared by 00_common.smk's scenario_params and any standalone
+    script that needs to replicate a scenario's own mode outside Snakemake.
+    """
+    if river_rp is not None and surge_rp is not None:
+        return "compound"
+    if river_rp is not None:
+        return "river_only"
+    if surge_rp is not None:
+        return "coastal_only"
+    raise ValueError(
+        "both river_rp and surge_rp are null -- no forcing to drive the model with"
+    )
+
+
 # ── private helpers ───────────────────────────────────────────────────────────
 
 
@@ -750,7 +769,7 @@ def interpolate_discharge_at_rp(
 def build_design_discharge_matrix(
     river_ds: xr.Dataset,
     active: np.ndarray,
-    design_rp_yr: float,
+    design_rp_yr: float | None,
     apply_protection_floor: bool = True,
 ) -> np.ndarray:
     """
@@ -781,8 +800,11 @@ def build_design_discharge_matrix(
         river_ds: Opened river_forcing.nc (xr.Dataset).
         active:   Boolean mask, len == river_ds.sizes["crossing"] -- which
                   crossings to build (typically has_glofas).
-        design_rp_yr: Return period (years) to build the event at --
-                  sfincs.boundary_setup.design_rp_river_yr.
+        design_rp_yr: Return period (years) to build the event at -- a
+                  scenario's own river_rp (config/scenarios.yml, see
+                  scenario_params in 00_common.smk). None builds a
+                  constant bankfull hydrograph instead (mean-conditions
+                  scenario).
         apply_protection_floor: Whether to apply step 2 (the protection-
                   discharge floor) when protection_discharge is present.
                   Only meaningful in "empirical" depth_method: in "modelled"
@@ -802,17 +824,20 @@ def build_design_discharge_matrix(
     period_hr = float(river_ds.attrs["period_hr"])
 
     n_active = int(active.sum())
-    design_q = interpolate_discharge_at_rp(table, table_rps, design_rp_yr)
+    if design_rp_yr is None:
+        design_q = bankfull_q.copy()  # mean river: constant bankfull hydrograph
+    else:
+        design_q = interpolate_discharge_at_rp(table, table_rps, design_rp_yr)
 
-    if apply_protection_floor and "protection_discharge" in river_ds:
-        prot_q = river_ds["protection_discharge"].values[active]
-        overtopped = design_q > prot_q
-        contained = (~overtopped) & (design_q > bankfull_q)
-        design_q = np.where(
-            overtopped,
-            bankfull_q + (design_q - prot_q),
-            np.where(contained, bankfull_q, design_q),
-        )
+        if apply_protection_floor and "protection_discharge" in river_ds:
+            prot_q = river_ds["protection_discharge"].values[active]
+            overtopped = design_q > prot_q
+            contained = (~overtopped) & (design_q > bankfull_q)
+            design_q = np.where(
+                overtopped,
+                bankfull_q + (design_q - prot_q),
+                np.where(contained, bankfull_q, design_q),
+            )
 
     discharge_matrix = np.full((n_active, len(times)), np.nan)
     for i in range(n_active):

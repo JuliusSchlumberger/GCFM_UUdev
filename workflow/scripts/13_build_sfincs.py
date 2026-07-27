@@ -22,7 +22,8 @@ sfincs.inp        SFINCS config / sentinel that the model was written
 sfincs.weir       Coastal/riverbank protection weir (section 4c); empty
                   placeholder when disabled or not applicable
 
-Forcing mode (sfincs.boundary_setup.mode in config.yml)
+Forcing mode (derived per-scenario by scenario_params in 00_common.smk,
+from the {scenario}'s own river_rp/surge_rp in config/scenarios.yml)
 ---------------------------------------------------
 Controls which forcing(s) actually drive the model, independent of the
 input files themselves (always loaded so duration/observation points stay
@@ -65,6 +66,7 @@ from hydromt_sfincs import SfincsModel
 
 from src.geometry import snap_points_into_region
 from src.river_forcing import build_design_discharge_matrix
+from src.surge import build_design_surge_matrix
 
 plt.ioff()
 
@@ -118,6 +120,7 @@ storetwet         = snakemake.params.storetwet
 forcing_mode      = snakemake.params.forcing_mode
 river_only_flat_level_m = float(snakemake.params.river_only_flat_level_m)
 design_rp_river_yr = float(snakemake.params.design_rp_river_yr)
+design_rp_surge_yr = float(snakemake.params.design_rp_surge_yr)
 compound_lag_hr   = float(snakemake.params.compound_lag_hr)
 flat_boundary_point_spacing_m = snakemake.params.flat_boundary_point_spacing_m
 waterlevel_buffer_m = snakemake.params.waterlevel_buffer_m
@@ -795,7 +798,7 @@ else:
 
     # water_level dims: (station, time) → transpose to (time, station) for DataFrame
     wl_df = pd.DataFrame(
-        data=surge_ds.water_level.values.T,
+        data=build_design_surge_matrix(surge_ds, design_rp_surge_yr).T,
         index=surge_times,
         columns=range(n_stations),
     )

@@ -24,7 +24,7 @@ mapping is anchored directly to the real, already-placed source points.
 
 The coastal boundary is forced flat and dry (same river_only_flat_level_m
 convention as rule modelled_depth_estimation's own calibration), isolating the river's own
-response regardless of the production model's sfincs.boundary_setup.mode.
+response regardless of the production model's own scenario-derived forcing mode.
 """
 
 import json
@@ -157,7 +157,7 @@ def _write_scenario(name: str, discharge_per_src: np.ndarray) -> Path:
 
     # ── flat, dry boundary (sfincs.bzs) -- river_only style, isolates the
     # river's own response regardless of the production model's own
-    # sfincs.boundary_setup.mode ─────────────────────────────────────────────
+    # scenario-derived forcing mode ───────────────────────────────────────────
     if n_bnd:
         bzs_arr = np.column_stack(
             [times_s] + [np.full(n_steps, river_only_flat_level_m) for _ in range(n_bnd)]
