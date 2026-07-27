@@ -3,12 +3,14 @@ test_zsini_sensitivity.py — Hypothesis test: how sensitive is the spin-up
 flood result to the assumed initial water level (zsini), independent of any
 dynamic forcing?
 
-zsini.tif (rule 03a) normally encodes 0.0 (mean sea level) for sea cells and
-NODATA for land cells (SFINCS then falls back to local bed level on land, i.e.
-dry at t=0). This script keeps that convention -- land cells stay NODATA --
-and only sweeps the *sea*-cell value, from the minimum land elevation (a
-"drier than the lowest point on land" extreme) up to mean sea level (the
-value the original zsini.tif already uses for sea cells), for basin 2444235.
+The pipeline's real zsini.tif (built in rule build_sfincs, 13, from rule
+get_landuse's (05b) sea_mask.tif + baseline_m) encodes baseline_m for sea
+cells and NODATA for land cells (SFINCS then falls back to local bed level
+on land, i.e. dry at t=0). This script keeps that convention -- land cells
+stay NODATA -- and only sweeps the *sea*-cell value, from the minimum land
+elevation (a "drier than the lowest point on land" extreme) up to the
+basin's actual sea-level baseline (surge_forcing.nc's baseline_m, the same
+value rule 13 uses), for basin 2444235.
 
 All other inputs (elevation, roughness, mask, river network/depth, grid
 resolution) are held identical across levels — copied verbatim from the
@@ -98,7 +100,7 @@ river_network_path = (
 )
 surge_forcing_path = basin_inputs_dir / "forcing" / "surge_forcing.nc"
 river_forcing_path = basin_inputs_dir / "forcing" / "river_forcing.nc"
-zsini_raw_path = basin_inputs_dir / "domain" / f"{BASIN_ID}_zsini.tif"
+sea_mask_path = basin_inputs_dir / "domain" / f"{BASIN_ID}_sea_mask.tif"
 
 sfincs_cfg = config["sfincs"]
 resolution = sfincs_cfg["grid"]["resolution"]
@@ -128,6 +130,7 @@ boundary_kwargs = (
 
 with xr.open_dataset(surge_forcing_path, decode_times=False) as _ds:
     surge_end_hr = float(_ds.time.max())
+    baseline_m = float(_ds["baseline_m"].values) if "baseline_m" in _ds else 0.0
 with xr.open_dataset(river_forcing_path, decode_times=False) as _ds:
     river_end_hr = float(_ds.time.max())
 
@@ -154,25 +157,26 @@ rivers = gpd.read_file(river_network_path)
 rivers["rivwth"] = rivers["max_width"].fillna(1.0).astype(float)
 log.info(f"Loaded {len(rivers)} reaches from {river_network_path}")
 
-# ── derive the zsini sweep range from the basin's own elevation/zsini files ────
-with rasterio.open(zsini_raw_path) as _src:
-    zsini_raw = _src.read(1).astype(np.float32)
+# ── derive the zsini sweep range from the basin's own sea mask + baseline_m ────
+# baseline_m (read above from surge_forcing.nc) is the actual sea-level
+# value rule 13 uses -- sea_mask.tif itself is a pure land/sea classification
+# with no water-level value baked in, so it's only used here for the mask.
+with rasterio.open(sea_mask_path) as _src:
+    sea_mask_raw = _src.read(1).astype(np.float32)
     zsini_meta = _src.meta.copy()
-    zsini_nodata = np.float32(_src.nodata if _src.nodata is not None else -9999.0)
+    sea_mask_nodata = np.float32(_src.nodata if _src.nodata is not None else -9999.0)
 with rasterio.open(elevation_merged_path) as _src:
     elev_raw = _src.read(1).astype(np.float32)
     elev_nodata = np.float32(_src.nodata if _src.nodata is not None else -9999.0)
 
-sea_mask = zsini_raw != zsini_nodata
-land_mask = (zsini_raw == zsini_nodata) & (elev_raw != elev_nodata)
-mean_sea_level_m = (
-    float(math.ceil(zsini_raw[sea_mask].max()) + 0.05) if sea_mask.any() else 0.0
-)
+sea_mask = sea_mask_raw != sea_mask_nodata
+land_mask = (sea_mask_raw == sea_mask_nodata) & (elev_raw != elev_nodata)
+mean_sea_level_m = baseline_m
 min_land_elev_m = float(math.floor(elev_raw[land_mask].min()))
 zsini_low_m, zsini_high_m = min_land_elev_m, mean_sea_level_m
 log.info(
     f"Basin {BASIN_ID}: min land elevation = {min_land_elev_m:.2f} m, "
-    f"mean sea level (zsini.tif) = {mean_sea_level_m:.2f} m -- "
+    f"sea-level baseline (surge_forcing.nc baseline_m) = {mean_sea_level_m:.2f} m -- "
     f"sweep range = [{zsini_low_m:.2f}, {zsini_high_m:.2f}] m"
 )
 
@@ -202,7 +206,7 @@ def write_zsini_sea_level(level_m: float, out_path: Path) -> Path:
     (matches zsini.tif's original convention -- SFINCS falls back to local bed
     level on land, i.e. dry at t=0)."""
     arr = np.full(
-        (zsini_meta["height"], zsini_meta["width"]), zsini_nodata, dtype=np.float32
+        (zsini_meta["height"], zsini_meta["width"]), sea_mask_nodata, dtype=np.float32
     )
     arr[sea_mask] = np.float32(level_m)
     with rasterio.open(out_path, "w", **zsini_meta) as dst:
@@ -258,8 +262,7 @@ def build_model(level_m: float, zsini_path: Path, sfincs_root: Path) -> SfincsMo
     # sub-pixels in a destination cell, ignoring nodata (land) ones -- a coastal
     # grid cell that's mostly land by area still gets the full sea-cell zsini
     # value, "starting wet" even where its bed elevation is well above that
-    # level (same artifact documented in test_river_smoothing_sfincs.py and
-    # tests/check_zsini_resampling.py). "nearest" avoids this blending.
+    # level. "nearest" avoids this blending.
     sf.initial_conditions.create(ini="local_zsini", reproj_method="nearest")
     sf.roughness.create(roughness_list=[{"manning": "local_roughness"}])
 

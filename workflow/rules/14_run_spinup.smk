@@ -42,6 +42,12 @@ rule run_spinup:
         dthisout_s                 = config["sfincs"]["spinup"]["dthisout_s"],
         include_subgrid            = config["sfincs"]["subgrid"]["enabled"],
         timeout_s                 = config["sfincs"]["simulation"]["timeout_s"],
+    # Claims the whole --cores budget: SFINCS itself can use multiple
+    # threads (see run_sfincs_subprocess's OMP_NUM_THREADS handling), but
+    # hydromt-sfincs/Snakemake can't parallelize *within* one run, so this
+    # ensures no other job (this basin's or another's) competes with it for
+    # CPU while it's executing -- the run gets the full machine instead.
+    threads: workflow.cores
     log:
         "logs/{basin_id}/scenarios/{scenario}/14_run_spinup.log"
     script:

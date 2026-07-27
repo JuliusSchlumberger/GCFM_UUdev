@@ -9,7 +9,7 @@ Provides per-cell estimation of return-period discharges using pyextremes:
 
 All EVA parameters are read from a plain dict (``eva_cfg``) matching the
 ``boundary_forcings.eva`` section of the project config YAML, including the
-newer optional knobs ``min_years_high_confidence`` (default 40.0),
+optional knobs ``min_years_high_confidence`` (default 40.0),
 ``peaks_per_year_min`` (default 1.0), ``threshold_min_pct`` (default 50.0),
 and ``deseasonalize_for_decorr``
 (default True) — see ``analyse_cell`` / ``_search_threshold`` for how each is
@@ -478,11 +478,11 @@ def gpd_return_value(
     Reconstructs pyextremes' own POT/GPD return-value formula directly from
     the fitted parameters (pot_threshold/pot_scale/pot_shape/pot_peaks_per_year
     -- e.g. as saved in river_forcing.nc), with no need to re-fit or re-touch
-    the raw discharge series. Matches _gpd_boot_ci's own formula exactly
-    (confirmed against pyextremes.eva.EVA.get_return_value's source: exceedance
-    probability = 1/(return_period * peaks_per_year), evaluated via
-    scipy.stats.genpareto.ppf on the exceedances distribution -- fit with
-    floc=0 -- then shifted back up by the threshold).
+    the raw discharge series. Matches both _gpd_boot_ci's formula and
+    pyextremes.eva.EVA.get_return_value's: exceedance probability =
+    1/(return_period * peaks_per_year), evaluated via
+    scipy.stats.genpareto.ppf on the exceedances distribution (fit with
+    floc=0), then shifted back up by the threshold.
 
     Args:
         threshold:      POT threshold (m³/s) -- pot_threshold.
@@ -670,9 +670,9 @@ def _search_threshold(
     * ppy > ppy_max → raise threshold (fewer peaks, ppy falls)
     * ppy < ppy_min → lower threshold (more peaks, ppy rises)
 
-    The bidirectional logic is critical: a purely upward search (old behaviour)
-    could never recover when the starting percentile already yields ppy < ppy_min,
-    because raising the threshold only makes ppy smaller.  ``threshold_min_pct``
+    The bidirectional logic is necessary: a purely upward search could never
+    recover when the starting percentile already yields ppy < ppy_min, because
+    raising the threshold only makes ppy smaller.  ``threshold_min_pct``
     (default 50.0) caps how far down the threshold may go.
 
     Returns (fitted EVA instance, (threshold, peaks_per_year, status)) or
@@ -797,7 +797,7 @@ def analyse_cell(
                        period (yr) and store it as ``res.q_protection`` --
                        reuses the already-fitted GPD model, no extra fitting.
                        Used for the existing flood-protection-level
-                       correction (top-level protection_levels config);
+                       correction (river_processing.modify_hydrograph);
                        NaN if the POT/GPD fit itself failed.
 
     Returns:
@@ -855,8 +855,8 @@ def analyse_cell(
 
     # ── AMAX / GEV → RP=rp_bf (bankfull) + trend ────────────────────────────
     #
-    # Deliberate dual-estimator design — BM/GEV here for RP2, POT/GPD below for
-    # RP100 — is intentional, NOT an inconsistency to "fix":
+    # Deliberate dual-estimator design: BM/GEV here for RP2, POT/GPD below for
+    # RP100.
     #   * The bankfull ≈ 1.5-2 yr recurrence convention (Leopold & Wolman,
     #     geomorphology literature) is *defined* on the annual-maximum series,
     #     so RP2 must be derived from block maxima to honour that definition.
@@ -865,8 +865,8 @@ def analyse_cell(
     #     better-constrained tail fit than AMAX/GEV would for the same record.
     # Because the two return levels come from two different estimators fit to
     # different extracted samples, comparing them head-to-head (e.g.
-    # "RP100 < RP2 ⇒ reject") is an apples-to-oranges check that flags a false
-    # symptom — removed in favour of the per-fit sanity checks below.
+    # "RP100 < RP2 ⇒ reject") would be an apples-to-oranges check, not a valid
+    # sanity test — see the per-fit sanity checks below instead.
     try:
         eva_bm = EVA(data=s)
         # errors='coerce': skip empty blocks (e.g. years with gaps in GloFAS data)

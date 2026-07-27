@@ -9,21 +9,27 @@ developed.
 
 Inputs (from Snakemake, see 13_build_sfincs.smk for the full list)
 --------------------------------------------------------------------
-elevation_merged  Blended FathomDEM+GEBCO GeoTIFF, or the conditioned DEM
-                  when river conditioning is enabled (UTM, from rule 05a/10)
+elevation_merged  The conditioned DEM (UTM, from rule 10) -- despite its
+                  key name this is the conditioned output, not the raw
+                  merged DEM.
 roughness         Manning's n GeoTIFF (from rule 05c)
+landuse           Copernicus LC100 classification GeoTIFF (from rule 05b) --
+                  used only to build the coastal protection weir (section 4c)
 
 Outputs
 -------
 sfincs.inp        SFINCS config / sentinel that the model was written
+sfincs.weir       Coastal/riverbank protection weir (section 4c); empty
+                  placeholder when disabled or not applicable
 
-Forcing mode (boundary_setup.mode in config.yml)
+Forcing mode (derived per-scenario by scenario_params in 00_common.smk,
+from the {scenario}'s own river_rp/surge_rp in config/scenarios.yml)
 ---------------------------------------------------
 Controls which forcing(s) actually drive the model, independent of the
 input files themselves (always loaded so duration/observation points stay
 consistent across modes):
   "compound"     — real surge/tide boundary + real river discharge (default).
-                   boundary_setup.compound.lag_hr optionally shifts the
+                   sfincs.boundary_setup.compound.lag_hr optionally shifts the
                    river discharge timeseries relative to the surge
                    timeseries (positive = river peak arrives later; negative
                    = earlier) — see the "compound lag" section below.
@@ -32,13 +38,15 @@ consistent across modes):
                    with a zeroed timeseries, so the model structure matches
                    the other modes).
   "river_only"   — real river discharge; the coastal water-level boundary is
-                   replaced by a flat constant at zsini's sea-level baseline
-                   (baseline_m) — no surge/tide variability, and no initial
-                   mismatch against zsini since both share baseline_m.
+                   replaced by a flat constant BELOW terrain.gebco_max_depth_m
+                   (river_only_flat_level_m, see section 9) — guaranteed dry
+                   everywhere, so no surge/tide variability and no coastal
+                   inflow of any kind confounds the river-discharge
+                   contribution being isolated.
 """
 
+import json
 import logging
-import math
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -53,10 +61,10 @@ import numpy as np
 import xarray as xr
 import yaml
 from scipy.ndimage import label as _ndimage_label
-from shapely.geometry import Point, Polygon
-from shapely.ops import nearest_points
+from shapely.geometry import Polygon
 from hydromt_sfincs import SfincsModel
 
+from src.geometry import snap_points_into_region
 from src.river_forcing import build_design_discharge_matrix
 from src.surge import build_design_surge_matrix
 
@@ -79,15 +87,21 @@ for _name in ("hydromt", "hydromt_sfincs"):
 domain_path           = Path(snakemake.input.domain_gpkg)
 elevation_merged_path = Path(snakemake.input.elevation_merged)
 roughness_path        = Path(snakemake.input.roughness)
+landuse_path          = Path(snakemake.input.landuse)
 land_polygons_path    = Path(snakemake.input.land_polygons)
 river_network_path    = Path(snakemake.input.river_network)
 delta_outflow_points_path = Path(snakemake.input.delta_outflow_points)
-zsini_path            = Path(snakemake.input.zsini)
+sea_mask_path         = Path(snakemake.input.sea_mask)
 surge_forcing_path    = Path(snakemake.input.surge_forcing)
 river_forcing_path    = Path(snakemake.input.river_forcing)
-burn_rivers_enabled   = snakemake.params.burn_rivers_enabled
-river_burned_dem_path = (
-    Path(snakemake.input.river_burned_dem) if burn_rivers_enabled else None
+river_burned_dem_path = Path(snakemake.input.river_burned_dem)
+river_burned_dem_sfincs_grid_path = Path(snakemake.input.river_burned_dem_sfincs_grid)
+elevation_conditioned_sfincs_grid_path = Path(snakemake.input.elevation_conditioned_sfincs_grid)
+river_elevation_max_path = Path(snakemake.input.river_elevation_max)
+# Optional: modelled_depth_estimation's own final traced weir -- only present in modelled mode on
+# the regular grid (empty list [] otherwise, see 13_build_sfincs.smk).
+coastal_protection_weir_path = (
+    Path(snakemake.input.coastal_protection_weir) if snakemake.input.coastal_protection_weir else None
 )
 
 inputs_dir        = Path(snakemake.params.inputs_dir)
@@ -104,8 +118,9 @@ dthisout          = snakemake.params.dthisout
 storevelmax       = snakemake.params.storevelmax
 storetwet         = snakemake.params.storetwet
 forcing_mode      = snakemake.params.forcing_mode
-design_rp_river_yr = snakemake.params.design_rp_river_yr # Removed Float 
-design_rp_surge_yr = snakemake.params.design_rp_surge_yr # Added 
+river_only_flat_level_m = float(snakemake.params.river_only_flat_level_m)
+design_rp_river_yr = float(snakemake.params.design_rp_river_yr)
+design_rp_surge_yr = float(snakemake.params.design_rp_surge_yr)
 compound_lag_hr   = float(snakemake.params.compound_lag_hr)
 flat_boundary_point_spacing_m = snakemake.params.flat_boundary_point_spacing_m
 waterlevel_buffer_m = snakemake.params.waterlevel_buffer_m
@@ -115,13 +130,20 @@ n_per_crossing     = snakemake.params.n_per_crossing
 max_downstream_hops = snakemake.params.max_downstream_hops
 include_rstart    = snakemake.params.include_rstart
 spinup_days       = snakemake.params.spinup_days
-preburn_enabled   = snakemake.params.preburn_enabled
+depth_method      = snakemake.params.depth_method
 quadtree_enabled  = snakemake.params.quadtree_enabled
+active_mask_enabled = snakemake.params.active_mask_enabled
+active_mask_elevation_buffer_m = float(snakemake.params.active_mask_elevation_buffer_m)
 river_refinement_level     = snakemake.params.river_refinement_level
 river_buffer_factor        = snakemake.params.river_buffer_factor
 coastal_refinement_enabled = snakemake.params.coastal_refinement_enabled
 coastal_refinement_level   = snakemake.params.coastal_refinement_level
 coastal_buffer_m           = snakemake.params.coastal_buffer_m
+min_component_cells        = int(snakemake.params.min_component_cells)
+weir_par1                  = float(snakemake.params.weir_par1)
+weir_crest_junction_blend_m = float(snakemake.params.weir_crest_junction_blend_m)
+weir_freeboard_m           = float(snakemake.params.weir_freeboard_m)
+river_crest_dilation_cells = int(snakemake.params.river_crest_dilation_cells)
 
 sfincs_root.mkdir(parents=True, exist_ok=True)
 log.info(f"Forcing mode: {forcing_mode!r}")
@@ -134,63 +156,77 @@ log.info(f"Forcing mode: {forcing_mode!r}")
 # It is 0.0 when both corrections are disabled (default).
 with xr.open_dataset(surge_forcing_path, decode_times=False) as _ds:
     baseline_m = float(_ds["baseline_m"].values) if "baseline_m" in _ds else 0.0
+    coastal_protection_crest_m = (
+        float(_ds["coastal_protection_crest_m"].values)
+        if "coastal_protection_crest_m" in _ds else 0.0
+    )
 log.info(f"Surge boundary baseline read from surge_forcing.nc: {baseline_m:+.4f} m")
 
-# ── corrected zsini raster ────────────────────────────────────────────────────
-# zsini.tif (rule 05b) has two values: 0.0 for sea cells (not on OSM land
-# polygons), -9999 nodata for land cells.  When baseline_m != 0 we write a
-# corrected copy shifting sea cells from 0.0 to baseline_m so the initial
-# ocean state matches the boundary forcing vertical reference.
-_zsini_src = zsini_path
-if baseline_m != 0.0:
-    _zsini_corr = sfincs_root / "zsini_baseline.tif"
-    with rasterio.open(_zsini_src) as _src:
-        _arr = _src.read(1).astype(np.float32)
-        _meta = _src.meta.copy()
-        _nodata_val = np.float32(_src.nodata if _src.nodata is not None else -9999.0)
-    _arr = np.where(_arr == np.float32(0.0), np.float32(baseline_m), _arr)
+# ── build zsini raster from the sea mask ────────────────────────────────────
+# sea_mask.tif (rule 05b) is a pure land/sea classification: 1.0 for sea
+# cells (not on OSM land polygons, or landuse==200 inland water body), -9999
+# nodata for land. baseline_m (the actual initial sea level) isn't known
+# until here, so this is the first point in the pipeline that can turn the
+# classification into the real zsini.tif -- always built here, in one place,
+# rather than conditionally patched after the fact.
+_zsini_out = sfincs_root / "zsini.tif"
+with rasterio.open(sea_mask_path) as _src:
+    _sea_mask_arr = _src.read(1).astype(np.float32)
+    _meta = _src.meta.copy()
+_arr = np.where(_sea_mask_arr == np.float32(1.0), np.float32(baseline_m), np.float32(-9999.0))
 
-    # ── connected-component dry-out of isolated sea cells ─────────────────────
-    # When baseline_m is significantly negative (e.g. −0.50 m after protection-
-    # level correction) shallow connections between isolated depressions and the
-    # main ocean become dry, trapping pockets of water that were previously able
-    # to drain.  Fix: label connected components of sea cells (value=baseline_m),
-    # keep only those reachable from the domain boundary, and set isolated wet
-    # cells (dep < baseline_m, so water depth > 0) to dep = dry start.
-    # Both zsini.tif and elevation_merged.tif share the same grid (zsini.tif
-    # is reprojected onto elevation_merged.tif's grid in rule 05b), so
-    # pixel-aligned comparison is exact.
-    with rasterio.open(elevation_merged_path) as _dep_src:
-        _dep = _dep_src.read(1).astype(np.float32)
-        _dep_nd = np.float32(_dep_src.nodata if _dep_src.nodata is not None else -9999.0)
-    _dep_valid = np.where(np.isclose(_dep, _dep_nd), np.float32(1e6), _dep)
+# ── connected-component dry-out of isolated sea cells ─────────────────────
+# When baseline_m is significantly negative (e.g. −0.50 m after protection-
+# level correction) shallow connections between isolated depressions and the
+# main ocean become dry, trapping pockets of water that were previously able
+# to drain. The same hazard exists even when baseline_m == 0 (e.g. an
+# inland lagoon disconnected from the open ocean by dry land in between), so
+# this fix always runs, not just when baseline_m != 0. Fix: label connected
+# components of sea cells (value=baseline_m), keep only the main open ocean,
+# and set isolated wet cells (dep < baseline_m, so water depth > 0) to
+# dep = dry start.
+# Both sea_mask.tif and elevation_merged.tif share the same grid (sea_mask
+# is reprojected onto elevation_merged.tif's grid in rule 05b), so
+# pixel-aligned comparison is exact.
+with rasterio.open(elevation_merged_path) as _dep_src:
+    _dep = _dep_src.read(1).astype(np.float32)
+    _dep_nd = np.float32(_dep_src.nodata if _dep_src.nodata is not None else -9999.0)
+_dep_valid = np.where(np.isclose(_dep, _dep_nd), np.float32(1e6), _dep)
 
-    _sea_mask = np.isclose(_arr, np.float32(baseline_m))           # cells carrying baseline_m
-    _labeled, _n = _ndimage_label(_sea_mask)                        # 4-connected components
-    # Edge labels = components touching the raster boundary (= open-ocean side)
-    _edge_lbl: set[int] = set()
-    for _edge in (_labeled[0, :], _labeled[-1, :], _labeled[:, 0], _labeled[:, -1]):
-        _edge_lbl.update(_edge.tolist())
-    _edge_lbl.discard(0)
-    _connected = np.isin(_labeled, list(_edge_lbl)) & _sea_mask
-    _isolated_wet = _sea_mask & ~_connected & (_dep_valid < np.float32(baseline_m))
-    _n_fix = int(_isolated_wet.sum())
-    if _n_fix > 0:
-        # Set isolated wet sea cells to their bed elevation → water depth = 0 (dry).
-        _arr = np.where(_isolated_wet, _dep_valid, _arr)
-        log.info(
-            f"zsini connectivity fix: {_n_fix} isolated wet sea-cell(s) set to dep "
-            f"(not reachable from domain boundary at baseline_m={baseline_m:+.4f} m)"
-        )
-    else:
-        log.info("zsini connectivity fix: no isolated wet sea cells found")
-
-    with rasterio.open(_zsini_corr, "w", **_meta) as _dst:
-        _dst.write(_arr, 1)
-    _zsini_uri = str(_zsini_corr)
-    log.info(f"Corrected zsini written: {_zsini_corr} (sea cells = {baseline_m:+.4f} m)")
+_sea_cells = np.isclose(_arr, np.float32(baseline_m))           # cells carrying baseline_m
+_labeled, _n = _ndimage_label(_sea_cells)                        # 4-connected components
+# The main open ocean is taken as the SINGLE LARGEST connected sea
+# component, not "whichever components touch the raster array's own
+# rectangular edge": our domains are a delta-polygon-shaped clip well
+# inside their own bounding-box raster (NaN-padded corners), so the
+# array's actual edge pixels are almost always outside-domain nodata, not
+# real sea -- an edge-touching heuristic would misclassify most of the
+# real open ocean as "isolated" here. Largest-component-by-area is
+# geometry-independent and only fails if a real, separate ocean body in
+# the domain is smaller than some enclosed pond/lagoon elsewhere.
+if _n > 0:
+    _sizes = np.bincount(_labeled.ravel())
+    _sizes[0] = 0  # exclude background (non-sea)
+    _main_label = int(np.argmax(_sizes))
+    _connected = _labeled == _main_label
 else:
-    _zsini_uri = str(zsini_path.relative_to(inputs_dir))
+    _connected = np.zeros_like(_sea_cells)
+_isolated_wet = _sea_cells & ~_connected & (_dep_valid < np.float32(baseline_m))
+_n_fix = int(_isolated_wet.sum())
+if _n_fix > 0:
+    # Set isolated wet sea cells to their bed elevation → water depth = 0 (dry).
+    _arr = np.where(_isolated_wet, _dep_valid, _arr)
+    log.info(
+        f"zsini connectivity fix: {_n_fix} isolated wet sea-cell(s) set to dep "
+        f"(not reachable from domain boundary at baseline_m={baseline_m:+.4f} m)"
+    )
+else:
+    log.info("zsini connectivity fix: no isolated wet sea cells found")
+
+with rasterio.open(_zsini_out, "w", **_meta) as _dst:
+    _dst.write(_arr, 1)
+_zsini_uri = str(_zsini_out)
+log.info(f"zsini written: {_zsini_out} (sea cells = {baseline_m:+.4f} m)")
 
 # ── delta-outline outflow points ──────────────────────────────────────────────
 # Rule clean_river_network's identify_delta_outflow_points always produces this
@@ -211,13 +247,21 @@ local_catalog = {
         "uri": str(elevation_merged_path),   # absolute — lives under sfincs_root
         "driver": "rasterio",
     },
-    **({
-        "local_river_burned": {
-            "data_type": "RasterDataset",
-            "uri": str(river_burned_dem_path),
-            "driver": "rasterio",
-        },
-    } if burn_rivers_enabled else {}),
+    "local_river_burned": {
+        "data_type": "RasterDataset",
+        "uri": str(river_burned_dem_path),
+        "driver": "rasterio",
+    },
+    "local_river_burned_sfincs_grid": {
+        "data_type": "RasterDataset",
+        "uri": str(river_burned_dem_sfincs_grid_path),
+        "driver": "rasterio",
+    },
+    "local_elevation_conditioned_sfincs_grid": {
+        "data_type": "RasterDataset",
+        "uri": str(elevation_conditioned_sfincs_grid_path),
+        "driver": "rasterio",
+    },
     "local_roughness": {
         "data_type": "RasterDataset",
         "uri": str(roughness_path),       # relative to inputs_dir
@@ -245,16 +289,38 @@ with open(local_catalog_path, "w") as fh:
     yaml.dump(local_catalog, fh, sort_keys=False)
 log.info(f"Data catalog written: {local_catalog_path}")
 
-# When burn_rivers is enabled, 'local_river_burned' (channel-only, native
-# resolution) takes priority over 'local_elevation_merged' wherever it has
-# valid data (hydromt_sfincs's elevation_list/merge_multi_dataarrays merges
-# by priority: first source wins, later sources fill gaps) — so ocean/
-# floodplain/gap cells transparently fall back to the existing DEM.
-elevation_list = (
-    [{"elevation": "local_river_burned"}, {"elevation": "local_elevation_merged"}]
-    if burn_rivers_enabled
-    else [{"elevation": "local_elevation_merged"}]
-)
+# The burned channel always takes priority over 'local_elevation_merged'
+# wherever it has valid data (hydromt_sfincs's elevation_list/
+# merge_multi_dataarrays merges by priority: first source wins, later
+# sources fill gaps) — so ocean/floodplain/gap cells transparently fall
+# back to the conditioned DEM.
+#
+# TWO different burned-channel sources, for two different consumers:
+# - elevation_list_main (sf.elevation.create(), the main "dep" grid) uses
+#   'local_river_burned_sfincs_grid' -- burned directly at the SFINCS
+#   grid's own resolution (rule empirical_depth_estimation/modelled_depth_estimation, both 10), so HydroMT does ZERO reprojection
+#   for this layer -- a perfect pixel-for-pixel match. Burning only at
+#   native resolution and letting HydroMT resample it here would leave
+#   part of the nominal channel corridor with no excavated data at all
+#   once merged onto the coarser SFINCS grid. Its fallback is
+#   'local_elevation_conditioned_sfincs_grid'
+#   (rule 10's own SFINCS-grid-resolution output) rather than
+#   'local_elevation_merged' (native) -- the SAME pre-computed background
+#   raster calibration (rule 9b) uses directly as its own
+#   sf.elevation.create() source, with zero HydroMT reprojection here
+#   either, so the floodplain/ocean background matches calibration exactly
+#   too, not just the channel.
+# - elevation_list_subgrid (sf.subgrid.create()) keeps the NATIVE-resolution
+#   'local_river_burned' + 'local_elevation_merged' -- subgrid needs real
+#   sub-cell (finer-than-grid-cell) detail for its own volume/conveyance
+#   tables; the SFINCS-grid version would just duplicate one flat value
+#   across every sub-cell. 'local_elevation_merged' here is the exact same
+#   native file calibration's own subgrid step reads as
+#   'local_elevation_conditioned' -- already consistent, no swap needed.
+elevation_list_main = [
+    {"elevation": "local_river_burned_sfincs_grid"}, {"elevation": "local_elevation_conditioned_sfincs_grid"},
+]
+elevation_list_subgrid = [{"elevation": "local_river_burned"}, {"elevation": "local_elevation_merged"}]
 
 # ── load domain boundary ────────────────────────────────────────────────────────
 delta_domain = gpd.read_file(domain_path)
@@ -315,23 +381,27 @@ else:
 # ── 2. Elevation ──────────────────────────────────────────────────────────────
 elevation_component = sf.quadtree_elevation if quadtree_enabled else sf.elevation
 elevation_component.create(
-    elevation_list=elevation_list,
+    elevation_list=elevation_list_main,
 )
-log.info("Elevation set from 'local_elevation_merged'")
+log.info(f"Elevation set from {[e['elevation'] for e in elevation_list_main]}")
 
 # ── 3. Mask: active cells ─────────────────────────────────────────────────────
 # Use include_polygon + include_zmax (not global zmax) so the elevation filter
 # is scoped to cells within the polygon.  Global zmax activates ALL grid cells
 # below the threshold first, then include_polygon *adds* (overrides), which
 # leaves ocean cells in the rectangular bounding box corners active.
-# sf.mask.create_active(include_polygon=delta_domain, include_zmax=clip_elevation_m)
-# log.info(
-#     f"Active mask created: cells within delta polygon AND below {clip_elevation_m} m"
-# )
+active_mask_kwargs = {}
+if active_mask_enabled:
+    with open(river_elevation_max_path) as f:
+        river_elevation_max_m = float(json.load(f)["river_elevation_max_m"])
+    clip_elevation_m = river_elevation_max_m + active_mask_elevation_buffer_m
+    active_mask_kwargs = {"include_zmax": clip_elevation_m}
 mask_component = sf.quadtree_mask if quadtree_enabled else sf.mask
-mask_component.create_active(include_polygon=delta_domain)
+mask_component.create_active(include_polygon=delta_domain, **active_mask_kwargs)
 log.info(
-    f"Active mask created: cells within delta polygon."
+    "Active mask created: cells within delta polygon"
+    + (f" AND below {clip_elevation_m:.1f} m (river max {river_elevation_max_m:.1f} m + "
+       f"{active_mask_elevation_buffer_m:.1f} m buffer)" if active_mask_kwargs else "")
 )
 
 # ── 4. Mask: waterlevel boundary ──────────────────────────────────────────────
@@ -374,15 +444,169 @@ if delta_outflow_enabled:
         f"crossing(s), {outflow_buffer_m:.0f} m buffer → mask=3"
     )
 
+# ── 4c. Coastal protection weir ───────────────────────────────────────────────
+# Bakes a coastal/riverbank protection weir directly into the model, hugging
+# the coast/riverbank directly (no inland offset) -- built on the model's
+# OWN grid (not the DEM/landuse working grid) so the derived line is
+# correctly aligned to real flux links by construction -- see
+# src.protection_weir's module docstring for the full design rationale.
+# A weir enforces a real barrier, unlike subtracting a scalar protection
+# height from the surge boundary forcing, which would let low-lying land
+# flood anyway since it doesn't create an actual obstacle. Needs the grid +
+# mask sections above (elevation/valid-cell data) but nothing from
+# initial-conditions/roughness/subgrid/forcing below.
+#
+# rivers is loaded here rather than down in section 8/subgrid since both
+# the channel mask below and the subgrid table need the same GeoDataFrame;
+# section 8 reuses this variable instead of reading it again.
+rivers = gpd.read_file(river_network_path)
+
+_domain_wgs84 = delta_domain.to_crs("EPSG:4326")
+_domain_union = _domain_wgs84.geometry.union_all()
+_domain_poly_4326 = _domain_union if isinstance(_domain_union, Polygon) else _domain_union.convex_hull
+
+# Weirs only exist where there's real calibrated data behind them --
+# river_processing.depth_method == "modelled" (empirical mode has no
+# simulated water level, only a design discharge, so any coastal number
+# there would be an arbitrary guess rather than a real protection
+# standard -- no weir at all in that case, any grid type).
+#
+# Regular grid + modelled: import rule 9b's own final, actual traced weir
+# directly (seed-head/domain-edge closure, coastal-probe correction,
+# per-cell smoothing, coastal-crest flooring all already baked in) --
+# no re-derivation, and critically no separate freeboard_m addition here
+# (modelled_depth_estimation's own convergence already guarantees that margin IS the tracked
+# crest, adding it again would double-count it).
+#
+# Quadtree + modelled: 9b never runs quadtree (its own weir_gdf's lines
+# are traced against regular-grid cell boundaries, not reusable against a
+# quadtree mesh) -- re-derive from the final per-reach weir_crest_calibrated
+# column instead, same mechanism this rule always used before.
+rivers_utm = rivers.to_crs(sf.crs)
+weir_gdf = gpd.GeoDataFrame({"elevation": [], "par1": []}, geometry=[], crs=sf.crs)
+weir_grid = None
+
+if depth_method == "modelled" and not quadtree_enabled and coastal_protection_weir_path is not None:
+    from src.protection_weir import GridArrays, LANDUSE_SEA
+    from src.river_burn import build_channel_mask_regular
+
+    weir_grid = GridArrays.from_regular(sf.grid.data["dep"], sf.grid.data["mask"], sf.crs)
+    weir_gdf = gpd.read_file(coastal_protection_weir_path)
+    if not weir_gdf.empty:
+        sf.weirs.set(weir_gdf, merge=False)
+        log.info(f"Coastal protection weir imported directly from rule 9b: {len(weir_gdf)} segment(s)")
+    else:
+        log.info("Coastal protection weir: 9b's own file has no segments -- sf.weirs left empty")
+    # Minimal diagnostics for the plot below -- cheap to recompute (mask
+    # classification only), avoids re-running the expensive weir trace
+    # that already happened once in rule 9b.
+    landuse_on_grid = weir_grid.sample_landuse(landuse_path)
+    river_channel_mask = build_channel_mask_regular(rivers_utm, "width", weir_grid.shape, weir_grid.transform)
+    weir_diagnostics = {
+        "applicable": True,
+        "ocean_mask": landuse_on_grid == LANDUSE_SEA,
+        "river_channel_mask": river_channel_mask,
+        "weir_lines": list(weir_gdf.geometry),
+        "crest_elevation_m": coastal_protection_crest_m,
+    }
+
+elif depth_method == "modelled" and quadtree_enabled:
+    from src.protection_weir import build_coastal_protection_weir, GridArrays
+    from src.river_burn import build_channel_mask_quadtree, build_smoothed_weir_crest_quadtree
+
+    weir_grid = GridArrays.from_quadtree(sf.quadtree_grid.data, sf.crs)
+    river_channel_mask = build_channel_mask_quadtree(rivers_utm, "width", sf.quadtree_grid.data.grid)
+
+    river_crest_on_grid = None
+    if "weir_crest_calibrated" in rivers_utm.columns:
+        river_crest_on_grid = build_smoothed_weir_crest_quadtree(
+            rivers_utm, "width", "weir_crest_calibrated", sf.quadtree_grid.data.grid,
+            blend_distance_m=weir_crest_junction_blend_m,
+        )
+
+    landuse_on_grid = weir_grid.sample_landuse(landuse_path)
+    # Same width/resolution scaling as rule 9b's own dilation (see
+    # 10_depth_estimation_modelled.py) -- quadtree cell size varies per
+    # face, so use the FINEST (river-refined) cell size as the resolution
+    # reference, matching the scale the weir corridor actually sits at.
+    _finest_cell_size_m = float(np.min(weir_grid.cell_size_m))
+    _max_river_width_m = float(rivers_utm["width"].max()) if rivers_utm["width"].notna().any() else 0.0
+    river_crest_dilation_cells_scaled = max(
+        river_crest_dilation_cells, int(_max_river_width_m / (2 * _finest_cell_size_m))
+    )
+    log.info(
+        f"river_crest_dilation_cells (quadtree fallback) = {river_crest_dilation_cells_scaled} "
+        f"(max reach width={_max_river_width_m:.0f} m, finest cell size={_finest_cell_size_m:.1f} m, "
+        f"floor={river_crest_dilation_cells})"
+    )
+    weir_gdf, weir_diagnostics = build_coastal_protection_weir(
+        weir_grid, landuse_on_grid, river_channel_mask, coastal_protection_crest_m,
+        min_component_cells, weir_par1, river_crest_on_grid=river_crest_on_grid,
+        freeboard_m=weir_freeboard_m,
+        # Quadtree's build_channel_mask_quadtree is untouched/out of scope
+        # (rule 9b never runs quadtree), so it keeps the safety-net dilation.
+        channel_mask_gap_free=False,
+        river_crest_dilation_cells=river_crest_dilation_cells_scaled,
+    )
+    if weir_diagnostics.get("applicable", True) and not weir_gdf.empty:
+        sf.weirs.set(weir_gdf, merge=False)
+        log.info(f"Coastal protection weir set (quadtree fallback): {len(weir_gdf)} segment(s)")
+    else:
+        log.info("Coastal protection weir: not applicable or no segments extracted -- sf.weirs left empty")
+
+else:
+    log.info(f"Coastal protection weir: none built -- depth_method={depth_method!r} has no calibrated crest data")
+    weir_diagnostics = {"applicable": False}
+
+# Standalone GIS export (positions + crest elevation/par1 per segment) --
+# sf.weirs.set() above only feeds SFINCS's own sfincs.weir text format
+# (written by sf.write() later); this is for inspecting/QA-ing the same
+# weir data in GIS tooling directly.
+Path(snakemake.output.weir_gpkg).parent.mkdir(parents=True, exist_ok=True)
+if not weir_gdf.empty:
+    weir_gdf.to_file(snakemake.output.weir_gpkg, driver="GPKG")
+    log.info(f"Weir GeoPackage written: {snakemake.output.weir_gpkg} ({len(weir_gdf)} segment(s))")
+else:
+    Path(snakemake.output.weir_gpkg).touch()
+    log.info("Weir GeoPackage: no segments -- empty sentinel written")
+
+if weir_grid is not None:
+    from src.plots import plot_coastal_protection_weir
+    plot_coastal_protection_weir(
+        weir_grid, weir_diagnostics, _domain_poly_4326,
+        str(land_polygons_path), str(river_network_path),
+        str(snakemake.output.plot_coastal_protection_weir),
+        basin_id=sfincs_root.parent.name, weir_gdf=weir_gdf,
+    )
+else:
+    Path(snakemake.output.plot_coastal_protection_weir).touch()
+
 # ── 5. Initial conditions ──────────────────────────────────────────────────────
-# zsini.tif (rule 05b) has two values: 0.0 for sea cells (not on OSM land
-# polygons) and -9999 nodata for land cells.  When baseline_m != 0 the
-# catalog points to a corrected copy with sea cells shifted to baseline_m
-# so the initial ocean state matches the boundary forcing lead period.
+# zsini.tif is built above from sea_mask.tif (rule 05b) + baseline_m: sea
+# cells = baseline_m, -9999 nodata for land cells, so the initial ocean
+# state matches the boundary forcing lead period.
 # create() reprojects the raster onto the model grid (mask must exist first).
 # Where nodata: SFINCS falls back to local bed level as initial water level.
+#
+# forcing_mode="river_only": SKIP the spatially-varying raster entirely and
+# leave every cell (sea AND land) at the uniform zsini=-9999 default below --
+# i.e. every cell starts dry at its own bed level, including the ocean. The
+# river_only boundary is a flat constant BELOW terrain.gebco_max_depth_m
+# (river_only_flat_level_m, section 9 below) -- guaranteed dry, so the ocean
+# stays dry (no fill-in from the boundary) for the entire run, same as every
+# other cell. Giving the ocean any head start here (as compound/coastal_only
+# do, where real surge/tide dynamics need a consistent non-transient sea
+# state) would just pre-fill areas right when the point of river_only is to
+# isolate the river's own contribution against a neutral, dry coast that
+# never contributes water of its own.
 initial_conditions_component = sf.quadtree_initial_conditions if quadtree_enabled else sf.initial_conditions
-if quadtree_enabled:
+if forcing_mode == "river_only":
+    log.info(
+        "Initial conditions: uniform zsini=-9999 (dry at own bed level, "
+        "incl. ocean) -- forcing_mode='river_only', boundary stays dry "
+        "(below the GEBCO depth clamp) for the entire run"
+    )
+elif quadtree_enabled:
     # quadtree_initial_conditions.create()'s default reproj_method="average" is not a
     # valid xugrid.OverlapRegridder method in the installed xugrid version (valid: "mean",
     # "harmonic_mean", ...) — override explicitly to work around this hydromt_sfincs bug.
@@ -399,12 +623,32 @@ if quadtree_enabled:
     # it has served its purpose -- see the write() section below.)
     sf.config.update({"inifile": sf.config.get("ncinifile")})
 else:
-    initial_conditions_component.create(ini="local_zsini")
+    # reproj_method="nearest", NOT the default "average": zsini is a
+    # near-binary field (baseline_m at sea, NaN/nodata on land), reprojected
+    # from the ~30 m elevation working grid onto the coarser (e.g. 120 m)
+    # SFINCS grid. "average" reprojects each destination cell from the mean
+    # of overlapping source pixels -- for a coastal cell whose native-
+    # resolution footprint has ZERO overlapping valid (sea) source pixels
+    # (e.g. a genuine open-water SFINCS cell that native-resolution OSM
+    # land polygons happen to classify as "land" at that exact sub-pixel
+    # location, or an edge/alignment mismatch between zsini's own grid and
+    # SFINCS's independently-built grid), the result is NaN -> fillna(-9999)
+    # -- SFINCS then starts that cell completely DRY (initial water level =
+    # its own bed level) despite being an active sea cell whose bed is well
+    # below baseline_m, visible in the spin-up animation as water "flooding
+    # in" from the boundary to fill these wrongly-dry interior sea cells.
+    # "nearest" avoids any blending/dilution: each destination cell cleanly
+    # inherits whichever single category (sea or land) the nearest
+    # native-resolution zsini pixel belongs to.
+    initial_conditions_component.create(ini="local_zsini", reproj_method="nearest")
 # HydroMT hardcodes zsini=0.0 in sfincs.inp after create().  Override to
 # -9999 so any cell not covered by sfincs.ini falls back to bed level (dry),
-# consistent with how sfincs.ini itself handles land cells.
+# consistent with how sfincs.ini itself handles land cells -- and, for
+# forcing_mode="river_only" (no create() call above), this IS the initial
+# condition for every cell, sea included.
 sf.config.update({"zsini": -9999.0})
-log.info(f"Initial conditions set: sea = {baseline_m:+.4f} m, land = -9999 (bed level / dry)")
+if forcing_mode != "river_only":
+    log.info(f"Initial conditions set: sea = {baseline_m:+.4f} m, land = -9999 (bed level / dry)")
 
 # ── 6. Roughness ─────────────────────────────────────────────────────────────
 # roughness.create() option (1): {'manning': catalog_key} loads a pre-computed
@@ -466,31 +710,16 @@ log.info("Simulation config set (tstart=tref placeholder, updated before write)"
 # (empty file) so Snakemake's output check passes; sfincs.inp will NOT
 # contain a qtrfile/sbgfile directive, so SFINCS can run without subgrid
 # (coarser, but valid).
-rivers = gpd.read_file(river_network_path)
+# rivers itself already loaded in section 4c (coastal protection weir).
 rivers["rivwth"] = rivers["width"].fillna(1.0).astype(float)
 rivers["rivdph"] = rivers["rivdph"].clip(lower=0.0).astype(float)
 
-# When river conditioning is enabled (and burn_rivers is NOT), rule 11
-# (burn_river_bed) has pre-computed smooth bed anchor points
-# (zbed_anchors.gpkg) with absolute rivbed [m+REF] values. These are passed
-# directly to burn_river_rect as gdf_zb, which interpolates along merged
-# river lines and only lowers the subgrid DEM where rivbed < DEM.
-# rivdph is completely bypassed when gdf_zb is provided — no need to zero it.
-#
-# When burn_rivers IS enabled, the channel is already correctly burned into
-# 'local_river_burned' (see elevation_list above) — burn_river_rect is
-# skipped entirely (river_list=[] below) rather than running it a second
-# time on an already-burned raster, since it's the actual source of the
-# per-tile contamination artifact this feature exists to avoid.
-zbed_gdf = None
-if preburn_enabled and not burn_rivers_enabled:
-    zbed_path = snakemake.input.zbed_anchors
-    if zbed_path:   # empty list [] when disabled
-        zbed_gdf = gpd.read_file(zbed_path)
-        log.info(
-            f"Loaded {len(zbed_gdf)} river bed anchor points from zbed_anchors.gpkg — "
-            "passed as gdf_zb (rivbed) to subgrid; rivdph bypassed"
-        )
+# The channel is always already correctly burned into 'local_river_burned'
+# (native resolution, see elevation_list_subgrid above), so hydromt's own
+# burn_river_rect (river_list -> gdf_zb) is never used here -- running it a
+# second time on an already-burned raster produces a wavy, non-monotonic
+# bed, which is exactly what passing a non-empty river_list here would do.
+river_list = []
 
 # Clear any subgrid files from a previous build before writing new ones.
 # A regular build writes a single dep_subgrid.tif/manning_subgrid.tif; a
@@ -511,16 +740,8 @@ if include_subgrid:
         f"rivdph [{rivers['rivdph'].min():.2f}–{rivers['rivdph'].max():.2f} m]"
     )
     subgrid_component = sf.quadtree_subgrid if quadtree_enabled else sf.subgrid
-    if burn_rivers_enabled:
-        river_list = []
-        log.info("burn_rivers enabled — skipping burn_river_rect (channel already burned)")
-    else:
-        river_entry = {"centerlines": rivers}
-        if zbed_gdf is not None:
-            river_entry["gdf_zb"] = zbed_gdf
-        river_list = [river_entry]
     subgrid_component.create(
-        elevation_list=elevation_list,
+        elevation_list=elevation_list_subgrid,
         roughness_list=[{"manning": "local_roughness"}],
         river_list=river_list,
         nr_subgrid_pixels=nr_subgrid_pixels,
@@ -546,14 +767,17 @@ else:
 # within the given buffer.
 #
 # forcing_mode="river_only": replace the real surge/tide boundary with a flat
-# constant at baseline_m -- the same value zsini's sea cells already carry
-# (section 5), so there's no initial mismatch/transient at the coast, and no
-# surge/tide variability to confound the river-discharge contribution.
+# constant BELOW terrain.gebco_max_depth_m (the deepest any clamped ocean bed
+# cell can be) -- river_only_flat_level_m, computed in the rule from config,
+# not just zsini's baseline_m -- so the boundary is guaranteed dry everywhere
+# and contributes no water of its own; the model's behavior is then driven
+# entirely by river discharge, with no surge/tide variability or coastal
+# inflow to confound it.
 if forcing_mode == "river_only":
     sf.water_level.create_boundary_points_from_mask(bnd_dist=flat_boundary_point_spacing_m)
-    sf.water_level.create_timeseries(shape="constant", offset=baseline_m)
+    sf.water_level.create_timeseries(shape="constant", offset=river_only_flat_level_m)
     log.info(
-        f"Water-level forcing: flat constant boundary at {baseline_m:+.4f} m "
+        f"Water-level forcing: flat constant boundary at {river_only_flat_level_m:+.4f} m "
         f"(forcing_mode='river_only')"
     )
 else:
@@ -621,11 +845,16 @@ else:
     # Built here (SFINCS-build time), not precomputed in river_forcing.nc --
     # looks up the design discharge at design_rp_river_yr from the stored
     # per-crossing GPD return-value table (log-RP interpolated), applies the
-    # protection-discharge floor, then reconstructs the sinusoidal-wave
+    # protection-discharge floor (empirical mode only -- in modelled mode a
+    # real calibrated riverbank weir already represents protection, so the
+    # floor would double-count it), then reconstructs the sinusoidal-wave
     # hydrograph -- see src.river_forcing.build_design_discharge_matrix.
     # discharge dims: (crossing, time) → transpose to (time, crossing) for DataFrame
     dis_df = pd.DataFrame(
-        data=build_design_discharge_matrix(river_ds, active, design_rp_river_yr).T,
+        data=build_design_discharge_matrix(
+            river_ds, active, design_rp_river_yr,
+            apply_protection_floor=(depth_method == "empirical"),
+        ).T,
         index=river_times,
         columns=range(n_active),
     )
@@ -666,25 +895,14 @@ else:
         dis_df.loc[:, :] = 0.0
         log.info("River discharge forced to 0.0 m3/s at all crossings (forcing_mode='coastal_only')")
 
-    # Filter crossing points to those within the active SFINCS region.
-    # Centroids of inside-domain reaches can land in a cell outside the
-    # active-cells polygon (delta_domain); discharge_points.create() clips
-    # locations against self.model.region using an UNBUFFERED 'intersects'
-    # check and raises NoDataException when none survive. Its own `buffer=`
-    # parameter does NOT expand that check outward -- it instead restricts
-    # acceptance to a ring near the boundary that is itself clipped back to
-    # the same unbuffered region, so it can never rescue a point that falls
-    # just outside (confirmed by reading hydromt_sfincs' discharge_points.
-    # create(): `region.boundary.buffer(buffer).clip(self.model.region)`).
-    # A 1-cell buffer is used here only to decide which crossings to keep;
-    # any kept point that falls just outside the exact (unbuffered) region
-    # is then snapped onto its boundary (nearest_points; a no-op for points
-    # already inside) so every kept point is guaranteed to satisfy hydromt's
-    # own 'intersects' check regardless of its buffer setting.
+    # Filter crossing points to those within the active SFINCS region, and
+    # snap any kept point that falls just outside the exact region back
+    # inside -- see src.geometry.snap_points_into_region's docstring for why
+    # this two-step process is needed (discharge_points.create()'s own
+    # unbuffered 'intersects' check + GEOS floating-point fragility).
     buf_deg = float(resolution) / 111_000.0
     region_wgs84 = sf.region.to_crs("EPSG:4326").geometry.union_all()
-    in_region = crossings_gdf.geometry.within(region_wgs84.buffer(buf_deg))
-    crossings_filt = crossings_gdf[in_region].copy()
+    crossings_filt, in_region = snap_points_into_region(crossings_gdf, region_wgs84, buf_deg)
     n_outside = int((~in_region).sum())
     if n_outside:
         log.warning(
@@ -695,32 +913,6 @@ else:
     if crossings_filt.empty:
         log.warning("All discharge crossings outside active region — discharge forcing skipped")
     else:
-        # nearest_points() alone is not enough: it returns a point that is
-        # mathematically ON the region boundary, but GEOS's floating-point
-        # arithmetic can place it a hair outside, which then still fails
-        # hydromt's own 'intersects' check inside create() (confirmed live:
-        # a point snapped this way at R=60/n_cells=2 still reported
-        # region.intersects(point) == False). Nudge REGION_SNAP_NUDGE_M
-        # further from the boundary point, towards a point guaranteed to be
-        # inside the region (representative_point()), so the result is
-        # safely interior rather than balanced on a numerically fragile edge.
-        REGION_SNAP_NUDGE_M = 1.0
-        nudge_deg = REGION_SNAP_NUDGE_M / 111_000.0
-        interior_anchor = region_wgs84.representative_point()
-
-        def _snap_into_region(g):
-            if region_wgs84.contains(g):
-                return g
-            boundary_pt = nearest_points(region_wgs84, g)[0]
-            dx = interior_anchor.x - boundary_pt.x
-            dy = interior_anchor.y - boundary_pt.y
-            dist = math.hypot(dx, dy)
-            if dist == 0:
-                return boundary_pt
-            frac = min(nudge_deg / dist, 1.0)
-            return Point(boundary_pt.x + dx * frac, boundary_pt.y + dy * frac)
-
-        crossings_filt["geometry"] = crossings_filt.geometry.apply(_snap_into_region)
         # Pass full dis_df — discharge_points.create() reindexes it to only the
         # columns matching crossings_filt["index"] (the original crossing indices).
         sf.discharge_points.create(
@@ -844,8 +1036,8 @@ if quadtree_enabled:
     # is now correctly written to disk. But the SFINCS kernel itself appears to
     # treat "inifile" (legacy regular-grid ASCII/binary ini format) and
     # "ncinifile" (netCDF, for quadtree) as mutually exclusive: leaving BOTH
-    # keys in sfincs.inp pointing at the same netCDF file caused an immediate
-    # access-violation crash at simulation start (observed for basin 4267691).
+    # keys in sfincs.inp pointing at the same netCDF file causes an immediate
+    # access-violation crash at simulation start.
     # Drop the now-redundant "inifile" key and re-serialize sfincs.inp so the
     # kernel only sees "ncinifile", matching the actual file format on disk.
     sf.config.set("inifile", None)
@@ -858,6 +1050,15 @@ subgrid_path = Path(snakemake.output.sfincs_subgrid)
 if not subgrid_path.exists():
     subgrid_path.touch()
     log.info("sfincs_subgrid.nc placeholder written (subgrid not built)")
+
+# SfincsWeirs.write() (called inside sf.write() above) is a no-op when no
+# weir was ever sf.weirs.set() (feature disabled, no ocean cells, or no
+# weir segments extracted) -- touch a placeholder so Snakemake's output
+# check passes, same pattern as sfincs_subgrid above.
+weir_path = Path(snakemake.output.sfincs_weir)
+if not weir_path.exists():
+    weir_path.touch()
+    log.info("sfincs.weir placeholder written (no weir set)")
 
 # ── diagnostic plots ──────────────────────────────────────────────────────────
 # Plots are built manually (not via fn_out) so we can:
@@ -930,7 +1131,10 @@ with xr.open_dataset(river_forcing_path, decode_times=False) as _rds:
     _active_mask  = _rds.has_glofas.values.astype(bool)
     _n_cross      = int(_active_mask.sum())
     _dis_active   = (
-        build_design_discharge_matrix(_rds, _active_mask, design_rp_river_yr)
+        build_design_discharge_matrix(
+            _rds, _active_mask, design_rp_river_yr,
+            apply_protection_floor=(depth_method == "empirical"),
+        )
         if _n_cross > 0 else np.zeros((0, len(_river_times)))
     )
 
@@ -975,8 +1179,7 @@ plt.close(fig5)
 log.info("Plot written: 05_forcing.png")
 
 # 6. Initial conditions (zsini)
-_zsini_plot_path = _zsini_corr if baseline_m != 0.0 else _zsini_src
-with rasterio.open(_zsini_plot_path) as _src:
+with rasterio.open(_zsini_out) as _src:
     _zsini_arr = _src.read(1).astype(np.float32)
     _nodata_val = _src.nodata
     _bounds = _src.bounds

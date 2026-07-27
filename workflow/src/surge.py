@@ -84,6 +84,37 @@ def sinusoidal_wave(
     return values
 
 
+def lookup_storm_tide_at_rp(surge_ds: xr.Dataset, rp_yr: float | None) -> np.ndarray:
+    """
+    Per-station storm-tide water level at ``rp_yr`` from surge_forcing.nc's
+    stored storm_tide_rp_table (exact match against COAST-RP's tabulated
+    RPs — no interpolation), vertically corrected the same way rule 07
+    applied (station_baseline = −mdt + slr_m).
+
+    rp_yr=None means mean coastal conditions: each station's own baseline
+    (tide-only / calm sea, no storm surge).
+
+    Returns:
+        (n_station,) np.ndarray, water level (m).
+    """
+    n_stations = surge_ds.sizes["station"]
+    baselines = (
+        surge_ds["station_baseline"].values
+        if "station_baseline" in surge_ds
+        else np.full(n_stations, float(surge_ds["baseline_m"].values))
+    )
+    if rp_yr is None:
+        return baselines  # flat: no storm surge
+    table_rps = surge_ds["table_rp"].values
+    idx = np.nonzero(np.isclose(table_rps, float(rp_yr)))[0]
+    if idx.size == 0:
+        raise ValueError(
+            f"surge RP {rp_yr} not tabulated in COAST-RP "
+            f"({[int(r) for r in table_rps]})"
+        )
+    return surge_ds["storm_tide_rp_table"].values[:, idx[0]] + baselines
+
+
 def build_design_surge_matrix(
     surge_ds: xr.Dataset,
     design_rp_yr: int | None,
@@ -96,33 +127,19 @@ def build_design_surge_matrix(
 
     design_rp_yr=None means mean coastal conditions: zero surge amplitude, a
     flat timeseries at each station's own baseline (tide-only / calm sea).
-    Otherwise the raw storm-tide is taken from storm_tide_rp_table (exact
-    match against COAST-RP's tabulated RPs — no interpolation) and the same
-    vertical correction rule 07 applied (station_baseline = −mdt + slr_m) is
-    added.  The protection level, if rule 07 stored one, is subtracted in
-    both cases.  At rule 07's own configured RP this reproduces the stored
+    The protection level, if rule 07 stored one, is subtracted in both
+    cases.  At rule 07's own configured RP this reproduces the stored
     water_level exactly.
 
     Returns:
         (n_station, n_time) np.ndarray, water level (m).
     """
-    n_stations = surge_ds.sizes["station"]
     baselines = (
         surge_ds["station_baseline"].values
         if "station_baseline" in surge_ds
-        else np.full(n_stations, float(surge_ds["baseline_m"].values))
+        else np.full(surge_ds.sizes["station"], float(surge_ds["baseline_m"].values))
     )
-    if design_rp_yr is None:
-        rp_level = baselines  # flat: wave from baseline to baseline
-    else:
-        table_rps = surge_ds["table_rp"].values
-        idx = np.nonzero(np.isclose(table_rps, float(design_rp_yr)))[0]
-        if idx.size == 0:
-            raise ValueError(
-                f"surge RP {design_rp_yr} not tabulated in COAST-RP "
-                f"({[int(r) for r in table_rps]})"
-            )
-        rp_level = surge_ds["storm_tide_rp_table"].values[:, idx[0]] + baselines
+    rp_level = lookup_storm_tide_at_rp(surge_ds, design_rp_yr)
     times = surge_ds["time"].values
     wave = np.stack(
         [
@@ -229,9 +246,7 @@ def apply_mdt_correction(
                        found within +/-fallback_deg).
         rp_level:     rp_level_raw - mdt (local MSL -> GOCO06s geoid), matching
                        the sign convention used to re-reference GEBCO to
-                       GOCO06s (gebco -= mdt) in 05a_get_elevation.py. The
-                       caller decides whether to keep this or revert to
-                       rp_level_raw based on vertical_correction.enabled.
+                       GOCO06s (gebco -= mdt) in 05a_get_elevation.py.
     """
     lat_dim = next(d for d in mdt_da.dims if "lat" in d.lower())
     lon_dim = next(d for d in mdt_da.dims if "lon" in d.lower())
@@ -411,9 +426,9 @@ def interpolate_protection_level(
     load_coastrp_stations()).
 
     target_rp_yr is clamped to [min(_COASTRP_RPS), max(_COASTRP_RPS)] --
-    callers needing a wider cap (e.g. top-level protection_levels.
-    max_rp_yr) should apply it before calling this, but COAST-RP itself
-    cannot extrapolate past its own tabulated range regardless.
+    callers needing a wider cap (e.g. top-level flopros_range.max_rp_yr)
+    should apply it before calling this, but COAST-RP itself cannot
+    extrapolate past its own tabulated range regardless.
 
     Args:
         stations:      GeoDataFrame with 'rp_raw_{rp:04d}' columns for every
@@ -569,7 +584,7 @@ def build_surge_dataset(
     regardless of how MDT varies spatially across the selected stations.
     ``baseline_m`` (the mean of those per-station values) is still stored in
     the dataset so rule 13 can initialise sea cells at the same vertical
-    reference (zsini_baseline.tif).
+    reference (zsini.tif).
 
     Args:
         stations:          GeoDataFrame with 'rp_level' and 'dist_m' columns and
@@ -581,7 +596,7 @@ def build_surge_dataset(
         baseline_m:        Mean vertical correction applied to rp_level (m).
                            Equals mean(−MDT + SLR) across selected stations.
                            Stored in the dataset so rule 13 can initialise sea
-                           cells (zsini_baseline.tif).  Defaults to 0.0.
+                           cells (zsini.tif).  Defaults to 0.0.
         station_baselines: Per-station lead-period flat values (m), length
                            equal to ``len(stations)``.  Each entry is the
                            station's own local MSL in model coordinates
@@ -656,7 +671,7 @@ def build_surge_dataset(
                 "Mean vertical correction applied as lead-period baseline "
                 "(mean(−MDT + SLR) across selected stations = calm sea level "
                 "in model coordinates). Read by rule 13 to initialise sea cells "
-                "via zsini_baseline.tif.  Equals 0.0 when both corrections are off."
+                "via zsini.tif.  Equals 0.0 when both corrections are off."
             ),
         },
     )

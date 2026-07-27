@@ -30,6 +30,11 @@ rule run_event:
         min_inundation_depth_m     = config["sfincs"]["sanity_checks"]["min_inundation_depth_m"],
         include_subgrid            = config["sfincs"]["subgrid"]["enabled"],
         animation_fps              = config["sfincs"]["sanity_checks"]["animation_fps"],
+    # Claims the whole --cores budget -- see rule run_spinup's (14) threads
+    # comment for the full rationale (SFINCS itself can multi-thread, but
+    # Snakemake can't parallelize within one run, so give it the whole
+    # machine rather than let other jobs compete with it for CPU).
+    threads: workflow.cores
     log:
         "logs/{basin_id}/scenarios/{scenario}/16_run_event.log"
     script:

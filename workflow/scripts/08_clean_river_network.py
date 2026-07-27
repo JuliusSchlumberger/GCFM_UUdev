@@ -8,6 +8,7 @@ from src.profiling import ScriptProfiler
 from src.river_forcing import load_forcing_crossings, snap_crossings_to_reaches
 from src.plots import plot_clean_network_discharge, plot_cleaned_network
 from src.river_network import (
+    _as_linestring,
     accumulate_discharge,
     build_downstream_adjacency,
     collect_downstream_main_paths,
@@ -72,6 +73,37 @@ rivers_clean["linked_to_source"] = True
 rivers_clean["is_seed"] = rivers_clean["reach_id"].map(_norm_id).isin(set(seed_q.keys()))
 log.info(f"Retained {len(rivers_clean)}/{len(rivers)} reaches")
 
+# Trim each seed reach's own geometry to the real delta polygon (domain_poly
+# -- the SAME polygon rule 07's own find_boundary_crossings/
+# _domain_entry_point used to locate the actual discharge injection
+# coordinate, stored independently in river_forcing.nc, not as a reach
+# endpoint). A seed reach otherwise still carries its full rectangle-clipped
+# SWORD extent (rule 06's bounding-box clip: delta polygon envelope +
+# domain.delta_buffer_m), typically extending outside the real delta
+# polygon -- e.g. a downstream observation/calibration point placed at
+# such a reach's own (now-partly-external) midpoint can end up right at or
+# beyond the active model domain's own edge. Trimming here only affects
+# this reach's OWN geometry (hence its length/midpoint/along-reach
+# sampling everywhere downstream); the entry point itself is unaffected.
+seed_mask = rivers_clean["is_seed"]
+if seed_mask.any():
+    domain_poly_native = gpd.GeoSeries([domain_poly], crs="EPSG:4326").to_crs(rivers_clean.crs).iloc[0]
+    n_trimmed = 0
+    for idx in rivers_clean.index[seed_mask]:
+        geom = rivers_clean.at[idx, "geometry"]
+        clipped = geom.intersection(domain_poly_native)
+        if clipped.is_empty:
+            log.warning(f"Seed reach {rivers_clean.at[idx, 'reach_id']}: intersection with domain polygon is empty, keeping original geometry")
+            continue
+        clipped_line = _as_linestring(clipped)
+        if clipped_line is None or clipped_line.length == 0:
+            log.warning(f"Seed reach {rivers_clean.at[idx, 'reach_id']}: clipped geometry has no length, keeping original geometry")
+            continue
+        if clipped_line.length < geom.length:
+            n_trimmed += 1
+            rivers_clean.at[idx, "geometry"] = clipped_line
+    log.info(f"Seed reach(es) trimmed to domain polygon: {n_trimmed}/{int(seed_mask.sum())}")
+
 # ── delta-outline outflow points (neither seed nor mouth) ────────────────────
 # A reach that crosses the delta polygon's OUTLINE but is neither the seed
 # (the real inflow entry point) nor a mouth is a genuine place where flow
@@ -114,7 +146,6 @@ adjacency = build_downstream_adjacency(rivers_clean)
 q_acc = accumulate_discharge(
     rivers_clean, seed_q, adjacency,
     n_iterations=snakemake.params.flow_accumulation_iterations,
-    min_width_m=snakemake.params.min_width_m,
 )
 rivers_clean["bankfull_discharge_acc"] = q_acc
 log.info(

@@ -25,9 +25,6 @@ Outputs
 spinup/sfincs.YYYYMMDD.HHMMSS.rst   SFINCS binary restart file at t = spinup_days.
 """
 
-import subprocess
-import sys
-import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -36,8 +33,9 @@ import geopandas as gpd
 from shapely.geometry import Polygon
 
 from src.log import setup_logging
-from src.plots import plot_max_inundation_map
+from src.plots import plot_max_inundation_map, plot_water_level_timeseries
 from src.postprocessing import compute_max_inundation
+from src.sfincs_run import run_sfincs_subprocess
 
 log = setup_logging(snakemake.log[0])
 
@@ -166,56 +164,7 @@ with open(spinup_inp, "w") as fh:
 log.info(f"Spinup sfincs.inp written: {spinup_inp}")
 
 # ── run SFINCS ────────────────────────────────────────────────────────────────
-# Resolve and validate the executable path before attempting to launch.
-sfincs_exe = sfincs_exe.resolve()
-
-log.info(f"Running SFINCS: {sfincs_exe}")
-
-# Stream stdout and stderr line-by-line so output appears in the terminal
-# immediately (via sys.stderr) AND is written to the Snakemake log file.
-proc = subprocess.Popen(
-    [str(sfincs_exe)],
-    cwd=str(spinup_dir),
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    text=True,
-    bufsize=1,   # line-buffered
-)
-
-def _forward(pipe, log_fn):
-    for line in pipe:
-        line = line.rstrip()
-        if line:
-            log_fn(f"[sfincs] {line}")
-            print(f"[sfincs] {line}", file=sys.stderr, flush=True)
-
-t_out = threading.Thread(target=_forward, args=(proc.stdout, log.info))
-t_err = threading.Thread(target=_forward, args=(proc.stderr, log.warning))
-t_out.start()
-t_err.start()
-
-# proc.wait() must run BEFORE joining the reader threads: t_out.join()/
-# t_err.join() block unconditionally until SFINCS's own stdout/stderr pipes
-# close, which only happens once it exits on its own -- so calling them
-# first made the timeout below unreachable until the process had already
-# finished, silently defeating it. Killing the process here closes its
-# pipes, which is what lets the reader threads finish and join() return.
-try:
-    proc.wait(timeout=timeout_s)
-except subprocess.TimeoutExpired:
-    proc.kill()
-    t_out.join()
-    t_err.join()
-    raise RuntimeError(f"SFINCS spin-up exceeded {timeout_s}s timeout")
-
-t_out.join()
-t_err.join()
-
-if proc.returncode != 0:
-    raise RuntimeError(
-        f"SFINCS spin-up failed with exit code {proc.returncode}. "
-        f"Check log: {snakemake.log[0]}"
-    )
+run_sfincs_subprocess(sfincs_exe, spinup_dir, timeout_s, log, label="SFINCS spin-up", n_threads=snakemake.threads)
 
 # SFINCS restart files sfincs.YYYYMMDD.HHMMSS.rst (timestamp at trstout).
 # rst_fname is computed in the rule from tref + spinup_days and passed as a param.
@@ -274,28 +223,14 @@ else:
             zs = zs[:, np.newaxis]
         if zs.shape[0] != len(t_days):
             zs = zs.T   # transpose to (time, stations)
-        n_stations = zs.shape[1]
 
-        fig, ax = plt.subplots(figsize=(11, 5))
-        for i in range(n_stations):
-            ax.plot(t_days, zs[:, i], lw=1.0, alpha=0.75, label=f"obs {i + 1}")
-
-        ax.axvline(
-            spinup_days, color="red", linestyle="--", linewidth=1.2,
-            label=f"Day {spinup_days} (restart written)",
+        plot_water_level_timeseries(
+            t_days, zs, plot_path,
+            day_markers=[(spinup_days, f"Day {spinup_days} (restart written)")],
+            basin_id=f"Basin {Path(sfincs_root).parent.name}",
+            run_label=f"Spin-up validation | lines should be near-flat at day {spinup_days} if spin-up is sufficient",
+            ylabel=f"Water level — {zs_var} (m)",
         )
-        ax.set_xlabel("Time since spin-up start (days)")
-        ax.set_ylabel(f"Water level — {zs_var} (m)")
-        ax.set_title(
-            f"Spin-up validation — water level at {n_stations} observation points\n"
-            f"Basin {Path(sfincs_root).parent.name} | "
-            f"Lines should be near-flat at day {spinup_days} if spin-up is sufficient"
-        )
-        ax.legend(fontsize=7, ncol=max(1, n_stations // 5), loc="upper left")
-        ax.grid(True, alpha=0.3, linewidth=0.5)
-        fig.tight_layout()
-        fig.savefig(plot_path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
         log.info(f"Validation plot written: {plot_path}")
 
 # ── max inundation depth map ──────────────────────────────────────────────────

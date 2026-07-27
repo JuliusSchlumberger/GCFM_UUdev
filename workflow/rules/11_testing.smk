@@ -16,41 +16,41 @@ rule test_upstream_boundary:
     (Q_bf / (W × D)) are used as calculated, with no config floor; a mouth
     with no usable calculated depth or velocity is skipped.
 
-    Diagnostic-only side branch: only needs rule 09b's (add_estuarine_depth)
-    and 07's (get_boundary_forcings) outputs, and nothing downstream depends
-    on this rule's output -- it does NOT gate build_sfincs (13). Numbered
-    after the rule-10/11 river-depth-refinement branch purely because it's
-    convenient to run last among the "preprocess" validation checks, not
-    because anything requires it to run after them.
+    Diagnostic-only side branch: only needs the depth-estimated network
+    (rule empirical_depth_estimation or modelled_depth_estimation, both
+    numbered 10, whichever river_processing.depth_method selects) and
+    rule 07's (get_boundary_forcings) outputs, and nothing downstream
+    depends on this rule's output -- it does NOT gate build_sfincs (13).
 
-    Uses river_network_estuarine.gpkg (rule 09b's output, the FINAL
-    hybrid-blended rivdph), not river_network_processed.gpkg (rule 09a's
-    power-law-only rivdph) -- matches the network 13_build_sfincs.py and
-    rule burn_river_bed actually use. Using the wrong one previously gave
-    wildly inconsistent mouth depths (e.g. 1.89-17.80 m across 5 mouths of
-    the same delta, vs. ~5.04 m for all of them once correctly estuarine
-    -blended).
+    Uses river_network_depth_estimated.gpkg -- the unified output of
+    whichever depth-estimation rule ran, matching whatever network
+    13_build_sfincs.py actually uses.
     """
     input:
         spec_basins_meta        = results_path("{basin_id}/inputs/domain/domain_bbox.json"),
         domain_gpkg             = results_path("{basin_id}/inputs/domain/{basin_id}_domain.gpkg"),
-        river_network_estuarine = results_path("{basin_id}/inputs/domain/{basin_id}_river_network_estuarine.gpkg"),
+        # Empirical or SFINCS-modelled (rule 10, whichever alternative ran),
+        # per river_processing.depth_method -- both write the same unified
+        # filename, so this input needs no mode conditional (same as
+        # build_sfincs/13).
+        river_network_depth_estimated = results_path("{basin_id}/inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
         river_forcing           = results_path("{basin_id}/inputs/forcing/river_forcing.nc"),
         surge_forcing           = results_path("{basin_id}/inputs/forcing/surge_forcing.nc"),
         land_polygons           = results_path("{basin_id}/inputs/domain/{basin_id}_land_polygons.gpkg"),
         spec_landuse            = results_path("{basin_id}/inputs/domain/{basin_id}_landuse.tif"),
     output:
-        plot_upstream_check = results_path("{basin_id}/visuals/input_data/12_upstream_boundary_check.png"),
+        plot_upstream_check = results_path("{basin_id}/visuals/input_data/11_upstream_boundary_check.png"),
     params:
         effective_period_fraction    = config["testing"]["upstream_boundary_check"]["effective_period_fraction"],
         channel_manning_n            = config["testing"]["upstream_boundary_check"]["channel_manning_n"],
         amplitude_threshold_fraction = config["testing"]["upstream_boundary_check"]["amplitude_threshold_fraction"],
+        surge_rp                     = config["testing"]["upstream_boundary_check"]["surge_rp"],
         surge_period_hr              = config["boundary_forcings"]["surge"]["period_hr"],
     log:
-        "logs/{basin_id}/12_upstream_boundary_check.log"
+        "logs/{basin_id}/11_upstream_boundary_check.log"
 
     script:
-        "../scripts/12_test_upstream_boundary.py"
+        "../scripts/11_test_upstream_boundary.py"
 
 
 rule test_bifurcation_calibration_options:
@@ -61,7 +61,7 @@ rule test_bifurcation_calibration_options:
     rather than reading their already-built output) so both sources can be
     compared side by side. One figure per bifurcation, 1 or 2 panels
     depending on whether the manual width corrections actually touched that
-    bifurcation's neighborhood -- see 12b_bifurcation_calibration_options.py
+    bifurcation's neighborhood -- see 11b_bifurcation_calibration_options.py
     for the full comparison methodology.
 
     Diagnostic-only side branch: only needs rule 07's river_forcing.nc (for
@@ -78,12 +78,11 @@ rule test_bifurcation_calibration_options:
         river_network_original = catalogue_path("river_network_original"),
         river_network          = catalogue_path("river_network"),
     output:
-        plot_dir = directory(results_path("{basin_id}/visuals/bifurcation_calibration_options")),
+        plot_dir = directory(results_path("{basin_id}/visuals/input_data/11b_bifurcation_calibration_options")),
     params:
         n_iterations       = config["river_processing"]["flow_accumulation"]["iterations"],
-        min_width_m        = config["river_processing"]["hydraulic_geometry"]["min_width_m"],
         discharge_variable = config["river_processing"]["flow_accumulation"]["discharge_variable"],
     log:
-        "logs/{basin_id}/12b_bifurcation_calibration_options.log"
+        "logs/{basin_id}/11b_bifurcation_calibration_options.log"
     script:
-        "../scripts/12b_bifurcation_calibration_options.py"
+        "../scripts/11b_bifurcation_calibration_options.py"
