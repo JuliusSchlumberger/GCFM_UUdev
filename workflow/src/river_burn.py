@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import math
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 import geopandas as gpd
 import numpy as np
@@ -45,6 +45,7 @@ from rasterio.features import rasterize as rio_rasterize
 from rasterio.transform import from_origin
 from rasterio.windows import Window, transform as window_transform
 from scipy.interpolate import interp1d
+from scipy.spatial import cKDTree
 
 from src.raster import reproject_nan_aware
 from src.river_network import (
@@ -340,7 +341,9 @@ def burn_river_channel(
                 fill_value=(rivbed_vals[0], rivbed_vals[-1]),
             )
 
-        buf_poly = line.buffer(float(width) / 2.0)
+        buf_poly = _flush_capped_buffer(
+            line, float(width), clip_start=bool(getattr(row, "is_seed", False))
+        )
         # Corner-based window (not rasterio.windows.from_bounds, which
         # assumes a north-up/negative-e transform and raises "Bounds and
         # transform are inconsistent" against a positive-y-scale transform,
@@ -483,7 +486,11 @@ def _channel_buffer_polygons(rivers: gpd.GeoDataFrame, width_column: str) -> lis
         line = _as_linestring(row.geometry)
         if line is None or line.length == 0:
             continue
-        polys.append(line.buffer(float(width) / 2.0))
+        polys.append(
+            _flush_capped_buffer(
+                line, float(width), clip_start=bool(getattr(row, "is_seed", False))
+            )
+        )
     return polys
 
 
@@ -703,7 +710,9 @@ def build_smoothed_weir_crest_regular(
             continue
         line, _length, profile = profiles[rid]
 
-        buf_poly = line.buffer(float(width) / 2.0)
+        buf_poly = _flush_capped_buffer(
+            line, float(width), clip_start=bool(getattr(row, "is_seed", False))
+        )
         bminx, bminy, bmaxx, bmaxy = buf_poly.bounds
         corners = [(bminx, bminy), (bmaxx, bminy), (bminx, bmaxy), (bmaxx, bmaxy)]
         cols_corners, rows_corners = zip(*(inv_transform * c for c in corners))
@@ -752,6 +761,89 @@ def build_smoothed_weir_crest_regular(
     return output
 
 
+def build_nearest_weir_crest_regular(
+    rivers: gpd.GeoDataFrame,
+    width_column: str,
+    out_shape: tuple[int, int],
+    out_transform,
+    cell_gdf: gpd.GeoDataFrame,
+    crest_values: np.ndarray,
+) -> np.ndarray:
+    """
+    Per-cell calibrated weir crest, painted with NO along-reach
+    interpolation and NO cross-reach junction blending -- every raster
+    cell within a reach's own buffer is assigned its NEAREST centerline
+    anchor's own crest value directly (nearest (x, y) match against every
+    cell_gdf row, any reach), not a value interpolated between anchors
+    along a smoothed profile. Companion to build_smoothed_weir_crest_regular,
+    kept as a SEPARATE function rather than a mode switch on it -- rule 13's
+    own quadtree fallback still needs the smoothed/interpolated profile
+    machinery (_smoothed_weir_crest_profiles) unchanged, so that function
+    is left untouched for that consumer.
+
+    Searching the FULL cell_gdf anchor set (not just the current reach's
+    own anchors) rather than reusing per-reach along-line profiles also
+    means junctions are handled automatically -- a cell near a confluence
+    simply takes whichever nearby reach's anchor is physically closest, no
+    separate blend_distance_m parameter needed.
+    """
+    output = np.full(out_shape, np.nan, dtype=np.float32)
+    if cell_gdf.empty or len(crest_values) == 0:
+        return output
+    anchor_xy = cell_gdf[["x", "y"]].to_numpy()
+    anchor_tree = cKDTree(anchor_xy)
+
+    inv_transform = ~out_transform
+    for row in rivers.itertuples(index=False):
+        rid = normalize_reach_id(row.reach_id)
+        width = getattr(row, width_column, np.nan)
+        line = row.geometry
+        if rid is None or line is None or line.is_empty or pd.isna(width) or width <= 0:
+            continue
+
+        buf_poly = _flush_capped_buffer(
+            line, float(width), clip_start=bool(getattr(row, "is_seed", False))
+        )
+        bminx, bminy, bmaxx, bmaxy = buf_poly.bounds
+        corners = [(bminx, bminy), (bmaxx, bminy), (bminx, bmaxy), (bmaxx, bmaxy)]
+        cols_corners, rows_corners = zip(*(inv_transform * c for c in corners))
+        col_off = max(0, int(np.floor(min(cols_corners))))
+        row_off = max(0, int(np.floor(min(rows_corners))))
+        col_stop = min(out_shape[1], int(np.ceil(max(cols_corners))))
+        row_stop = min(out_shape[0], int(np.ceil(max(rows_corners))))
+        if col_stop <= col_off or row_stop <= row_off:
+            continue
+        window = Window(col_off, row_off, col_stop - col_off, row_stop - row_off)
+
+        win_transform = window_transform(window, out_transform)
+        win_shape = (int(window.height), int(window.width))
+        inside = geometry_mask(
+            [buf_poly],
+            out_shape=win_shape,
+            transform=win_transform,
+            invert=True,
+            all_touched=True,
+        )
+        if not inside.any():
+            continue
+
+        rows_idx, cols_idx = np.where(inside)
+        xs, ys = rasterio.transform.xy(win_transform, rows_idx, cols_idx)
+        _dist, nearest_idx = anchor_tree.query(np.column_stack([xs, ys]))
+        vals = crest_values[nearest_idx]
+
+        row_off, col_off = int(window.row_off), int(window.col_off)
+        output_win = output[
+            row_off : row_off + win_shape[0], col_off : col_off + win_shape[1]
+        ]
+        current = output_win[rows_idx, cols_idx]
+        output_win[rows_idx, cols_idx] = np.where(
+            np.isnan(current), vals, np.maximum(current, vals)
+        )
+
+    return output
+
+
 def build_smoothed_weir_crest_quadtree(
     rivers: gpd.GeoDataFrame,
     width_column: str,
@@ -785,7 +877,9 @@ def build_smoothed_weir_crest_quadtree(
             continue
         line, _length, profile = profiles[rid]
 
-        buf_poly = line.buffer(float(width) / 2.0)
+        buf_poly = _flush_capped_buffer(
+            line, float(width), clip_start=bool(getattr(row, "is_seed", False))
+        )
         hit_idx = tree.query(buf_poly, predicate="intersects")
         if len(hit_idx) == 0:
             continue
@@ -925,6 +1019,175 @@ def build_centerline_cells_regular(
         .sort_values(["reach_id", "along_m"])
         .reset_index(drop=True)
     )
+
+
+def _half_plane_beyond(
+    origin: tuple, away_point: tuple, size: float
+) -> shapely.Polygon:
+    """
+    Large rectangle covering the half-plane on `away_point`'s side of the
+    line through `origin` perpendicular to (away_point - origin) -- used by
+    _flush_capped_buffer() to clip a round buffer end-cap back to a flat
+    cut exactly at `origin`.
+    """
+    d = np.array(away_point) - np.array(origin)
+    d = d / np.hypot(*d)
+    n = np.array([-d[1], d[0]])
+    o = np.array(origin)
+    corners = [
+        o + n * size,
+        o - n * size,
+        o - n * size + d * size,
+        o + n * size + d * size,
+    ]
+    return shapely.Polygon(corners)
+
+
+def _flush_capped_buffer(
+    line: shapely.LineString,
+    width: float,
+    clip_start: bool = False,
+    clip_end: bool = False,
+) -> shapely.Polygon:
+    """
+    line.buffer(width/2), with the round end-cap at the start and/or end
+    replaced by a flat cut exactly at that endpoint, perpendicular to the
+    line's own local tangent there.
+
+    Every reach's buffered channel footprint (channel_mask, the burn
+    excavation corridor, the weir smoothing corridor) is built via a plain
+    line.buffer(width/2), which defaults to a ROUND end cap at both ends --
+    fine at an internal junction (a neighbouring reach's own buffer already
+    overlaps and covers the join regardless of angle), but wrong at a
+    network SEED (no upstream neighbour): the round cap bulges out in an
+    arc beyond the line's own true start vertex, enclosing extra channel
+    cells that are never sampled by build_centerline_cells_regular (which
+    only follows the raw LINE, not the buffer) and so are invisible to
+    per-cell calibration tracking, yet still sit inside the same confined
+    pocket as the actual discharge-injection cell.
+
+    Only clip_start/clip_end=True gets this treatment (typically
+    clip_start for a reach with is_seed=True) -- every other reach keeps
+    its plain round-capped buffer unchanged.
+
+    Degenerate first/last segments (a duplicate leading/trailing
+    coordinate) safely fall back to the unclipped round cap for that end,
+    rather than raising on a zero-length tangent.
+    """
+    buf = line.buffer(width / 2.0)
+    if not clip_start and not clip_end:
+        return buf
+    coords = list(line.coords)
+    minx, miny, maxx, maxy = buf.bounds
+    big = (maxx - minx) + (maxy - miny) + width  # safely larger than buf's own extent
+    if clip_start and len(coords) >= 2 and coords[0] != coords[1]:
+        buf = buf.intersection(_half_plane_beyond(coords[0], coords[1], big))
+    if clip_end and len(coords) >= 2 and coords[-1] != coords[-2]:
+        buf = buf.intersection(_half_plane_beyond(coords[-1], coords[-2], big))
+    return buf
+
+
+def snap_points_to_centerline_cells(
+    points: gpd.GeoDataFrame,
+    centerline_cells: gpd.GeoDataFrame,
+    reach_ids: Sequence[str | None] | None = None,
+    resolution_m: float | None = None,
+) -> gpd.GeoDataFrame:
+    """
+    Snap each point in `points` onto the nearest cell the river network's own
+    RAW centerline actually passes through (centerline_cells, from
+    build_centerline_cells_regular) -- not just channel_mask (the buffered
+    corridor half a channel-width wide), the exact cell(s) the reach
+    LineString itself intersects.
+
+    Motivation: neither hydromt_sfincs's discharge_points.create() nor this
+    codebase's own point-wrangling (geometry.snap_points_into_region, which
+    only nudges a point back inside the model's own active region) ever
+    checks that a discharge/source point's resolved grid cell actually sits
+    on the modelled channel. A point can be geometrically exact (e.g. a
+    domain-entry point computed directly from the reach's own geometry) and
+    still resolve to a neighbouring floodplain cell once rasterized onto a
+    coarse grid -- injecting a large constant discharge there has nowhere
+    near enough conveyance and can produce an unrealistic local water-level
+    pileup (observed: basin 4267691's round-0 calibration, max water level
+    369 m at one location).
+
+    Args:
+        points:           Point geometry, same CRS as centerline_cells.
+        centerline_cells: Output of build_centerline_cells_regular -- must
+                           have 'reach_id', 'row', 'col', 'x', 'y', geometry.
+        reach_ids:        Optional, one entry per `points` row (e.g.
+                           river_forcing.nc's own inside_reach_id, None where
+                           unresolved) -- restricts the nearest-cell search
+                           to that point's own reach first, which matters at
+                           a confluence/bifurcation where a DIFFERENT
+                           reach's cell could otherwise be geometrically
+                           closer than the correct reach's own cell. Falls
+                           back to searching every reach's cells when a
+                           point's reach_id is None, or has no rows in
+                           centerline_cells at all (e.g. a reach entirely
+                           outside the active grid).
+        resolution_m:     Grid cell size (m), used only to size the
+                           "snapped suspiciously far" warning threshold
+                           below. Skipped (no warning possible) if omitted.
+
+    Returns:
+        Copy of `points` with:
+          - geometry replaced by the resolved cell's own center point (the
+            exact coordinate build_centerline_cells_regular already used,
+            so it is guaranteed consistent with channel_mask/calibration
+            cell tracking elsewhere, not a fresh approximation)
+          - new 'row'/'col' columns (the resolved cell's grid indices)
+          - new 'snap_distance_m' column (distance from the original point
+            to the resolved cell center), for diagnostics/logging
+    """
+    if centerline_cells.empty:
+        raise ValueError("centerline_cells is empty -- cannot snap any points to it")
+
+    all_xy = centerline_cells[["x", "y"]].to_numpy()
+    all_rowcol = centerline_cells[["row", "col"]].to_numpy()
+    by_reach: dict[str, np.ndarray] = {
+        rid: idx.to_numpy()
+        for rid, idx in centerline_cells.groupby("reach_id").groups.items()
+    }
+    if reach_ids is None:
+        reach_ids = [None] * len(points)
+
+    snapped_geoms = []
+    snapped_rowcol = np.empty((len(points), 2), dtype=int)
+    snap_dist_m = np.empty(len(points), dtype=float)
+
+    for i, (pt, rid) in enumerate(zip(points.geometry, reach_ids)):
+        norm_rid = normalize_reach_id(rid) if rid is not None else None
+        candidate_idx = by_reach.get(norm_rid) if norm_rid is not None else None
+        if candidate_idx is None or len(candidate_idx) == 0:
+            candidate_idx = np.arange(len(centerline_cells))
+
+        cand_xy = all_xy[candidate_idx]
+        d2 = (cand_xy[:, 0] - pt.x) ** 2 + (cand_xy[:, 1] - pt.y) ** 2
+        best = candidate_idx[np.argmin(d2)]
+
+        snapped_geoms.append(shapely.Point(all_xy[best]))
+        snapped_rowcol[i] = all_rowcol[best]
+        snap_dist_m[i] = float(np.sqrt(d2.min()))
+
+    out = points.copy()
+    out["geometry"] = snapped_geoms
+    out["row"] = snapped_rowcol[:, 0]
+    out["col"] = snapped_rowcol[:, 1]
+    out["snap_distance_m"] = snap_dist_m
+
+    # A large snap distance usually means the reach_id lookup missed (wrong
+    # or unresolved reach) rather than a genuinely distant channel -- worth
+    # surfacing rather than silently accepting.
+    if resolution_m and (snap_dist_m > 3 * resolution_m).any():
+        n_far = int((snap_dist_m > 3 * resolution_m).sum())
+        log.warning(
+            f"snap_points_to_centerline_cells: {n_far}/{len(points)} point(s) snapped "
+            f">3 cells away from their nearest centerline cell (max "
+            f"{snap_dist_m.max():.0f} m) -- check reach_id resolution for these points"
+        )
+    return out
 
 
 def _quadtree_face_polygons(ugrid) -> list:

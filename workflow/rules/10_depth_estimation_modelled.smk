@@ -80,21 +80,20 @@ if config["river_processing"]["depth_method"] == "modelled":
             plot_water_level_timeseries  = results_path("{basin_id}/visuals/input_data/10_calibration/water_level_timeseries.png"),
             plot_max_inundation          = results_path("{basin_id}/visuals/input_data/10_calibration/max_inundation.png"),
             animation_flood_progress     = results_path("{basin_id}/visuals/input_data/10_calibration/flood_animation.mp4"),
+            plot_crest_gap_map           = results_path("{basin_id}/visuals/input_data/10_calibration/crest_gap_map.png"),
             # Per-round diagnostics (round 0 = isolated calibration, rounds
-            # 1..n_correction_iterations = coupled-system corrections) -- one
-            # full set of the same four plots per round, so each round's own
-            # transient state can be inspected before the next round
-            # overwrites the disposable calibration model's own files.
-            **{
-                f"{kind}_round{i}": results_path(f"{{basin_id}}/visuals/input_data/10_calibration/rounds/round{i}_{fname}")
-                for i in range(config["river_processing"]["river_depth_modelling"]["n_correction_iterations"] + 1)
-                for kind, fname in [
-                    ("plot_calibration", "river_depth.png"),
-                    ("plot_water_level", "water_level_timeseries.png"),
-                    ("plot_max_inundation", "max_inundation.png"),
-                    ("animation", "flood_animation.mp4"),
-                ]
-            },
+            # 1..n_correction_iterations = coupled-system corrections) are
+            # DELIBERATELY NOT declared here (same convention as
+            # calibration_state.csv, written directly under calib_root) --
+            # early-stopping means not every round index actually runs, and
+            # a round that never simulated should have NO file at all, not
+            # an empty placeholder. Snakemake requires every DECLARED output
+            # to exist after the rule finishes, which would force an empty
+            # touch() for every skipped round if these were declared;
+            # writing them directly (10_depth_estimation_modelled.py's own
+            # round_visuals_dir) lets a skipped round have nothing, and the
+            # final round's own real files are what the canonical outputs
+            # above are copied from.
         params:
             calib_root  = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_calibration"),
             sfincs_exe  = config["sfincs"]["simulation"]["sfincs_exe"],
@@ -109,12 +108,12 @@ if config["river_processing"]["depth_method"] == "modelled":
             hg_c = config["river_processing"]["empirical_estimation"]["hydraulic_geometry"]["c"],
             hg_f = config["river_processing"]["empirical_estimation"]["hydraulic_geometry"]["f"],
             calibration_days             = config["river_processing"]["river_depth_modelling"]["calibration_days"],
+            discharge_ramp_hours          = config["river_processing"]["river_depth_modelling"]["discharge_ramp_hours"],
             weir_crest_m                  = config["river_processing"]["river_depth_modelling"]["weir_crest_m"],
             weir_par1                     = config["river_processing"]["river_depth_modelling"]["weir_par1"],
             weir_crest_fraction           = config["river_processing"]["river_depth_modelling"]["weir_crest_fraction"],
             n_correction_iterations       = config["river_processing"]["river_depth_modelling"]["n_correction_iterations"],
             min_crest_increment_per_round_m = config["river_processing"]["river_depth_modelling"]["min_crest_increment_per_round_m"],
-            weir_crest_junction_blend_m   = config["river_processing"]["river_depth_modelling"]["weir_crest_junction_blend_m"],
             weir_freeboard_m              = config["river_processing"]["river_depth_modelling"]["freeboard_m"],
             river_crest_dilation_cells    = config["river_processing"]["river_depth_modelling"]["river_crest_dilation_cells"],
             min_component_cells           = config["river_processing"]["river_depth_modelling"]["min_component_cells"],

@@ -21,6 +21,7 @@ from rasterio.warp import calculate_default_transform, transform_geom as _transf
 import rioxarray  # noqa: F401  — registers the .rio accessor used for reprojection
 import xarray as xr
 import xugrid as xu
+from scipy.spatial import cKDTree
 from matplotlib.collections import LineCollection
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
@@ -2227,6 +2228,180 @@ def plot_water_level_timeseries(
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
+def plot_crest_gap_map(
+    river_crest_on_grid: np.ndarray,
+    grid_transform,
+    map_nc_path: str,
+    weir_gdf: gpd.GeoDataFrame,
+    rivers_utm: gpd.GeoDataFrame,
+    discharge_x: np.ndarray,
+    discharge_y: np.ndarray,
+    output_path: str,
+    basin_id: str = "",
+    run_label: str = "",
+) -> None:
+    """
+    Per-round calibration diagnostic: the painted weir crest minus that
+    round's own actual simulated period-max water level, at every cell the
+    crest was painted onto -- negative = overtopped. Two panels: the full
+    domain, and a zoom on the overtopped cell(s) (or the crest-covered area
+    generally, if none), both with the weir line, river network, and the
+    REAL discharge point(s) overlaid (not a reach's own line-start
+    coordinate, which is not necessarily where discharge actually enters
+    the model).
+
+    Geographic orientation (imshow origin/extent) is auto-detected from
+    grid_transform's own sign convention rather than assumed -- a
+    SFINCS-built grid commonly has a POSITIVE y-scale (row increases
+    northward), which a plain imshow() would otherwise silently plot
+    upside down.
+    """
+    out_shape = river_crest_on_grid.shape
+    rows, cols = np.where(np.isfinite(river_crest_on_grid))
+    if len(rows) == 0:
+        Path(output_path).touch()
+        log.warning(
+            f"plot_crest_gap_map: no crest-covered cells -- writing empty sentinel to {output_path}"
+        )
+        return
+
+    with xr.open_dataset(map_nc_path) as ds:
+        zs = ds["zs"].values
+        map_grid_x = ds["x"].values
+        map_grid_y = ds["y"].values
+    period_max_zs_sim = np.nanmax(zs, axis=0)
+
+    valid_sfincs = np.isfinite(map_grid_x.ravel()) & np.isfinite(map_grid_y.ravel())
+    sfincs_xy = np.column_stack(
+        [map_grid_x.ravel()[valid_sfincs], map_grid_y.ravel()[valid_sfincs]]
+    )
+    sfincs_tree = cKDTree(sfincs_xy)
+    raster_x, raster_y = rasterio.transform.xy(grid_transform, rows, cols)
+    _dist, flat_idx = sfincs_tree.query(np.column_stack([raster_x, raster_y]))
+    n_dim, m_dim = map_grid_x.shape
+    orig_flat_idx = np.where(valid_sfincs)[0][flat_idx]
+    n_idx, m_idx = np.unravel_index(orig_flat_idx, (n_dim, m_dim))
+    zs_at_raster_cells = period_max_zs_sim[n_idx, m_idx]
+
+    gap_grid = np.full(out_shape, np.nan, dtype=np.float32)
+    gap_grid[rows, cols] = river_crest_on_grid[rows, cols] - zs_at_raster_cells
+
+    def _imshow_extent_and_origin(transform, nrows, ncols):
+        x0, y0 = transform * (0, 0)
+        x1, y1 = transform * (ncols, nrows)
+        orientation = "upper" if y0 > y1 else "lower"
+        img_extent = (min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1))
+        return img_extent, orientation
+
+    extent, origin = _imshow_extent_and_origin(grid_transform, *out_shape)
+
+    overtopped_rows, overtopped_cols = np.where(gap_grid < 0)
+    overtopped_x, overtopped_y = rasterio.transform.xy(
+        grid_transform, overtopped_rows, overtopped_cols
+    )
+
+    def _plot_overlay(ax):
+        if not rivers_utm.empty:
+            rivers_utm.plot(ax=ax, color="black", linewidth=0.8, zorder=3)
+        if not weir_gdf.empty:
+            weir_gdf.plot(
+                ax=ax, color="dimgray", linewidth=1.2, linestyle="--", zorder=4
+            )
+        if len(discharge_x):
+            ax.scatter(
+                discharge_x,
+                discharge_y,
+                marker="*",
+                s=250,
+                color="gold",
+                edgecolors="black",
+                linewidths=1,
+                zorder=6,
+                label="discharge point",
+            )
+        if len(overtopped_x):
+            ax.scatter(
+                overtopped_x,
+                overtopped_y,
+                s=120,
+                facecolors="none",
+                edgecolors="lime",
+                linewidths=2.5,
+                zorder=5,
+                label=f"{len(overtopped_x)} overtopped cell(s)",
+            )
+
+    finite_gap = gap_grid[np.isfinite(gap_grid)]
+    vmax = float(np.nanpercentile(np.abs(finite_gap), 99)) if len(finite_gap) else 1.0
+    vmax = vmax if vmax > 0 else 1.0
+
+    fig, axes = plt.subplots(1, 2, figsize=(18, 9))
+    ax = axes[0]
+    im = ax.imshow(
+        gap_grid,
+        cmap="RdBu",
+        vmin=-vmax,
+        vmax=vmax,
+        extent=extent,
+        origin=origin,
+        zorder=1,
+    )
+    plt.colorbar(
+        im, ax=ax, label="crest - actual period-max zs (m)\n(negative = overtopped)"
+    )
+    _plot_overlay(ax)
+    ax.legend(loc="upper right", fontsize=8)
+    title_bits = [b for b in (basin_id, run_label) if b]
+    prefix = f"{' | '.join(title_bits)}\n" if title_bits else ""
+    ax.set_title(f"{prefix}Crest minus actual simulated water level")
+    ax.set_aspect("equal")
+
+    ax2 = axes[1]
+    im2 = ax2.imshow(
+        gap_grid,
+        cmap="RdBu",
+        vmin=-vmax,
+        vmax=vmax,
+        extent=extent,
+        origin=origin,
+        zorder=1,
+    )
+    plt.colorbar(im2, ax=ax2, label="gap (m)")
+    _plot_overlay(ax2)
+    if len(overtopped_rows):
+        cell_size_m = abs(grid_transform.a)
+        pad_m = 15 * cell_size_m
+        ax2.set_xlim(min(overtopped_x) - pad_m, max(overtopped_x) + pad_m)
+        ax2.set_ylim(min(overtopped_y) - pad_m, max(overtopped_y) + pad_m)
+        for x, y, r, c in zip(
+            overtopped_x, overtopped_y, overtopped_rows, overtopped_cols
+        ):
+            ax2.annotate(
+                f"({r},{c})\ngap={gap_grid[r, c]:.2f}m",
+                (x, y),
+                textcoords="offset points",
+                xytext=(10, 10),
+                color="black",
+                fontsize=9,
+                bbox=dict(boxstyle="round", fc="white", alpha=0.8),
+                zorder=7,
+            )
+        ax2.set_title(
+            "Zoomed on the overtopped cell(s)\n(dashed = weir line, black = river network, star = discharge point)"
+        )
+    else:
+        crest_xmin, crest_xmax = raster_x.min(), raster_x.max()
+        crest_ymin, crest_ymax = raster_y.min(), raster_y.max()
+        pad_m = 0.05 * max(crest_xmax - crest_xmin, crest_ymax - crest_ymin, 1.0)
+        ax2.set_xlim(crest_xmin - pad_m, crest_xmax + pad_m)
+        ax2.set_ylim(crest_ymin - pad_m, crest_ymax + pad_m)
+        ax2.set_title("No overtopped cells this round")
+    ax2.set_aspect("equal")
+
+    fig.tight_layout()
+    _save(fig, output_path)
 
 
 def plot_calibration_round_profiles(
