@@ -1666,7 +1666,16 @@ src/plots.py             — all diagnostic plot functions (see section 10)
 src/postprocessing.py    — SFINCS output processing, flood extent calculation
                             (used by rules 14, 15, 16); compute_risk_metrics():
                             scalar flood-risk metrics from a downscaled flood
-                            map, legacy analyse.py-compatible columns (rule 17)
+                            map, legacy analyse.py-compatible columns (rule 17).
+                            compute_max_inundation()/compute_flood_timeseries_
+                            stats() bound da_dep's memory via
+                            _coarsen_for_memory() for BOTH regular and
+                            quadtree grids now, not just quadtree — a large
+                            regular grid's own full-extent subgrid reference
+                            raster can exceed max_bytes just as easily (see
+                            section 14's QUADTREE POSTPROCESSING MEMORY entry,
+                            despite the name — the fix wasn't actually
+                            quadtree-specific).
 src/profiling.py         — ScriptProfiler: wraps functions with timing logs
 src/protection_levels.py — FLOPROS × WRI geounit dominant-protection lookup;
                             used by rule 04
@@ -1680,7 +1689,29 @@ src/protection_weir.py   — NEW. Builds a coastal/riverbank protection weir
                             10-modelled's own disposable calibration model
                             (uniform artificial confinement value for both
                             coast and river sides — see
-                            river_depth_calibration.py below).
+                            river_depth_calibration.py below). The traced
+                            weir is GUARANTEED topologically continuous
+                            (boundary-to-boundary chains or closed loops,
+                            never a dangling gap) — build_coastal_protection_
+                            weir()'s own elsewhere_crest (the coastal
+                            "elsewhere" floor, coastal_crest_on_grid) falls
+                            back to the flat crest_elevation_m scalar
+                            wherever it's NaN, so crest_surface is
+                            guaranteed finite at every land cell and the
+                            edge tracer never silently drops a segment for
+                            a missing value — see section 14's WEIR
+                            TOPOLOGY GAPS entry. connected_components()
+                            (used by discard_small_components, its only
+                            caller) uses 8-CONNECTIVITY for the regular
+                            grid (self._struct8), not scipy.ndimage.label's
+                            own 4-connectivity default — a real coastline
+                            can narrow to a single diagonal-only pixel
+                            connection, which 4-connectivity would treat
+                            as a break, splitting one landform into a kept
+                            piece + a small diagonally-attached tail
+                            dropped as if it were a separate tiny island —
+                            see section 14's WEIR TOPOLOGY GAPS (DIAGONAL
+                            4-CONNECTIVITY) entry.
 src/quadtree_refinement.py — build_refinement_polygons(): river-buffer +
                             optional coastal-buffer refinement-zone polygons
                             for SFINCS quadtree grid; used by rule 13
@@ -1699,6 +1730,52 @@ src/river_burn.py         — burn_river_channel() (+ build_channel_mask_
                             Called directly by BOTH rule-10 siblings (see
                             section 5) and by rule 13's own quadtree
                             fallback weir smoothing.
+                            build_centerline_cells_regular() — every grid
+                            cell a reach's own RAW centerline (not the
+                            buffered channel_mask corridor) actually
+                            touches; used for rule 10-modelled's own
+                            per-cell calibration tracking (cell_gdf) AND by
+                            the new snap_points_to_centerline_cells() (see
+                            below).
+                            snap_points_to_centerline_cells() — NEW.
+                            Snaps a discharge/source point onto the nearest
+                            centerline cell (optionally restricted to a
+                            known reach_id first) — fixes a real bug where
+                            neither hydromt_sfincs's discharge_points.
+                            create() nor this codebase's own
+                            snap_points_into_region ever verified a
+                            discharge point's resolved grid cell was
+                            actually on the modelled channel; an unsnapped
+                            point could land on a floodplain cell with no
+                            conveyance and produce an unrealistic local
+                            water-level pileup (very likely what produced
+                            basin 4267691's round-0 369 m spike — see
+                            section 14). Used by BOTH rule 10-modelled and
+                            rule 13's regular-grid discharge forcing.
+                            Regular grid only — no quadtree equivalent of
+                            build_centerline_cells_regular exists yet, so
+                            quadtree builds don't get this snap.
+                            build_nearest_weir_crest_regular() — NEW
+                            (2026-07-29). Sibling of build_smoothed_weir_
+                            crest_regular: paints every raster cell with
+                            its NEAREST centerline anchor's crest value
+                            directly, no along-reach interpolation/
+                            junction blending — used by rule 10-modelled's
+                            own correction rounds only (section 14, crest
+                            redesign entry); build_smoothed_weir_crest_
+                            regular itself is untouched and still used by
+                            rule 13's quadtree fallback.
+                            _flush_capped_buffer() / _half_plane_beyond() —
+                            NEW. line.buffer(width/2) with the round end
+                            cap clipped to a flat cut at clip_start/
+                            clip_end, used by ALL FOUR per-reach buffer
+                            call sites (burn_river_channel,
+                            _channel_buffer_polygons/build_channel_mask_
+                            regular, build_smoothed_weir_crest_regular/
+                            quadtree) with clip_start=is_seed — see
+                            section 14's SEED REACH ROUNDED-CAP entry for
+                            why the default round cap is wrong at a
+                            network seed specifically.
 src/river_conditioning.py — enforce_river_monotonicity(): topological
                             downstream-min DEM conditioning; used by rule 09.
 src/river_depth_calibration.py — NEW. The core of rule modelled_depth_
@@ -2250,6 +2327,335 @@ QUADTREE POSTPROCESSING MEMORY (fixed, three rounds -- basin 4267691, run_spinup
   NATIVE resolution somewhere upstream of any coarsening (Round 3's mistake)
   before assuming the existing _coarsen_for_memory() safety net will catch
   it -- that net only helps once the array is already in memory.
+  Round 4 (fixed, basin 4267691, modelled_depth_estimation/rule 10): despite
+  the name, this risk was never actually quadtree-specific -- Round 1's own
+  fix gated _coarsen_for_memory() behind `isinstance(da_zsmax, xu.
+  UgridDataArray)` in BOTH compute_max_inundation and compute_flood_
+  timeseries_stats, so a REGULAR grid (rule 10-modelled always builds one,
+  it has its own NotImplementedError guard against quadtree) got no memory
+  bounding at all -- basin 4267691's own regular-grid subgrid reference
+  raster (~700M pixels / ~2.8 GB uncompressed) crashed round 0's own
+  diagnostics with no traceback. Fixed by dropping the quadtree-only gate
+  in both functions -- _coarsen_for_memory() already no-ops below its own
+  max_bytes threshold, so calling it unconditionally is safe for both grid
+  types.
+
+DISCHARGE POINTS NOT SNAPPED TO THE NETWORK CENTERLINE (fixed, basin
+4267691 investigation):
+  Neither hydromt_sfincs's own discharge_points.create() nor this
+  codebase's existing point-wrangling (geometry.snap_points_into_region,
+  which only nudges a point back inside the model's active region) ever
+  checked that a discharge point's resolved SFINCS grid cell actually sits
+  on the modelled channel. A crossing's domain-entry point is geometrically
+  exact, but nothing guaranteed the grid cell it rasterizes onto was part
+  of channel_mask -- on a coarse enough grid it could land on a
+  neighbouring floodplain cell with no real conveyance instead. Very likely
+  what produced basin 4267691's round-0 calibration water-level spike
+  (369 m at one location): a large constant discharge injected into a cell
+  with no channel depth to carry it.
+  Fixed via new river_burn.snap_points_to_centerline_cells() -- see section
+  11's river_burn.py entry for the full mechanism. Wired into BOTH
+  10_depth_estimation_modelled.py and 13_build_sfincs.py's regular-grid
+  discharge forcing. Regular grid only -- no quadtree equivalent of
+  build_centerline_cells_regular exists yet.
+
+SEED REACH ROUNDED-CAP (fixed, raised independently during the same
+investigation):
+  Every per-reach channel buffer in river_burn.py (channel_mask, the burn
+  excavation corridor, the weir-smoothing corridor) is built via a plain
+  line.buffer(width/2.0), which defaults to a ROUND end cap at both ends.
+  Harmless at an internal junction (a neighbouring reach's own buffer
+  already overlaps and covers the join regardless of angle), but wrong at
+  a network SEED reach (is_seed=True, no upstream neighbour): the round
+  cap bulges out in an arc beyond the line's own true start vertex,
+  enclosing extra channel cells build_centerline_cells_regular never
+  samples (it only follows the raw line, not the buffer) -- invisible to
+  per-cell calibration tracking, yet inside the same confined pocket as
+  the actual discharge-injection cell.
+  Fixed via new river_burn._flush_capped_buffer()/_half_plane_beyond() --
+  see section 11's river_burn.py entry. Wired into all FOUR existing
+  line.buffer(...) call sites with clip_start=bool(row.is_seed); every
+  other reach keeps its plain round-capped buffer unchanged. Terminal/
+  mouth reaches (no downstream neighbour) have the same bulge but are
+  scoped out for now -- their downstream end transitions into the coastal
+  weir/ocean_mask handling through a different mechanism, not confirmed
+  safe to flush-cap yet (clip_end stays False everywhere).
+
+WEIR TOPOLOGY GAPS (fixed, found by directly inspecting basin 2433835's
+own coastal_protection_weir.gpkg):
+  REQUIREMENT: every weir segment's endpoint must either connect to
+  another segment, or lie on the delta polygon's own boundary -- the whole
+  weir must resolve into continuous boundary-to-boundary chains or fully
+  closed loops, NEVER a dangling gap in the middle (a break lets water
+  flow straight through at exactly that point). Endpoint-connectivity
+  analysis on the actual file found 38 dangling endpoints out of 3547
+  segments, none of them legitimately at the domain boundary -- real,
+  confirmed breaks.
+  Root cause: protection_weir.py's edge-tracing functions
+  (_seaward_edges_regular_with_values / _seaward_edges_quadtree_with_values,
+  shared by both grid types via seaward_edges_with_values) detect a
+  land/water_like transition purely geometrically, but silently DROP the
+  segment if that cell's crest_surface value is NaN. crest_surface =
+  max(elsewhere_crest, river_crest_on_grid); river_crest_on_grid
+  legitimately has NaN gaps beyond its own dilation radius, but
+  elsewhere_crest (coastal_crest_on_grid, rule modelled_depth_estimation's
+  own per-cell probe-derived array) can ALSO have NaN holes beyond its own
+  probe/dilation coverage (e.g. a land cell next to a small isolated water
+  patch that's neither a modelled river reach nor near a coastal probe).
+  Wherever both are NaN at once, the segment vanished.
+  Fixed in build_coastal_protection_weir(): elsewhere_crest now falls back
+  to the flat crest_elevation_m scalar wherever coastal_crest_on_grid
+  itself is NaN -- exactly what "no per-cell override available" already
+  means everywhere else that array doesn't cover. crest_surface is now
+  guaranteed finite at every land cell, so the edge tracer's NaN-drop
+  branch never actually triggers for this call path (seaward_edges_with_
+  values has exactly one caller, build_coastal_protection_weir, so fixing
+  the input at the source was safe and sufficient -- the tracer's own
+  drop-on-NaN branch was left in place as a defensive no-op, not removed).
+  Verified with a synthetic unit test (straight 10-cell coastline, a
+  deliberate NaN hole at one cell) -- produces exactly 10 segments, none
+  dropped, the NaN cell correctly falling back to the flat scalar crest.
+
+WEIR TOPOLOGY GAPS (DIAGONAL 4-CONNECTIVITY) (fixed, found tracing basin
+2433835's weir geometry directly -- no SFINCS run needed, weir line
+positioning depends only on grid/channel_mask/land classification):
+  A SECOND, distinct cause of dangling weir endpoints, found even after
+  the NaN-drop fix above was already in place: GridArrays.
+  connected_components() (discard_small_components' only caller, used to
+  drop land/water patches smaller than min_component_cells) used scipy.
+  ndimage.label()'s DEFAULT 4-connectivity (only edge-sharing neighbours
+  count as connected). A real, physically continuous coastline commonly
+  narrows to a single DIAGONAL-only pixel-to-pixel connection at some
+  point (an ordinary raster-discretization artifact for a jagged
+  coastline, not a genuine break in the landform) -- under 4-connectivity
+  that diagonal touch does NOT count as connected, so a large mainland and
+  a small diagonally-attached tail get classified as two SEPARATE
+  components, and the small tail (confirmed on basin 2433835: ~7 cells,
+  well under min_component_cells=30) gets dropped as if it were a real,
+  isolated small island. The dropped cells become neither land_mask nor
+  water_like, and the edge tracer draws no segment against either side of
+  them (same "neither" mechanism as the NaN-drop bug above, different
+  root cause) -- the boundary stops dead at the pinch point instead of
+  continuing along what is, physically, the same landform.
+  Fixed by switching connected_components()'s regular-grid branch to
+  8-connectivity (self._struct8 = generate_binary_structure(2, 2),
+  treating a diagonal touch as connected) -- the ONLY caller is
+  discard_small_components, so this doesn't affect close_gaps (which
+  intentionally keeps its own separate 4-connectivity self._struct4, since
+  that one represents actual grid-step distance for dilation, not a
+  landform-continuity question) or the quadtree branch (mesh face_face_
+  connectivity is a real physical adjacency graph already, no diagonal
+  ambiguity applies).
+  Verified with a synthetic unit test (25-cell block + 4-cell tail joined
+  only diagonally -- previously the tail was dropped, now both are kept as
+  one 29-cell component) and by re-tracing basin 2433835's actual weir (4
+  dangling endpoints -> 2; the remaining 2 are a distinct, minor, unfixed
+  issue in far corners of the rectangular grid bounding box with no land
+  or channel nearby at all -- not this bug, not yet investigated further).
+
+MOUTH CREST NEVER VERIFIED AGAINST THE REAL WATER LEVEL (fixed):
+  10_depth_estimation_modelled.py's own zs+freeboard_m<=crest condition
+  holds well along the centerline, but the mouth reach's own last cell was
+  a special case that bypassed it entirely: every round (round 0, every
+  correction round, even the final exact-tightening snap) unconditionally
+  set weir_crest_current[is_last_mouth_cell] = dem_at_cell[is_last_mouth_
+  cell] -- the raw seabed elevation, only ever floored afterward by the
+  flat coastal_protection_crest_m scalar, never checked against that
+  round's own actual simulated water level at all (unlike every other
+  centerline cell AND the coastal/river-boundary probe cells).
+  Fixed: mouth crest is now max(period-max water level at the nearest
+  OCEAN-classified cell + freeboard_m, coastal_protection_crest_m)
+  (_mouth_crest_target, new small "mouth ocean probe" -- one nearest-
+  ocean-cell per mouth reach, same _resolve_map_cell_idx/_read_map_zs_
+  at_cells machinery every other probe uses). Deliberately samples the
+  OCEAN side, not the mouth's own river-side channel cell -- that cell
+  sits right at the coast/river transition and isn't necessarily
+  representative of the open water the crest actually holds back
+  (mirrors the river-boundary probe's own "look across the dike" logic).
+  Bed/depth at the mouth is UNCHANGED (still hard-forced to natural
+  bathymetry, a real physical constraint) -- only the crest formula
+  changed, at all three places it used to be hard-forced to dem_at_cell.
+  Known residual, not addressed: if backwater consistently raises the
+  RIVER side above the ocean side at the mouth, this fix alone won't
+  catch it (only the ocean side is sampled) -- flagged, not yet decided
+  whether to also take the max against the river-side centerline cell's
+  own reading there.
+
+DISCHARGE-BUFFER PROBES SAMPLED ONLY THE INJECTION CELL'S OWN NEAREST
+CHANNEL CELL, NOT THE LOCAL PEAK (fixed):
+  Near a seed/head reach, the discharge injection cell's own water level
+  is not necessarily the local peak -- a narrow/bottlenecked head can push
+  the true peak a cell or two away (see this module's own long-standing
+  "sharp local spike" caveat about the injection cell itself). The river-
+  boundary probe mechanism sampled EVERY probe cell, including ones inside
+  a discharge point's own 5-cell buffer, at a single nearest-channel-cell
+  reading, which could miss that off-injection-cell peak.
+  Fixed: river_boundary_probe cells inside a discharge point's own buffer
+  zone (_discharge_buffer_land) now sample the MAX water level across
+  every channel cell within that SAME radius of their nearest discharge
+  point, instead of one nearest-cell reading (falls back to the nearest-
+  cell reading if that local neighbourhood is somehow empty). Ordinary
+  dike-adjacent probes elsewhere are unaffected. Since the weir build
+  already combines the centerline's own per-cell crest and this probe
+  correction via np.maximum, the centerline's own more-precise,
+  round-verified value still wins wherever it's higher -- this only ever
+  raises protection further where the centerline is silent or lower.
+  Verified with a synthetic test of the new index/aggregation logic.
+
+WEIR TOPOLOGY GAPS (DISCARDED SMALL FEATURES LEFT AS HOLES) (fixed, found
+tracing basin 4267691's weir geometry standalone -- a much bigger, more
+complex coastline than 2433835):
+  A THIRD distinct weir-topology-gap mechanism, on top of the NaN-drop fix
+  and the diagonal-4-connectivity fix above: discard_small_components()
+  (called separately on land_mask and water_like, to drop small islands/
+  patches below min_component_cells) leaves every discarded cell as
+  neither land_mask nor water_like -- invisible to the edge tracer
+  (h_break/v_break require one side True and the other True; a cell
+  reading False on both gets no segment drawn against it from either
+  direction). Where a discarded small feature sits at the true edge of a
+  larger, still-kept feature, this doesn't just skip a ring around the
+  excluded feature itself (the intended behaviour) -- it also breaks the
+  LARGER feature's own boundary trace at that exact point, leaving a
+  dangling gap in what should still be a continuous coastline.
+  Fixed in build_coastal_protection_weir(): a cell discarded from
+  land_mask is now reclassified into water_like instead of being left as
+  a hole, and vice versa for a discarded water_like cell reclassified
+  into land_mask -- a too-small island dissolves into its surrounding
+  water, a too-small pond dissolves into its surrounding land, either way
+  producing a genuine continuous transition at the larger feature's own
+  true edge (or no segment at all, where the discarded feature was fully
+  isolated) -- achieving the original "no ring around a small excluded
+  feature" intent without leaving an untraceable gap behind.
+  land_mask_raw/water_like_raw are mutually exclusive by construction
+  (land_mask_raw = ~water_like_raw & valid_mask), so the two reclassified
+  sets can never collide with each other or with the surviving mask on
+  the opposite side -- proven via a synthetic exclusivity/coverage test.
+  Verified empirically on both basins: 2433835 unaffected (4010 segments
+  vs. 3988 before, same 2 pre-existing array-edge dangling points, no
+  regression). 4267691: 22 -> 16 dangling endpoints -- all 6 resolved
+  were genuine coastline small-feature cases; the remaining 16 are now
+  EXCLUSIVELY the array-bounding-box-edge case (see next entry).
+
+CALIBRATION CREST REDESIGN: CROSS-SECTION ZS, DIRECT PER-CELL TARGET, NO
+INTERPOLATION (2026-07-29, found investigating basin 2433835's round-6
+snap-verification failure):
+  Round 5's one-shot snap tightened the crest to zs+freeboard_m and
+  reported convergence, but round 6 (the verification round) actually
+  overtopped 2 cells once simulated. Root cause investigation (reusing
+  round 6's own already-existing sfincs_map.nc/calibration_state.csv, no
+  new SFINCS run) found the gap traced to build_smoothed_weir_crest_
+  regular's own along-reach INTERPOLATION: the per-cell snap targets were
+  already exact requirements, so interpolating between them (plus
+  reading zs from a single intersected grid cell rather than the true
+  local cross-section) could under-shoot the real local requirement by
+  more than the fixed 0.5 m freeboard cap in wide channel sections.
+  Six related fixes, all in 10_depth_estimation_modelled.py unless noted:
+  - New _read_cross_section_period_max_zs: every centerline cell's own
+    period-max water level is now the MAX across its own channel CROSS-
+    SECTION (the contiguous channel_mask run through it along its own
+    grid row vs. column, whichever is SHORTER), not the single
+    intersected cell. _read_zs_and_resolve (single-cell) is kept, now
+    used ONLY for the water-level-timeseries plot's own representative-
+    cell indexing -- a visualization concern, not a calibration one.
+  - Correction-round crest update simplified to a single unconditional
+    formula, every cell: weir_crest_current = period_max_zs +
+    min_crest_increment_per_round_m -- replaces the old badly_overtopped/
+    near_zero two-case branching. Can now raise OR lower a cell's crest
+    (previously raise-only until the snap). The existing one-shot
+    snap-and-verify-then-revert-on-failure step is UNCHANGED.
+  - New river_burn.build_nearest_weir_crest_regular: paints every raster
+    cell with its NEAREST centerline anchor's crest value directly (no
+    along-reach interpolation, no junction blending) -- a sibling
+    function, NOT a modification of build_smoothed_weir_crest_regular
+    (rule 13's quadtree fallback still needs that one's interpolation
+    unchanged). Verified with a synthetic test: two anchors at different
+    crest values produce a sharp step at the midpoint, only the two exact
+    anchor values ever painted, no intermediate blend.
+  - Fixed: the post-loop backfill for early-stopped rounds was
+    overwriting a round that ACTUALLY ran. On a failed snap,
+    converged_round_idx = round_idx - 1, but the backfill range started
+    at converged_round_idx+1 -- which INCLUDED round_idx itself (the
+    just-simulated, rejected verification round), silently replacing its
+    genuine calibration_state.csv/plots/animation with copies of the
+    earlier round's files (confirmed via byte-identical MD5 hashes).
+    Fixed: only rounds that never simulated at all get touched (empty
+    sentinel for the visual outputs; calibration_state.csv still copied,
+    since gather_calibration_round_profile reads every round index and no
+    genuine data ever existed there to misrepresent); the final slot
+    (round n_correction_iterations) gets a full copy of the ACCEPTED
+    round's files.
+  - Fixed: on a failed snap, weir_crest_current etc. were reverted to
+    their pre-snap values, but the weir_gdf object actually written to
+    coastal_protection_weir.gpkg was never rebuilt -- it stayed whatever
+    the rejected, over-tightened snap round had traced. Fixed: weir_gdf
+    is re-traced once after the loop from the reverted (accepted) crest,
+    via the new build_nearest_weir_crest_regular + build_coastal_
+    protection_weir, whenever a snap was reverted.
+  - New per-round diagnostic, plots.plot_crest_gap_map (5th per-round
+    kind): painted crest minus that round's own actual simulated
+    period-max water level, weir line + river network + the REAL
+    discharge point(s) overlaid (crossings_utm -- the same snapped
+    locations discharge_points.create() is actually forced with; an
+    earlier ad hoc version of this plot showed the seed reach's own
+    line-start vertex instead, which visibly sat outside the
+    embankments). Auto-detects imshow orientation from the grid
+    transform's own sign convention (a SFINCS grid commonly has a
+    positive y-scale, which imshow() would otherwise silently flip).
+  - Revised later the same day: all 5 per-round diagnostic kinds
+    (plot_calibration/plot_water_level/plot_max_inundation/animation/
+    crest_gap_map) are no longer DECLARED Snakemake outputs at all --
+    written directly under calib_root's own round_visuals_dir, same
+    convention calibration_state.csv already used, via a
+    _round_visual_paths(round_idx) helper. A round genuinely skipped by
+    early-stopping now gets NO file whatsoever (previously an empty
+    .touch()'d placeholder, forced by Snakemake's own "every declared
+    output must exist" requirement) -- only the FINAL slot
+    (round{n_correction_iterations}) still gets a copy of the accepted
+    round's own real files. Filenames also put the round number as a
+    SUFFIX, not a prefix (e.g. max_inundation_round4.png, not
+    round4_max_inundation.png) -- an alphabetically-sorted directory
+    listing now groups by plot KIND first, so comparing one diagnostic
+    across rounds means consecutive files instead of picking them out of
+    a by-round-interleaved listing.
+
+CALIBRATION DISCHARGE STEP-SHOCK AT THE SEED CELL (fixed 2026-07-29,
+found investigating basin 2433835's wild round4/round5 water-level
+oscillation at the seed's own injection cell -- multi-metre swings
+hour-to-hour under CONSTANT discharge forcing, which is not physically
+plausible and directly called the whole calibration's own reliability
+into question):
+  10_depth_estimation_modelled.py forced the FULL calibration discharge
+  (a design return-period peak, e.g. 3276 m3/s vs. 974.8 m3/s bankfull for
+  this basin's seed) as a flat STEP function from t=0, into a channel
+  that starts near-dry -- production's own forcing
+  (src.river_forcing.build_design_discharge_matrix/sinusoidal_wave, rule
+  14_run_spinup.py) never does this: it always starts at a bankfull
+  baseline for a lead period before ramping to the event peak, precisely
+  to avoid this startup shock.
+  Fixed: calibration discharge now ramps LINEARLY from each crossing's own
+  bankfull_discharge up to the full calibration discharge over
+  river_processing.river_depth_modelling.discharge_ramp_hours (default
+  6.0), then holds flat for the rest of the run -- linear instead of
+  production's sinusoidal shape since calibration only needs to reach and
+  hold the peak, not simulate a full recession. Verified with a standalone
+  test of the ramp math; NOT YET re-verified against a live SFINCS run
+  (next step: re-run basin 2433835's calibration and confirm the seed-cell
+  oscillation is actually resolved).
+
+WEIR TOPOLOGY GAPS AT THE RECTANGULAR GRID'S OWN BOUNDING-BOX EDGE
+(found, NOT yet fixed):
+  After both fixes above, basin 2433835 still has 2 dangling endpoints and
+  basin 4267691 has 16 -- ALL of them sitting exactly on the grid's own
+  raster bounding-box edge coordinates (e.g. basin 4267691: x=427526.763
+  or x=895889.922, which are exactly grid.transform.c and grid.transform.c
+  + shape[1]*grid.transform.a -- the literal left/right array edges), 14-36
+  km from any river or channel, in empty ocean corners the delta polygon
+  doesn't reach. Likely related to _pad_for_edge_tracing's own padding-
+  ring/ocean_exempt closure logic at the array's own corners, but not
+  investigated in detail -- lower priority since nothing physically needs
+  protecting there (open ocean far from the domain of interest), unlike
+  the two fixed mechanisms above which affected real coastline/riverbank
+  continuity.
 
 MESH-NATIVE ANIMATION (flood progression):
   hydromt_sfincs itself never rasterizes a quadtree mesh for PLOTTING —

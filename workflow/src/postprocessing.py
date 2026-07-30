@@ -261,8 +261,12 @@ def compute_max_inundation(
     da_dep = get_bed_level(mod, sfincs_root, include_subgrid, max_bytes=max_bytes)
     if da_dep is None:
         return None, None
-    if isinstance(da_zsmax, xu.UgridDataArray):
-        da_dep = _coarsen_for_memory(da_dep, max_bytes=max_bytes)
+    # Bound da_dep's memory regardless of grid type -- a large enough REGULAR
+    # grid's own full-extent subgrid reference raster (get_bed_level's
+    # dep_subgrid.tif) can just as easily exceed max_bytes as a quadtree
+    # mosaic can; _coarsen_for_memory is already a no-op below its own
+    # threshold, so there is no reason to gate this on da_zsmax's type.
+    da_dep = _coarsen_for_memory(da_dep, max_bytes=max_bytes)
 
     da_hmax = sfincs_utils.downscale_floodmap(zsmax=da_zsmax, dep=da_dep, hmin=hmin)
 
@@ -413,8 +417,10 @@ def compute_flood_timeseries_stats(
     da_dep = get_bed_level(mod, sfincs_root, include_subgrid, max_bytes=max_bytes)
     if da_dep is None:
         return None
-    if isinstance(da_zs_native, xu.UgridDataArray):
-        da_dep = _coarsen_for_memory(da_dep, max_bytes=max_bytes)
+    # See compute_max_inundation's identical fix: bound da_dep regardless of
+    # grid type, not just for quadtree -- a large REGULAR grid's own
+    # full-extent subgrid reference raster needs the same protection.
+    da_dep = _coarsen_for_memory(da_dep, max_bytes=max_bytes)
 
     da_lu = mod.data_catalog.get_rasterdataset(str(landuse_path))
     da_lu_grid = da_lu.raster.reproject_like(da_dep, method="nearest").compute()

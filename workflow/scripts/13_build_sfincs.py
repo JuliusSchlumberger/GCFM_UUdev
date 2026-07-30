@@ -841,6 +841,9 @@ else:
         ),
         crs="EPSG:4326",
     )
+    inside_reach_ids = (
+        river_ds.inside_reach_id.values[active] if "inside_reach_id" in river_ds else [None] * n_active
+    )
 
     # Built here (SFINCS-build time), not precomputed in river_forcing.nc --
     # looks up the design discharge at design_rp_river_yr from the stored
@@ -894,6 +897,27 @@ else:
         # entirely, so the model structure matches the other two modes.
         dis_df.loc[:, :] = 0.0
         log.info("River discharge forced to 0.0 m3/s at all crossings (forcing_mode='coastal_only')")
+
+    # Snap each crossing onto the grid cell its OWN reach's centerline
+    # actually passes through, not just wherever its raw domain-entry point
+    # happens to rasterize to -- see src.river_burn.
+    # snap_points_to_centerline_cells's own docstring (an unsnapped point
+    # can resolve to a neighbouring floodplain cell with no real channel
+    # conveyance, producing an unrealistic local water-level pileup).
+    # Regular grid only: no quadtree equivalent of
+    # build_centerline_cells_regular exists yet (see that function's own
+    # docstring) -- quadtree builds keep the previous unsnapped behaviour
+    # for now.
+    if not quadtree_enabled:
+        from src.river_burn import build_centerline_cells_regular, snap_points_to_centerline_cells
+
+        centerline_cells = build_centerline_cells_regular(
+            rivers_utm, sf.grid.data["dep"].shape, sf.grid.data["dep"].rio.transform()
+        )
+        crossings_gdf = snap_points_to_centerline_cells(
+            crossings_gdf.to_crs(sf.crs), centerline_cells,
+            reach_ids=inside_reach_ids, resolution_m=resolution,
+        ).to_crs("EPSG:4326")
 
     # Filter crossing points to those within the active SFINCS region, and
     # snap any kept point that falls just outside the exact region back

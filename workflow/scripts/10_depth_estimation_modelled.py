@@ -16,9 +16,18 @@ not a calibrated or real coastal one: even with the real, steady baseline_m
 boundary in place (see below), the confined river's water level can exceed
 a low real crest right at the coast/river transition near the mouth,
 leaking onto the floodplain through the coastal side of the same merged
-boundary -- so round 0 must confine everything uniformly. Forced with a steady
+boundary -- so round 0 must confine everything uniformly. Forced with a
 discharge equal to the basin's protection-level return period (bankfull as
-a fallback), runs for a single fixed duration (river_processing.
+a fallback) -- linearly RAMPED UP from each crossing's own bankfull_discharge
+over river_processing.river_depth_modelling.discharge_ramp_hours, then held
+constant for the rest of the run, rather than forced as an instantaneous
+step from t=0: the calibration discharge is often several times bankfull,
+and stepping straight to it into a channel that starts near-dry produces a
+startup shock wave that can persist/oscillate for the entire run instead of
+damping out (mirrors production's own bankfull-lead-in-then-ramp hydrograph,
+src.river_forcing.build_design_discharge_matrix/sinusoidal_wave, just linear
+here since calibration only needs to reach and hold the peak). Runs for a
+single fixed duration (river_processing.
 river_depth_modelling.calibration_days), and splits the simulated rise above
 the DEM between channel excavation and an actual production-model weir
 crest (river_processing.river_depth_modelling.weir_crest_fraction) --
@@ -47,12 +56,30 @@ points"/sfincs_his.nc -- a single point per reach misses real, substantial
 internal variation within a reach, most strikingly a sharp
 local spike right at the seed reach's own discharge-injection cell. Every
 cell the centerline actually passes through (src.river_burn.build_centerline_cells_regular)
-gets its own independently-tracked depth/crest, so the calibrated crest
-varies smoothly along a reach and across reach junctions
-(build_smoothed_weir_crest_regular's own per-reach interpolation + junction
-blend, generalized from one scalar per reach to many anchors per reach),
-matching how the burned bed already varies via burn_river_channel's own
-per-anchor interpolation.
+gets its own independently-tracked depth/crest.
+
+Each centerline cell's own "period_max_water_level" is not simply the
+single grid cell the centerline happens to intersect, either -- a single
+cell's own reading can be a noisy, non-representative sample of the true
+water level at that point along the river. Instead it is the MAX water
+level across that cell's own channel CROSS-SECTION: the contiguous
+channel_mask run through the cell along its own grid row vs. its own grid
+column, whichever is SHORTER (extended by one cell on each side to also
+reach the adjacent land cell the weir itself sits on) -- see
+_read_cross_section_period_max_zs and the precomputation block above
+cell_gdf's own global-cache-var init. Deliberately a simple axis-aligned
+comparison, not a true reach-normal cross-section.
+
+The calibrated crest is painted onto the grid with NO along-reach
+interpolation and no cross-reach junction blending either
+(build_nearest_weir_crest_regular): every raster cell gets its own nearest
+centerline anchor's crest value directly, since every anchor is already an
+exact per-cell target (zs_max(cross-section) + freeboard/increment, see
+below) -- interpolating between exact targets would just reintroduce the
+same under/over-shoot a smoothed profile was meant to avoid. Only
+burn_river_channel's own bed excavation still uses per-anchor
+interpolation (a channel bed is expected to vary gradually, unlike a
+target-driven crest).
 
 weir_crest_fraction is applied uniformly at round 0, with no magnitude
 threshold that switches some cells to 0% excavation -- a hard switch to
@@ -70,55 +97,37 @@ river_processing.river_depth_modelling.n_correction_iterations (default 2)
 additional ROUNDS run after round 0: each builds a model with round 0's own
 (fixed) excavation + the CURRENT calibrated crest (a faithful, coupled
 replica of what production will actually build, via the same
-burn_river_channel/build_smoothed_weir_crest_regular functions rules 11b/13
-use) instead of an isolated confinement wall, at the SAME calibration
-discharge, then updates the crest, both cases expressed as plain
-differences/sums only (no abs(), no ratios, so they stay correct for
-below-datum/negative elevations, e.g. a mouth's own natural bathymetry):
+burn_river_channel function rules 11b/13 use, plus
+build_nearest_weir_crest_regular for the crest -- see above) instead of an
+isolated confinement wall, at the SAME calibration discharge, then updates
+the crest directly, at every cell, unconditionally (no overtopped/
+not-overtopped branching, no smoothing):
 
-    gap = weir_crest_current - period_max_water_level  (negative = overtopped)
+    weir_crest_current = period_max_water_level + min_crest_increment_per_round_m
 
-    BADLY OVERTOPPED (gap < -freeboard_m): close the full gap, floored at a
-    minimum step size so the crest keeps making real progress every round
-    instead of stalling on a residual that never grows enough to matter:
-        weir_crest_current += max(-gap, min_crest_increment_per_round_m)
-
-    NEAR ZERO (|gap| <= freeboard_m -- barely overtopped, or contained with
-    less than freeboard_m of margin): raised by the SAME flat
-    min_crest_increment_per_round_m step, unconditionally -- NOT targeted at
-    period_max_water_level + freeboard_m. Treating the whole
-    [-freeboard_m, +freeboard_m] band identically avoids a sharp
-    discontinuity between two physically-adjacent cells that land on
-    opposite sides of gap == 0 by a few mm of simulated-zs noise (one side
-    would otherwise jump by min_crest_increment_per_round_m, the other by
-    the near-zero freeboard-exact nudge).
-
-    Comfortably contained (gap > freeboard_m): left unchanged every round
-    while raise-only correction is still ongoing -- the crest is never
-    lowered round-to-round while cells elsewhere are still overtopped. Once
-    EVERY cell is simultaneously contained with the inundated-cell count
-    stable (the early-stopping condition below), a single one-shot
-    tightening snap runs instead, see that section.
+Applied to every cell whether it raises OR lowers that cell's crest
+relative to its current value -- repeated every round, this makes the
+crest climb by at least min_crest_increment_per_round_m each round on top
+of whatever the coupled water level actually settles at (raising the
+crest removes overbank relief, forcing more of the same discharge through
+the same, round-0-frozen channel depth, which raises the confined water
+level in turn -- a flat per-round increment, not a full-gap jump, keeps
+this feedback from compounding in one aggressive step). Once a round's own
+crest already exceeds that round's own period_max_water_level everywhere
+(no overtopping under its own simulation) AND the realized inundated-cell
+count has settled back down near round 0's own, a single one-shot
+tightening snap runs instead -- see the early-stopping section below.
 
 weir_crest_current is used AS-IS, with no separate freeboard added on top,
 both to run every round's own simulated weir and as this rule's own final
 output -- so the calibrated crest itself always guarantees at least
-freeboard_m of margin above the coupled system's own driven water level,
-rather than relying on a separate, later top-up (rule 13's own
-build_coastal_protection_weir freeboard_m parameter, used this way for the
-production/coastal crest, would otherwise double-count it here).
+freeboard_m of margin above the coupled system's own driven water level
+once the one-shot snap has run, rather than relying on a separate, later
+top-up (rule 13's own build_coastal_protection_weir freeboard_m parameter,
+used this way for the production/coastal crest, would otherwise
+double-count it here).
 `n_correction_iterations: 0` skips this refinement entirely, using round
 0's own isolated-confinement estimate unchanged.
-
-Jumping straight to period_max_water_level + freeboard_m for badly
-overtopped cells (the same rule as the near-zero case) would risk a
-self-reinforcing loop for inland reaches, since depth is frozen after
-round 0 and the crest is the only lever left: raising the crest removes
-overbank relief, forcing more of the same discharge through the same
-(unchanged) channel depth, which raises the confined water level, which
-then needs an even higher crest, without converging. The floored-full-gap
-closure above is a more conservative, incremental correction for large
-gaps specifically, to avoid compounding that loop in one aggressive jump.
 
 The coastal boundary is a real, STEADY baseline_m level (mean sea level +
 SLR/MDT correction, read from surge_forcing.nc -- the same value
@@ -139,9 +148,11 @@ directly from real calibration data, not DEM shape alone.
 Mouth reach(es) (n_rch_dn == 0, topologically the network's own real
 coastal outlet(s) -- NOT the same thing as a delta-outline outflow point,
 see below) have their own last (most downstream, max along_m) cell
-hard-forced to zero excavation (rivdph=0, crest=natural bed) -- that
-coastal endpoint is a real physical constraint (the actual seabed), not a
-calibration result.
+hard-forced to zero excavation (rivdph=0, bed=natural bathymetry) -- that
+coastal endpoint's BED is a real physical constraint (the actual seabed),
+not a calibration result. The CREST there is a separate concern (see
+below) -- it still needs to be an actual protective structure, not the
+raw (possibly below-sea-level) seabed elevation.
 
 Separately, a non-seed, non-mouth, non-bifurcation reach that crosses the
 delta polygon's own outline (identify_delta_outflow_points, rule
@@ -172,27 +183,31 @@ SWORD guarantees a mouth has exactly one upstream neighbour) that stops
 permanently -- for that entire mouth's own path -- the first time it finds
 a cell that doesn't need clamping, or hits a reach with zero or more than
 one upstream neighbour (headwater or confluence).
-Crest is untouched by any of this -- every non-endpoint cell still gets the
-normal per-cell round-0 crest formula; only the coastal endpoint's own
-crest is hard-forced (and then floored against the real coastal protection
-crest, see below).
+Bed is untouched by any of this beyond the endpoint itself -- every
+non-endpoint cell still gets the normal per-cell round-0 bed formula; only
+the coastal endpoint's own bed is hard-forced to natural bathymetry.
 
-The forced natural-bathymetry bed/crest at each mouth's own last cell is
-re-asserted at the end of every correction round too, after the
-ensure-minimum-freeboard crest update -- its bed and crest are externally
-fixed for the entire calibration, never excess/freeboard-driven at all.
+The mouth's own CREST, unlike its bed, is not hard-forced to a fixed value
+at all -- it is re-targeted every round (round 0, every correction round,
+and the final snap) to max(the real simulated water level at the nearest
+OCEAN-classified grid cell + freeboard_m, coastal_protection_crest_m)
+(_mouth_crest_target). Sampling the ocean side rather than the mouth's own
+river-side channel cell matters: that channel cell sits right at the
+coast/river transition and its own reading isn't necessarily
+representative of the open water the crest there actually has to hold
+back. This gives the mouth a real, verified protective structure sized
+against actual (backwater/tide-coupled) conditions, rather than reporting
+the raw seabed elevation (which can be below sea level) with only a flat
+coastal standard as a floor.
 
-weir_crest_current is floored against coastal_protection_crest_m (the real
-production coastal protection standard, read from surge_forcing.nc) EVERY
-round, for EVERY cell, right after that round's own update: the mouth's
-hard-forced last cell would otherwise report raw natural bathymetry (which
-can be below sea level) with nothing enforcing the production requirement
-that crest = max(river-derived crest, coastal protection crest).
-build_coastal_protection_weir already applies this max()
-at actual simulation/build time; this floor makes the TRACKED
-weir_crest_current (calibration_state.csv, the round-profile plots, and the
-final network's own weir_crest_calibrated column) agree with what SFINCS
-actually built, instead of under-reporting it.
+weir_crest_current is ALSO floored against coastal_protection_crest_m (the
+real production coastal protection standard, read from surge_forcing.nc)
+EVERY round, for EVERY cell, right after that round's own update --
+build_coastal_protection_weir already applies this max() at actual
+simulation/build time; this floor makes the TRACKED weir_crest_current
+(calibration_state.csv, the round-profile plots, and the final network's
+own weir_crest_calibrated column) agree with what SFINCS actually built,
+instead of under-reporting it.
 
 Coastal probe correction (correction rounds only): the river's own
 backwater can raise the water level right at the coast above baseline_m,
@@ -313,12 +328,13 @@ from src.log import setup_logging
 from src.plots import (
     animate_flood_progression,
     plot_calibration_round_profiles,
+    plot_crest_gap_map,
     plot_max_inundation_map,
     plot_river_depth,
     plot_water_level_timeseries,
 )
 from src.postprocessing import compute_flood_progression, compute_max_inundation
-from src.river_burn import build_centerline_cells_regular, build_channel_mask_regular, build_smoothed_weir_crest_regular, burn_river_channel, constrain_to_coarse_channel_mask
+from src.river_burn import build_centerline_cells_regular, build_channel_mask_regular, build_nearest_weir_crest_regular, burn_river_channel, constrain_to_coarse_channel_mask, snap_points_to_centerline_cells
 from src.river_depth_calibration import (
     build_calibration_seed_discharge,
     compute_calibrated_depth,
@@ -364,12 +380,12 @@ hg_c = float(snakemake.params.hg_c)
 hg_f = float(snakemake.params.hg_f)
 
 calibration_days   = float(snakemake.params.calibration_days)
+discharge_ramp_hours = float(snakemake.params.discharge_ramp_hours)
 weir_crest_m       = float(snakemake.params.weir_crest_m)
 weir_par1          = float(snakemake.params.weir_par1)
 weir_crest_fraction = float(snakemake.params.weir_crest_fraction)
 n_correction_iterations = int(snakemake.params.n_correction_iterations)
 min_crest_increment_per_round_m = float(snakemake.params.min_crest_increment_per_round_m)
-weir_crest_junction_blend_m = float(snakemake.params.weir_crest_junction_blend_m)
 weir_freeboard_m = float(snakemake.params.weir_freeboard_m)
 # river_crest_dilation_cells_min: FLOOR only -- the actual value used is
 # computed per basin (see below, once rivers_utm/grid are available) as
@@ -738,13 +754,106 @@ log.info(
     f"{cell_gdf['reach_id'].nunique()} reach(es)"
 )
 
+# ── per-cell CROSS-SECTION zs sampling (replaces a single grid cell's own
+# reading) ────────────────────────────────────────────────────────────────
+# A single grid cell's own water level can be a noisy, non-representative
+# sample of "the water level at this point along the river" -- the true
+# channel cross-section at a given along-reach position is usually several
+# cells wide, and the centerline happens to intersect just one of them.
+# Every centerline cell's own "zs" (used everywhere depth/crest calibration
+# reads a water level, both round 0's own split and every correction
+# round's own update -- see _read_cross_section_period_max_zs below) is now
+# the MAX water level across the FULL cross-section of channel_mask cells
+# at that point, found by comparing the contiguous channel_mask run through
+# the cell along its own grid ROW vs. its own grid COLUMN, and taking
+# whichever run is SHORTER -- the shorter run is the cross-channel
+# direction, since a channel is narrow across and long along at any single
+# row/column slice (deliberately NOT the union of both: for a reach running
+# straight along one grid axis, the OTHER axis's own run is the reach's
+# entire length, so unioning would give every cell along that whole reach
+# the same single global maximum -- confirmed degenerate, not just a
+# theoretical concern). Each run is also extended by one cell beyond
+# channel_mask's own True region on either side, to reach the adjacent
+# LAND cell where the weir segment itself is actually drawn (the weir sits
+# at the land/water_like transition, one cell outside channel_mask's own
+# True region -- see _seaward_edges_regular_with_values). Deliberately a
+# simple axis-aligned comparison, not a true reach-normal cross-section --
+# exact only to the extent the channel isn't running near-diagonally at
+# that specific point, the same caveat any grid-aligned raster analysis
+# carries.
+def _channel_run_through(mask_1d: np.ndarray, idx: int) -> np.ndarray:
+    """Contiguous True run in a 1D boolean slice of channel_mask containing
+    position idx, extended by one cell on each side beyond the run's own
+    boundary (to also reach the adjacent land cell the weir itself sits
+    on) -- idx itself is always included even if mask_1d[idx] is somehow
+    False (shouldn't happen for a real centerline cell, but never silently
+    drop the cell's own position)."""
+    if not mask_1d[idx]:
+        left = right = idx
+    else:
+        left = idx
+        while left > 0 and mask_1d[left - 1]:
+            left -= 1
+        right = idx
+        while right < len(mask_1d) - 1 and mask_1d[right + 1]:
+            right += 1
+    left = max(0, left - 1)
+    right = min(len(mask_1d) - 1, right + 1)
+    return np.arange(left, right + 1)
+
+
+_cell_rows = cell_gdf["row"].to_numpy()
+_cell_cols = cell_gdf["col"].to_numpy()
+cell_cross_section_rowcol: list[np.ndarray] = []  # one (n_i, 2) row/col array per cell_gdf row
+for _r, _c in zip(_cell_rows, _cell_cols):
+    _row_run_cols = _channel_run_through(channel_mask[_r, :], _c)
+    _col_run_rows = _channel_run_through(channel_mask[:, _c], _r)
+    if len(_row_run_cols) <= len(_col_run_rows):
+        _rc = np.column_stack([np.full(len(_row_run_cols), _r), _row_run_cols])
+    else:
+        _rc = np.column_stack([_col_run_rows, np.full(len(_col_run_rows), _c)])
+    cell_cross_section_rowcol.append(_rc)
+
+# Flattened, DEDUPLICATED set of every grid cell any cross-section actually
+# needs -- sfincs_map.nc is resolved/read once for this whole set (see
+# _read_cross_section_period_max_zs below), not once per cell_gdf row, even
+# though a single grid cell can appear in more than one cell_gdf row's own
+# cross-section (e.g. two adjacent centerline cells sharing part of the
+# same cross-channel run).
+_all_cross_section_rc = np.concatenate(cell_cross_section_rowcol, axis=0)
+_unique_rc, _cross_section_inverse = np.unique(_all_cross_section_rc, axis=0, return_inverse=True)
+cross_section_unique_rows = _unique_rc[:, 0]
+cross_section_unique_cols = _unique_rc[:, 1]
+cross_section_unique_x, cross_section_unique_y = rasterio.transform.xy(
+    grid.transform, cross_section_unique_rows, cross_section_unique_cols
+)
+cross_section_unique_x = np.asarray(cross_section_unique_x)
+cross_section_unique_y = np.asarray(cross_section_unique_y)
+# Split _cross_section_inverse back into per-cell_gdf-row groups (same
+# lengths/order as cell_cross_section_rowcol) -- cross_section_group_idx[i]
+# gives the positional indices into cross_section_unique_rows/cols (and
+# therefore into per-unique-cell period-max arrays) that make up cell i's
+# own cross-section.
+_group_sizes = [len(a) for a in cell_cross_section_rowcol]
+_group_bounds = np.cumsum([0] + _group_sizes)
+cross_section_group_idx = [
+    _cross_section_inverse[_group_bounds[i]:_group_bounds[i + 1]] for i in range(len(cell_gdf))
+]
+log.info(
+    f"Cross-section zs sampling: {len(cell_gdf)} centerline cell(s) map onto "
+    f"{len(cross_section_unique_rows)} unique grid cell(s) total "
+    f"(median cross-section width: {int(np.median(_group_sizes))} cell(s))"
+)
+
 # (n_idx, m_idx): sfincs_map.nc's own internal cell indices matching
 # cell_gdf's (row, col) -- resolved lazily, once, inside _run_calibration_round
 # below, from round 0's own freshly written sfincs_map.nc (grid geometry is
 # round-invariant, so it's reused unchanged for every later round).
 map_cell_idx = None
+cross_section_map_cell_idx = None
 coastal_map_cell_idx = None
 river_boundary_map_cell_idx = None
+mouth_ocean_map_cell_idx = None
 
 # One representative cell per reach (nearest that reach's own along_m
 # midpoint) -- used only by the water-level-timeseries diagnostic plot,
@@ -766,6 +875,10 @@ with xr.open_dataset(river_forcing_path, decode_times=False) as river_ds:
     inside_ids = river_ds["inside_reach_id"].values[active] if "inside_reach_id" in river_ds else []
     cross_lons = river_ds["longitude"].values[active]
     cross_lats = river_ds["latitude"].values[active]
+    # Per-crossing bankfull discharge -- the ramp's own start value (see
+    # below), read at the SAME active crossings, same indexing/order as
+    # cross_lons/cross_lats/inside_ids.
+    cross_bankfull_q = river_ds["bankfull_discharge"].values[active]
 
 crossing_q = [reach_q.get(str(rid), np.nan) for rid in inside_ids]
 crossings_gdf = gpd.GeoDataFrame(
@@ -776,22 +889,57 @@ crossings_gdf = gpd.GeoDataFrame(
 valid = np.isfinite(crossing_q)
 crossings_gdf = crossings_gdf[valid].reset_index(drop=True)
 crossing_q = np.asarray(crossing_q)[valid]
+crossing_bankfull_q = np.asarray(cross_bankfull_q)[valid]
+inside_ids_valid = np.asarray(inside_ids)[valid] if len(inside_ids) else [None] * len(crossing_q)
 
 if crossings_gdf.empty:
     raise RuntimeError("No discharge crossings resolved to a calibration discharge -- cannot calibrate")
 
+# Snap each crossing onto the grid cell its OWN reach's centerline actually
+# passes through (cell_gdf), not just wherever its raw domain-entry point
+# happens to rasterize to -- an unsnapped point can resolve to a
+# neighbouring floodplain cell with no real channel conveyance, which is
+# exactly what produced basin 4267691's round-0 369 m water-level pileup.
+# reach_ids restricts the nearest-cell search to the point's own reach
+# first (matters at confluences/bifurcations), falling back to the nearest
+# cell across all reaches when inside_reach_id is missing/unresolved.
+crossings_utm = snap_points_to_centerline_cells(
+    crossings_gdf.to_crs(sf.crs), cell_gdf, reach_ids=inside_ids_valid, resolution_m=resolution,
+)
+crossings_gdf = crossings_utm.to_crs("EPSG:4326")
+
 crossings_filt, cross_keep_mask = snap_points_into_region(crossings_gdf, region_wgs84, buf_deg)
 crossing_q = crossing_q[cross_keep_mask]
+crossing_bankfull_q = crossing_bankfull_q[cross_keep_mask]
 if crossings_filt.empty:
     raise RuntimeError("All discharge crossings fall outside the active calibration region")
 
-dis_df = pd.DataFrame(
-    data=np.tile(crossing_q, (len(calib_times), 1)),
-    index=calib_times,
-    columns=range(len(crossings_filt)),
-)
+# Linear ramp from each crossing's own bankfull_discharge up to the full
+# calibration discharge over discharge_ramp_hours (from t=0), held flat
+# afterward -- NOT a flat step function from t=0. Forcing the full
+# calibration discharge (often several times bankfull) as an instantaneous
+# step into a channel that starts near-dry produces a startup shock wave
+# that can persist/oscillate for the entire run instead of damping out
+# (confirmed on basin 2433835: the seed's own first cell showed multi-metre
+# swings hour-to-hour under CONSTANT forcing with no ramp). Mirrors
+# production's own bankfull-lead-in-then-ramp hydrograph shape
+# (src.river_forcing.build_design_discharge_matrix/sinusoidal_wave), linear
+# instead of sinusoidal since calibration only needs to reach and hold the
+# peak, not simulate a full event recession. A crossing with NaN bankfull
+# (shouldn't happen -- same has_glofas-active set river_forcing.nc already
+# guarantees bankfull_discharge for) falls back to ramping from 0 rather
+# than dropping the ramp entirely.
+_ramp_hours = np.arange(n_steps) * (calibration_days * 24.0) / (n_steps - 1)
+_ramp_frac = np.clip(_ramp_hours / max(discharge_ramp_hours, 1e-6), 0.0, 1.0)[:, None]
+_bankfull_start = np.where(np.isfinite(crossing_bankfull_q), crossing_bankfull_q, 0.0)
+dis_values = _bankfull_start[None, :] + (crossing_q[None, :] - _bankfull_start[None, :]) * _ramp_frac
+dis_df = pd.DataFrame(dis_values, index=calib_times, columns=range(len(crossings_filt)))
 sf.discharge_points.create(timeseries=dis_df, locations=crossings_filt)
-log.info(f"Discharge forcing: {len(crossings_filt)} constant source point(s)")
+log.info(
+    f"Discharge forcing: {len(crossings_filt)} source point(s), ramped from bankfull to the full "
+    f"calibration discharge over {discharge_ramp_hours:.1f} h, held constant for the remaining "
+    f"{max(calibration_days * 24.0 - discharge_ramp_hours, 0.0):.1f} h"
+)
 
 # ── river boundary probe cells (LAND cells directly bordering the channel,
 # driving a separate river-boundary weir correction) ─────────────────────────
@@ -841,24 +989,49 @@ river_boundary_probe_x = np.asarray(river_boundary_probe_x)
 river_boundary_probe_y = np.asarray(river_boundary_probe_y)
 
 # Nearest channel_mask cell for each probe -- the actual water-level
-# SAMPLING location (see docstring above); the probe's own row/col above
-# remains where the CORRECTED crest value gets rasterized back onto the
-# grid, since that's the land-side position crest_surface is looked up at.
+# SAMPLING location for an ORDINARY (non-discharge) probe (see docstring
+# above); the probe's own row/col above remains where the CORRECTED crest
+# value gets rasterized back onto the grid, since that's the land-side
+# position crest_surface is looked up at.
 _channel_rows_all, _channel_cols_all = np.where(channel_mask & grid.valid_mask)
 _channel_tree = cKDTree(np.column_stack([_channel_rows_all, _channel_cols_all]))
 _dist_to_channel, _nearest_channel_idx = _channel_tree.query(
     np.column_stack([river_boundary_probe_rows, river_boundary_probe_cols])
 )
-_river_boundary_sample_rows = _channel_rows_all[_nearest_channel_idx]
-_river_boundary_sample_cols = _channel_cols_all[_nearest_channel_idx]
-river_boundary_sample_x, river_boundary_sample_y = rasterio.transform.xy(
-    grid.transform, _river_boundary_sample_rows, _river_boundary_sample_cols
-)
-river_boundary_sample_x = np.asarray(river_boundary_sample_x)
-river_boundary_sample_y = np.asarray(river_boundary_sample_y)
+channel_cell_x, channel_cell_y = rasterio.transform.xy(grid.transform, _channel_rows_all, _channel_cols_all)
+channel_cell_x = np.asarray(channel_cell_x)
+channel_cell_y = np.asarray(channel_cell_y)
+
+# Discharge-buffer probes (river_boundary_probe cells inside
+# _discharge_buffer_land) sample the WORST (max) water level across every
+# channel cell within that SAME discharge-buffer radius of their own
+# nearest discharge point, instead of a single nearest-channel-cell
+# reading: the discharge injection cell's own water level is not
+# necessarily the local peak (a narrow/bottlenecked head can push the true
+# peak a cell or two away, see this module's own docstring for the known
+# "sharp local spike" caveat) -- sampling the whole neighbourhood's own
+# worst case is a safer basis for the crest there. Ordinary dike-adjacent
+# probes elsewhere (not near any discharge point) keep the single
+# nearest-channel-cell reading above, unchanged.
+_is_discharge_probe = _discharge_buffer_land[river_boundary_probe_rows, river_boundary_probe_cols]
+_discharge_local_channel_idx: list[np.ndarray] = []
+for _dr, _dc in zip(_discharge_rows, _discharge_cols):
+    _d = np.hypot(_channel_rows_all - _dr, _channel_cols_all - _dc)
+    _discharge_local_channel_idx.append(np.flatnonzero(_d <= _discharge_buffer_cells))
+if _is_discharge_probe.any():
+    _discharge_tree = cKDTree(np.column_stack([_discharge_rows, _discharge_cols]))
+    _, _nearest_discharge_idx = _discharge_tree.query(
+        np.column_stack([
+            river_boundary_probe_rows[_is_discharge_probe], river_boundary_probe_cols[_is_discharge_probe],
+        ])
+    )
+else:
+    _nearest_discharge_idx = np.zeros(0, dtype=int)
 log.info(
     f"River boundary probe cells (land, directly bordering channel_mask or within "
-    f"{_discharge_buffer_cells:.0f} cell(s) of a discharge point): {len(river_boundary_probe_rows)}"
+    f"{_discharge_buffer_cells:.0f} cell(s) of a discharge point): {len(river_boundary_probe_rows)} "
+    f"({int(_is_discharge_probe.sum())} sampling their own discharge-radius max, "
+    f"{int((~_is_discharge_probe).sum())} sampling their own nearest channel cell)"
 )
 
 # ── coastal water-level boundary (steady baseline_m) ─────────────────────────
@@ -918,6 +1091,35 @@ def _read_zs_and_resolve(round_root: Path):
     return _read_map_zs_at_cells(round_root, *map_cell_idx)
 
 
+def _read_cross_section_period_max_zs(round_root: Path) -> np.ndarray:
+    """Per-centerline-cell period-max water level, one value per cell_gdf
+    row, taken as the MAX across that cell's own channel cross-section
+    (cross_section_group_idx, precomputed above from channel_mask's row/
+    column runs) rather than the single grid cell the centerline happens
+    to intersect -- see the precomputation block above cell_gdf's own
+    global-cache-var init for the full rationale. This is the value that
+    drives every depth/crest calibration decision (round 0's split, every
+    correction round's own update, the final snap); _read_zs_and_resolve
+    (single intersected cell) is kept unchanged alongside this, only for
+    the water-level-timeseries diagnostic plot's own representative-cell
+    indexing, which is a visualization concern, not a calibration one."""
+    global cross_section_map_cell_idx
+    if cross_section_map_cell_idx is None:
+        cross_section_map_cell_idx = _resolve_map_cell_idx(
+            round_root / "sfincs_map.nc", cross_section_unique_x, cross_section_unique_y,
+        )
+        log.info(
+            f"Resolved {len(cross_section_map_cell_idx[0])} unique cross-section grid cell(s) "
+            f"against sfincs_map.nc's own grid indices"
+        )
+    zs, _times_s = _read_map_zs_at_cells(round_root, *cross_section_map_cell_idx)
+    per_unique_cell_period_max = compute_period_max_zs(zs)
+    return np.array(
+        [np.nanmax(per_unique_cell_period_max[idx]) for idx in cross_section_group_idx],
+        dtype=np.float32,
+    )
+
+
 def _read_coastal_probe_period_max_zs(round_root: Path) -> np.ndarray:
     """Same pattern as _read_zs_and_resolve, for the coastal probe cells
     (ocean, near land) instead of the river's own centerline cells --
@@ -933,26 +1135,73 @@ def _read_coastal_probe_period_max_zs(round_root: Path) -> np.ndarray:
     return compute_period_max_zs(zs)
 
 
+def _read_mouth_ocean_period_max_zs(round_root: Path) -> np.ndarray:
+    """Same pattern as _read_coastal_probe_period_max_zs, one probe per
+    mouth reach -- the nearest OCEAN-classified cell (mouth_ocean_rows/
+    cols/x/y) to that mouth's own last centerline cell, not the river-side
+    channel cell itself. Empty array if there is no mouth reach at all."""
+    global mouth_ocean_map_cell_idx
+    if len(mouth_ocean_rows) == 0:
+        return np.zeros(0, dtype=np.float32)
+    if mouth_ocean_map_cell_idx is None:
+        mouth_ocean_map_cell_idx = _resolve_map_cell_idx(round_root / "sfincs_map.nc", mouth_ocean_x, mouth_ocean_y)
+        log.info(f"Resolved {len(mouth_ocean_map_cell_idx[0])} mouth ocean probe cell(s) against sfincs_map.nc's own grid indices")
+    zs, _times_s = _read_map_zs_at_cells(round_root, *mouth_ocean_map_cell_idx)
+    return compute_period_max_zs(zs)
+
+
+def _mouth_crest_target(round_root: Path) -> np.ndarray:
+    """The mouth's own last centerline cell's CREST target, every round
+    including round 0 and the final snap -- max(the real, seaward water
+    level there + freeboard_m, the real coastal protection standard).
+    Deliberately NOT the mouth cell's own bed elevation (natural
+    bathymetry stays a separate, unrelated BED/depth concern, hard-forced
+    elsewhere) -- a coastal outlet still needs an actual protective crest
+    sized against how high the water there actually gets, sampled on the
+    OPEN-WATER side of the coast/river transition (mouth_ocean_rows/cols),
+    not the river-side channel cell's own reading, which sits right at
+    that transition and isn't necessarily representative of the water it's
+    actually confining against."""
+    if len(mouth_ocean_rows) == 0:
+        return np.zeros(0, dtype=np.float32)
+    mouth_ocean_period_max_zs = _read_mouth_ocean_period_max_zs(round_root)
+    return np.maximum(mouth_ocean_period_max_zs + weir_freeboard_m, coastal_protection_crest_m)
+
+
 def _read_river_boundary_probe_period_max_zs(round_root: Path) -> np.ndarray:
-    """Same pattern as _read_coastal_probe_period_max_zs, for the river
-    boundary probe cells -- but sampled at each probe's own NEAREST
-    channel_mask cell (river_boundary_sample_x/y), not the land probe's own
-    position (river_boundary_probe_x/y, used only for rasterizing the
-    corrected value back onto the grid afterward) -- see the probe setup's
-    own docstring for why. Empty array if there are no probe cells at all."""
+    """Per-probe period-max water level, resolved once against the FULL
+    channel-cell set (channel_cell_x/y) rather than one point per probe.
+    An ORDINARY (non-discharge) probe reads its own single nearest channel
+    cell (_nearest_channel_idx, "look across the dike, what's the water
+    level on the other side"). A DISCHARGE-buffer probe instead reads the
+    MAX water level across every channel cell within its own nearest
+    discharge point's own buffer radius (_discharge_local_channel_idx) --
+    see the probe setup's own docstring for why. Falls back to the
+    ordinary nearest-cell reading if that local neighbourhood is somehow
+    empty (a discharge point with no channel cell within its own radius,
+    not expected in practice but not a reason to crash). Empty array if
+    there are no probe cells at all."""
     global river_boundary_map_cell_idx
     if len(river_boundary_probe_rows) == 0:
         return np.zeros(0, dtype=np.float32)
     if river_boundary_map_cell_idx is None:
-        river_boundary_map_cell_idx = _resolve_map_cell_idx(
-            round_root / "sfincs_map.nc", river_boundary_sample_x, river_boundary_sample_y
-        )
+        river_boundary_map_cell_idx = _resolve_map_cell_idx(round_root / "sfincs_map.nc", channel_cell_x, channel_cell_y)
         log.info(
-            f"Resolved {len(river_boundary_map_cell_idx[0])} river boundary probe cell(s) "
-            f"against sfincs_map.nc's own grid indices"
+            f"Resolved {len(river_boundary_map_cell_idx[0])} channel cell(s) (river boundary probe "
+            f"sampling) against sfincs_map.nc's own grid indices"
         )
     zs, _times_s = _read_map_zs_at_cells(round_root, *river_boundary_map_cell_idx)
-    return compute_period_max_zs(zs)
+    channel_period_max_zs = compute_period_max_zs(zs)
+    result = np.empty(len(river_boundary_probe_rows), dtype=np.float32)
+    result[~_is_discharge_probe] = channel_period_max_zs[_nearest_channel_idx[~_is_discharge_probe]]
+    for _i, _pos in enumerate(np.flatnonzero(_is_discharge_probe)):
+        _di = _nearest_discharge_idx[_i]
+        _local_idx = _discharge_local_channel_idx[_di]
+        result[_pos] = (
+            np.nanmax(channel_period_max_zs[_local_idx]) if len(_local_idx)
+            else channel_period_max_zs[_nearest_channel_idx[_pos]]
+        )
+    return result
 
 
 def _rasterize_nearest(rows: np.ndarray, cols: np.ndarray, values: np.ndarray, out_shape: tuple[int, int]) -> np.ndarray:
@@ -1015,10 +1264,19 @@ def _run_calibration_round(round_label: str, round_root: Path):
         label=f"SFINCS calibration ({round_label})", n_threads=snakemake.threads,
     )
 
+    # final_zs/final_times_s (single intersected cell per centerline cell)
+    # are kept ONLY for the water-level-timeseries diagnostic plot's own
+    # representative_cell_pos indexing -- a visualization concern. Every
+    # calibration decision (round 0's split, every correction round's own
+    # update, the final snap) instead uses period_max_zs from
+    # _read_cross_section_period_max_zs, the MAX water level across each
+    # centerline cell's own channel cross-section (see that function's own
+    # docstring) -- a single cell's own reading can be a noisy, non-
+    # representative sample of the true water level at that point.
     zs, times_s = _read_zs_and_resolve(round_root)
-    period_max_zs = compute_period_max_zs(zs)
+    period_max_zs = _read_cross_section_period_max_zs(round_root)
     log.info(
-        f"[{round_label}] Period max water level: min={period_max_zs.min():.3f} m, "
+        f"[{round_label}] Period max water level (cross-section): min={period_max_zs.min():.3f} m, "
         f"max={period_max_zs.max():.3f} m, median={np.median(period_max_zs):.3f} m "
         f"(over the full {calibration_days:.0f}-day run, {zs.shape[0]} output step(s))"
     )
@@ -1028,6 +1286,28 @@ def _run_calibration_round(round_label: str, round_root: Path):
 # wgs84_bounds/domain_poly: round-invariant, needed by every round's own
 # diagnostic plots below -- computed once, before the loop.
 wgs84_bounds, domain_crs, domain_poly = load_domain(snakemake.input.spec_basins_meta, domain_gpkg_path)
+
+# Per-round diagnostic files are written directly here (NOT declared
+# Snakemake outputs, same convention as calibration_state.csv) -- a round
+# skipped by early-stopping gets NO file at all rather than an empty
+# placeholder, since Snakemake would otherwise require every one of them
+# to exist. Filenames put the round number as a SUFFIX (e.g.
+# "max_inundation_round4.png"), not a prefix, so a directory listing
+# sorted alphabetically groups by PLOT KIND first -- comparing the same
+# diagnostic across rounds means looking at consecutive files, not
+# picking them out of an interleaved by-round listing.
+round_visuals_dir = Path(snakemake.output.plot_calibration).parent / "rounds"
+round_visuals_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _round_visual_paths(round_idx: int) -> dict[str, Path]:
+    return {
+        "plot_calibration": round_visuals_dir / f"river_depth_round{round_idx}.png",
+        "plot_water_level": round_visuals_dir / f"water_level_timeseries_round{round_idx}.png",
+        "plot_max_inundation": round_visuals_dir / f"max_inundation_round{round_idx}.png",
+        "animation": round_visuals_dir / f"flood_animation_round{round_idx}.mp4",
+        "crest_gap_map": round_visuals_dir / f"crest_gap_map_round{round_idx}.png",
+    }
 
 # ── round 0 + N correction rounds ─────────────────────────────────────────────
 # Round 0: isolated confinement (unchanged from the original single-pass
@@ -1039,11 +1319,16 @@ weir_crest_current = None
 weir_crest_simulated = None
 mouth_natural_bathymetry = None
 is_last_mouth_cell = None
+mouth_ocean_rows = np.zeros(0, dtype=int)
+mouth_ocean_cols = np.zeros(0, dtype=int)
+mouth_ocean_x = np.zeros(0, dtype=float)
+mouth_ocean_y = np.zeros(0, dtype=float)
 gap = None
 round0_inundated_count = None
 converged_round_idx = None
 crest_before_snap = None
 snap_attempted = False
+snap_reverted = False
 coastal_crest_current = None
 coastal_gap = None
 coastal_crest_before_snap = None
@@ -1178,10 +1463,17 @@ for round_idx in range(n_correction_iterations + 1):
                 f"{stats_native['n_pixels_burned']:,} pixel(s)"
             )
 
-        river_crest_on_grid = build_smoothed_weir_crest_regular(
-            rivers_utm, "width", "weir_crest_calibrated", grid.shape, grid.transform,
-            blend_distance_m=weir_crest_junction_blend_m,
-            crest_anchors=cell_gdf.assign(crest=weir_crest_current),
+        # Direct per-cell nearest-anchor painting (build_nearest_weir_crest_regular)
+        # instead of the interpolated/smoothed profile (build_smoothed_weir_crest_regular)
+        # -- the calibration loop's own per-cell targets (weir_crest_current)
+        # are already exact requirements (zs_max(cross-section) + freeboard/
+        # increment), so interpolating BETWEEN them would reintroduce the
+        # same under/over-shoot smoothing was meant to avoid. See that
+        # function's own docstring for why it's a separate function rather
+        # than a mode switch on build_smoothed_weir_crest_regular.
+        river_crest_on_grid = build_nearest_weir_crest_regular(
+            rivers_utm, "width", grid.shape, grid.transform,
+            cell_gdf=cell_gdf, crest_values=weir_crest_current,
         )
 
     # Round 0: uniform 1000 m confinement everywhere (the deliberately
@@ -1343,7 +1635,6 @@ for round_idx in range(n_correction_iterations + 1):
                 last_pos = reach_pos[-1]
                 is_last_mouth_cell[last_pos] = True
                 coastal_endpoint_bed = dem_at_cell[last_pos]
-                weir_crest_current[last_pos] = dem_at_cell[last_pos]
                 rivdph_current[last_pos] = 0.0
                 mouth_natural_bathymetry[mouth_rid] = coastal_endpoint_bed
 
@@ -1368,70 +1659,63 @@ for round_idx in range(n_correction_iterations + 1):
         else:
             log.warning(f"[{round_label}] No mouth (outlet) reach found")
 
+        # Mouth ocean probe cell(s): one per mouth, the nearest OCEAN-
+        # classified grid cell to that mouth's own last centerline cell --
+        # crest there (via _mouth_crest_target below) is sized against the
+        # real open-water level, not the river-side channel cell's own
+        # reading, which sits right at the coast/river transition and
+        # isn't necessarily representative of the water it actually
+        # confines against.
+        if is_last_mouth_cell.any():
+            _ocean_rows_all, _ocean_cols_all = np.where(ocean_mask_grid)
+            _ocean_tree = cKDTree(np.column_stack([_ocean_rows_all, _ocean_cols_all]))
+            _mouth_positions = np.flatnonzero(is_last_mouth_cell)
+            _mouth_rowcol = cell_gdf.loc[_mouth_positions, ["row", "col"]].to_numpy()
+            _, _nearest_ocean_idx = _ocean_tree.query(_mouth_rowcol)
+            mouth_ocean_rows = _ocean_rows_all[_nearest_ocean_idx]
+            mouth_ocean_cols = _ocean_cols_all[_nearest_ocean_idx]
+            mouth_ocean_x, mouth_ocean_y = rasterio.transform.xy(grid.transform, mouth_ocean_rows, mouth_ocean_cols)
+            mouth_ocean_x = np.asarray(mouth_ocean_x)
+            mouth_ocean_y = np.asarray(mouth_ocean_y)
+            log.info(
+                f"[{round_label}] Mouth ocean probe cell(s): {len(mouth_ocean_rows)} "
+                f"(nearest ocean cell to each mouth's own coastal endpoint)"
+            )
+
         # Depth (rivdph_current) is set HERE, once, and never revisited again
         # in any correction round -- see this rule's own module docstring for
         # the full rationale. Only the crest keeps adjusting below.
         log.info(f"[{round_label}] Excavation depth fixed for all subsequent rounds")
+        weir_crest_current[is_last_mouth_cell] = _mouth_crest_target(round_root)
     else:
-        # Two-case crest update, both cases expressed as plain differences/
-        # sums only (no abs(), no ratios) so they stay correct regardless of
-        # sign -- elevations here are relative to a vertical datum and are
-        # routinely negative (e.g. the mouth's own natural bathymetry, -1.85
-        # m in this basin), not distances, so an accidental abs() would
-        # silently corrupt the update for any below-datum cell.
-        #
-        # Case 1 -- BADLY OVERTOPPED (gap < -weir_freeboard_m): close the
-        # full gap, floored at a minimum step size so the crest keeps making
-        # real, non-vanishing progress every round instead of stalling on a
-        # residual that never grows enough to matter:
-        #     delta = max(period_max_zs - weir_crest_current, min_crest_increment_per_round_m)
-        # Case 2 -- NEAR ZERO (|gap| <= weir_freeboard_m), i.e. either
-        # barely overtopped or contained but with less than freeboard_m of
-        # margin: raised by the SAME flat min_crest_increment_per_round_m
-        # step, unconditionally -- NOT targeted at zs + freeboard_m. A cell
-        # already comfortably contained (gap > weir_freeboard_m) is left
-        # untouched by either case -- the crest never gets lowered here
-        # (only the separate one-shot snap-and-verify step, once every cell
-        # is contained, ever tightens it -- see the early-stopping check
-        # below).
-        #
-        # Case 2 deliberately targets a flat min_crest_increment_per_round_m
-        # step rather than the freeboard-exact zs + weir_freeboard_m: gap == 0
-        # is where Case 1's own min-increment floor and Case 2 meet, and
-        # neighbouring cells can straddle that boundary by a few mm of
-        # simulated-zs noise -- a freeboard-exact Case 2 would jump one side
-        # by min_crest_increment_per_round_m and the other by a near-zero
-        # nudge, producing a one-cell notch in an otherwise smooth crest
-        # profile. Treating the whole [-freeboard_m, +freeboard_m] band
-        # identically keeps adjacent cells moving together instead of
-        # diverging. This is deliberately less precise than a freeboard-exact
-        # target -- the one-shot snap-and-verify step (once every cell is
-        # contained) is what achieves the tight final margin, not these
-        # intermediate rounds.
+        # Direct per-cell crest update -- no two-case overtopped/near-zero
+        # branching, no smoothing algorithm applied to the centerline's own
+        # target: every centerline cell's crest is set directly from THIS
+        # round's own simulated cross-section water level
+        # (period_max_zs, see _read_cross_section_period_max_zs) plus a flat
+        # per-round increment, applied to EVERY cell unconditionally --
+        # raising OR lowering it relative to whatever it currently is, not
+        # just where it was overtopped. Repeated every round, this makes
+        # the crest climb by min_crest_increment_per_round_m each round on
+        # top of whatever the coupled water level actually settles at. Once
+        # a round's own crest already exceeds that round's own
+        # period_max_zs everywhere (no overtopping under its own
+        # simulation), the one-shot snap-and-verify step below (unchanged)
+        # tightens the crest down to the freeboard-exact target and spends
+        # one more round confirming it still holds.
         gap = weir_crest_current - period_max_zs  # margin: negative = overtopped by this much
-        badly_overtopped = gap < -weir_freeboard_m
-        near_zero = np.abs(gap) <= weir_freeboard_m
-        n_badly_overtopped = int(badly_overtopped.sum())
-        n_near_zero = int(near_zero.sum())
+        n_overtopped = int((gap < 0).sum())
         log.info(
-            f"[{round_label}] {n_badly_overtopped}/{len(gap)} cell(s) badly overtopped by their "
-            f"own period-max water level (min gap={np.min(gap):.3f} m, more than "
-            f"{weir_freeboard_m:.2f} m below crest); {n_near_zero} more within "
-            f"{weir_freeboard_m:.2f} m of the target either side -- crest raised at "
-            f"{n_badly_overtopped + n_near_zero}/{len(gap)} cell(s) total"
+            f"[{round_label}] {n_overtopped}/{len(gap)} cell(s) overtopped by their own "
+            f"period-max water level (min gap={np.min(gap):.3f} m) -- crest set directly to "
+            f"zs_max(centerline) + {min_crest_increment_per_round_m:.2f} m at every cell"
         )
-        excess = -gap  # = period_max_zs - weir_crest_current, positive where overtopped
-        weir_crest_current = np.where(
-            badly_overtopped,
-            weir_crest_current + np.maximum(excess, min_crest_increment_per_round_m),
-            weir_crest_current,
-        )
-        weir_crest_current = np.where(
-            near_zero, weir_crest_current + min_crest_increment_per_round_m, weir_crest_current
-        )
-        # Mouth outlet cell(s) are permanently fixed to natural bathymetry,
-        # independent of either case above.
-        weir_crest_current[is_last_mouth_cell] = dem_at_cell[is_last_mouth_cell]
+        weir_crest_current = period_max_zs + min_crest_increment_per_round_m
+        # Mouth outlet cell(s): crest re-targeted every round, independent
+        # of the formula above -- see _mouth_crest_target's own docstring
+        # (bed/depth there is the separate, unrelated natural-bathymetry
+        # floor set once in round 0, untouched here).
+        weir_crest_current[is_last_mouth_cell] = _mouth_crest_target(round_root)
         log.info(
             f"[{round_label}] Updated crest: min={np.nanmin(weir_crest_current):.3f} m, "
             f"max={np.nanmax(weir_crest_current):.3f} m, median={np.nanmedian(weir_crest_current):.3f} m "
@@ -1553,11 +1837,12 @@ for round_idx in range(n_correction_iterations + 1):
     # this disposable calibration model's own sfincs_map.nc/sfincs_his.nc/
     # subgrid files -- each round's own transient state is only ever
     # available during its own iteration.
-    plot_calibration_path = Path(getattr(snakemake.output, f"plot_calibration_round{round_idx}"))
-    plot_water_level_path = Path(getattr(snakemake.output, f"plot_water_level_round{round_idx}"))
-    plot_max_inundation_path = Path(getattr(snakemake.output, f"plot_max_inundation_round{round_idx}"))
-    animation_path = Path(getattr(snakemake.output, f"animation_round{round_idx}"))
-    plot_calibration_path.parent.mkdir(parents=True, exist_ok=True)
+    _round_paths = _round_visual_paths(round_idx)
+    plot_calibration_path = _round_paths["plot_calibration"]
+    plot_water_level_path = _round_paths["plot_water_level"]
+    plot_max_inundation_path = _round_paths["plot_max_inundation"]
+    animation_path = _round_paths["animation"]
+    crest_gap_map_path = _round_paths["crest_gap_map"]
 
     rivers_wgs = rivers.to_crs("EPSG:4326") if rivers.crs is not None and rivers.crs.to_epsg() != 4326 else rivers
     plot_river_depth(
@@ -1600,6 +1885,19 @@ for round_idx in range(n_correction_iterations + 1):
             str(animation_path),
             basin_id=calib_root.parent.name, run_label=f"calibration -- {round_label}", fps=animation_fps,
         )
+
+    # Crest-vs-actual-water-level gap map -- the painted crest (river_crest_on_grid,
+    # THIS round's own actual weir) minus THIS round's own actual simulated
+    # period-max water level, with the weir line / river network / REAL
+    # discharge point(s) overlaid (crossings_utm -- the same snapped
+    # locations discharge is actually injected at, not a reach's own
+    # line-start coordinate).
+    plot_crest_gap_map(
+        river_crest_on_grid, grid.transform, str(round_root / "sfincs_map.nc"),
+        weir_gdf, rivers_utm, crossings_utm.geometry.x.to_numpy(), crossings_utm.geometry.y.to_numpy(),
+        str(crest_gap_map_path),
+        basin_id=calib_root.parent.name, run_label=f"calibration -- {round_label}",
+    )
     log.info(f"[{round_label}] Diagnostic plots written under {plot_calibration_path.parent}")
 
     # ── early-stopping check (correction rounds only) ────────────────────────
@@ -1664,6 +1962,17 @@ for round_idx in range(n_correction_iterations + 1):
             rivers["weir_crest_calibrated"] = rivers["reach_id"].astype(str).map(reach_medians["crest"])
             rivers_utm["weir_crest_calibrated"] = rivers_utm["reach_id"].astype(str).map(reach_medians["crest"])
             converged_round_idx = round_idx - 1
+            # weir_gdf (this loop iteration's own traced weir) was built from
+            # the FAILED, over-tightened snap crest -- it no longer matches
+            # weir_crest_current now that it's been reverted above, so the
+            # exported gpkg would otherwise report a crest that was never
+            # actually accepted. Flagged here, rebuilt once after the loop
+            # (see snap_reverted's own use below) rather than re-traced
+            # again right here, since coastal_crest_on_grid/
+            # river_boundary_crest_on_grid at this point in the loop still
+            # reflect the (also reverted) pre-snap state consistently only
+            # once every relevant variable has actually settled post-revert.
+            snap_reverted = True
         break
     elif round_idx < n_correction_iterations:
         contained = _gap_contained(gap) and _gap_contained(coastal_gap) and _gap_contained(river_boundary_gap)
@@ -1682,7 +1991,7 @@ for round_idx in range(n_correction_iterations + 1):
             )
             crest_before_snap = weir_crest_current.copy()
             weir_crest_current = period_max_zs + weir_freeboard_m
-            weir_crest_current[is_last_mouth_cell] = dem_at_cell[is_last_mouth_cell]
+            weir_crest_current[is_last_mouth_cell] = _mouth_crest_target(round_root)
             weir_crest_current = np.maximum(weir_crest_current, coastal_protection_crest_m)
             if coastal_crest_current is not None:
                 coastal_crest_before_snap = coastal_crest_current.copy()
@@ -1712,33 +2021,59 @@ for round_idx in range(n_correction_iterations + 1):
                 f"still more than 10% away from round 0's own ({round0_inundated_count})"
             )
 
-# ── backfill any round slot(s) skipped by early stopping ─────────────────────
-# n_correction_iterations still fixes how many round-indexed output files
-# Snakemake expects (declared at DAG-build time, before this script runs) --
-# stopping the actual simulation loop early doesn't reduce that. Every
-# remaining, never-simulated round slot gets a plain copy of the last round
-# that actually ran, both for the four declared per-round Snakemake outputs
-# and for calibration_state.csv (which gather_calibration_round_profile
-# below expects to exist for every round index) -- honestly representing
-# "nothing changed after this round" rather than leaving a gap.
-if converged_round_idx is not None and converged_round_idx < n_correction_iterations:
+# ── backfill round slot(s) skipped by early stopping ──────────────────────────
+# `round_idx` (the for loop's own variable, still holding its last value
+# here whether the loop broke early or ran to completion) is the last
+# round that ACTUALLY simulated something -- its own output files are
+# genuine and must NEVER be overwritten, even when that round turned out
+# to be a REJECTED snap attempt (converged_round_idx == round_idx - 1 in
+# that case): destroying a round's own real diagnostics the moment it's
+# superseded is exactly what made an earlier failed-snap investigation on
+# basin 2433835 have to reconstruct round 6's own state from raw
+# sfincs_map.nc instead of just reading its already-corrupted
+# max_inundation_round6.png.
+#
+# Rounds strictly BETWEEN the last simulated one and the final slot never
+# ran at all -- these are genuinely SKIPPED: no visual output files at
+# all (not even an empty placeholder), since these are no longer declared
+# Snakemake outputs (see this rule's own .smk comment) and a round that
+# never ran has nothing worth a file for. calibration_state.csv is the
+# one exception: it still gets a copy of the converged (accepted) round's
+# own file, since gather_calibration_round_profile (below) reads every
+# round index's own CSV unconditionally -- harmless here, since no
+# genuine state ever existed for these rounds to misrepresent in the
+# first place.
+#
+# The FINAL slot (round n_correction_iterations) always gets a full copy
+# of the converged round's own genuine, ACCEPTED files -- "jump directly
+# to round n_correction_iterations's own plot & diagnostics" -- since the
+# canonical-output copy section further down reads from exactly that slot.
+if converged_round_idx is not None and round_idx < n_correction_iterations:
     log.info(
-        f"Calibration converged at round {converged_round_idx}/{n_correction_iterations} -- "
-        f"backfilling round {converged_round_idx + 1}..{n_correction_iterations}'s own output "
-        f"slot(s) from round {converged_round_idx}'s own files (no further simulation needed)"
+        f"Calibration converged at round {converged_round_idx}/{n_correction_iterations} "
+        f"(last actually-simulated round: {round_idx}) -- rounds {round_idx + 1}.."
+        f"{n_correction_iterations - 1} never ran and are left with no visual output at all; "
+        f"round {n_correction_iterations}'s own slot gets a direct copy of round "
+        f"{converged_round_idx}'s own accepted diagnostics"
     )
-    for _skip_idx in range(converged_round_idx + 1, n_correction_iterations + 1):
+    for _skip_idx in range(round_idx + 1, n_correction_iterations):
         _skip_round_root = calib_root / f"round{_skip_idx}"
         _skip_round_root.mkdir(parents=True, exist_ok=True)
         shutil.copy(
             calib_root / f"round{converged_round_idx}" / "calibration_state.csv",
             _skip_round_root / "calibration_state.csv",
         )
-        for _kind in ("plot_calibration", "plot_water_level", "plot_max_inundation", "animation"):
-            shutil.copy(
-                getattr(snakemake.output, f"{_kind}_round{converged_round_idx}"),
-                getattr(snakemake.output, f"{_kind}_round{_skip_idx}"),
-            )
+
+    _final_round_root = calib_root / f"round{n_correction_iterations}"
+    _final_round_root.mkdir(parents=True, exist_ok=True)
+    shutil.copy(
+        calib_root / f"round{converged_round_idx}" / "calibration_state.csv",
+        _final_round_root / "calibration_state.csv",
+    )
+    _converged_paths = _round_visual_paths(converged_round_idx)
+    _final_paths = _round_visual_paths(n_correction_iterations)
+    for _kind in _converged_paths:
+        shutil.copy(_converged_paths[_kind], _final_paths[_kind])
 
 # ── canonical production outputs: burned river DEM + weir, from the FINAL
 # converged state ──────────────────────────────────────────────────────────
@@ -1792,10 +2127,45 @@ log.info(
     f"({_stats2['n_reaches_burned']} reach(es) burned, {_stats2['n_pixels_burned']:,} pixel(s))"
 )
 
-# weir_gdf: already the final round's own actual traced weir (loop-
-# persistent, correctly holds whichever round the loop last executed --
-# the converged round if early-stopping fired, round n_correction_iterations
-# otherwise) -- written as-is, no re-derivation.
+# weir_gdf: normally already the final round's own actual traced weir (loop-
+# persistent, correctly holds whichever round the loop last executed -- the
+# converged round if early-stopping fired, round n_correction_iterations
+# otherwise), written as-is. The ONE exception is a failed snap
+# verification: there, weir_crest_current/coastal_crest_current/
+# river_boundary_crest_current were all reverted back to their PRE-snap
+# (accepted) values above, but weir_gdf itself still holds the FAILED,
+# over-tightened snap's own traced geometry -- re-traced here from the
+# now-reverted, actually-accepted crest arrays instead, so the exported
+# gpkg always matches the crest that was actually accepted, never a
+# rejected one.
+if snap_reverted:
+    log.info("Snap was reverted -- re-tracing the exported weir from the accepted (pre-snap) crest")
+    _final_river_crest_on_grid = build_nearest_weir_crest_regular(
+        rivers_utm, "width", grid.shape, grid.transform,
+        cell_gdf=cell_gdf, crest_values=weir_crest_current,
+    )
+    _final_coastal_crest_on_grid = None
+    if coastal_crest_current is not None:
+        _final_coastal_crest_on_grid = _rasterize_nearest(
+            coastal_probe_rows, coastal_probe_cols, coastal_crest_current, landuse_on_grid.shape,
+        )
+    if river_boundary_crest_current is not None:
+        _final_river_boundary_crest_on_grid = _rasterize_nearest(
+            river_boundary_probe_rows, river_boundary_probe_cols, river_boundary_crest_current, landuse_on_grid.shape,
+        )
+        _final_coastal_crest_on_grid = (
+            _final_river_boundary_crest_on_grid if _final_coastal_crest_on_grid is None
+            else np.maximum(_final_coastal_crest_on_grid, _final_river_boundary_crest_on_grid)
+        )
+    weir_gdf, _final_weir_diagnostics = build_coastal_protection_weir(
+        grid, landuse_on_grid, channel_mask, coastal_protection_crest_m,
+        min_component_cells, weir_par1, river_crest_on_grid=_final_river_crest_on_grid,
+        coastal_crest_on_grid=_final_coastal_crest_on_grid,
+        freeboard_m=0.0, channel_mask_gap_free=True,
+        river_crest_dilation_cells=river_crest_dilation_cells,
+    )
+    log.info(f"Re-traced weir: {len(weir_gdf)} segment(s) (was built from the rejected snap before this)")
+
 Path(snakemake.output.coastal_protection_weir).parent.mkdir(parents=True, exist_ok=True)
 weir_gdf.to_file(snakemake.output.coastal_protection_weir, driver="GPKG")
 log.info(f"Written: {snakemake.output.coastal_protection_weir} ({len(weir_gdf)} segment(s))")
@@ -1855,12 +2225,14 @@ log.info(f"Written: {snakemake.output.depth_estimated_river_network}")
 # convention expect, rather than recomputing the same plots a second time.
 Path(snakemake.output.plot_calibration).parent.mkdir(parents=True, exist_ok=True)
 _last_round = n_correction_iterations
+_last_round_paths = _round_visual_paths(_last_round)
 for _canonical, _kind in (
     (snakemake.output.plot_calibration, "plot_calibration"),
     (snakemake.output.plot_water_level_timeseries, "plot_water_level"),
     (snakemake.output.plot_max_inundation, "plot_max_inundation"),
     (snakemake.output.animation_flood_progress, "animation"),
+    (snakemake.output.plot_crest_gap_map, "crest_gap_map"),
 ):
-    shutil.copy(getattr(snakemake.output, f"{_kind}_round{_last_round}"), _canonical)
+    shutil.copy(_last_round_paths[_kind], _canonical)
 log.info(f"Canonical diagnostic outputs copied from round {_last_round}'s own files")
 log.info("Done")

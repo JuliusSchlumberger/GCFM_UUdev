@@ -60,7 +60,7 @@ from scipy.ndimage import binary_dilation, generate_binary_structure
 from scipy.ndimage import label as ndimage_label
 from scipy.sparse.csgraph import connected_components as sparse_connected_components
 from scipy.sparse.csgraph import dijkstra
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Polygon
 from shapely.ops import linemerge, unary_union
 
 log = logging.getLogger(__name__)
@@ -97,6 +97,7 @@ class GridArrays:
             self.shape = bed_elevation.shape
             self.n_cells = bed_elevation.size
             self._struct4 = generate_binary_structure(2, 1)
+            self._struct8 = generate_binary_structure(2, 2)
             self.ugrid = None
         elif grid_type == "quadtree":
             self.ugrid = ugrid
@@ -238,9 +239,26 @@ class GridArrays:
     def connected_components(self, mask: np.ndarray) -> tuple:
         """Connected components WITHIN mask (cells/faces outside mask are
         never connected to anything). Returns (labels, n_labels).
+
+        Regular grid: uses 8-CONNECTIVITY (self._struct8, diagonals count
+        as connected), not scipy.ndimage.label's own 4-connectivity
+        default. A real, physically continuous coastline/riverbank
+        commonly narrows to a single diagonal-only pixel-to-pixel
+        connection at some point (a thin, jagged spit -- an ordinary
+        raster-discretization artifact, not a genuine break in the
+        landform). Under 4-connectivity that diagonal touch does NOT count
+        as connected, so discard_small_components (this method's only
+        caller) sees the far side as a SEPARATE, small component and drops
+        it as if it were a real, isolated small island -- leaving a
+        dangling gap in the traced weir exactly at that pinch point, since
+        the dropped cells become neither land_mask nor water_like and the
+        edge tracer draws no segment against either side of them (see
+        Reference_memory.txt section 14, WEIR TOPOLOGY GAPS (DIAGONAL
+        4-CONNECTIVITY) entry). 8-connectivity treats a diagonal touch as
+        one continuous component, matching the physical reality.
         """
         if self.grid_type == "regular":
-            labeled, n_labels = ndimage_label(mask)
+            labeled, n_labels = ndimage_label(mask, structure=self._struct8)
             return labeled, n_labels
         ffc = self.ugrid.face_face_connectivity.tocoo()
         keep = mask[ffc.row] & mask[ffc.col]
@@ -551,6 +569,131 @@ def build_weir_geodataframe(
     )
 
 
+def _remove_small_dikerings(
+    weir_gdf: gpd.GeoDataFrame,
+    min_component_cells: int,
+    cell_size_m: float,
+    coord_ndigits: int = 3,
+) -> gpd.GeoDataFrame:
+    """
+    Vector-space counterpart to discard_small_components: that function
+    already drops a small isolated land island/water patch that is its OWN
+    separate connected component -- but a small feature attached to a
+    larger, kept component at a single diagonal-pinch pixel (exactly the
+    geometry connected_components' own 8-connectivity treats as "part of
+    the larger component," correctly, from a raster-masking standpoint)
+    still traces its own tiny closed ring in the final VECTOR output,
+    meeting the main boundary at one shared vertex where FOUR segments
+    meet -- two continuing the main boundary through that point, two
+    entering/leaving the small ring. discard_small_components never sees
+    this case at all, since at the raster level the small feature is
+    already merged into one large, correctly-kept component; only after
+    tracing does it show up as its own separate little loop.
+
+    For every vertex where exactly two of its incident segments trace a
+    closed loop back to that SAME vertex through only degree-2 (simple
+    chain) intermediate vertices -- i.e. a standalone ring touching the
+    rest of the network at exactly that one point -- this computes the
+    loop's own enclosed area and, if it's under min_component_cells worth
+    of grid cells, drops every segment making up that loop. The other two
+    segments at the pinch vertex (the main boundary's own through-path)
+    are always left untouched, so the boundary continues with no gap --
+    mirroring discard_small_components' own "no ring around a too-small
+    feature" outcome, just reached in vector space instead of raster space.
+
+    coord_ndigits rounds endpoint coordinates before matching -- segments
+    come from exact grid-edge construction, so this is a floating-point-
+    noise safety margin, not a real snapping tolerance. cell_size_m is a
+    single representative scalar (regular grid: the uniform cell size;
+    quadtree: pass a representative size, e.g. the median face size, since
+    this is an approximate area-based screen, not an exact face count).
+    """
+    if weir_gdf.empty:
+        return weir_gdf
+
+    coords = [list(geom.coords) for geom in weir_gdf.geometry]
+
+    def _key(pt):
+        return (round(pt[0], coord_ndigits), round(pt[1], coord_ndigits))
+
+    endpoints = [(_key(c[0]), _key(c[-1])) for c in coords]
+
+    vertex_segments: dict[tuple, list[int]] = {}
+    for seg_idx, (a, b) in enumerate(endpoints):
+        vertex_segments.setdefault(a, []).append(seg_idx)
+        vertex_segments.setdefault(b, []).append(seg_idx)
+
+    def _other_endpoint(seg_idx: int, vkey: tuple) -> tuple:
+        a, b = endpoints[seg_idx]
+        return b if a == vkey else a
+
+    # Bounds how far a trace walks before giving up -- without this, a
+    # pinch vertex on the boundary's own big main loop/chain (which also,
+    # trivially, eventually closes back on itself if it's a full loop)
+    # would walk the ENTIRE remaining network before failing the area
+    # check, for every degree-4 vertex, which is needlessly expensive on a
+    # coastline with tens of thousands of segments (e.g. the Mississippi).
+    # Generous relative to what a genuinely small loop's own perimeter can
+    # be, since only small loops are ever actually removed.
+    max_trace_segments = max(64, min_component_cells * 8)
+
+    def _trace_loop(start_vkey: tuple, first_seg_idx: int):
+        """
+        Walk from start_vkey via first_seg_idx through degree-2 chain
+        vertices only; returns (loop_segment_indices, loop_vertex_keys) if
+        this closes back to start_vkey within max_trace_segments steps,
+        else None (hit a dangling end, another junction, or ran too long
+        first -- not a standalone SMALL loop through this vertex).
+        """
+        loop_segs = [first_seg_idx]
+        loop_coords = [start_vkey]
+        prev_seg = first_seg_idx
+        cur_vkey = _other_endpoint(first_seg_idx, start_vkey)
+        while cur_vkey != start_vkey:
+            if len(loop_segs) > max_trace_segments:
+                return None
+            incident = vertex_segments.get(cur_vkey, [])
+            if len(incident) != 2:
+                return None
+            next_seg = incident[1] if incident[0] == prev_seg else incident[0]
+            loop_segs.append(next_seg)
+            loop_coords.append(cur_vkey)
+            prev_seg = next_seg
+            cur_vkey = _other_endpoint(next_seg, cur_vkey)
+        return loop_segs, loop_coords
+
+    to_drop: set[int] = set()
+    seen_loops: set[frozenset] = set()
+    for vkey, seg_idxs in vertex_segments.items():
+        if len(seg_idxs) < 4:
+            continue
+        for seg_idx in seg_idxs:
+            result = _trace_loop(vkey, seg_idx)
+            if result is None:
+                continue
+            loop_segs, loop_coords = result
+            loop_key = frozenset(loop_segs)
+            if loop_key in seen_loops:
+                continue
+            seen_loops.add(loop_key)
+            ring_coords = loop_coords + [loop_coords[0]]
+            if len(set(loop_coords)) < 3:
+                continue  # degenerate -- not enough distinct vertices for a real ring
+            n_cells = Polygon(ring_coords).area / (cell_size_m**2)
+            if n_cells < min_component_cells:
+                to_drop.update(loop_segs)
+
+    if not to_drop:
+        return weir_gdf
+
+    log.info(
+        f"Dropped {len(to_drop)} segment(s) forming small dikering(s) attached to the main "
+        f"boundary at a single pinch point (< {min_component_cells} cell(s) enclosed each) -- "
+        f"the main boundary's own through-segments at each pinch point are kept"
+    )
+    return weir_gdf.drop(index=list(to_drop)).reset_index(drop=True)
+
+
 def build_coastal_protection_weir(
     grid: GridArrays,
     landuse_on_grid: np.ndarray,
@@ -638,7 +781,12 @@ def build_coastal_protection_weir(
             via the SAME np.maximum as river_crest_on_grid -- never LOWERS
             protection versus the flat scalar, only raises it locally where
             the data says so. None (default) uses the flat crest_elevation_m
-            scalar everywhere.
+            scalar everywhere; wherever this array itself is NaN (a land
+            cell beyond its own probe/dilation coverage), also falls back
+            to crest_elevation_m rather than leaving a gap -- crest_surface
+            is guaranteed finite at every land cell so the traced weir
+            never drops a segment for a missing value (see the fallback
+            just below).
     """
     ocean_mask = landuse_on_grid == LANDUSE_SEA
 
@@ -690,6 +838,41 @@ def build_coastal_protection_weir(
     water_like, n_water_discarded, n_water_components = discard_small_components(
         water_like_raw, grid, min_component_cells
     )
+
+    # A cell discarded from EITHER side would otherwise become "neither
+    # land_mask nor water_like" -- invisible to the edge tracer
+    # (h_break/v_break require one side True and the other True; a
+    # "neither" cell reads False on both, so no segment is drawn against
+    # it from either direction). Where a discarded component sits AT the
+    # true edge of a larger, still-kept feature (not fully isolated deep
+    # inside the opposite class), that doesn't just skip a ring around the
+    # excluded feature itself -- it also breaks the LARGER feature's own
+    # boundary trace at exactly that point, leaving a dangling gap in what
+    # should still be a continuous coastline/riverbank (confirmed on basin
+    # 4267691: several dangling endpoints traced back to exactly this,
+    # for genuinely small, isolated islands/patches -- distinct from the
+    # diagonal-connectivity artifact discard_small_components' own
+    # 8-connectivity already guards against). Reclassifying a discarded
+    # cell to the OPPOSITE class instead -- a too-small land island
+    # dissolves into the surrounding water_like, a too-small water patch
+    # dissolves into the surrounding land -- keeps land_mask/water_like
+    # exact complements again, so the tracer sees a genuine, continuous
+    # transition at the larger feature's own true edge (or nothing at
+    # all, where the discarded feature was fully isolated) instead of a
+    # hole either way. This is exactly what "no ring around a small
+    # excluded feature" already meant to achieve -- just implemented
+    # without leaving an untraceable gap behind. land_mask_raw/
+    # water_like_raw are mutually exclusive by construction (land_mask_raw
+    # = ~water_like_raw & valid_mask), so the two reclassified sets can
+    # never collide with each other or with the surviving mask on the
+    # opposite side -- computed from the PRE-reclassification land_mask/
+    # water_like explicitly (not chained), so reordering these two lines
+    # later can't silently change which cells get reclassified.
+    _land_discarded = land_mask_raw & ~land_mask
+    _water_discarded = water_like_raw & ~water_like
+    land_mask = land_mask | _water_discarded
+    water_like = water_like | _land_discarded
+
     if n_land_discarded:
         log.info(
             f"Discarded {n_land_discarded:,} land cell(s) across {n_land_components} small "
@@ -724,11 +907,30 @@ def build_coastal_protection_weir(
             f"(+{freeboard_m:.2f} m freeboard) -- empirical mode, no riverbank weir"
         )
     else:
-        elsewhere_crest = (
-            coastal_crest_on_grid
-            if coastal_crest_on_grid is not None
-            else np.float32(crest_elevation_m)
-        )
+        # coastal_crest_on_grid can have NaN gaps beyond its own probe/
+        # dilation coverage (e.g. a land cell adjacent to a small isolated
+        # water patch that's neither a modelled river reach nor near a
+        # coastal probe). Falling back to the flat crest_elevation_m there
+        # -- exactly what "no per-cell override available" already means
+        # everywhere else this array doesn't cover -- guarantees
+        # elsewhere_crest, and therefore crest_surface below, is finite at
+        # every land cell. That matters beyond just picking a sensible
+        # crest value: seaward_edges_with_values DROPS a weir segment
+        # entirely wherever its land-side crest_surface value is NaN, which
+        # otherwise breaks an intended requirement of the traced weir --
+        # every land/water_like boundary cell gets a segment, so the result
+        # is either continuous chains running boundary-to-boundary or fully
+        # closed loops, never a dangling gap in the middle of an otherwise
+        # continuous coastline/riverbank (confirmed via basin 2433835: 38
+        # dangling endpoints traced back to exactly this NaN-drop path).
+        if coastal_crest_on_grid is not None:
+            elsewhere_crest = np.where(
+                np.isfinite(coastal_crest_on_grid),
+                coastal_crest_on_grid,
+                np.float32(crest_elevation_m),
+            )
+        else:
+            elsewhere_crest = np.float32(crest_elevation_m)
         crest_surface = np.where(
             np.isfinite(river_crest_on_grid),
             np.maximum(elsewhere_crest, river_crest_on_grid),
@@ -752,12 +954,27 @@ def build_coastal_protection_weir(
 
     weir_gdf = build_weir_geodataframe(weir_lines, weir_crests, weir_par1, grid.crs)
 
+    # Vector-space cleanup pass: a small feature attached to a larger, kept
+    # component at a single diagonal-pinch pixel survives discard_small_
+    # components (raster level, above) since it's part of one large,
+    # correctly-kept component there -- but still traces its own tiny
+    # closed ring in this vector output, hanging off the main boundary at
+    # one 4-way pinch vertex. See _remove_small_dikerings' own docstring.
+    _dikering_cell_size_m = (
+        float(grid.cell_size_m)
+        if np.isscalar(grid.cell_size_m)
+        else float(np.median(grid.cell_size_m))
+    )
+    weir_gdf = _remove_small_dikerings(
+        weir_gdf, min_component_cells, _dikering_cell_size_m
+    )
+
     diagnostics = {
         "applicable": True,
         "ocean_mask": ocean_mask,
         "river_channel_mask": river_channel_mask,
         "land_mask": land_mask,
-        "weir_lines": weir_lines,
+        "weir_lines": list(weir_gdf.geometry),
         "n_final": n_final,
         "n_land_discarded": n_land_discarded,
         "n_water_discarded": n_water_discarded,
