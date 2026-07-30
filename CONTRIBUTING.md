@@ -126,7 +126,7 @@ PR updates automatically with each push, no need to reopen it.
 ## Config changes
 
 `config/config.yml` is organised by *who consumes a setting*, not by feature
-area — e.g. `datum_correction` and `protection_levels` are top-level because
+area — e.g. `datum_correction` and `flopros_range` are top-level because
 more than one rule reads them, `boundary_setup` is separate from
 `boundary_forcings` because one produces forcing data and the other
 configures how the built model consumes it. Before adding a new key:

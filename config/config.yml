@@ -7,7 +7,6 @@ profiling:
 results_dir: D:/GCFM_UU/results
 
 # ── Domain & basin setup (rules 01-02) ───────────────────────────────────────
-# Domain = the delta polygon itself; target CRS is always auto-detected UTM.
 domain:
   delta_buffer_m: 2000   # clipping bbox buffer around the delta polygon (m)
 
@@ -16,36 +15,49 @@ datum_correction: # EGM2008 -> GOCO06s (DEM) or local MSL -> GOCO06s (bathymetry
   mdt_load_margin_deg: 5.0       # margin (degrees) beyond domain bbox when loading MDT
   fallback_search_deg: 3.0       # +/- deg to search for a valid MDT cell if the nearest station
 
+# ── Terrain / bathymetry merge (rule 05a) ────────────────────────────────────
+terrain:
+  gebco_max_depth_m: 7.0  # clamp GEBCO depths. SFINCS's internal time step is set by
+                          # a CFL condition (dt ~ dx/sqrt(g*h)) and shared by
+                          # the WHOLE domain via its single deepest active
+                          # cell.
+
 # ── Existing flood-protection levels (rule 04) ───────────────────────────────
-protection_levels:  # modification of forcing timeseries to account for existing flood-protection infrastructure
-  enabled: true
+flopros_range:
   default_rp_yr: 2.0    # fallback assumed protection RP when neither Riverine nor Coastal are given
   max_rp_yr: 1000.0     # cap on the (FLOPROS) protection RP before discharge/
 
-# ── River network processing (rules 06, 08, 09a, 09b, 10, 11) ──────────────
+# ── River network processing (rules 06, 08, 09, 10) ──────────────────────────
 river_processing:
+  depth_method: "modelled" # "modelled" (run SFINCS to measure depth & dike crest) or "empirical" (formula-driven from discharge)
   flow_accumulation:
     discharge_variable: bankfull_discharge
     iterations: 100
-  hydraulic_geometry: # Hydraulic depth using Power-law relations (Leopold-Maddock)
-    discharge_threshold: 1.0e-4
-    min_width_m: 1.0
-    a: 0.27   # at-a-station width coefficient (Leopold & Maddock)
-    b: 0.30   # at-a-station width exponent
-    c: 7.20   # at-a-station depth coefficient
-    f: 0.50   # at-a-station depth exponent
-  estuarine_depth: # applying Leuven et al. (2018) for estuarine reaches
-    enabled: true
-    max_match_dist_km: 300.0  # max distance from basin bbox to Nienhuis delta lat/lon
-    obrien_C: 6.5e-4          # O'Brien (1969) coefficient: A0 = C * P^alpha [m^3]
-    obrien_alpha: 0.85        # O'Brien exponent (0.85 for natural, mixed-energy estuaries)
-    convergence_ratio_k: 2.5  # L_A = L_e / k (convergence length as fraction of estuary length)
-    blend_fraction: 0.15      # linear blend over +-15% of L_e around the estuarine/fluvial boundary
-    min_depth_m: 0.5          # floor on estuarine reach depth
-  conditioning: # Forced monotonicity downstream along river network.
-    enabled: true
-  burn_rivers:  # create separate DEM from zbed_anchors. Else zbed_anchors provided to hydromt_sfincs.
-    enabled: true
+  river_depth_modelling:  # rule modelled_depth_estimation (10), only used when depth_method == "modelled"
+    calibration_days: 11             # single fixed run duration (days)
+    weir_crest_m: 1000.0            # initial channel-confinement weir crest (m) -- effectively never overtopped
+    weir_crest_fraction: 0.2        # ROUND 0 ONLY, applied UNIFORMLY to every cell with no magnitude threshold: fraction of the isolated-confinement rise above DEM (period_max_zs - dem_at_point) assigned to the production riverbank weir's crest; the remainder (1 - this) becomes channel excavation depth (rivdph) -- this initial depth/crest split is never revisited again; correction rounds only ever adjust the crest (see weir_crest_junction_blend_m/freeboard_m below). The mouth reach's own separate 2-anchor bed interpolation (see 10_depth_estimation_modelled.py) is what keeps its interior cells smooth.
+    n_correction_iterations: 10      # MAXIMUM number of additional coupled-system correction rounds after the initial isolated-confinement calibration (round 0) -- each builds a model with round 0's own (fixed, never revisited) excavation + the CURRENT calibrated crest, and raises the crest wherever the resulting water level leaves less than freeboard_m (below) of margin below it. Corrects for backwater coupling between reaches that round 0's isolated-per-reach confinement can't see. 0 = round 0's own estimate used unchanged. Calibration STOPS EARLY, before reaching this maximum, once (a) the crest already exceeds the period-max water level everywhere (no raw overtopping under that round's own simulation) AND (b) the realized inundated-land-cell count (from the same max-inundation diagnostic already computed every round) has settled to within 10% of round 0's own (near-zero, since round 0 is confined by an effectively un-overtoppable 1000 m wall). That first convergence isn't the final round, though: the raise-only process above can leave real excess margin behind (it never lowers crest while any cell is still overtopped elsewhere), so this spends exactly ONE more round tightening every cell's crest down to period_max_zs + freeboard_m in one shot and re-simulating once to verify it still holds everywhere; if it doesn't, that whole snap is abandoned (not patched cell-by-cell) and the round before it becomes the converged one instead. Any remaining round slot(s) up to this maximum are then backfilled with the converged round's own files (no further SFINCS runtime spent on rounds that can't change the outcome).
+    min_crest_increment_per_round_m: 5.0  # CORRECTION ROUNDS ONLY, overtopped cells (period_max_zs > weir_crest_current): minimum-step-size FLOOR (m) on the crest's own increment -- delta = max(period_max_zs - weir_crest_current, this), i.e. close the full gap if it's larger than this floor, otherwise overshoot on purpose by at least this much, so the crest keeps making real progress toward containment instead of stalling on a residual that never grows enough to matter. Where the cell is already contained (period_max_zs <= weir_crest_current), this floor does not apply at all -- see freeboard_m below for that case instead.
+    # ── weir-building params (used by modelled_depth_estimation every round, and by rule 13's own quadtree fallback)
+    min_component_cells: 30           # discard small isolated land islands or water patches below this cell count on either side -- neither gets a weir ring around it
+    weir_par1: 0.6                    # SFINCS weir discharge coefficient
+    weir_crest_junction_blend_m: 1000.0  # ONLY affects rule 13's own quadtree fallback (flat per-reach weir_crest_calibrated scalar, where two reaches sharing a junction can genuinely disagree) -- distance (m) over which the lower-crest reach at a junction ramps up to match its higher-crest neighbour, instead of meeting it in a hard step. No-op for modelled_depth_estimation's own per-cell calibration, where reaches sharing a junction cell are computed from the same physical location and already agree -- see _smoothed_weir_crest_profiles's own docstring.
+    freeboard_m: 0.5                  # modelled_depth_estimation's own correction-round convergence target: each round raises weir_crest_current to period_max_zs + freeboard_m wherever the existing margin is smaller, so the crest converges to guarantee at least this much clearance above the coupled system's own driven water level. Rule 13 does not add this again when it imports modelled_depth_estimation's own final weir directly (would double-count it); it IS added separately by rule 13's own quadtree fallback re-derivation (from the flattened weir_crest_calibrated scalar, which has no convergence margin of its own baked in).
+    river_crest_dilation_cells: 5     # FLOOR only, not the actual value used -- both modelled_depth_estimation (every round) and rule 13's own quadtree fallback compute the real dilation radius as max(this floor, river_width_m / (2 * coarse_grid_resolution_m)) per basin, tying it to a physically meaningful scale (a wide river's calibrated crest needs to reach further onto adjacent land than a narrow one does) instead of one arbitrary constant for every basin. This value is the minimum below which that formula never goes.
+  empirical_estimation: # only used when depth_method == "empirical" (rule empirical_depth_estimation, 10); ignored entirely under depth_method == "modelled"
+    modify_hydrograph: false # Toggle to include flopras protection
+    hydraulic_geometry: # Bankfull depth using the downstream hydraulic geometry power-law relation (Leopold & Maddock, 1953, and successors), depth = c*Q^f
+      c: 0.27   # depth coefficient
+      f: 0.30   # depth exponent
+    estuarine_depth: # part of rule empirical_depth_estimation (10); not applied when depth_method == "modelled". Applying Leuven et al. (2018) for estuarine reaches
+      enabled: true
+      max_match_dist_km: 300.0  # max distance from basin bbox to Nienhuis delta lat/lon
+      obrien_C: 6.5e-4          # O'Brien (1969) coefficient: A0 = C * P^alpha [m^3]
+      obrien_alpha: 0.85        # O'Brien exponent (0.85 for natural, mixed-energy estuaries)
+      convergence_ratio_k: 2.5  # L_A = L_e / k (convergence length as fraction of estuary length)
+      blend_fraction: 0.15      # linear blend over +-15% of L_e around the estuarine/fluvial boundary
+      min_depth_m: 0.5          # floor on estuarine reach depth
 
 # ── Boundary forcings (rule 07) ─────────────────────────────────────────────
 boundary_forcings:
@@ -55,7 +67,7 @@ boundary_forcings:
     min_stations: 6
     max_stations: 10
     dedupe_radius_km: 1
-    return_period: 25
+    return_period: 100
     search_radii_km: [10, 25, 50, 1000]
     period_hr: 12
     slr: # IPCC AR6 sea-level-rise fingerprint, scaled to a single global-mean target (slr_m) and added to each station's storm-tide level.
@@ -102,7 +114,7 @@ boundary_forcings:
       tail_percentile: 90.0    # the headline GloFAS-vs-GRDC correlation is restricted to overlap days where
                                 # GRDC discharge is at or above this percentile.
 
-# ── Testing / validation (rule 12) ───────────────────────────────────────────
+# ── Testing / validation (rule 11) ───────────────────────────────────────────
 testing: # Diagnostic-only side branch
   upstream_boundary_check:
     effective_period_fraction: 0.5   # fraction of surge period_hr used as effective tidal period
@@ -110,40 +122,46 @@ testing: # Diagnostic-only side branch
     amplitude_threshold_fraction: 0.05   # march upstream until amplitude decays
                                           # below this fraction of its LOCAL
                                           # (per-mouth) starting value
-
-# ── Boundary setup (rule 13) ─────────────────────────────────────────────────
-boundary_setup:
-  waterlevel_buffer_m: 25000   # search radius for matching surge boundary stations to the
-                                # nearest waterlevel boundary cell (m)
-  outflow_buffer_m: 500.0      # buffer radius (m) around each delta-outline outflow point
-  design_rp_river_yr: 150      # return period (yr) of the river discharge the event is built at --
-                                # looked up (log-RP interpolated) from river_forcing.nc's
-                                # discharge_rp_table (GPD fit) at build time, see
-                                # build_design_discharge_matrix in src/river_forcing.py. Replaces
-                                # the old boundary_forcings.river.eva.rp_fl -- changing this value
-                                # no longer requires re-running EVA (rule 07), only rebuilding (rule 13).
-  mode: "compound"             # "compound" (real surge + real river discharge)
-                               # "coastal_only" (real surge, river discharge set to 0).
-                               # "river_only" (coastal boundary flat constant + real river discharge)
-  flat_boundary_point_spacing_m: 5000   # boundary-point spacing along the waterlevel mask, used only when mode="river_only"
-  compound:
-    lag_hr: 0 # Shifts the river discharge timeseries relative to the surge timeseries
+    surge_rp: 100                        # surge return period (yr) used as the per-mouth wave
+                                          # amplitude (A0) for this check -- independent of any
+                                          # scenario's own design RP. Must be a COAST-RP tabulated
+                                          # value: 1,2,5,10,25,50,100,250,500,1000.
 
 # ── SFINCS model build & run (rules 13, 14, 15) ─────────────────────────────
 sfincs:
+  boundary_setup: # rule 13
+    waterlevel_buffer_m: 25000   # search radius for matching surge boundary stations to the
+                                  # nearest waterlevel boundary cell (m)
+    outflow_buffer_m: 500.0      # buffer radius (m) around each delta-outline outflow point
+    # mode/design_rp_river_yr/design_rp_surge_yr are no longer set here --
+    # derived per-scenario from config/scenarios.yml (see scenario_params in
+    # 00_common.smk): both RPs set -> compound; exactly one set -> that
+    # driver alone (river_only/coastal_only); both null -> invalid.
+    flat_boundary_point_spacing_m: 5000   # boundary-point spacing along the waterlevel mask, used only when mode="river_only"
+    compound:
+      lag_hr: 0 # Shifts the river discharge timeseries relative to the surge timeseries
   grid:
-    resolution: 120             # computational grid resolution in meters
+    optimize_resolution:  # rule 08b: per-basin resolution based on river width + domain cell budget
+      enabled: true
+      default_resolution_m: 200.0        # preferred target used when enabled: false (still subject to the cell-budget cap below)
+      target_cells_per_width: 3.0        # when enabled: candidate = width_p20 (20th-percentile channel width among discharge-thresholded reaches) / this factor
+      max_active_cells: 4_000_000          # cell-budget cap (analytic: polygon_area / resolution^2), applies unconditionally
     quadtree:
       enabled: false                  # set true to enable quadtree refinement near rivers/coast (requires subgrid.enabled: true)
-      river_refinement_level: 1       # refinement levels (each level halves cell size) applied along river_network_processed.gpkg
+      river_refinement_level: 1       # refinement levels (each level halves cell size) applied along river_network_depth_estimated.gpkg
       river_buffer_factor: 1.5        # river refinement buffer = width * this factor
       coastal_refinement_enabled: false  # set true to refine around the coastline; the coastal buffer
                                           # covers the entire coastline perimeter
       coastal_refinement_level: 2     # refinement level applied around the coastline
       coastal_buffer_m: 400          # coastal refinement buffer distance (m) around land_polygons.gpkg
+    active_mask:  # rule modelled_depth_estimation (10)/13: exclude cells far above anything the river itself ever reaches
+      enabled: true
+      elevation_buffer_m: 20.0  # active-cell elevation ceiling = river_elevation_max.json's own
+                                 # river_elevation_max_m (rule enforce_river_monotonicity, 09, max conditioned centerline
+                                 # elevation, always attained at a seed reach) + this buffer
   subgrid:
-    enabled: True                # set to false to skip subgrid
-    nr_subgrid_pixels: 4        # subgrid pixels per grid cell (must be multiple of 2)
+    enabled: true                # set to false to skip subgrid
+    nr_subgrid_pixels: 10        # subgrid pixels per grid cell (must be multiple of 2)
     nr_levels: 20                 # water-level bins for subgrid tables; memory scales linearly with this (default: 20)
     nrmax: 2000                  # tile size for subgrid computation (default 2000)
   observation_points:
@@ -158,18 +176,26 @@ sfincs:
     dthisout:      600           # time-series output at observation points (s) -- MAIN EVENT run only
     storevelmax:     0           # write maximum flow velocity (0=off, 1=on)
     storetwet:       0           # write inundation duration / time-wet (0=off, 1=on)
-    sfincs_exe: C:\Users\2899043\PhD\SFINCS_software\SFINCS_v2.3.0_mt_Faber_release_exe\sfincs.exe
+    sfincs_exe: "C:\\Users\\2899043\\PhD\\SFINCS_software\\SFINCS_v2.3.0_mt_Faber_release_exe\\sfincs.exe"
     timeout_s: 68400             # max wall-clock time for a SFINCS subprocess (s, 19 h) --
                                   # shared by both the spin-up and main event runs
-
   spinup: # Spin-up simulation with constant forcings
     enabled: true                # run a spin-up + create a restart file before the main event run
-    spinup_days: 11               # days of constant bankfull forcing to reach steady river state
+    spinup_days: 1               # days of constant bankfull forcing to reach steady river state
     dthisout_s: 3600              # obs-point output interval during spinup (s) — for validation plot
     dtmapout_s: 3600              # map snapshot interval during spinup (s) — controls animation frame count
+
+  protection_validation:  # rule 13b -- does the built model actually hold at its own design standard?
+    enabled: true                    # reuses the production build's own dep/msk/manning/subgrid/weir/obs (referenced, not rebuilt) with steady test discharge swapped in
+    higher_rp_factor: 1.10           # second scenario's discharge = protection-level Q * this factor -- tests a modest beyond-design-standard event
+    simulation_days: 4               # short steady run duration per scenario
+    convergence_window_hours: 12     # same windowed-flatness check as rule modelled_depth_estimation's own calibration (src.river_depth_calibration.check_convergence)
+    convergence_abs_tolerance_m: 0.02
+    convergence_rel_tolerance: 0.01
+
   sanity_checks:
     min_inundation_depth_m: 0.0  # threshold for counting a cell as flooded in sanity checks
-    animation_fps: 2             # frames per second for flood progression animation
+    animation_fps: 1             # frames per second for flood progression animation
 
 # Flood metrics (rule 17)
 metrics:

@@ -1,5 +1,5 @@
 """
-test_bifurcation_calibration_options.py — compares discharge partitioning at
+11b_bifurcation_calibration_options.py — compares discharge partitioning at
 every bifurcation between the ORIGINAL and MODIFIED SWORD river networks, by
 rebuilding the cleaned river network FROM RAW SWORD (not reading the
 pre-built river_network_clean.gpkg) via the actual pipeline functions
@@ -22,14 +22,14 @@ rule 08 performs (fix_tjunction_tails, downstream-reachability filtering
 from the basin's seed crossings, delta-outflow-point identification,
 missing-width handling) in addition to rule 06's domain-bbox clip -- see
 clip_and_preclean() below. river_forcing.nc (rule 07's output, needed for
-seed crossings/discharges) is REUSED UNCHANGED from each basin's existing
-build for both SWORD sources: crossing detection and GloFAS discharge
-matching depend only on reach geometry and location, which SWORD's product
-description confirms unchanged between the two files (same feature count,
-same schema; only specific reaches' attribute values were manually
-adjusted, not geometry or rch_id_up/rch_id_dn topology) -- this also means
-both sources share the same geometry/adjacency, so bifurcations are
-identified once (from the original network) and reused for both.
+seed crossings/discharges) is REUSED UNCHANGED for both SWORD sources:
+crossing detection and GloFAS discharge matching depend only on reach
+geometry and location, which SWORD's product description confirms unchanged
+between the two files (same feature count, same schema; only specific
+reaches' attribute values were manually adjusted, not geometry or
+rch_id_up/rch_id_dn topology) -- this also means both sources share the same
+geometry/adjacency, so bifurcations are identified once (from the original
+network) and reused for both.
 
 For each bifurcation, the two sources' canonical 'width' is compared across
 every reach in the local neighborhood (see downstream_within_steps): if any
@@ -51,16 +51,14 @@ annotated with up to two percentages:
 Format: "immediate% / bifurcation%" (e.g. "39% / 24%"), or just
 "bifurcation%" alone where the immediate-upstream % is undefined.
 
-Figures are written to figs/bifurcation_calibration_options/{basin_id}_
-{upstream_reach_id}.png.
-
-Usage:
-    conda run -n hmt_sfincs_dev python tests/test_bifurcation_calibration_options.py [basin_id ...]
+Diagnostic-only side branch: only needs rule 06's raw river network sources
+(read directly from the data catalogue, not rule 06's own output) and rule
+07's river_forcing.nc -- nothing downstream depends on this rule's output.
+One figure per bifurcation, written to
+visuals/input_data/bifurcation_calibration_options/{upstream_reach_id}.png.
 """
 
-import logging
 import math
-import sys
 from pathlib import Path
 
 import cartopy.crs as ccrs
@@ -72,13 +70,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import yaml
 from shapely.geometry import Point, box as shapely_box
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
 from src.domain import load_domain
 from src.geometry import pick_utm_crs
-from src.io import load_catalogue, raw_input_path
+from src.log import setup_logging
+from src.profiling import ScriptProfiler
 from src.river_forcing import load_forcing_crossings, snap_crossings_to_reaches
 from src.river_network import (
     _as_linestring,
@@ -93,35 +90,21 @@ from src.river_network import (
     remove_reaches_with_missing_width,
 )
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
-log = logging.getLogger(__name__)
+log = setup_logging(snakemake.log[0])
+profiler = ScriptProfiler(snakemake)
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-FIGS_DIR = REPO_ROOT / "figs" / "bifurcation_calibration_options"
-FIGS_DIR.mkdir(parents=True, exist_ok=True)
+basin_id = snakemake.wildcards.basin_id
+plot_dir = Path(snakemake.output.plot_dir)
+plot_dir.mkdir(parents=True, exist_ok=True)
 
-with open(REPO_ROOT / "config" / "config.yml") as fh:
-    config = yaml.safe_load(fh)
-catalogue = load_catalogue(REPO_ROOT / config["data_catalogue"])
-
-RESULTS_DIR = Path(config["results_dir"])
-N_ITERATIONS = int(config["river_processing"]["flow_accumulation"]["iterations"])
-MIN_WIDTH_M = float(config["river_processing"]["hydraulic_geometry"]["min_width_m"])
-DISCHARGE_VARIABLE = config["river_processing"]["flow_accumulation"][
-    "discharge_variable"
-]
+N_ITERATIONS = int(snakemake.params.n_iterations)
+DISCHARGE_VARIABLE = snakemake.params.discharge_variable
 N_STEPS = 3
-WIDTH_DIFF_TOLERANCE_M = (
-    0.01  # min |width_orig - width_mod| in a bifurcation's neighborhood
-)
-# before it's considered "actually different" (vs. floating-point noise)
+WIDTH_DIFF_TOLERANCE_M = 0.01  # min |width_orig - width_mod| in a bifurcation's neighborhood
+                                # before it's considered "actually different" (vs. floating-point noise)
 
-ORIGINAL_SWORD_PATH = raw_input_path(catalogue, "river_network_original")
-MODIFIED_SWORD_PATH = raw_input_path(catalogue, "river_network")
-
-DEFAULT_BASIN_IDS = ["4267691", "1416812", "1248635"]
-basin_ids = sys.argv[1:] if len(sys.argv) > 1 else DEFAULT_BASIN_IDS
-log.info(f"Basins to process: {basin_ids}")
+ORIGINAL_SWORD_PATH = snakemake.input.river_network_original
+MODIFIED_SWORD_PATH = snakemake.input.river_network
 
 
 def clip_and_preclean(
@@ -147,8 +130,7 @@ def clip_and_preclean(
     )
     river_gdf = gpd.read_file(global_path, bbox=tuple(bbox), engine="pyogrio")
     clip_src = (
-        clip_gdf
-        if river_gdf.crs is None or river_gdf.crs == clip_gdf.crs
+        clip_gdf if river_gdf.crs is None or river_gdf.crs == clip_gdf.crs
         else clip_gdf.to_crs(river_gdf.crs)
     )
     rivers = gpd.clip(river_gdf, clip_src).copy()
@@ -161,13 +143,9 @@ def clip_and_preclean(
     rivers_clean["is_seed"] = (
         rivers_clean["reach_id"].apply(normalize_reach_id).isin(set(seed_q.keys()))
     )
-    log.info(
-        f"  clipped {len(rivers)} reach(es) -> {len(rivers_clean)} reachable from seed(s)"
-    )
+    log.info(f"  clipped {len(rivers)} reach(es) -> {len(rivers_clean)} reachable from seed(s)")
 
-    rivers_clean, outflow_points = identify_delta_outflow_points(
-        rivers_clean, delta_polygon
-    )
+    rivers_clean, outflow_points = identify_delta_outflow_points(rivers_clean, delta_polygon)
     log.info(f"  delta-outline outflow points: {len(outflow_points)}")
 
     rivers_clean = remove_reaches_with_missing_width(rivers_clean)
@@ -186,7 +164,7 @@ def compute_discharge(
 ) -> gpd.GeoDataFrame:
     """Run discharge accumulation and attach the result as 'bankfull_discharge_acc'."""
     adjacency = build_downstream_adjacency(rivers)
-    q = accumulate_discharge(rivers, seed_q, adjacency, N_ITERATIONS, MIN_WIDTH_M)
+    q = accumulate_discharge(rivers, seed_q, adjacency, N_ITERATIONS)
     rivers = rivers.copy()
     rivers["bankfull_discharge_acc"] = q
     return rivers
@@ -209,9 +187,7 @@ def downstream_within_steps(adjacency: dict, root: str, n_steps: int) -> list[st
     return list(visited)
 
 
-def discharge_to_linewidth(
-    q: float, q_max: float, min_lw: float = 1.0, max_lw: float = 10.0
-) -> float:
+def discharge_to_linewidth(q: float, q_max: float, min_lw: float = 1.0, max_lw: float = 10.0) -> float:
     if not np.isfinite(q) or q <= 0 or not np.isfinite(q_max) or q_max <= 0:
         return min_lw
     return min_lw + (max_lw - min_lw) * np.sqrt(min(q, q_max) / q_max)
@@ -235,9 +211,7 @@ def auto_zoomlevel(extent: tuple[float, float, float, float], lat_deg: float) ->
     pick an OSM tile zoom level from a projected-CRS extent and latitude."""
     earth_circumference_m = 2 * np.pi * 6378137
     tile_size_m = max(extent[1] - extent[0], extent[3] - extent[2]) / 4
-    zoom = int(
-        np.log2(earth_circumference_m * abs(np.cos(np.radians(lat_deg))) / tile_size_m)
-    )
+    zoom = int(np.log2(earth_circumference_m * abs(np.cos(np.radians(lat_deg))) / tile_size_m))
     return min(17, max(10, zoom))
 
 
@@ -261,68 +235,36 @@ def annotation_label(
     return f"{bifurcation_pct:.0f}%"
 
 
-for basin_id in basin_ids:
-    domain_dir = RESULTS_DIR / str(basin_id) / "inputs" / "domain"
-    spec_basins_meta = domain_dir / "domain_bbox.json"
-    domain_gpkg = domain_dir / f"{basin_id}_domain.gpkg"
-    delta_polygon_path = domain_dir / f"{basin_id}_delta_polygon.gpkg"
-    land_polygons_path = domain_dir / f"{basin_id}_land_polygons.gpkg"
-    river_forcing_path = (
-        RESULTS_DIR / str(basin_id) / "inputs" / "forcing" / "river_forcing.nc"
-    )
+wgs84_bounds, _domain_crs, domain_poly = load_domain(
+    snakemake.input.spec_basins_meta, snakemake.input.domain_gpkg
+)
+delta_polygon = gpd.read_file(snakemake.input.delta_polygon)
 
-    missing = [
-        p
-        for p in (
-            spec_basins_meta,
-            domain_gpkg,
-            delta_polygon_path,
-            land_polygons_path,
-            river_forcing_path,
-        )
-        if not p.exists()
-    ]
-    if missing:
-        log.warning(f"Basin {basin_id}: missing {missing} -- skipping")
-        continue
-
-    wgs84_bounds, _domain_crs, domain_poly = load_domain(spec_basins_meta, domain_gpkg)
-    delta_polygon = gpd.read_file(delta_polygon_path)
-
-    crossings = load_forcing_crossings(
-        river_forcing_path, discharge_variable=DISCHARGE_VARIABLE
-    )
-    seed_q = snap_crossings_to_reaches(crossings)
-    if not seed_q:
-        log.warning(
-            f"Basin {basin_id}: no seed reach(es) with valid discharge -- skipping"
-        )
-        continue
-    log.info(
-        f"Basin {basin_id}: {len(seed_q)} seed reach(es), reused across both SWORD sources"
-    )
+crossings = load_forcing_crossings(snakemake.input.river_forcing, discharge_variable=DISCHARGE_VARIABLE)
+seed_q = snap_crossings_to_reaches(crossings)
+if not seed_q:
+    log.warning(f"Basin {basin_id}: no seed reach(es) with valid discharge -- nothing to plot")
+else:
+    log.info(f"Basin {basin_id}: {len(seed_q)} seed reach(es), reused across both SWORD sources")
 
     # ── Original SWORD ──────────────────────────────────────────────────────
     log.info(f"Basin {basin_id}: original SWORD")
-    rivers_orig = clip_and_preclean(
-        ORIGINAL_SWORD_PATH, wgs84_bounds, delta_polygon, seed_q
-    )
+    rivers_orig = clip_and_preclean(ORIGINAL_SWORD_PATH, wgs84_bounds, delta_polygon, seed_q)
     rivers_orig = apply_base_width_rule(rivers_orig)
     rivers_orig = compute_discharge(rivers_orig, seed_q)
 
     # ── Modified SWORD (pipeline default) ───────────────────────────────────
     log.info(f"Basin {basin_id}: modified SWORD")
-    rivers_mod = clip_and_preclean(
-        MODIFIED_SWORD_PATH, wgs84_bounds, delta_polygon, seed_q
-    )
+    rivers_mod = clip_and_preclean(MODIFIED_SWORD_PATH, wgs84_bounds, delta_polygon, seed_q)
     rivers_mod = apply_base_width_rule(rivers_mod)
     rivers_mod = compute_discharge(rivers_mod, seed_q)
 
     # ── reproject to a shared UTM CRS; geometry/topology are identical
-    # between the two sources (confirmed: only attribute values were
-    # modified), so bifurcation detection, adjacency, and plotted geometry
-    # are all built once from the original network and reused for the
-    # modified one -- only 'width' and the discharge values can differ. ──
+    # between the two sources (only attribute values differ, per SWORD's
+    # own product description), so bifurcation detection, adjacency, and
+    # plotted geometry are all built once from the original network and
+    # reused for the modified one -- only 'width' and the discharge values
+    # can differ. ──
     utm_crs = pick_utm_crs(rivers_orig)
     cartopy_crs = utm_epsg_to_cartopy_crs(utm_crs)
 
@@ -341,11 +283,7 @@ for basin_id in basin_ids:
             upstream_adj.setdefault(dn, []).append(rid)
 
     bifurcation_ids = [rid for rid, dn in adjacency.items() if len(dn) >= 2]
-    log.info(
-        f"Basin {basin_id}: {len(rivers_orig_utm)} reaches, {len(bifurcation_ids)} bifurcation(s)"
-    )
-    if not bifurcation_ids:
-        continue
+    log.info(f"Basin {basin_id}: {len(rivers_orig_utm)} reaches, {len(bifurcation_ids)} bifurcation(s)")
 
     q_by_scenario = {
         "Original": rivers_orig_utm["bankfull_discharge_acc"],
@@ -366,34 +304,22 @@ for basin_id in basin_ids:
         # that actually drives accumulate_discharge), not the raw SWORD
         # attribute, so this reflects exactly what could visibly differ.
         width_differs = any(
-            abs(
-                float(rivers_orig_utm.loc[rid, "width"])
-                - float(rivers_mod_utm.loc[rid, "width"])
-            )
+            abs(float(rivers_orig_utm.loc[rid, "width"]) - float(rivers_mod_utm.loc[rid, "width"]))
             > WIDTH_DIFF_TOLERANCE_M
             for rid in neighborhood_ids
         )
-        panels = (
-            dict(q_by_scenario)
-            if width_differs
-            else {"Modified": q_by_scenario["Modified"]}
-        )
+        panels = dict(q_by_scenario) if width_differs else {"Modified": q_by_scenario["Modified"]}
         n_panels = len(panels)
 
         q_max = max(
-            q_series.loc[neighborhood_ids]
-            .replace([np.inf, -np.inf], np.nan)
-            .fillna(0.0)
-            .max()
+            q_series.loc[neighborhood_ids].replace([np.inf, -np.inf], np.nan).fillna(0.0).max()
             for q_series in panels.values()
         )
         if not np.isfinite(q_max) or q_max <= 0:
             q_max = 1.0
 
         # ── extent + OSM tile zoom level for this bifurcation's neighborhood ──
-        neighborhood_geoms = [
-            rivers_orig_utm.loc[rid].geometry for rid in neighborhood_ids
-        ]
+        neighborhood_geoms = [rivers_orig_utm.loc[rid].geometry for rid in neighborhood_ids]
         minx = min(g.bounds[0] for g in neighborhood_geoms)
         miny = min(g.bounds[1] for g in neighborhood_geoms)
         maxx = max(g.bounds[2] for g in neighborhood_geoms)
@@ -416,9 +342,7 @@ for basin_id in basin_ids:
             try:
                 ax.add_image(cimgt.OSM(), zoomlevel)
             except Exception as e:
-                log.warning(
-                    f"Basin {basin_id}, bifurcation {root_rid}: OSM basemap fetch failed ({e}) -- continuing without it"
-                )
+                log.warning(f"Basin {basin_id}, bifurcation {root_rid}: OSM basemap fetch failed ({e}) -- continuing without it")
 
             for rid in neighborhood_ids:
                 line = _as_linestring(rivers_orig_utm.loc[rid].geometry)
@@ -428,12 +352,8 @@ for basin_id in basin_ids:
                 lw = discharge_to_linewidth(q_val, q_max)
                 color = "black" if rid == root_rid else "steelblue"
                 ax.plot(
-                    *line.xy,
-                    color=color,
-                    linewidth=lw,
-                    solid_capstyle="round",
-                    transform=cartopy_crs,
-                    zorder=2,
+                    *line.xy, color=color, linewidth=lw, solid_capstyle="round",
+                    transform=cartopy_crs, zorder=2,
                 )
 
                 if rid == root_rid:
@@ -450,9 +370,7 @@ for basin_id in basin_ids:
                     # leader line ties the label back to its actual reach.
                     dx, dy = mid.x - neighborhood_cx, mid.y - neighborhood_cy
                     dist = math.hypot(dx, dy)
-                    offset_pts = (
-                        (dx / dist * 22, dy / dist * 22) if dist > 0 else (0, 22)
-                    )
+                    offset_pts = (dx / dist * 22, dy / dist * 22) if dist > 0 else (0, 22)
                     ax.annotate(
                         label_text,
                         (mid.x, mid.y),
@@ -465,14 +383,7 @@ for basin_id in basin_ids:
                         zorder=4,
                         xycoords=cartopy_crs._as_mpl_transform(ax),
                         bbox=dict(boxstyle="round", fc="white", ec="none", alpha=0.8),
-                        arrowprops=dict(
-                            arrowstyle="-",
-                            color="darkred",
-                            linewidth=0.6,
-                            alpha=0.7,
-                            shrinkA=0,
-                            shrinkB=2,
-                        ),
+                        arrowprops=dict(arrowstyle="-", color="darkred", linewidth=0.6, alpha=0.7, shrinkA=0, shrinkB=2),
                     )
 
             ax.set_title(label, fontsize=11)
@@ -491,7 +402,10 @@ for basin_id in basin_ids:
             fontsize=12,
         )
         fig.tight_layout(rect=(0, 0, 1, 0.92))
-        out_path = FIGS_DIR / f"{basin_id}_{root_rid}.png"
+        out_path = plot_dir / f"{root_rid}.png"
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
         log.info(f"Written: {out_path}")
+
+profiler.stop()
+log.info("Done")

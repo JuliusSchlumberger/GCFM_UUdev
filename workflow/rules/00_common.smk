@@ -1,7 +1,9 @@
+import json
 import os
 
 from src.io import load_catalogue, catalogue_entry,read_geometry, raw_input_path
 from src.io import general_path as _gen_path
+from src.river_forcing import derive_forcing_mode
 import geopandas as gpd
 
 import re as _re
@@ -68,31 +70,12 @@ if config["sfincs"]["grid"]["quadtree"]["enabled"] and not config["sfincs"]["sub
         "(quadtree postprocessing relies on the subgrid dep_subgrid.tif reference raster)"
     )
 
-if (
-    config["river_processing"]["burn_rivers"]["enabled"]
-    and not config["river_processing"]["conditioning"]["enabled"]
-):
-    raise ValueError(
-        "river_processing.burn_rivers.enabled requires "
-        "river_processing.conditioning.enabled = true (burn_rivers burns the "
-        "zbed_anchors.gpkg profile computed by rule burn_river_bed, which "
-        "itself requires conditioning to be enabled)"
-    )
-
-# NOTE: KL removed
-# _FORCING_MODES = ("compound", "coastal_only", "river_only")
-# if config["boundary_setup"]["mode"] not in _FORCING_MODES:
-#     raise ValueError(
-#         f"boundary_setup.mode = {config['boundary_setup']['mode']!r} is not valid "
-#         f"— must be one of {_FORCING_MODES}"
-#     )
-
 # ── scenario axis ─────────────────────────────────────────────────────────────
-# Scenarios are defined by name in scenarios_file (config/scenarios.yml) and
-# selected as the {scenario} wildcard. The reserved name "default" is not in
-# that file: it replays config.yml's own boundary_setup settings (mode,
-# design_rp_river_yr, surge.return_period) and is what plain `snakemake build`
-# runs when no target_scenarios is given.
+# Scenarios (incl. the reserved name "default", used when no target_scenarios
+# is given) are defined by name in scenarios_file (config/scenarios.yml) and
+# selected as the {scenario} wildcard. Each scenario's own forcing_mode is
+# DERIVED from which of its RPs are set (see scenario_params below) rather
+# than declared separately -- there is no standalone "mode" setting anywhere.
 
 _SURGE_RPS = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000)    # COAST-RP tabulated; no interpolation
 _RIVER_RP_MIN, _RIVER_RP_MAX = 2, 1000                     # log-interpolated from discharge_rp_table
@@ -100,10 +83,15 @@ _RIVER_RP_MIN, _RIVER_RP_MAX = 2, 1000                     # log-interpolated fr
 with open(config["scenarios_file"]) as _f:
     SCENARIO_DEFS = _yaml.safe_load(_f) or {}
 
+if "default" not in SCENARIO_DEFS:
+    raise ValueError(
+        f"{config['scenarios_file']} must define a 'default' scenario -- "
+        f"used whenever target_scenarios is not given"
+    )
+
 for _name, _s in SCENARIO_DEFS.items():
-    if _name == "default" or not _re.fullmatch(r"[A-Za-z0-9_-]+", _name):
-        raise ValueError(f"scenario name {_name!r} invalid ('default' is reserved; "
-                         "use letters/digits/_/- only)")
+    if not _re.fullmatch(r"[A-Za-z0-9_-]+", _name):
+        raise ValueError(f"scenario name {_name!r} invalid (use letters/digits/_/- only)")
     _srp, _rrp = _s.get("surge_rp"), _s.get("river_rp")
     if _srp is not None and _srp not in _SURGE_RPS:
         raise ValueError(f"{_name}: surge_rp must be a COAST-RP tabulated value {_SURGE_RPS}")
@@ -111,24 +99,23 @@ for _name, _s in SCENARIO_DEFS.items():
         raise ValueError(f"{_name}: river_rp must be in [{_RIVER_RP_MIN}, {_RIVER_RP_MAX}] yr")
 
 def scenario_params(name):
-    """-> dict(mode, surge_rp, river_rp); None RP = mean conditions."""
-    if name == "default":
-        return {
-            "mode":     config["boundary_setup"]["mode"],
-            "surge_rp": config["boundary_forcings"]["surge"]["return_period"],
-            "river_rp": config["boundary_setup"]["design_rp_river_yr"],
-        }
+    """-> dict(mode, surge_rp, river_rp); mode via derive_forcing_mode."""
     s = SCENARIO_DEFS[name]
-    return {"mode": "compound", "surge_rp": s.get("surge_rp"), "river_rp": s.get("river_rp")}
+    river_rp, surge_rp = s.get("river_rp"), s.get("surge_rp")
+    try:
+        mode = derive_forcing_mode(river_rp, surge_rp)
+    except ValueError as e:
+        raise ValueError(f"scenario {name!r}: {e}") from e
+    return {"mode": mode, "surge_rp": surge_rp, "river_rp": river_rp}
 
-# What to run: CLI override, else just the config.yml-driven default.
+# What to run: CLI override, else just the "default" scenario.
 #   snakemake build --config target_scenarios="['baseline','coast_100']"
 SCENARIOS = list(config.get("target_scenarios", ["default"]))
-_unknown = sorted(set(SCENARIOS) - set(SCENARIO_DEFS) - {"default"})
+_unknown = sorted(set(SCENARIOS) - set(SCENARIO_DEFS))
 if _unknown:
     raise ValueError(f"target_scenarios {_unknown} not defined in {config['scenarios_file']}")
 
 
 wildcard_constraints:
     basin_id = r"\d+",
-    scenario = r"|".join(sorted(set(SCENARIO_DEFS) | {"default"}))
+    scenario = r"|".join(sorted(SCENARIO_DEFS))

@@ -42,8 +42,8 @@ def build_refinement_polygons(
     of which polygon is processed first.
 
     Args:
-        river_network_path:      Path to river_network_processed.gpkg (must
-                                  have a 'width' column).
+        river_network_path:      Path to river_network_depth_estimated.gpkg
+                                  (must have a 'width' column).
         land_polygons_path:      Path to land_polygons.gpkg (OSM land).
         river_refinement_level:  Refinement level for the river buffer zone.
         river_buffer_factor:     River buffer distance = width * this factor.

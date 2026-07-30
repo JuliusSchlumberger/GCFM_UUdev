@@ -1,5 +1,5 @@
 """
-12_test_upstream_boundary.py — Check that river boundary forcing locations are
+11_test_upstream_boundary.py — Check that river boundary forcing locations are
 far enough upstream from river mouths to avoid surge-wave interaction.
 
 Final wave-propagation distance = min(kinematic distance, attenuation distance):
@@ -21,9 +21,8 @@ Final wave-propagation distance = min(kinematic distance, attenuation distance):
     approximately constant per reach, based on a representative tidal/surge
     velocity). Re-deriving U from the locally-decaying amplitude at every
     step instead turns the equation into dA/dx = -k·A², a hyperbolic decay
-    that (confirmed by direct comparison) fails to converge at all for
-    low-amplitude mouths -- this is why U is frozen at the mouth, not
-    recomputed per reach.
+    that fails to converge at all for low-amplitude mouths -- this is why
+    U is frozen at the mouth, not recomputed per reach.
     Stops when A decays below amplitude_threshold_fraction of A0, or the
     upstream network runs out.
 
@@ -34,7 +33,7 @@ domain-wide max (stations can vary 5-10x across one basin's coastline).
 When c ≤ v (river faster than wave), the mouth is flagged as
 "undetermined/blocked" -- a zero-radius marker is drawn but no circle.
 
-River mouths: reaches in river_network_estuarine.gpkg whose rch_id_dn
+River mouths: reaches in river_network_depth_estimated.gpkg whose rch_id_dn
 targets are absent from the network (outlets / domain-exits).
 
 Active forcing points: has_glofas=1 crossings in river_forcing.nc.
@@ -71,6 +70,7 @@ from src.log import setup_logging
 from src.plots import map_background
 from src.profiling import ScriptProfiler
 from src.river_network import _as_linestring, build_downstream_adjacency, normalize_reach_id
+from src.surge import lookup_storm_tide_at_rp
 
 log = setup_logging(snakemake.log[0])
 profiler = ScriptProfiler(snakemake)
@@ -89,6 +89,7 @@ eff_frac      = float(snakemake.params.effective_period_fraction)
 period_hr     = float(snakemake.params.surge_period_hr)
 channel_n     = float(snakemake.params.channel_manning_n)
 amp_thresh_frac = float(snakemake.params.amplitude_threshold_fraction)
+surge_rp      = snakemake.params.surge_rp
 T_eff_s       = eff_frac * period_hr * 3600.0
 log.info(
     f"Parameters:"
@@ -97,6 +98,7 @@ log.info(
     f"\n  T_eff = {eff_frac} × {period_hr} h × 3600 s/h = {T_eff_s:.0f} s  ({T_eff_s/3600:.2f} h)"
     f"\n  channel_manning_n           = {channel_n}"
     f"\n  amplitude_threshold_fraction = {amp_thresh_frac}"
+    f"\n  surge_rp                    = {surge_rp} yr"
     f"\n  g                           = {G} m/s²"
     f"\n  depth/velocity: calculated per mouth (rivdph; Q_bf/(W×D)), no config floor"
 )
@@ -108,10 +110,13 @@ wgs84_bounds, domain_crs, domain_poly = load_domain(
 log.info(f"Domain: {wgs84_bounds}, CRS: {domain_crs}")
 
 # ── surge stations (per-station amplitude, NOT a domain-wide max) ────────────
+# station_rp is looked up at this check's OWN configured surge_rp (testing.
+# upstream_boundary_check.surge_rp), independent of rule 07's own
+# station-selection RP and of any scenario's design surge RP.
 with xr.open_dataset(snakemake.input.surge_forcing, decode_times=False) as surge_ds:
     station_lons = surge_ds["longitude"].values.astype(float)
     station_lats = surge_ds["latitude"].values.astype(float)
-    station_rp   = surge_ds["rp_level"].values.astype(float)
+    station_rp   = lookup_storm_tide_at_rp(surge_ds, surge_rp).astype(float)
 log.info(
     f"Surge stations: {len(station_rp)}, rp_level range "
     f"[{station_rp.min():.3f}, {station_rp.max():.3f}] m "
@@ -152,7 +157,7 @@ def _placeholder(output_path: str, message: str) -> None:
 
 
 # ── river network ─────────────────────────────────────────────────────────────
-rivers = gpd.read_file(snakemake.input.river_network_estuarine)
+rivers = gpd.read_file(snakemake.input.river_network_depth_estimated)
 if rivers.crs is not None and rivers.crs.to_epsg() != 4326:
     rivers = rivers.to_crs("EPSG:4326")
 
@@ -170,7 +175,7 @@ by_rid = {r["_rid"]: r for _, r in rivers.iterrows() if r["_rid"] is not None}
 log.info(f"River network: {len(rivers)} reaches, {len(by_rid)} unique IDs")
 
 # Downstream adjacency (shared helper -- same parsing as elsewhere in the
-# pipeline, e.g. 10_condition_elevation.py) inverted to get upstream
+# pipeline, e.g. 09_condition_elevation.py) inverted to get upstream
 # adjacency for the attenuation march.
 downstream_adj = build_downstream_adjacency(rivers)
 upstream_adj: dict[str, list[str]] = {rid: [] for rid in downstream_adj}

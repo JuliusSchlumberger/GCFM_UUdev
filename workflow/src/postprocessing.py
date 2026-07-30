@@ -24,8 +24,10 @@ from hydromt_sfincs import SfincsModel
 from hydromt_sfincs import utils as sfincs_utils
 
 # Copernicus LC100 land-use codes that represent water bodies (see _LC_NAMES
-# in src.plots): 80 = "Inland water", 200 = "Sea".
-WATER_LANDUSE_CODES: tuple[int, ...] = (80, 200)  # (80, 200)
+# in src.plots): 80 = "Inland water", 200 = "Sea". Deliberately not (80, 200)
+# here -- set to values that match no real land-use class, so rivers/ocean
+# stay unmasked and visible in these diagnostics.
+WATER_LANDUSE_CODES: tuple[int, ...] = (0, 2000)
 
 # Memory budget for area/volume STATISTICS (compute_max_inundation,
 # compute_flood_timeseries_stats) rather than _coarsen_for_memory's
@@ -37,9 +39,24 @@ STATS_MAX_BYTES: float = 1.5e9
 
 
 def load_sfincs_output(run_dir: str | Path) -> SfincsModel:
-    """Load a SFINCS run's map output via SfincsModel (HydroMT-aware spatial dims)."""
+    """Load a SFINCS run's map output via SfincsModel (HydroMT-aware spatial dims).
+
+    Reads ONLY sfincs_map.nc, not sfincs_his.nc -- none of this module's
+    compute_* functions use station/observation-point data (only zsmax/zs/zb
+    from the map file), and reading the his file unconditionally breaks for a
+    run with zero observation points (e.g. river depth calibration's own
+    disposable model, src.river_depth_calibration): SFINCS still writes a
+    zero-station sfincs_his.nc in that case, and hydromt_sfincs's his-file
+    reader crashes indexing station 0 of an empty dimension.
+    """
     mod = SfincsModel(root=str(run_dir), mode="r")
-    mod.output.read()
+    # Pre-initialize with skip_read=True so read_map_file's own internal
+    # `self.set(...)` call doesn't re-trigger the full (map+his) `read()` --
+    # `set()` calls `_initialize()` too, which only acts while `_data is None`.
+    mod.output._initialize(skip_read=True)
+    fn_map = Path(run_dir) / "sfincs_map.nc"
+    if fn_map.is_file():
+        mod.output.read_map_file(fn_map=str(fn_map))
     return mod
 
 
@@ -57,15 +74,13 @@ def _mosaic_quadtree_dep_levels(
 
     The finest quadtree level's native pixel size, applied across the WHOLE
     domain (not just its own actually-refined footprint), can be hundreds of
-    millions of pixels for a big domain — multiple GiB per array — which
-    used to blow past available memory while just BUILDING the mosaic
-    (reprojecting every coarser level onto that huge native grid), well
-    before anything downstream (nothing needs subgrid-level pixel detail —
-    see ``_coarsen_for_memory``) actually used that resolution. Levels are
-    still combined finest-first, so refined-zone detail still takes priority
-    over the coarser base level where they overlap — just built at a bounded
-    resolution from the start instead of coarsening a huge array after the
-    fact.
+    millions of pixels for a big domain — multiple GiB per array. Building
+    the mosaic at that resolution (reprojecting every coarser level onto
+    that huge native grid) would risk exhausting available memory before
+    anything downstream actually needs it (nothing needs subgrid-level pixel
+    detail — see ``_coarsen_for_memory``). Levels are combined finest-first,
+    so refined-zone detail still takes priority over the coarser base level
+    where they overlap, at a bounded resolution from the start.
     """
     import rasterio
     from rasterio.enums import Resampling
@@ -124,9 +139,8 @@ def _mosaic_quadtree_dep_levels(
     # inplace=True: .rio.write_crs()/.rio.write_transform() deep-copy the
     # WHOLE array by default even though they only touch metadata -- for an
     # array already sized right at the memory budget, chaining two
-    # out-of-place calls needs multiple simultaneous full-size copies (hit
-    # for basin 4267691: a 1.76 GiB array's deep copy inside write_transform
-    # failed to allocate). inplace=True sets the metadata directly with no copy.
+    # out-of-place calls would need multiple simultaneous full-size copies.
+    # inplace=True sets the metadata directly with no copy.
     mosaic.rio.write_crs(finest["crs"], inplace=True)
     mosaic.rio.write_transform(target_transform, inplace=True)
     return mosaic
@@ -187,19 +201,18 @@ def _coarsen_for_memory(da_ref: xr.DataArray, max_bytes: float = 5e8) -> xr.Data
     if total_bytes <= max_bytes:
         return da_ref
     factor = int(np.ceil((total_bytes / max_bytes) ** 0.5))
-    # da_ref arrives already fully materialized (eager, eager numpy-backed --
+    # da_ref arrives already fully materialized (eager, numpy-backed --
     # get_bed_level's underlying rioxarray/data_catalog reads are not
     # chunked). A plain (non-chunked) .coarsen().mean() on an array this
     # large needs to build temporary reduction bookkeeping arrays (skipna's
     # internal isnan mask, in particular) comparable in size to da_ref
     # itself, ON TOP OF da_ref already being resident -- for a big enough
     # native array this alone can exceed available memory even though the
-    # coarsened OUTPUT is tiny (hit for basin 4267691: a 900 MiB mask
-    # allocation failed with the ~7.5 GiB source array already in memory).
-    # Chunking first makes the reduction dask-backed, so it's computed
-    # chunk-by-chunk with small bounded per-chunk temporaries instead of one
-    # array-sized allocation; .compute() at the end materializes only the
-    # already-small coarsened result.
+    # coarsened OUTPUT is tiny. Chunking first makes the reduction
+    # dask-backed, so it's computed chunk-by-chunk with small bounded
+    # per-chunk temporaries instead of one array-sized allocation;
+    # .compute() at the end materializes only the already-small coarsened
+    # result.
     da_chunked = da_ref.chunk({"y": 2000, "x": 2000})
     da_coarse = da_chunked.coarsen(x=factor, y=factor, boundary="trim").mean().compute()
     # coarsen().mean() does not reliably carry the "spatial_ref" CRS
@@ -288,15 +301,16 @@ def compute_flood_progression(
     run_dir: str | Path,
     landuse_path: str | Path,
     water_landuse_codes: tuple[int, ...] = WATER_LANDUSE_CODES,
+    variable: str = "depth",
 ) -> xr.DataArray | xu.UgridDataArray | None:
     """
-    Instantaneous land-surface inundation depth time series for an animation
-    of flood progression.
+    Instantaneous time series for an animation of flood progression.
 
-    Loads the instantaneous water level ``zs`` (one frame per ``dtmapout``)
-    and the static bed level ``zb`` from the run's map output and derives the
-    depth ``h = max(zs - zb, 0)`` — both already at the resolution SFINCS
-    itself wrote to the map output (cell/mesh resolution), with NO subgrid
+    ``variable="depth"`` (default): land-surface inundation depth
+    ``h = max(zs - zb, 0)``, derived from the instantaneous water level
+    ``zs`` (one frame per ``dtmapout``) and the static bed level ``zb`` from
+    the run's map output — both already at the resolution SFINCS itself
+    wrote to the map output (cell/mesh resolution), with NO subgrid
     downscaling applied, since this is for animation only (see
     ``compute_max_inundation`` for the downscaled, subgrid-aware version used
     for area/volume statistics).
@@ -310,14 +324,31 @@ def compute_flood_progression(
     water boundary visually, so per-cell land-use sampling isn't worth the
     extra spatial-join step for what both approaches use only cosmetically.
 
-    Returns None when ``zs`` (the full time-series map output, as opposed to
-    just the ``zsmax`` envelope) is not present in the run output.
-    """
-    mod = load_sfincs_output(run_dir)
-    if "zs" not in mod.output.data or "zb" not in mod.output.data:
-        return None
+    ``variable="level"``: the raw water level ``zs`` itself, returned
+    unmasked over the whole grid/mesh -- unlike depth, water level is
+    physically meaningful over open sea and inland water too (e.g. watching
+    a surge propagate), so there's no water body to exclude.
 
+    Returns None when ``zs`` (the full time-series map output, as opposed to
+    just the ``zsmax`` envelope) is not present in the run output, or (for
+    ``variable="depth"``) when the bed level ``zb`` is unavailable.
+    """
+    if variable not in ("depth", "level"):
+        raise ValueError(f"variable must be 'depth' or 'level', got {variable!r}")
+
+    mod = load_sfincs_output(run_dir)
+    if "zs" not in mod.output.data:
+        return None
     da_zs_native = mod.output.data["zs"]
+
+    if variable == "level":
+        da_zs_native = da_zs_native.rename("zs")
+        if isinstance(da_zs_native, xu.UgridDataArray):
+            return _ensure_ugrid_crs(da_zs_native, mod.crs)
+        return da_zs_native
+
+    if "zb" not in mod.output.data:
+        return None
     da_zb_native = mod.output.data["zb"].squeeze()
     da_h = (da_zs_native - da_zb_native).clip(min=0.0)
     da_h.name = "h"
@@ -365,13 +396,9 @@ def compute_flood_timeseries_stats(
     (already memory-bounded, see ``get_bed_level`` / ``_coarsen_for_memory``)
     subgrid reference grid, computes its area/volume, then discards it before
     moving to the next frame. This decouples the memory cost from the number
-    of output timesteps entirely (previously, when this calculation shared
-    ``compute_flood_progression``'s output, the WHOLE multi-frame time series
-    had to be rasterized onto the reference grid at once, forcing a much
-    coarser resolution to fit the same memory budget) — so ``max_bytes`` here
-    only has to bound a SINGLE frame, and can afford a more generous, more
-    accurate resolution (``STATS_MAX_BYTES``) than an animation's per-frame
-    budget would.
+    of output timesteps, so ``max_bytes`` here only has to bound a SINGLE
+    frame, and can afford a more generous, more accurate resolution
+    (``STATS_MAX_BYTES``) than an animation's per-frame budget would.
 
     Returns None when ``zs`` or the bed level is unavailable.
     """

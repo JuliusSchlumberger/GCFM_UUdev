@@ -15,7 +15,6 @@ rule clean_river_network:
     params:
         discharge_variable = config["river_processing"]["flow_accumulation"]["discharge_variable"],
         flow_accumulation_iterations = config["river_processing"]["flow_accumulation"]["iterations"],
-        min_width_m = config["river_processing"]["hydraulic_geometry"]["min_width_m"],
     log:
         "logs/{basin_id}/08_clean_river_network.log"
     script:

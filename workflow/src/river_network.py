@@ -21,6 +21,50 @@ from src.geometry import pick_utm_crs
 log = logging.getLogger(__name__)
 
 
+# Minimum distance (m) an own anchor must already be from a reach's start/end
+# before a borrowed neighbour junction value is skipped as redundant (used by
+# src.river_burn.burn_river_channel/_smoothed_weir_crest_profiles and
+# src.river_preburn.compute_river_bed_points -- everywhere a per-point
+# profile is extended with a synthetic junction-boundary anchor).
+_BOUNDARY_BLEND_EPS_M = 1.0
+
+
+def _junction_value(
+    reach_data: dict[str, tuple[object, np.ndarray, np.ndarray]],
+    up_rid: str,
+    dn_rid: str,
+) -> float | None:
+    """
+    Shared value at the junction between two adjacent reaches: the average
+    of the upstream reach's own anchor nearest ITS downstream end and the
+    downstream reach's own anchor nearest ITS upstream start.
+
+    Using this SAME averaged value as the synthetic boundary anchor on BOTH
+    sides of the junction (rather than each side simply adopting the other
+    side's raw value) is what actually removes the step there -- both
+    reaches' interpolation then passes through an identical value at the
+    shared coordinate. Adopting the other side's raw value outright would
+    just swap which side has the mismatch instead of removing it.
+
+    Generic over whatever per-point quantity `reach_data` carries (river bed
+    elevation in src.river_burn.burn_river_channel, calibrated weir crest in
+    src.river_burn's smoothed-crest profiles, calibrated channel depth in
+    src.river_preburn.compute_river_bed_points) -- reach_data maps reach_id
+    to (line, along_sorted, value_sorted).
+    """
+    up_entry = reach_data.get(up_rid)
+    dn_entry = reach_data.get(dn_rid)
+    if up_entry is None or dn_entry is None:
+        return None
+    _, up_along, up_vals = up_entry
+    _, dn_along, dn_vals = dn_entry
+    if len(up_along) == 0 or len(dn_along) == 0:
+        return None
+    up_val = float(up_vals[np.argmax(up_along)])
+    dn_val = float(dn_vals[np.argmin(dn_along)])
+    return (up_val + dn_val) / 2.0
+
+
 def normalize_reach_id(x) -> str | None:
     """Normalize a SWORD reach_id value (int/float/str) to a canonical string, or None if NA."""
     if pd.isna(x):
@@ -370,7 +414,6 @@ def accumulate_discharge(
     seed_q: dict[str, float],
     adjacency: dict[str, list[str]],
     n_iterations: int,
-    min_width_m: float,
 ) -> np.ndarray:
     """
     Iterative width-weighted downstream flow accumulation.
@@ -383,14 +426,14 @@ def accumulate_discharge(
 
     Args:
         rivers:       Cleaned river network GeoDataFrame with 'reach_id',
-                      'width', and geometry columns.
+                      'width', and geometry columns. Width is assumed valid
+                      (non-missing, non-zero) — callers run this after
+                      remove_reaches_with_missing_width/normalize_channel_widths.
         seed_q:       Dict {reach_id_str: bankfull_discharge} from the boundary
                       forcing snapping step.  Multiple crossings that snap to the
                       same reach are pre-summed.
         adjacency:    Downstream adjacency dict from build_downstream_adjacency().
         n_iterations: Number of propagation steps (100 covers chains of ≤100 hops).
-        min_width_m:  Minimum channel width used as a floor to prevent division
-                      by zero.
 
     Returns:
         1-D NumPy array of accumulated discharge (m³ s⁻¹) indexed in the same
@@ -402,10 +445,7 @@ def accumulate_discharge(
             "accumulate_discharge: river network is empty; returning zero-length array"
         )
         return np.zeros(0)
-    widths = np.maximum(
-        rivers["width"].fillna(min_width_m).to_numpy(dtype=float),
-        min_width_m,
-    )
+    widths = rivers["width"].to_numpy(dtype=float)
     reach_to_idx = {r: i for i, r in enumerate(rids)}
 
     adj_idx: dict[int, list[int]] = {
@@ -454,35 +494,33 @@ def accumulate_discharge(
 
 def compute_hydraulic_depth(
     q_acc: np.ndarray,
-    widths: np.ndarray,
-    alpha: float,
-    beta: float,
+    c: float,
+    f: float,
 ) -> np.ndarray:
     """
-    Compute bankfull hydraulic depth from the Leopold–Maddock hydraulic geometry.
+    Compute bankfull hydraulic depth directly from the downstream hydraulic
+    geometry depth relation (Leopold & Maddock, 1953 and successors):
 
-    The combined at-a-station and downstream hydraulic geometry relation gives:
+        depth = c · Q^f
 
-        cross_section_area = alpha · Q^beta
-        depth = cross_section_area / width = alpha · Q^beta / width
-
-    where alpha = a · c and beta = b + f, with (a, b) the at-a-station width
-    exponents and (c, f) the at-a-station depth exponents (Leopold & Maddock,
-    1953).
+    Deliberately does NOT derive depth from channel width by dividing the
+    width relation's implied cross-sectional area by the real (SWORD)
+    width: at this pipeline's basin-accumulated discharges, the width
+    relation predicts channel widths of only a few metres against real
+    SWORD widths in the hundreds of metres, so that division would
+    dominate the result by 1-2 orders of magnitude and silently undersize
+    every burnt channel.
 
     Args:
-        q_acc:  Accumulated discharge array (m³ s⁻¹), same length as widths.
-        widths: Observed channel widths (m); already floored at min_width_m
-                by the caller.
-        alpha:  Combined coefficient (a · c).
-        beta:   Combined exponent (b + f).
+        q_acc: Accumulated discharge array (m³ s⁻¹).
+        c:     Depth coefficient.
+        f:     Depth exponent.
 
     Returns:
         Array of hydraulic depths (m), same shape as q_acc.
     """
     # TODO: update to consider coastal influence. For now, the same formula is applied to all reaches regardless of proximity to the coast, which may lead to overestimation of depth in tidally influenced reaches where the hydraulic geometry may differ from the inland river regime.
-    depth = alpha * np.power(q_acc, beta) / widths
-    return depth
+    return c * np.power(q_acc, f)
 
 
 def identify_delta_outflow_points(
@@ -501,11 +539,9 @@ def identify_delta_outflow_points(
 
     Reaches entirely inside or entirely outside the delta polygon never
     qualify, regardless of 'is_seed'/mouth status -- only a reach whose
-    geometry actually crosses the boundary line is a candidate at all
-    (confirmed for basin 4267691: only 4/312 raw reaches cross the outline,
-    3 of which are exactly its 3 known seed reaches; checking against the
-    filled polygon instead flagged 127/147 reaches -- almost the entire
-    network -- which was not the intent).
+    geometry actually crosses the boundary line is a candidate at all.
+    Checking against the filled polygon interior instead would flag nearly
+    every reach in a delta network, which is not the intent.
 
     A qualifying reach -- crosses the delta outline, 'is_seed' is False,
     isn't a mouth (no downstream neighbour in-network), AND isn't a
@@ -602,10 +638,7 @@ def remove_reaches_with_missing_width(
     fix_width_max_width_order's swap condition (max_width < width) fires
     unconditionally whenever max_width is the nodata sentinel (nodata_value
     < any real width), silently moving the valid value into max_width and
-    leaving 'width' corrupted with the sentinel instead -- confirmed to
-    already be happening (basin 1248635: 10 reaches with max_width=-9999
-    and a valid width in the raw network end up with width=-9999 after that
-    swap runs).
+    leaving 'width' corrupted with the sentinel instead.
 
     * Exactly one of the two is missing: the reach's channel geometry is
       still known from the other value, so both columns are set to it.
@@ -702,7 +735,7 @@ def enforce_mouth_width_monotonic(
     and raise the mouth's width to match.
 
     Mouths are reaches with no downstream neighbour in-network (same
-    definition used elsewhere, e.g. 12_test_upstream_boundary.py). A mouth
+    definition used elsewhere, e.g. 11_test_upstream_boundary.py). A mouth
     with multiple upstream neighbours (a confluence right at the outlet) is
     compared against the WIDEST of them.
 
@@ -1011,251 +1044,49 @@ def sample_dem_near_river(
     return pd.DataFrame.from_records(records)
 
 
-def compute_river_elevation_profile(rivers: gpd.GeoDataFrame) -> pd.DataFrame:
+def trace_widest_path(rivers: gpd.GeoDataFrame, seed: str) -> list[str]:
     """
-    River elevation profile against distance from the river mouth, built by
-    chaining the 'slope' (m/km) attribute upstream through the network from
-    the mouth, rather than trusting each reach's own 'wse' independently.
+    From `seed`, walk downstream; at a bifurcation always continue onto the
+    candidate with the largest 'width'. Stops at a true outlet (no
+    downstream neighbour).
 
-    Each reach's downstream-point elevation is inherited from its
-    already-resolved downstream neighbour's upstream-point elevation (so the
-    profile is continuous by construction across reach boundaries), and its
-    own upstream-point elevation = that inherited base + slope/1000 * reach
-    length. Only the network's root reach(es) (no in-domain downstream
-    neighbour — the true outlet(s) within this clipped network) seed their
-    downstream elevation from their own 'wse' attribute; every other reach's
-    'wse' is ignored in favour of the chained value. This avoids the small
-    per-reach 'wse' inconsistencies that otherwise produce spurious jumps
-    where reaches connect (each reach's 'wse'/'slope' are independent
-    SWORD-reported estimates, not guaranteed to agree exactly at shared
-    nodes).
-
-    At a bifurcation (a reach with more than one in-domain downstream
-    neighbour), the upstream reach is only resolved once *all* of its
-    downstream branches have themselves resolved; it then inherits from
-    whichever branch shares its own 'main_path_id' (SWORD's own
-    upstream-to-downstream river-arm grouping — unambiguous at nearly every
-    bifurcation, since exactly one branch normally continues the same arm).
-    If more than one branch shares that main_path_id, or none does, the
-    branch flagged 'is_mainstem_edge' wins instead. This mirrors SWORD's own
-    mainstem-vs-distributary classification rather than picking arbitrarily
-    by BFS resolution order.
-
-    The branch(es) *not* chosen were each independently chained from their
-    own far-downstream root, so their implied elevation at the bifurcation
-    point need not agree with the chosen branch's. Each discarded branch's
-    entire already-resolved upstream subtree (its own tributaries included)
-    is shifted by the constant offset needed to match the chosen branch at
-    the junction — preserving that branch's own slope-derived shape while
-    removing the discontinuity, rather than leaving it at the first reach of
-    the side-arm. Nested bifurcations are corrected outermost (most
-    downstream) first, so each sees any already-corrected upstream anchor.
+    Deliberately NOT trace_seed_mainstem_paths' own main_path_id/
+    is_mainstem_edge tagging (by request) -- that SWORD-provided tagging
+    can be unreliable, whereas width is a directly observed quantity
+    already used everywhere else a bifurcation choice matters (e.g.
+    accumulate_discharge's own width-proportional split).
 
     Args:
-        rivers: River network with 'reach_id', 'rch_id_dn', 'dist_out',
-                'wse', 'slope', 'main_path_id', 'is_mainstem_edge' columns
-                (any CRS — reprojected internally to a metric CRS to measure
-                each reach's length).
+        rivers: River network with 'reach_id', 'rch_id_dn', 'width'.
+        seed:   Starting reach_id (normalized string).
 
     Returns:
-        DataFrame with one row per reach endpoint (two per reach: upstream
-        and downstream), columns 'reach_id', 'distance_from_mouth_m',
-        'elevation_m', sorted by distance_from_mouth_m for direct line
-        plotting. Reaches without a path to a root reach, or missing
-        'dist_out'/'slope', are excluded.
+        Ordered list of reach_id strings from the seed (inclusive) to
+        wherever the walk ends.
     """
-    required = {
-        "reach_id",
-        "rch_id_dn",
-        "dist_out",
-        "wse",
-        "slope",
-        "main_path_id",
-        "is_mainstem_edge",
+    adjacency = build_downstream_adjacency(rivers)
+    width_by_rid = {
+        normalize_reach_id(rid): w
+        for rid, w in zip(rivers["reach_id"], rivers["width"])
+        if normalize_reach_id(rid) is not None
     }
-    missing = required - set(rivers.columns)
-    if missing:
-        raise ValueError(f"rivers is missing required column(s): {sorted(missing)}")
-
-    metric_crs = pick_utm_crs(rivers) if rivers.crs.is_geographic else rivers.crs
-    rivers_m = rivers.to_crs(metric_crs)
-
-    rids = [normalize_reach_id(x) for x in rivers_m["reach_id"]]
-    adjacency = build_downstream_adjacency(rivers_m)
-    upstream_of: dict[str, list[str]] = {}
-    for rid, dn_list in adjacency.items():
-        for dn in dn_list:
-            upstream_of.setdefault(dn, []).append(rid)
-
-    lengths: dict[str, float] = {}
-    rises: dict[
-        str, float
-    ] = {}  # slope-implied elevation gain along the reach, downstream -> upstream
-    wse: dict[str, float] = {}
-    dist_out: dict[str, float] = {}
-    main_path_id: dict[str, object] = {}
-    is_mainstem: dict[str, bool] = {}
-    for rid, row in zip(rids, rivers_m.itertuples(index=False)):
-        if rid is None:
-            continue
-        line = _as_linestring(row.geometry)
-        if (
-            line is None
-            or line.length == 0
-            or pd.isna(row.slope)
-            or pd.isna(row.dist_out)
-        ):
-            continue
-        lengths[rid] = line.length
-        rises[rid] = float(row.slope) / 1000.0 * line.length
-        dist_out[rid] = float(row.dist_out)
-        if not pd.isna(row.wse):
-            wse[rid] = float(row.wse)
-        if not pd.isna(row.main_path_id):
-            main_path_id[rid] = row.main_path_id
-        is_mainstem[rid] = (
-            bool(row.is_mainstem_edge) if not pd.isna(row.is_mainstem_edge) else False
-        )
-
-    # Number of *resolvable* downstream branches per reach (i.e. excluding
-    # downstream neighbours that themselves lack slope/dist_out and can
-    # therefore never resolve) -- used to detect genuine bifurcations and to
-    # avoid ever waiting on a branch that will never arrive.
-    out_degree: dict[str, int] = {
-        rid: sum(1 for dn in dn_list if dn in lengths)
-        for rid, dn_list in adjacency.items()
-    }
-
-    def _select_downstream_branch(up_rid: str, resolved: dict[str, float]) -> str:
-        """Pick which resolved downstream branch up_rid's elevation chain continues into."""
-        candidates = list(resolved)  # dict insertion order = order branches resolved in
-        same_path = [
-            d for d in candidates if main_path_id.get(d) == main_path_id.get(up_rid)
-        ]
-        pool = same_path if same_path else candidates
-        mainstem = [d for d in pool if is_mainstem.get(d)]
-        return (mainstem or pool)[0]
-
-    elev_dn: dict[str, float] = {}
-    elev_up: dict[str, float] = {}
-    pending: dict[
-        str, dict[str, float]
-    ] = {}  # up_rid -> {resolved downstream rid: its elev_up}
-    queue: deque[str] = deque()
-    for rid in lengths:
-        if not adjacency.get(rid):  # no in-domain downstream neighbour -> network root
-            base = wse.get(rid, 0.0) - rises[rid]
-            elev_dn[rid] = base
-            elev_up[rid] = base + rises[rid]
-            queue.append(rid)
-
-    n_roots = len(queue)
-    n_bifurcations = 0
-    n_ambiguous = 0
-    bifurcation_events: list[tuple[str, str, dict[str, float]]] = []
-    while queue:
-        rid = queue.popleft()
-        for up_rid in upstream_of.get(rid, []):
-            if up_rid in elev_up or up_rid not in lengths:
-                continue
-            if out_degree.get(up_rid, 1) <= 1:
-                elev_dn[up_rid] = elev_up[rid]
-                elev_up[up_rid] = elev_dn[up_rid] + rises[up_rid]
-                queue.append(up_rid)
-                continue
-            branch_results = pending.setdefault(up_rid, {})
-            branch_results[rid] = elev_up[rid]
-            if len(branch_results) < out_degree[up_rid]:
-                continue  # still waiting on other downstream branch(es)
-            n_bifurcations += 1
-            own_path = main_path_id.get(up_rid)
-            if sum(1 for d in branch_results if main_path_id.get(d) == own_path) != 1:
-                n_ambiguous += 1
-            chosen = _select_downstream_branch(up_rid, branch_results)
-            elev_dn[up_rid] = branch_results[chosen]
-            elev_up[up_rid] = elev_dn[up_rid] + rises[up_rid]
-            bifurcation_events.append((up_rid, chosen, dict(branch_results)))
-            queue.append(up_rid)
-
-    if n_bifurcations:
-        log.info(
-            f"compute_river_elevation_profile: resolved {n_bifurcations} bifurcation(s) "
-            f"via main_path_id ({n_ambiguous} needed the is_mainstem_edge tie-break)"
-        )
-
-    # Discarded branches were each chained independently from their own far-
-    # downstream root, so their elev_up at the bifurcation point need not agree
-    # with the chosen branch's value there. Snap each discarded branch's entire
-    # already-resolved upstream subtree (its own tributaries included) by the
-    # constant offset needed to match the chosen branch at the junction --
-    # this preserves each branch's own (real, slope-derived) internal shape
-    # while removing the standing discontinuity, rather than just relocating
-    # it to the first reach of the side-arm. Processed most-downstream-first
-    # (ascending dist_out) so a nested bifurcation's anchor already reflects
-    # any outer correction by the time it's used.
-    #
-    # In a braided/anastomosing reach (parallel channels rejoining), the same
-    # discarded node can be a branch candidate for more than one bifurcation.
-    # The offset must therefore be computed against its *current* (possibly
-    # already shifted by an earlier, more-downstream correction) elev_up --
-    # not the value captured in branch_results back in the main pass -- or
-    # an already-applied shift gets compounded on top of itself instead of
-    # superseded.
-    bifurcation_events.sort(key=lambda ev: dist_out[ev[0]])
-    n_shifted = 0
-    for up_rid, chosen, branch_results in bifurcation_events:
-        anchor = elev_dn[up_rid]
-        for branch_rid in branch_results:
-            if branch_rid == chosen or branch_rid not in elev_up:
-                continue
-            offset = anchor - elev_up[branch_rid]
-            if offset == 0.0:
-                continue
-            stack = [branch_rid]
-            seen: set[str] = set()
-            while stack:
-                node = stack.pop()
-                if node in seen or node not in elev_dn:
-                    continue
-                seen.add(node)
-                elev_dn[node] += offset
-                elev_up[node] += offset
-                stack.extend(upstream_of.get(node, []))
-            n_shifted += len(seen)
-
-    if n_shifted:
-        log.info(
-            f"compute_river_elevation_profile: shifted {n_shifted} reach(es) in discarded "
-            f"bifurcation branch(es) to match the chosen branch at each junction"
-        )
-
-    rows: list[dict] = []
-    for rid in lengths:
-        if rid not in elev_dn:
-            continue
-        rows.append(
-            {
-                "reach_id": rid,
-                "distance_from_mouth_m": dist_out[rid] - lengths[rid],
-                "elevation_m": elev_dn[rid],
-            }
-        )
-        rows.append(
-            {
-                "reach_id": rid,
-                "distance_from_mouth_m": dist_out[rid],
-                "elevation_m": elev_up[rid],
-            }
-        )
-
-    log.info(
-        f"compute_river_elevation_profile: {len(elev_dn)}/{len(lengths)} reach(es) resolved "
-        f"via chained slope integration from {n_roots} network root(s)"
-    )
-    profile = pd.DataFrame(rows)
-    if profile.empty:
-        return profile
-    return profile.sort_values("distance_from_mouth_m").reset_index(drop=True)
+    path = [seed]
+    seen = {seed}
+    current = seed
+    while True:
+        candidates = adjacency.get(current, [])
+        if not candidates:
+            break
+        if len(candidates) == 1:
+            nxt = candidates[0]
+        else:
+            nxt = max(candidates, key=lambda c: width_by_rid.get(c, -np.inf))
+        if nxt in seen:
+            break  # defensive cycle guard
+        path.append(nxt)
+        seen.add(nxt)
+        current = nxt
+    return path
 
 
 def compute_seed_path_offsets(

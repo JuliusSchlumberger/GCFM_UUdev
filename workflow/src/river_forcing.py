@@ -17,6 +17,25 @@ from src.extreme_values import EVAResult
 log = logging.getLogger(__name__)
 
 
+def derive_forcing_mode(river_rp: float | None, surge_rp: float | None) -> str:
+    """
+    Derive SFINCS forcing mode from which design RPs a scenario sets: both
+    -> "compound"; river_rp only -> "river_only"; surge_rp only ->
+    "coastal_only"; neither -> ValueError (no forcing to drive the model
+    with). Shared by 00_common.smk's scenario_params and any standalone
+    script that needs to replicate a scenario's own mode outside Snakemake.
+    """
+    if river_rp is not None and surge_rp is not None:
+        return "compound"
+    if river_rp is not None:
+        return "river_only"
+    if surge_rp is not None:
+        return "coastal_only"
+    raise ValueError(
+        "both river_rp and surge_rp are null -- no forcing to drive the model with"
+    )
+
+
 # ── private helpers ───────────────────────────────────────────────────────────
 
 
@@ -518,11 +537,11 @@ def build_river_dataset(
     a per-crossing return-period discharge table (POT/GPD), and EVA
     diagnostic variables.
 
-    Unlike the previous design, this does NOT build the actual discharge
-    timeseries used to force SFINCS -- that's now built at SFINCS-build time
-    (rule 13, see build_design_discharge_matrix below) from bankfull_discharge
-    + a build-time-configurable return period looked up in discharge_rp_table,
-    so changing the design return period no longer requires re-running EVA.
+    Does NOT build the actual discharge timeseries used to force SFINCS --
+    that's built at SFINCS-build time (rule 13, see
+    build_design_discharge_matrix below) from bankfull_discharge + a
+    build-time-configurable return period looked up in discharge_rp_table,
+    so changing the design return period does not require re-running EVA.
 
     Args:
         discharge_rp_table: (n_crossing, n_return_period) array -- discharge
@@ -568,9 +587,10 @@ def build_river_dataset(
 
     # Store inside_reach_id only for crossings that passed all filters.
     # has_glofas=True encapsulates enters_domain AND EVA convergence
-    # (visible_on_grid is informational only -- see 07_get_boundary_forcings.py
-    # Step 4 -- and no longer gates this); filtered-out crossings get "" so
-    # rule 08 never accidentally seeds from them.
+    # (visible_on_grid is purely informational -- see
+    # 07_get_boundary_forcings.py Step 4 -- and does not gate this);
+    # filtered-out crossings get "" so rule 08 never accidentally seeds
+    # from them.
     if "inside_reach_id" in crossings.columns:
         inside_reach_ids_arr = np.array(
             [
@@ -713,18 +733,51 @@ def build_river_dataset(
     )
 
 
+def interpolate_discharge_at_rp(
+    discharge_rp_table: np.ndarray,
+    return_period_axis: np.ndarray,
+    target_rp_yr: float,
+) -> np.ndarray:
+    """
+    Look up discharge at an arbitrary return period from a per-crossing GPD
+    return-value table, log-RP interpolated (standard flood-frequency
+    convention -- linear interpolation in raw RP-space would be badly skewed
+    given the table's multi-order-of-magnitude span).
+
+    Factored out of build_design_discharge_matrix so callers that need a
+    single steady discharge value (e.g. river depth calibration, rule
+    modelled_depth_estimation)
+    don't have to build a full event hydrograph just to get this lookup.
+
+    Args:
+        discharge_rp_table: (n_crossings, n_rp) array.
+        return_period_axis: (n_rp,) return periods (years) the table's
+            second axis corresponds to.
+        target_rp_yr: Return period (years) to interpolate at.
+
+    Returns:
+        (n_crossings,) array of discharge (m^3 s^-1) at target_rp_yr.
+    """
+    log_rp = np.log(target_rp_yr)
+    log_table_rps = np.log(return_period_axis)
+    n = discharge_rp_table.shape[0]
+    return np.array(
+        [np.interp(log_rp, log_table_rps, discharge_rp_table[i]) for i in range(n)]
+    )
+
+
 def build_design_discharge_matrix(
     river_ds: xr.Dataset,
     active: np.ndarray,
-    design_rp_yr: float,
+    design_rp_yr: float | None,
+    apply_protection_floor: bool = True,
 ) -> np.ndarray:
     """
     Build the discharge timeseries actually fed to SFINCS for the given
     design return period, from river_forcing.nc's stored bankfull_discharge +
-    discharge_rp_table (+ protection_discharge, if present) -- the SFINCS-
-    build-time counterpart to the old rule-07-time sinusoidal_wave call (see
-    build_river_dataset). Changing design_rp_yr only requires re-running the
-    build (rule 13), not re-running EVA (rule 07).
+    discharge_rp_table (+ protection_discharge, if present). Changing
+    design_rp_yr only requires re-running the build (rule 13), not
+    re-running EVA (rule 07).
 
     Per active crossing:
       1. Look up the design discharge Q_f at design_rp_yr from
@@ -747,8 +800,18 @@ def build_design_discharge_matrix(
         river_ds: Opened river_forcing.nc (xr.Dataset).
         active:   Boolean mask, len == river_ds.sizes["crossing"] -- which
                   crossings to build (typically has_glofas).
-        design_rp_yr: Return period (years) to build the event at --
-                  boundary_setup.design_rp_river_yr.
+        design_rp_yr: Return period (years) to build the event at -- a
+                  scenario's own river_rp (config/scenarios.yml, see
+                  scenario_params in 00_common.smk). None builds a
+                  constant bankfull hydrograph instead (mean-conditions
+                  scenario).
+        apply_protection_floor: Whether to apply step 2 (the protection-
+                  discharge floor) when protection_discharge is present.
+                  Only meaningful in "empirical" depth_method: in "modelled"
+                  mode a real calibrated riverbank weir already represents
+                  protection infrastructure, so flooring the discharge too
+                  would double-count it -- pass False there even if rule 07
+                  wrote protection_discharge into river_forcing.nc.
 
     Returns:
         (n_active, n_time) np.ndarray, discharge (m3 s-1) per active crossing.
@@ -764,13 +827,9 @@ def build_design_discharge_matrix(
     if design_rp_yr is None:
         design_q = bankfull_q.copy()  # mean river: constant bankfull hydrograph
     else:
-        log_rp = np.log(design_rp_yr)
-        log_table_rps = np.log(table_rps)
-        design_q = np.array(
-            [np.interp(log_rp, log_table_rps, table[i]) for i in range(n_active)]
-        )
+        design_q = interpolate_discharge_at_rp(table, table_rps, design_rp_yr)
 
-        if "protection_discharge" in river_ds:
+        if apply_protection_floor and "protection_discharge" in river_ds:
             prot_q = river_ds["protection_discharge"].values[active]
             overtopped = design_q > prot_q
             contained = (~overtopped) & (design_q > bankfull_q)
@@ -779,7 +838,6 @@ def build_design_discharge_matrix(
                 bankfull_q + (design_q - prot_q),
                 np.where(contained, bankfull_q, design_q),
             )
-            n_active = int(active.sum())
 
     discharge_matrix = np.full((n_active, len(times)), np.nan)
     for i in range(n_active):
@@ -851,7 +909,7 @@ def snap_crossings_to_reaches(
     The inside_reach_id for each crossing was resolved in rule 07 by
     resolve_inside_domain_reaches and stored in river_forcing.nc.  Only
     crossings that passed all filters (enters_domain, EVA convergence --
-    visible_on_grid is informational only, it no longer gates anything)
+    visible_on_grid is purely informational and does not gate anything)
     carry a non-empty inside_reach_id — they arrive here already filtered
     via load_forcing_crossings.
 

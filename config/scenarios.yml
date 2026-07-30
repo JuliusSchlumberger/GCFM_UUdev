@@ -1,15 +1,16 @@
 # Named flood-event scenarios.
 # Referenced by name as the {scenario} wildcard:
-#   snakemake build --config target_scenarios="['baseline','coast_100']"
-# Each scenario runs in compound mode; a null RP means mean conditions for that driver
+#   snakemake build --config target_scenarios="['coast_100','river_100']"
+# mode is derived from which RPs are set (see scenario_params in
+# 00_common.smk): both set -> compound; exactly one set -> that driver alone
+# (river_only/coastal_only); both null -> invalid (raises) -- a scenario
+# needs at least one real driver, so there is no "both null" entry here.
 
 # Surge RPs must be COAST-RP tabulated values: 1,2,5,10,25,50,100,250,500,1000.
-# The reserved name "default" (not defined here) uses config.yml's
-# boundary_setup settings unchanged.
 
-baseline:                 # reference surface: no design event at all
-  surge_rp: null
-  river_rp: null
+default:                  # what plain `snakemake build` runs (no target_scenarios given)
+  surge_rp: 100
+  river_rp: 150
 
 coast_100:
   surge_rp: 100

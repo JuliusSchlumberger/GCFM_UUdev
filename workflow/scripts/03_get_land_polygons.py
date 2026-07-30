@@ -30,9 +30,7 @@ log.info(f"Domain WGS84 bounds: {wgs84_bounds}")
 # bbox= in read_file uses (minx, miny, maxx, maxy) — same as wgs84_bounds.
 # This GeoPackage carries two layers ('marine_buffer' — an x/y tile-grid
 # index — and 'land_polygons' — the actual polygon geometries). Without an
-# explicit layer=, gpd.read_file silently defaults to 'marine_buffer', whose
-# tile footprints rarely overlap a basin's small bbox, so the clip came back
-# empty even over basins that are clearly on land.
+# explicit layer=, gpd.read_file silently defaults to 'marine_buffer'.
 land = gpd_read_file(snakemake.input.osm_land, bbox=wgs84_bounds, engine="pyogrio",
                      layer="land_polygons")
 log.info(f"OSM land clipped: {len(land)} polygon(s)")

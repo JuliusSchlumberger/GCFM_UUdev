@@ -53,8 +53,7 @@ datasets:
       DiluviumDEM's 80 m clip). The dataset is provided as 1°x1° tiles in
       WGS84 geographic coordinates (EPSG:4326), 19,210 tiles globally.
       IMPORTANT: pixel values are stored as int32 CENTIMETERS, not meters
-      (raster tags: VERTICAL_UNITS=centimeters; confirmed by inspecting
-      n00e010.tif) — divide by 100 to get meters.
+      (raster tags: VERTICAL_UNITS=centimeters) — divide by 100 to get meters.
     source: "Uhe, P., Lucas, C., Hawker, L., Brine, M., Wilkinson, H., Cooper, A., Saoulis, A.A., Savage, J., & Sampson, C. (2025). FathomDEM: an improved global terrain map using a hybrid vision transformer model. Environmental Research Letters, 20, 034002. https://doi.org/10.1088/1748-9326/ada972 . Data: Zenodo record 14523356 (https://doi.org/10.5281/zenodo.14523356), restricted access via share-link token — see tests/download_fathomdem.py."
     provider: gdal
     file_format: GeoTIFF
@@ -66,9 +65,7 @@ datasets:
       spans 0°-1°N, 10°-11°E; s01w090.tif spans 1°-0°S, 90°-89°W). Matches
       src.raster.find_fathomdem_tiles's fname construction (NTFS path
       lookups are case-insensitive, so the function's uppercase N/E also
-      resolves these files on Windows) — but that function's docstring
-      describes a different, stale "FathomDEM_N00_00_E110_00.tif" pattern;
-      worth fixing for clarity even though the code itself is correct.
+      resolves these files on Windows).
     tile_examples:
       - n00e010.tif
       - s01w090.tif
@@ -115,6 +112,55 @@ datasets:
       05a_get_elevation.py, workflow/src/raster.py find_fathomdem_tiles) —
       see the description's centimeters-unit caveat.
 
+  - name: deltadtm_mask
+    # DeltaDTM's own validity/classification mask, used ONLY to identify
+    # ocean pixels so FathomDEM's known-bad seaward extension (it is a
+    # terrestrial DEM, not bathymetry, and reports spurious near-zero/
+    # shallow "elevation" over open water instead of nodata) can be
+    # excluded before the FathomDEM/GEBCO merge in 05a_get_elevation.py.
+    #
+    # IMPORTANT: this is a 4-class mask (0/1/2/3, +nodata=255), NOT the
+    # simple binary "1=valid land, 0=no-data" scheme some other projects'
+    # copies of this dataset use:
+    #   1        -> ocean/water
+    #   0        -> land outside DeltaDTM's own delta-lowland coverage
+    #               (real hills/inland terrain)
+    #   2        -> land, DeltaDTM's own reliable-data class
+    #   3        -> mostly land but a "leaky" transition class, likely a
+    #               coastal/tidal-flat zone
+    #   255 (nodata) -> no source tile coverage at all; NOT reliably
+    #               ocean (DeltaDTM's tile footprint doesn't necessarily
+    #               reach as far inland as this pipeline's domains do) --
+    #               deliberately NOT treated as ocean, unlike value 1.
+    # Only value 1 is used to clip FathomDEM (see clip_ocean_from_topo in
+    # workflow/src/raster.py).
+    description: >
+      DeltaDTM (Pronk et al. 2024) validity/classification mask, global
+      VRT mosaic of 1 arcsec per-tile GeoTIFFs. Used here purely to
+      identify ocean pixels for FathomDEM ocean-clipping -- NOT to gate
+      the actual DeltaDTM elevation values (this pipeline does not use
+      DeltaDTM's own elevation product).
+    source: "Pronk, M., Hooijer, A., Eilander, D., et al. (2024). DeltaDTM: A global coastal digital terrain model. Earth System Science Data, 16, 2343-2360. https://doi.org/10.5194/essd-16-2343-2024. Data: https://doi.org/10.5281/zenodo.7296982"
+    provider: gdal
+    file_format: VRT (GDAL virtual mosaic over per-tile GeoTIFFs)
+    file_path: DeltaDTM_masks/deltadtm_mask.vrt
+    crs:
+      epsg: 4326
+      name: WGS 84
+      units: degrees
+    raster_properties:
+      data_type: Byte
+      nodata_value: 255
+      band_count: 1
+      pixel_size_arcsec: 1
+    coverage:
+      spatial_extent: Coastal deltas and their immediate surroundings only
+        (not global) -- large gaps expected far from any delta.
+    notes: >
+      Used by workflow/scripts/05a_get_elevation.py (via
+      src.raster.clip_ocean_from_topo) right after FathomDEM is loaded
+      onto the UTM working grid, before the GEBCO hard-merge step.
+
 
   - name: river_network
     # SWORD (SWOT River Database) v17c, "unpublished" custom export, reach-
@@ -122,24 +168,19 @@ datasets:
     # tributaries, main_side and width/max_width were adjusted based on
     # Google Earth imagery and expert knowledge, to improve discharge-
     # partitioning behaviour at bifurcations SWORD's own attributes get
-    # wrong. This modified file is now the pipeline's DEFAULT river network
+    # wrong. This modified file is the pipeline's DEFAULT river network
     # source (rule get_river_network reads this entry directly). The
     # unmodified original is kept as the separate `river_network_original`
-    # entry (used for comparison in tests/test_bifurcation_calibration_
-    # options.py). Geometry and rch_id_up/rch_id_dn topology are UNCHANGED
-    # from the original -- only attribute values differ for the adjusted
-    # reaches (confirmed: identical feature count/schema between the two).
+    # entry, used by rule bifurcation_calibration_options (script
+    # 11b_bifurcation_calibration_options.py) for a before/after comparison.
+    # Geometry and rch_id_up/rch_id_dn topology are UNCHANGED from the
+    # original -- only attribute values differ for the adjusted reaches.
     #
-    # NOTE: earlier in this project's history the catalogue briefly pointed
-    # at the official SWORD v17b global release instead (SWORD/
-    # sword_v17b_global.gpkg) -- that was a mismatch (this project has
-    # always actually used v17c) and has been rolled back. v17c carries a
-    # richer field set than the official v17b release, including
-    # main_path_id, is_mainstem_edge, path_seg_pos, rch_id_up_main/
+    # v17c carries a richer field set than the official v17b release,
+    # including main_path_id, is_mainstem_edge, path_seg_pos, rch_id_up_main/
     # rch_id_dn_main, hydro_dist_out, hydro_dist_hw, subnetwork_id,
-    # continent, etc. -- all restored below. rch_id_up/rch_id_dn are a
-    # Python-list-repr string (e.g. "[id1, id2]"), NOT the whitespace-
-    # separated convention v17b uses.
+    # continent, etc. rch_id_up/rch_id_dn are a Python-list-repr string
+    # (e.g. "[id1, id2]"), NOT the whitespace-separated convention v17b uses.
     description: SWORD (SWOT River Database) v17c "unpublished" export, global reach-level vector river network, manually corrected for specific bifurcating tributaries.
     source: "Derived from SWORD (SWOT River Database) v17c (unpublished export; see raw_data/SWORD/v17c_release_notes.pdf and v17c_variable_reference.pdf) with manual attribute corrections based on Google Earth imagery and expert knowledge."
     provider: ogr
@@ -209,10 +250,10 @@ datasets:
   - name: river_network_original
     # Unmodified SWORD v17c "unpublished" export -- same schema/feature
     # count as `river_network`, but WITHOUT the manual main_side/width
-    # corrections. Used for the "before" comparison scenario in
-    # tests/test_bifurcation_calibration_options.py; not read by any
-    # production rule (rule get_river_network reads `river_network`, the
-    # modified/default version).
+    # corrections. Used only for the "before" comparison in rule
+    # bifurcation_calibration_options; not read by any production rule
+    # (rule get_river_network reads `river_network`, the modified/default
+    # version).
     description: SWORD (SWOT River Database) v17c "unpublished" export, global reach-level vector river network, unmodified.
     source: "SWORD (SWOT River Database) v17c (unpublished export; see raw_data/SWORD/v17c_release_notes.pdf and v17c_variable_reference.pdf)."
     provider: ogr
@@ -447,10 +488,8 @@ datasets:
     vertical_reference:
       units: m
       positive: up
-      datum:  # TODO: stated as local MSL in the source notebooks (see src/surge.py); an optional
-              # MDT-based local-MSL -> geoid correction is available via
-              # boundary_forcings.surge.vertical_correction (default OFF — see the TODO in
-              # src/surge.py for an open consistency question with the DEM's "local MSL" reference)
+      datum:  # stated as local MSL in the source notebooks (see src/surge.py); an
+              # MDT-based local-MSL -> geoid correction is applied unconditionally
     coverage:
       latitude_range: [-90, 90]
       longitude_range: [-180, 180]
@@ -881,6 +920,6 @@ datasets:
       match_basin_to_delta) in rule add_estuarine_depth. Matching is by
       spatial proximity: the Nienhuis delta Lat/Lon must fall within the
       basin's delta_polygon bbox or within a configurable buffer distance
-      (river_processing.estuarine_depth.max_match_dist_km). If no match
+      (river_processing.empirical_estimation.estuarine_depth.max_match_dist_km). If no match
       is found, the rule falls back silently to the existing power-law
       rivdph for all reaches.

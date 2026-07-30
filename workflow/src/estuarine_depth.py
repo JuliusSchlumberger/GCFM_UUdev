@@ -8,8 +8,8 @@ convergence inland (A(x) = A0 * exp(-x / L_A)) and SWORD per-reach widths,
 giving d(x) = A(x) / W(x).
 
 For reaches outside L_e (or for any basin where no Nienhuis delta is found
-within max_match_dist_km), the power-law depth already computed by rule
-add_river_depth is kept unchanged.
+within max_match_dist_km), the power-law depth already computed upstream
+is kept unchanged.
 
 Reference:
     Leuven, J.R.F.W. et al. (2018). Empirical Assessment Tool for
@@ -193,8 +193,8 @@ def compute_estuarine_depths(
         d_blend = (1-alpha)*d_estuarine + alpha*d_fluvial
 
     Args:
-        rivers:               GeoDataFrame from rule add_river_depth
-                              (already has 'rivdph' from power-law).
+        rivers:               GeoDataFrame with power-law depth already
+                              computed (column 'rivdph').
         delta_params:         Matched Nienhuis row (from match_basin_to_delta).
         obrien_C, obrien_alpha: O'Brien relation constants (config).
         convergence_ratio_k:  k such that L_A = L_e / k (config).
@@ -219,7 +219,8 @@ def compute_estuarine_depths(
         return rivers.copy()
 
     A0 = obrien_C * (P**obrien_alpha)
-    # NOTE: L_A is the convergence length scale, not the estuary length L_e (changed here because L_e too long for some basins, e.g. Mississippi > 500km)
+    # L_A (convergence length) is L_e scaled down by k, not L_e itself --
+    # using L_e directly overestimates the convergence length for long estuaries.
     L_A = L_e / convergence_ratio_k
     blend_half = blend_fraction * L_A
     x_lo = L_A - blend_half
@@ -333,11 +334,7 @@ def enforce_mouth_depth_monotonic(
     already identical, so this reduces to a plain upstream-continuity check;
     when it did, this catches the case where the O'Brien-relation estimate
     (and/or its min_depth_m floor) put a single mouth's depth well below
-    what's physically feeding it -- confirmed live (basin 2433835, single-
-    mouth Ebro-matched delta): the exponential-decay estimate came out at
-    ~0.24 m at the mouth (dist_out=199 m), floored to min_depth_m=0.5 m, vs.
-    ~2.3 m in the immediately upstream reach -- a ~1.6 m sill sitting right
-    at the model's downstream boundary.
+    what's physically feeding it.
 
     Args:
         rivers:          River network with 'reach_id', 'rch_id_dn',

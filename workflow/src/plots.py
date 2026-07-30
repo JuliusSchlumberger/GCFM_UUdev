@@ -9,9 +9,11 @@ from pathlib import Path
 
 import geopandas as gpd
 import matplotlib
+import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import rasterio
 from rasterio.enums import Resampling
 from rasterio.features import shapes as _rio_shapes
@@ -19,6 +21,7 @@ from rasterio.warp import calculate_default_transform, transform_geom as _transf
 import rioxarray  # noqa: F401  — registers the .rio accessor used for reprojection
 import xarray as xr
 import xugrid as xu
+from matplotlib.collections import LineCollection
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from shapely.geometry import Polygon, shape as _shape
@@ -33,10 +36,6 @@ log = logging.getLogger(__name__)
 
 _PLOT_DPI = 100
 _PLOT_MAX_PX = 2_000_000  # downsample rasters larger than this before rendering
-
-_VMIN_ELEV = -30.0
-_VMAX_ELEV = 80.0
-_THRESH_COLOR = "#FF4500"  # used for pixels above _VMAX_ELEV in topography plots
 
 # Diverging land/sea colormap: shades of blue below 0 m, shades of brown above.
 _BATHY_CMAP = mcolors.LinearSegmentedColormap.from_list(
@@ -105,40 +104,6 @@ _LC_COLORS: dict[int, str] = {
 # ── shared helpers ────────────────────────────────────────────────────────────
 
 
-def read_raster_for_plot(
-    path: str,
-) -> tuple[np.ndarray, tuple[float, float, float, float]]:
-    """
-    Read a raster band, mask nodata to NaN, and downsample for plotting.
-
-    Rasters larger than _PLOT_MAX_PX pixels are subsampled by a factor chosen
-    to bring them below that threshold, preventing multi-GiB memory allocations
-    when matplotlib renders the image.
-
-    Args:
-        path: Path to a GeoTIFF file.
-
-    Returns:
-        data:   2-D float array with nodata replaced by NaN.
-        extent: (left, right, bottom, top) in the raster CRS, suitable for
-                passing as ``extent`` to imshow.
-    """
-    import rasterio
-
-    with rasterio.open(path) as src:
-        data = src.read(1).astype(float)
-        nodata = src.nodata
-        b = src.bounds
-        extent = (b.left, b.right, b.bottom, b.top)
-    if nodata is not None:
-        data[data == nodata] = np.nan
-    total = data.shape[0] * data.shape[1]
-    if total > _PLOT_MAX_PX:
-        factor = math.ceil(math.sqrt(total / _PLOT_MAX_PX))
-        data = data[::factor, ::factor]
-    return data, extent
-
-
 def _to_wgs84_grid(
     data: np.ndarray,
     transform,
@@ -205,9 +170,9 @@ def read_raster_reprojected_for_plot(
     Read a raster band on its native (typically UTM) grid, reproject it to
     EPSG:4326, mask nodata to NaN, and downsample for plotting.
 
-    Counterpart to read_raster_for_plot for rasters that are stored on the
-    model's metric working grid — reprojecting here keeps every diagnostic
-    map in the same lon/lat reference frame.
+    For rasters that are stored on the model's metric working grid —
+    reprojecting here keeps every diagnostic map in the same lon/lat
+    reference frame.
 
     Args:
         dst_bounds: Optional (left, bottom, right, top) in EPSG:4326.  Pass
@@ -319,85 +284,6 @@ def _save(fig, output_path: str) -> None:
 
 # ── static data plots (rules 04-06: protection levels, elevation, landuse, ────
 # ── roughness, river network) ─────────────────────────────────────────────────
-
-
-def plot_topography(
-    topo_path: str,
-    bbox_poly: Polygon,
-    osm_land_path: str,
-    output_path: str,
-    water_bodies_path: str | None = None,
-) -> None:
-    """
-    Topography map: terrain colormap clipped to [_VMIN_ELEV, _VMAX_ELEV] m,
-    with pixels above the upper threshold highlighted in a distinct colour.
-    """
-    data, extent = read_raster_for_plot(topo_path)
-    thresh_mask = data >= _VMAX_ELEV
-    data_under = np.where(~thresh_mask, data, np.nan)
-    data_thresh = np.where(thresh_mask, 1.0, np.nan)
-
-    fig, ax = plt.subplots(figsize=(9, 7))
-    map_background(ax, bbox_poly, osm_land_path, water_bodies_path=water_bodies_path)
-    im = ax.imshow(
-        data_under,
-        cmap=plt.get_cmap("terrain"),
-        vmin=_VMIN_ELEV,
-        vmax=_VMAX_ELEV,
-        extent=extent,
-        origin="upper",
-        zorder=2,
-    )
-    if not np.all(np.isnan(data_thresh)):
-        ax.imshow(
-            data_thresh,
-            cmap=mcolors.ListedColormap([_THRESH_COLOR]),
-            vmin=0,
-            vmax=2,
-            extent=extent,
-            origin="upper",
-            zorder=3,
-        )
-    cb = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04)
-    cb.set_label("Elevation (m)")
-    ax.legend(
-        handles=[
-            Patch(color=_THRESH_COLOR, label=f"≥ {_VMAX_ELEV:.0f} m (DEM threshold)")
-        ],
-        loc="lower right",
-        framealpha=0.9,
-    )
-    ax.set_title("Topography (FathomDEM)")
-    _save(fig, output_path)
-
-
-def plot_bathymetry(
-    bathy_path: str,
-    bbox_poly: Polygon,
-    osm_land_path: str,
-    output_path: str,
-    water_bodies_path: str | None = None,
-) -> None:
-    """
-    Bathymetry map: diverging blue (depth) / brown (elevation) colormap,
-    centred at 0 m, spanning [_VMIN_ELEV, _VMAX_ELEV] m (GEBCO).
-    """
-    data, extent = read_raster_for_plot(bathy_path)
-
-    fig, ax = plt.subplots(figsize=(9, 7))
-    map_background(ax, bbox_poly, osm_land_path, water_bodies_path=water_bodies_path)
-    im = ax.imshow(
-        data,
-        cmap=_BATHY_CMAP,
-        norm=mcolors.TwoSlopeNorm(vmin=_VMIN_ELEV, vcenter=0, vmax=_VMAX_ELEV),
-        extent=extent,
-        origin="upper",
-        zorder=2,
-    )
-    cb = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, extend="both")
-    cb.set_label("Elevation / depth (m)")
-    ax.set_title("Bathymetry (GEBCO)")
-    _save(fig, output_path)
 
 
 def plot_landuse(
@@ -529,25 +415,26 @@ def plot_elevation_merged(
     _save(fig, output_path)
 
 
-def plot_zsini(
-    zsini_path: str,
+def plot_sea_mask(
+    sea_mask_path: str,
     bbox_poly: Polygon,
     osm_land_path: str,
     output_path: str,
     water_bodies_path: str | None = None,
 ) -> None:
     """
-    Initial water-level mask (zsini): cells seeded with an initial water level
-    of 0 m (open water at model start) vs land / outside-domain cells (nodata
-    — dry at model start).  Includes inland water bodies (landuse 200), which
-    are overridden to the sea initial value.
+    Sea / inland-water classification: cells classified as sea or permanent
+    inland water body (landuse 200) vs land / outside-domain cells (nodata).
+    This is a pure land/sea mask, not the model's initial water level --
+    rule build_sfincs (13) turns it into the actual zsini.tif (sea cells =
+    baseline_m) once that value is known.
 
     The raster (on the model's metric UTM grid) is reprojected to EPSG:4326
     for display so this map shares the same lon/lat reference frame as every
     other diagnostic plot.
     """
     data, extent = read_raster_reprojected_for_plot(
-        zsini_path, dst_bounds=bbox_poly.bounds
+        sea_mask_path, dst_bounds=bbox_poly.bounds
     )
     water_mask = ~np.isnan(data)
     n_water = int(water_mask.sum())
@@ -566,14 +453,12 @@ def plot_zsini(
 
     ax.legend(
         handles=[
-            Patch(
-                color="#3860D0", label=f"Initial water (zsini = 0 m) — {n_water:,} px"
-            ),
+            Patch(color="#3860D0", label=f"Sea / inland water — {n_water:,} px"),
         ],
         loc="lower right",
         framealpha=0.9,
     )
-    ax.set_title("Initial water level (zsini)")
+    ax.set_title("Sea / inland-water mask")
     _save(fig, output_path)
 
 
@@ -963,16 +848,16 @@ def plot_forcing_timeseries(
     """
     Two-panel timeseries: surge water level (left) and river discharge (right).
 
-    If the protection-level correction was applied (top-level
-    protection_levels.enabled -- surge_ds/river_ds then carry
+    If the protection-level correction was applied (river_processing.
+    modify_hydrograph -- surge_ds/river_ds then carry
     'water_level_uncorrected'/'discharge_uncorrected' and
     'protection_level'/'protection_discharge'), each panel shows three
     layers per station/crossing instead of just the single effective
     series: the original (undefended) timeseries, the constant protection
     level/discharge subtracted, and the resulting effective (modelled)
     hydrograph -- so the size of the correction is visible directly,
-    not just its end result. Falls back to the single-series plot
-    (unchanged from before this correction existed) when disabled.
+    not just its end result. Falls back to the single-series plot when
+    disabled.
     """
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
@@ -1495,7 +1380,7 @@ def plot_clean_network_discharge(
     _save(fig, output_path)
 
 
-# ── rules 09a-09b plots (add_river_depth, add_estuarine_depth) ────────────────
+# ── rule 10 plots (empirical_depth_estimation, modelled_depth_estimation) ──
 
 
 def plot_river_depth(
@@ -1647,7 +1532,7 @@ def plot_hydraulic_relations_with_estuarine(
     so the same function can serve both enabled and disabled modes.
 
     Args:
-        rivers_wgs:  GeoDataFrame in EPSG:4326 from river_network_estuarine.gpkg.
+        rivers_wgs:  GeoDataFrame in EPSG:4326 from river_network_depth_estimated.gpkg.
         output_path: Destination PNG path.
         L_e_m:       Estuary length in metres (optional; drawn as a vertical
                      annotation in the correlation panel if supplied).
@@ -2071,6 +1956,162 @@ def plot_refinement_zones(
     _save(fig, output_path)
 
 
+def plot_coastal_protection_weir(
+    grid,
+    diagnostics: dict,
+    domain_poly: Polygon,
+    land_polygons_path: str,
+    river_network_path: str,
+    output_path: str,
+    basin_id: str = "",
+    weir_gdf: gpd.GeoDataFrame | None = None,
+) -> None:
+    """
+    Single overview diagnostic for the coastal protection weir baked into
+    the model at rule 13 (src.protection_weir.build_coastal_protection_weir):
+    ocean + river channel (filled) and the derived weir line, which now
+    hugs the coast/riverbank directly (no inland offset). Works for both
+    regular grids (imshow) and quadtree meshes (per-face scatter squares,
+    since there's no ready-made triangulation and cell sizes vary) -- kept
+    in the model's own (UTM) CRS rather than reprojected to WGS84 like most
+    other diagnostics, since the underlying masks/mesh are native to that
+    CRS and quadtree meshes have no reproject path at all.
+
+    Args:
+        grid:                A src.protection_weir.GridArrays instance.
+        diagnostics:          Output dict from build_coastal_protection_weir.
+        domain_poly:         Domain polygon in WGS84 (from ``load_domain``).
+        land_polygons_path:  Path to the OSM land polygons geopackage.
+        river_network_path:  Path to the clipped river network geopackage.
+        output_path:         Destination PNG path.
+        basin_id:            Basin identifier for the plot title.
+        weir_gdf:            The GeoDataFrame build_coastal_protection_weir
+                            also returns (one LineString feature per weir
+                            segment, with an 'elevation' column) -- when
+                            given, the weir line is colour-coded by its own
+                            per-segment crest elevation instead of drawn as a
+                            single flat colour, so a smoothed/varying crest
+                            (river_processing.depth_method == "modelled") is
+                            actually visible. Falls back to a flat black line
+                            (diagnostics['weir_lines']) when omitted or empty.
+    """
+    if not diagnostics.get("applicable", True):
+        Path(output_path).touch()
+        log.info(
+            f"Coastal protection weir not applicable — empty sentinel written: {output_path}"
+        )
+        return
+
+    ocean_mask = diagnostics["ocean_mask"]
+    channel_mask = diagnostics["river_channel_mask"]
+    weir_lines = diagnostics["weir_lines"]
+    crest_elevation_m = diagnostics["crest_elevation_m"]
+
+    if grid.grid_type == "regular":
+        transform = grid.transform
+        nrows, ncols = grid.shape
+        x0, y0 = transform * (0, 0)
+        x1, y1 = transform * (ncols, nrows)
+        bounds = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+        origin = "lower" if transform.e > 0 else "upper"
+    else:
+        bounds = (
+            float(grid.face_x.min()),
+            float(grid.face_y.min()),
+            float(grid.face_x.max()),
+            float(grid.face_y.max()),
+        )
+
+    land, rivers, domain_gdf = _overlay_layers(
+        grid.crs, bounds, domain_poly, land_polygons_path, river_network_path
+    )
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+    _draw_overlays(ax, land, rivers, domain_gdf, zorder=0)
+
+    if grid.grid_type == "regular":
+        extent = (bounds[0], bounds[2], bounds[1], bounds[3])
+        ocean_plot = np.where(ocean_mask, 1.0, np.nan)
+        ax.imshow(
+            ocean_plot,
+            extent=extent,
+            origin=origin,
+            cmap=mcolors.ListedColormap(["steelblue"]),
+            vmin=0,
+            vmax=1,
+            zorder=1,
+        )
+        channel_plot = np.where(channel_mask & ~ocean_mask, 1.0, np.nan)
+        ax.imshow(
+            channel_plot,
+            extent=extent,
+            origin=origin,
+            cmap=mcolors.ListedColormap(["cornflowerblue"]),
+            vmin=0,
+            vmax=1,
+            zorder=1.1,
+        )
+    else:
+        for mask_arr, color, z in (
+            (ocean_mask, "steelblue", 1.0),
+            (channel_mask & ~ocean_mask, "cornflowerblue", 1.1),
+        ):
+            if mask_arr.any():
+                ax.scatter(
+                    grid.face_x[mask_arr],
+                    grid.face_y[mask_arr],
+                    s=grid.cell_size_m[mask_arr] ** 2 / 3000.0,
+                    color=color,
+                    marker="s",
+                    linewidths=0,
+                    zorder=z,
+                )
+
+    has_crest_values = (
+        weir_gdf is not None and not weir_gdf.empty and "elevation" in weir_gdf.columns
+    )
+    if has_crest_values:
+        segments = [np.asarray(line.coords) for line in weir_gdf.geometry]
+        crest_vals = weir_gdf["elevation"].to_numpy(dtype=float)
+        lc = LineCollection(segments, cmap="turbo", zorder=3, linewidths=1.8)
+        lc.set_array(crest_vals)
+        ax.add_collection(lc)
+        cbar = fig.colorbar(lc, ax=ax, fraction=0.03, pad=0.04)
+        cbar.set_label("Weir crest elevation (m)")
+        weir_legend = Line2D(
+            [0],
+            [0],
+            color="black",
+            linewidth=1.5,
+            label="Weir (colour = crest elevation)",
+        )
+    else:
+        for line in weir_lines:
+            x, y = line.xy
+            ax.plot(x, y, color="black", linewidth=1.2, zorder=3)
+        weir_legend = Line2D([0], [0], color="black", linewidth=1.5, label="Weir")
+
+    legend_handles = _OVERLAY_LEGEND_HANDLES + [
+        Patch(color="steelblue", label="Ocean"),
+        Patch(color="cornflowerblue", label="River channel"),
+        weir_legend,
+    ]
+    ax.legend(handles=legend_handles, loc="lower right", fontsize=8, framealpha=0.9)
+
+    title = (
+        f"Coastal protection weir\ncrest={crest_elevation_m:+.2f} m, "
+        f"{len(weir_lines)} segment(s)"
+    )
+    if basin_id:
+        title = f"{title} | {basin_id}"
+    ax.set_title(title)
+    ax.set_xlabel("Easting (m)")
+    ax.set_ylabel("Northing (m)")
+    ax.set_aspect("equal")
+    ax.grid(True, alpha=0.3, linewidth=0.5)
+    _save(fig, output_path)
+
+
 def reproject_max_for_plot(
     da: xr.DataArray,
     dst_crs: str = "EPSG:4326",
@@ -2087,18 +2128,16 @@ def reproject_max_for_plot(
     Reprojecting a fine-resolution SFINCS run raster (e.g. a quadtree run's
     subgrid, down to ~1.5 m pixels, or compute_max_inundation's own
     subgrid-resolution output) to WGS84 for a whole delta domain can produce
-    tens of thousands of pixels per side. Two problems with doing that
-    reproject at native resolution first and only downsampling afterward
-    (this function's predecessor, _downsample_wgs_dataarray): (a) the
+    tens of thousands of pixels per side. Reprojecting at native resolution
+    first and only downsampling afterward has two problems: (a) the
     reproject call itself still momentarily allocates the huge full-
-    resolution intermediate array (observed: an 11627x19827 single-band
-    array during reprojection, then a 4-channel float64 RGBA buffer during
-    imshow -- ~6.9 GiB -- once handed to matplotlib), and (b) picking every
-    Nth pixel post-hoc can alias away isolated peak values entirely, which
-    matters for a MAX-inundation map. Reprojecting directly at the coarse
-    target resolution with max-resampling avoids the large intermediate
-    altogether and guarantees the true max within each output pixel survives
-    the downsampling.
+    resolution intermediate array, which can reach several GiB once handed
+    to matplotlib for rendering, and (b) picking every Nth pixel post-hoc
+    can alias away isolated peak values entirely, which matters for a
+    MAX-inundation map. Reprojecting directly at the coarse target
+    resolution with max-resampling avoids the large intermediate altogether
+    and guarantees the true max within each output pixel survives the
+    downsampling.
 
     ``calculate_default_transform`` is metadata-only (no pixel data is read
     or reprojected) and is used only to estimate the "natural" 1:1 output
@@ -2116,10 +2155,207 @@ def reproject_max_for_plot(
     # calculate_default_transform picked; scale it up by `factor` to hit the
     # max_px budget.
     target_res = dst_transform.a * factor
-    return da.rio.reproject(dst_crs, resolution=target_res, resampling=resampling)
+    result = da.rio.reproject(dst_crs, resolution=target_res, resampling=resampling)
+    # A NaN-nodata source warped with Resampling.max can leave stray +/-inf
+    # behind: the max-reduction's identity element for a destination pixel
+    # whose only contributing source pixels were themselves NaN never gets
+    # replaced back with nodata, which can silently poison any min/max or
+    # percentile computed downstream without ever showing up as NaN.
+    # rio.reproject does not reliably carry "spatial_ref" through .where()
+    # either -- restore it explicitly.
+    crs = result.rio.crs
+    result = result.where(np.isfinite(result))
+    result.rio.write_crs(crs, inplace=True)
+    return result
 
 
 # ── run-output diagnostic plots (rules 14-15: run_spinup, sanity_checks) ──────
+
+
+def plot_water_level_timeseries(
+    t_days: np.ndarray,
+    zs: np.ndarray,
+    output_path: str,
+    day_markers: list[tuple[float, str]] | None = None,
+    station_labels: list[str] | None = None,
+    basin_id: str = "",
+    run_label: str = "",
+    ylabel: str = "Water level (m)",
+) -> None:
+    """
+    Line plot of water level over time at each observation point (rule 14's
+    "validation_spinup.png" pattern, generalised for reuse). Convergence /
+    spin-up sufficiency is visible as flat lines near the right edge.
+
+    Callers keep their own ``.his``-reading logic (CF-time-decoding
+    conventions differ slightly between call sites) and pass in the already
+    -extracted arrays -- this function only builds the figure.
+
+    Args:
+        t_days:         (n_time,) time coordinate, in days.
+        zs:             (n_time, n_stations) water level array.
+        output_path:    Destination PNG path.
+        day_markers:    Optional list of (day, label) vertical reference
+                        lines, e.g. spin-up end or convergence day.
+        station_labels: Optional per-station legend labels (length
+                        n_stations); defaults to "obs {i+1}" if omitted.
+        basin_id:       Basin identifier for the plot title.
+        run_label:      Optional run/scenario label for the plot title.
+        ylabel:         Y-axis label.
+    """
+    n_stations = zs.shape[1]
+    labels = (
+        station_labels
+        if station_labels is not None
+        else [f"obs {i + 1}" for i in range(n_stations)]
+    )
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+    for i in range(n_stations):
+        ax.plot(t_days, zs[:, i], lw=1.0, alpha=0.75, label=labels[i])
+
+    for day, marker_label in day_markers or []:
+        ax.axvline(day, color="red", linestyle="--", linewidth=1.2, label=marker_label)
+
+    ax.set_xlabel("Time (days)")
+    ax.set_ylabel(ylabel)
+    title_bits = [b for b in (basin_id, run_label) if b]
+    prefix = f"{' | '.join(title_bits)}\n" if title_bits else ""
+    ax.set_title(f"{prefix}Water level at {n_stations} observation point(s)")
+    ax.legend(fontsize=7, ncol=max(1, n_stations // 5), loc="upper left")
+    ax.grid(True, alpha=0.3, linewidth=0.5)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_calibration_round_profiles(
+    basin_id: str,
+    seed: str,
+    profiles_by_round: dict[int, pd.DataFrame],
+    n_rounds: int,
+    output_subplots_path: str,
+    output_combined_path: str,
+) -> None:
+    """
+    Bed / weir-crest / period-max water-level profile along one seed-to-
+    mouth path, one round per subplot plus an all-rounds-overlaid combined
+    figure -- the real per-cell calibration state
+    (src.river_depth_calibration.gather_calibration_round_profile,
+    reading each round's own calibration_state.csv directly), not a
+    reconstruction or an approximation of it.
+
+    Args:
+        basin_id, seed: For the plot titles only.
+        profiles_by_round: round_idx -> DataFrame with columns
+            'along_path_m', 'dem', 'rivdph', 'weir_crest', 'zs' (see
+            gather_calibration_round_profile).
+        n_rounds:       Number of correction rounds after round 0.
+        output_subplots_path, output_combined_path: Destination PNGs.
+    """
+    fig, axes = plt.subplots(
+        n_rounds + 1, 1, figsize=(11, 2.6 * (n_rounds + 1)), sharex=True, sharey=True
+    )
+    if n_rounds == 0:
+        axes = [axes]
+    for round_idx, ax in enumerate(axes):
+        df = profiles_by_round[round_idx]
+        ax.plot(
+            df["along_path_m"],
+            df["dem"],
+            color="grey",
+            lw=1.0,
+            ls=":",
+            label="natural DEM",
+        )
+        ax.plot(
+            df["along_path_m"],
+            df["dem"] - df["rivdph"],
+            color="steelblue",
+            lw=1.4,
+            label="river bed (excavated)",
+        )
+        ax.plot(
+            df["along_path_m"],
+            df["weir_crest"],
+            color="firebrick",
+            lw=1.4,
+            label="weir crest (as simulated this round)",
+        )
+        ax.plot(
+            df["along_path_m"],
+            df["zs"],
+            color="black",
+            lw=1.2,
+            ls="-.",
+            label="water level (period max)",
+        )
+        ax.set_ylabel("Elevation (m)")
+        ax.set_title(
+            f"round {round_idx}"
+            if round_idx == 0
+            else f"correction round {round_idx}/{n_rounds}",
+            fontsize=9,
+        )
+        ax.grid(True, alpha=0.3)
+        if round_idx == 0:
+            ax.legend(loc="best", fontsize=8)
+    axes[-1].set_xlabel("Distance along path from seed (m)")
+    fig.suptitle(
+        f"Basin {basin_id}, seed {seed}: bed/crest/water-level profile per round"
+    )
+    fig.tight_layout()
+    fig.savefig(output_subplots_path, dpi=150)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    df0 = profiles_by_round[0]
+    ax.plot(
+        df0["along_path_m"],
+        df0["dem"],
+        color="black",
+        lw=1.2,
+        ls=":",
+        label="natural DEM",
+    )
+    colors = cm.viridis(np.linspace(0.0, 0.9, n_rounds + 1))
+    for round_idx in range(n_rounds + 1):
+        df = profiles_by_round[round_idx]
+        color = colors[round_idx]
+        ax.plot(
+            df["along_path_m"],
+            df["dem"] - df["rivdph"],
+            color=color,
+            lw=1.3,
+            ls="-",
+            label=f"round {round_idx} bed",
+        )
+        ax.plot(
+            df["along_path_m"],
+            df["weir_crest"],
+            color=color,
+            lw=1.3,
+            ls="--",
+            label=f"round {round_idx} crest",
+        )
+        ax.plot(
+            df["along_path_m"],
+            df["zs"],
+            color=color,
+            lw=1.1,
+            ls="-.",
+            label=f"round {round_idx} zs",
+        )
+    ax.set_xlabel("Distance along path from seed (m)")
+    ax.set_ylabel("Elevation (m)")
+    ax.set_title(
+        f"Basin {basin_id}, seed {seed}: bed (solid) / crest (dashed) / water level (dash-dot), all rounds"
+    )
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best", fontsize=7, ncol=2)
+    fig.tight_layout()
+    fig.savefig(output_combined_path, dpi=150)
+    plt.close(fig)
 
 
 def plot_max_inundation_map(
@@ -2238,6 +2474,53 @@ def _mesh_overlay_setup(
     return crs, bounds, land, rivers, domain_gdf
 
 
+#: Per-``variable`` display style for animate_flood_progression: colormap,
+#: colorbar label, and whether the low end is pinned at 0 (depth, which is
+#: never negative) or left to the data's own low percentile (water level,
+#: which can be negative relative to the model's vertical datum).
+#: use_percentile=True clips the colour scale to the 1st/99th percentile
+#: (robust to a single outlier pixel dominating the range); False uses the
+#: data's true min/max instead. Water level uses true min/max so the actual
+#: extremes (e.g. a storm-surge peak) are visible rather than compressed
+#: toward 0 by the percentile clip.
+_FLOOD_ANIMATION_STYLE: dict[str, dict] = {
+    "depth": {
+        "cmap": "Blues",
+        "label": "Water depth (m)",
+        "vmin": 0.0,
+        "use_percentile": True,
+    },
+    "level": {
+        "cmap": "viridis",
+        "label": "Water level (m)",
+        "vmin": None,
+        "use_percentile": False,
+    },
+}
+
+
+def _flood_animation_bounds(vals: np.ndarray, style: dict) -> tuple[float, float]:
+    """Colour-scale (vmin, vmax) for one variable's whole time series, per
+    ``style["use_percentile"]``/``style["vmin"]`` (see ``_FLOOD_ANIMATION_STYLE``).
+    Filters with ``np.isfinite`` rather than ``~np.isnan`` -- see the -inf
+    caveat noted at each call site.
+    """
+    valid = vals[np.isfinite(vals)]
+    if not len(valid):
+        return (style["vmin"] if style["vmin"] is not None else 0.0), 1.0
+    if style["use_percentile"]:
+        vmax = float(np.percentile(valid, 99))
+        vmin = (
+            float(np.percentile(valid, 1)) if style["vmin"] is None else style["vmin"]
+        )
+    else:
+        vmax = float(valid.max())
+        vmin = float(valid.min()) if style["vmin"] is None else style["vmin"]
+    if style["vmin"] is not None:
+        vmax = max(vmax, 0.01)
+    return vmin, vmax
+
+
 def animate_flood_progression(
     da_h: xr.DataArray | xu.UgridDataArray,
     domain_poly: Polygon,
@@ -2247,29 +2530,33 @@ def animate_flood_progression(
     basin_id: str = "",
     run_label: str = "",
     fps: int = 4,
+    variable: str = "depth",
 ) -> None:
     """
-    Animate the progression of land-surface flooding over a SFINCS run
-    (output of ``postprocessing.compute_flood_progression``), saved as an MP4.
+    Animate the progression of a SFINCS run's instantaneous water depth or
+    water level (output of ``postprocessing.compute_flood_progression``),
+    saved as an MP4.
 
     For a REGULAR grid, the land outline, river network, and domain boundary
-    are drawn once as a static background; an imshow layer of instantaneous
-    water depth (already masked to non-water land-use areas) is then updated
-    for each time step.
+    are drawn once as a static background; an imshow layer of the
+    instantaneous variable (already masked to non-water land-use areas, for
+    ``variable="depth"``) is then updated for each time step.
 
     For a QUADTREE run, ``da_h`` arrives as a mesh-native ``xu.UgridDataArray``
     (unmasked — see ``postprocessing.compute_flood_progression``) and is
     rendered directly as mesh cell polygons (``.ugrid.plot()``, a
     ``matplotlib.collections.PolyCollection``) updated per frame via
-    ``set_array()`` — this never rasterizes the mesh, which for a large
-    quadtree domain is what previously risked exhausting memory (see
-    ``src.postprocessing``'s ``_coarsen_for_memory`` / mosaic history).
+    ``set_array()`` — this never rasterizes the mesh, avoiding the memory
+    cost that rasterizing a large quadtree domain at its native pixel
+    resolution would incur (see ``src.postprocessing``'s
+    ``_coarsen_for_memory``).
 
     Args:
-        da_h:               Instantaneous land-surface water depth with a
-                            ``time`` dimension; NaN = dry / water / outside
-                            domain (regular-grid case only — the quadtree case
-                            is unmasked). Regular-grid arrays must carry CRS
+        da_h:               Instantaneous water depth or water level (see
+                            ``variable``) with a ``time`` dimension; NaN =
+                            dry / water / outside domain (regular-grid depth
+                            case only — level and the quadtree case are
+                            unmasked). Regular-grid arrays must carry CRS
                             metadata (``rio.crs``); quadtree arrays must carry
                             mesh CRS metadata (``ugrid.grid.crs`` — see
                             ``postprocessing._ensure_ugrid_crs``).
@@ -2280,8 +2567,29 @@ def animate_flood_progression(
         basin_id:           Basin identifier for the plot title.
         run_label:          Optional run/scenario label for the plot title.
         fps:                Frames per second of the output video.
+        variable:           "depth" (default, ``da_h`` = inundation depth,
+                            colour scale pinned at 0) or "level" (``da_h`` =
+                            water level, colour scale follows the data's own
+                            range since it can be negative).
     """
     from matplotlib.animation import FFMpegWriter, FuncAnimation
+
+    # matplotlib's FFMpegWriter defaults to bitrate=-1 (encoder picks), which
+    # for libx264 falls back to a CRF that's too aggressive for this content:
+    # the pale, low-contrast floodplain signal (visually close to the light
+    # grey land background) gets quantized away by compression while the
+    # sharp, high-contrast river channel survives. -crf 15 (near-visually-
+    # lossless for x264, default is 23) fixes this without hand-tuning a
+    # bitrate for every domain size/resolution.
+    def _make_writer():
+        return FFMpegWriter(fps=fps, extra_args=["-crf", "15", "-pix_fmt", "yuv420p"])
+
+    if variable not in _FLOOD_ANIMATION_STYLE:
+        raise ValueError(
+            f"variable must be one of {list(_FLOOD_ANIMATION_STYLE)}, got {variable!r}"
+        )
+    style = _FLOOD_ANIMATION_STYLE[variable]
+    title_word = "Flood progression" if variable == "depth" else "Water level"
 
     if "time" not in da_h.dims:
         log.warning(
@@ -2296,17 +2604,16 @@ def animate_flood_progression(
         )
 
         vals = da_h.values
-        valid = vals[~np.isnan(vals)]
-        vmax = float(np.percentile(valid, 99)) if len(valid) > 0 else 1.0
-        vmax = max(vmax, 0.01)
+        vmin, vmax = _flood_animation_bounds(vals, style)
 
         fig, ax = plt.subplots(figsize=(10, 8))
         _draw_overlays(ax, land, rivers, domain_gdf, zorder=1)
         coll = da_h.isel(time=0).ugrid.plot(
-            ax=ax, cmap="Blues", vmin=0, vmax=vmax, zorder=2
+            ax=ax, cmap=style["cmap"], vmin=vmin, vmax=vmax, zorder=2
         )
-        cb = fig.colorbar(coll, ax=ax, fraction=0.03, pad=0.04, extend="max")
-        cb.set_label("Water depth (m)")
+        extend = "max" if style["vmin"] is not None else "both"
+        cb = fig.colorbar(coll, ax=ax, fraction=0.03, pad=0.04, extend=extend)
+        cb.set_label(style["label"])
 
         xmin, ymin, xmax, ymax = bounds
         _margin = max(xmax - xmin, ymax - ymin) * 0.3
@@ -2323,7 +2630,7 @@ def animate_flood_progression(
             fontsize=8,
         )
 
-        title_prefix = "Flood progression"
+        title_prefix = title_word
         if run_label:
             title_prefix = f"{title_prefix} — {run_label}"
         if basin_id:
@@ -2343,7 +2650,7 @@ def animate_flood_progression(
         anim = FuncAnimation(fig, _update_mesh, frames=n_frames, blit=False)
         out_path = Path(output_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        anim.save(str(out_path), writer=FFMpegWriter(fps=fps))
+        anim.save(str(out_path), writer=_make_writer())
         plt.close(fig)
         log.info(f"Written: {output_path}")
         return
@@ -2359,10 +2666,14 @@ def animate_flood_progression(
         river_network_path,
     )
 
+    # np.isfinite (not just ~np.isnan) matters here: reproject_max_for_plot's
+    # Resampling.max can leave stray -inf pixels behind when a NaN-nodata
+    # source is warped (the max-reduction identity element never gets
+    # replaced back to nodata for destination pixels whose only contributing
+    # source pixels were themselves nodata) -- -inf silently poisons both the
+    # percentile and true min/max otherwise, without ever showing up as NaN.
     vals = da_wgs.values
-    valid = vals[~np.isnan(vals)]
-    vmax = float(np.percentile(valid, 99)) if len(valid) > 0 else 1.0
-    vmax = max(vmax, 0.01)
+    vmin, vmax = _flood_animation_bounds(vals, style)
 
     x, y = da_wgs["x"].values, da_wgs["y"].values
     extent = (float(x.min()), float(x.max()), float(y.min()), float(y.max()))
@@ -2380,15 +2691,16 @@ def animate_flood_progression(
 
     im = ax.imshow(
         np.full(da_wgs.shape[1:], np.nan),
-        cmap="Blues",
-        vmin=0,
+        cmap=style["cmap"],
+        vmin=vmin,
         vmax=vmax,
         extent=extent,
         origin=origin,
         zorder=2,
     )
-    cb = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.04, extend="max")
-    cb.set_label("Water depth (m)")
+    extend = "max" if style["vmin"] is not None else "both"
+    cb = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.04, extend=extend)
+    cb.set_label(style["label"])
     ax.set_xlim(lon_min - _margin, lon_max + _margin)
     ax.set_ylim(lat_min - _margin, lat_max + _margin)
     ax.set_xlabel("Longitude (°)")
@@ -2399,7 +2711,7 @@ def animate_flood_progression(
         handles=_OVERLAY_LEGEND_HANDLES, loc="lower right", framealpha=0.9, fontsize=8
     )
 
-    title_prefix = "Flood progression"
+    title_prefix = title_word
     if run_label:
         title_prefix = f"{title_prefix} — {run_label}"
     if basin_id:
@@ -2420,7 +2732,7 @@ def animate_flood_progression(
 
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    anim.save(str(out_path), writer=FFMpegWriter(fps=fps))
+    anim.save(str(out_path), writer=_make_writer())
     plt.close(fig)
     log.info(f"Written: {output_path}")
 

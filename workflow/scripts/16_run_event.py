@@ -32,9 +32,6 @@ event/flood_timeseries.csv       Per-timestep flooded_area_km2 / flood_volume_m3
 """
 
 import gc
-import subprocess
-import sys
-import threading
 from pathlib import Path
 from typing import cast
 
@@ -50,6 +47,7 @@ from src.postprocessing import (
     compute_flood_timeseries_stats,
     compute_max_inundation,
 )
+from src.sfincs_run import run_sfincs_subprocess
 
 log = setup_logging(snakemake.log[0])
 
@@ -80,52 +78,7 @@ basin_id = sfincs_root.parent.name
 # The main sfincs.inp (written by rule 13) already covers exactly this run;
 # cwd = sfincs_root so all its relative file references (dep, msk, bnd, ...,
 # and rstfile = spinup/<restart file>) resolve correctly.
-sfincs_exe = sfincs_exe.resolve()
-log.info(f"Running SFINCS event: {sfincs_exe}")
-
-proc = subprocess.Popen(
-    [str(sfincs_exe)],
-    cwd=str(sfincs_root),
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    text=True,
-    bufsize=1,   # line-buffered
-)
-
-def _forward(pipe, log_fn):
-    for line in pipe:
-        line = line.rstrip()
-        if line:
-            log_fn(f"[sfincs] {line}")
-            print(f"[sfincs] {line}", file=sys.stderr, flush=True)
-
-t_out = threading.Thread(target=_forward, args=(proc.stdout, log.info))
-t_err = threading.Thread(target=_forward, args=(proc.stderr, log.warning))
-t_out.start()
-t_err.start()
-
-# proc.wait() must run BEFORE joining the reader threads: t_out.join()/
-# t_err.join() block unconditionally until SFINCS's own stdout/stderr pipes
-# close, which only happens once it exits on its own -- so calling them
-# first made the timeout below unreachable until the process had already
-# finished, silently defeating it. Killing the process here closes its
-# pipes, which is what lets the reader threads finish and join() return.
-try:
-    proc.wait(timeout=timeout_s)
-except subprocess.TimeoutExpired:
-    proc.kill()
-    t_out.join()
-    t_err.join()
-    raise RuntimeError(f"SFINCS event run exceeded {timeout_s}s timeout")
-
-t_out.join()
-t_err.join()
-
-if proc.returncode != 0:
-    raise RuntimeError(
-        f"SFINCS event run failed with exit code {proc.returncode}. "
-        f"Check log: {snakemake.log[0]}"
-    )
+run_sfincs_subprocess(sfincs_exe, sfincs_root, timeout_s, log, label="SFINCS event run", n_threads=snakemake.threads)
 
 sfincs_map_path = Path(snakemake.output.sfincs_map_nc)
 if not sfincs_map_path.exists():
@@ -199,9 +152,8 @@ else:
     # da_h (all frames, mesh resolution) is only needed for the animation
     # above. compute_flood_timeseries_stats below rasterizes one frame at a
     # time onto a fine subgrid raster via hydromt_sfincs's celltree-based
-    # rasterize_like, which needs substantial working memory on its own
-    # (observed to MemoryError for basin 4267691 when da_h was still
-    # resident) -- free it first so that call has the headroom it needs.
+    # rasterize_like, which needs substantial working memory on its own --
+    # free da_h first so that call has the headroom it needs.
     del da_h
     gc.collect()
 

@@ -7,7 +7,7 @@ from rasterio.features import rasterize as rio_rasterize
 
 from src.domain import load_domain
 from src.log import setup_logging
-from src.plots import plot_landuse, plot_zsini
+from src.plots import plot_landuse, plot_sea_mask
 from src.profiling import ScriptProfiler
 from src.raster import reproject_to_reference_grid
 
@@ -40,17 +40,20 @@ with rasterio.open(snakemake.output.spec_landuse, "w", **out_meta) as dst:
     dst.write(data, 1)
 log.info(f"Written: {snakemake.output.spec_landuse}")
 
-# ── zsini: land/sea split + water-body override ──────────────────────────────
+# ── sea mask: land/sea classification + water-body override ──────────────────
 # Rasterise OSM land polygons onto elevation_merged.tif's exact grid (the
-# same grid landuse was just reprojected to) to get the initial land/sea
-# split: 0.0 m (open water at model start) at sea, nodata (dry) on land.
-# Cells with landuse==200 (permanent inland water body) are then overridden
-# to 0.0 regardless of the land polygon, and any cell with no elevation data
-# (outside the domain polygon / no DEM+GEBCO coverage) is excluded.
+# same grid landuse was just reprojected to) to get the land/sea split: 1.0
+# (sea/inland-water) vs nodata (land). Cells with landuse==200 (permanent
+# inland water body) are then overridden to sea regardless of the land
+# polygon, and any cell with no elevation data (outside the domain polygon /
+# no DEM+GEBCO coverage) is excluded. This is a pure classification -- it
+# carries no water-level value. The actual initial water level (zsini.tif,
+# sea cells = baseline_m) is built later in rule build_sfincs (13), which is
+# the first point in the pipeline baseline_m is actually known.
 land_gdf = gpd.read_file(snakemake.input.land_polygons).to_crs(ref_meta["crs"])
 if land_gdf.empty:
     land_mask = np.zeros((ref_meta["height"], ref_meta["width"]), dtype=bool)
-    log.warning("No land polygons — zsini is all-sea (within domain)")
+    log.warning("No land polygons — sea mask is all-sea (within domain)")
 else:
     land_mask = rio_rasterize(
         shapes=[(geom, 1) for geom in land_gdf.geometry if geom is not None],
@@ -62,25 +65,25 @@ else:
 lu_arr = data[0] if data.ndim == 3 else data
 NODATA = np.float32(-9999.0)
 sea_mask = ~land_mask | (lu_arr == 200)
-zsini_arr = np.where(sea_mask, np.float32(0.0), NODATA).astype(np.float32)
+sea_mask_arr = np.where(sea_mask, np.float32(1.0), NODATA).astype(np.float32)
 
 if elevation_nodata is not None:
-    zsini_arr[elevation_arr == np.float32(elevation_nodata)] = NODATA
-zsini_arr[~np.isfinite(elevation_arr)] = NODATA
+    sea_mask_arr[elevation_arr == np.float32(elevation_nodata)] = NODATA
+sea_mask_arr[~np.isfinite(elevation_arr)] = NODATA
 
-zsini_meta = ref_meta.copy()
-zsini_meta.update(nodata=float(NODATA))
+sea_mask_meta = ref_meta.copy()
+sea_mask_meta.update(nodata=float(NODATA))
 
 n_wb = int(((lu_arr == 200) & land_mask).sum())
-n_water = int((zsini_arr == 0.0).sum())
+n_water = int((sea_mask_arr == 1.0).sum())
 log.info(
-    f"zsini: {n_water:,} initial-water px "
+    f"sea_mask: {n_water:,} sea/inland-water px "
     f"({n_wb:,} inland water-body px added inside the land mask)"
 )
 
-with rasterio.open(snakemake.output.zsini, "w", **zsini_meta) as zdst:
-    zdst.write(zsini_arr, 1)
-log.info(f"Written: {snakemake.output.zsini}")
+with rasterio.open(snakemake.output.sea_mask, "w", **sea_mask_meta) as zdst:
+    zdst.write(sea_mask_arr, 1)
+log.info(f"Written: {snakemake.output.sea_mask}")
 
 # ── plots ──────────────────────────────────────────────────────────────────────
 plot_landuse(
@@ -88,11 +91,11 @@ plot_landuse(
     snakemake.input.land_polygons, snakemake.output.plot_landuse,
     water_bodies_path=snakemake.output.spec_landuse,
 )
-plot_zsini(
-    zsini_path=snakemake.output.zsini,
+plot_sea_mask(
+    sea_mask_path=snakemake.output.sea_mask,
     bbox_poly=domain_poly,
     osm_land_path=snakemake.input.land_polygons,
-    output_path=snakemake.output.plot_zsini,
+    output_path=snakemake.output.plot_sea_mask,
     water_bodies_path=snakemake.output.spec_landuse,
 )
 profiler.stop()
