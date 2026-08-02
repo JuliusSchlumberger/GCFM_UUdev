@@ -37,7 +37,6 @@ include: "rules/10_depth_estimation_empirical.smk"
 include: "rules/10_depth_estimation_modelled.smk"
 include: "rules/11_testing.smk"
 include: "rules/13_build_sfincs.smk"
-include: "rules/13b_validate_protection_level.smk"
 include: "rules/14_run_spinup.smk"
 include: "rules/15_sanity_checks.smk"
 include: "rules/16_run_event.smk"
@@ -132,13 +131,6 @@ _BUILD_OUTPUTS = [
       + expand (results_path("{basin_id}/scenarios/{scenario}/metrics/max_flood_depth.tif"), basin_id=BASINS, scenario=SCENARIOS)
       + expand (results_path("{basin_id}/scenarios/{scenario}/metrics/flood_metrics.csv"), basin_id=BASINS, scenario=SCENARIOS)
       if config["sfincs"]["spinup"]["enabled"] else []),
-    # rule validate_protection_level (13b) -- independent of spin-up/event,
-    # not gated by sfincs.spinup.enabled.
-    *(expand(results_path("{basin_id}/visuals/model_runs/protection_validation/protection_level_max_inundation.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/model_runs/protection_validation/protection_level_water_level.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/model_runs/protection_validation/higher_rp_max_inundation.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/model_runs/protection_validation/higher_rp_water_level.png"), basin_id=BASINS)
-      if config["sfincs"]["protection_validation"]["enabled"] else []),
 ]
 
 # ── Named partial-pipeline targets ───────────────────────────────────────────

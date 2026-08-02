@@ -6,6 +6,34 @@ and why*.
 
 #
 
+# 2026-08-02b: removed rule 13b (validate_protection_level) entirely (- JS)
+
+Follow-up to the scenario-rerun investigation below, which flagged that `13b_validate_protection_level.smk` hard-coded `scenarios/default/...` in its own inputs (even though its own outputs are basin-level), pulling an extra full `build_sfincs` + simulation for the `default` scenario into the DAG on every `build` request, regardless of which scenario was actually being built. Rather than scope the rule to whichever scenario is actually requested, the decision was to remove the rule entirely.
+
+Removed: `workflow/rules/13b_validate_protection_level.smk`, `workflow/scripts/13b_validate_protection_level.py`, the `include:` line and `_BUILD_OUTPUTS` block in `workflow/Snakefile`, `sfincs.protection_validation.*` in `config/config.yml`, and `src.river_depth_calibration.check_convergence()` (a windowed-flatness convergence check written specifically for this rule -- it had no other caller; rule `modelled_depth_estimation`'s own calibration deliberately never used a windowed convergence check, it always used the period-maximum water level instead, see that rule's own module docstring). The basin-level `visuals/model_runs/` directory no longer exists at all, since this rule was its only user.
+
+Verified via `snakemake -n`: job count for a single-scenario build dropped from 14 to 12 (removing both the validation job itself and the extra `default`-scenario `build_sfincs` job it was forcing).
+
+# 2026-08-02: scenario switch was re-triggering the entire preprocessing chain, including depth calibration (- JS)
+
+User reported that running a different scenario (`target_scenarios=['coast_100']`) after other scenarios had already been built re-ran the WHOLE preprocessing pipeline for the basin, including the expensive SFINCS-based depth/crest calibration (rule `modelled_depth_estimation`) -- even though no input data had changed, only the requested scenario. Investigated via `snakemake -n` dry runs comparing job stats/reasons across different `target_scenarios` values.
+
+**Root cause**: `workflow/rules/07_boundary_forcings.smk` (rule `get_boundary_forcings`, a BASIN-level rule with no `{scenario}` wildcard -- it runs once per basin, before the scenario axis branches) had a `params:` entry `design_rp_river_yr = SCENARIO_DEFS[SCENARIOS[0]]["river_rp"]` -- i.e. it read *the first entry of whatever `target_scenarios` list was passed on the command line*. Snakemake's default rerun-triggers include `params`, so this single line meant rule 07's own recorded metadata (and therefore its own "needs rerun?" status) depended on which scenario(s) were requested and even their LIST ORDER -- confirmed empirically: `target_scenarios=['default','coast_100']` did not rerun rule 07, but the reversed `target_scenarios=['coast_100','default']` did, with identical code and data. Once rule 07 is marked dirty, everything downstream cascades: 08 -> 08b -> 08c -> 09 -> **10 (`modelled_depth_estimation`)** -> 13 and on.
+
+The value itself was only ever used for a *diagnostic preview* inside `07_get_boundary_forcings.py` (a "how big is this crossing" plot annotation and the EVA return-value used for the `has_glofas`/`ok` gate) -- the actual production `discharge_rp_table` (consumed by rules 08/10/13) is computed at every standard return period regardless of this value, and rule 13 builds each scenario's own REAL forcing from its own actual `design_rp_river_yr` (via `scenario_params()`), never from this diagnostic value.
+
+**Fixed**: this diagnostic RP is now a fixed, scenario-independent config value (`boundary_forcings.river.eva.rp_fl`, default 100.0) instead of being derived from the requested scenario list. `design_rp_river_yr` param removed entirely from rule 07; `07_get_boundary_forcings.py` now just reads `rp_fl` straight from `params.eva` (already scenario-independent) instead of overriding it. Verified via dry run: rule 07's own recorded "now" params are now byte-identical across `coast_100`, `river_100`, and reversed scenario-list orderings. One transitional rerun of the whole preprocessing chain is still unavoidable the next time ANY scenario is built (the on-disk metadata reflects the old, scenario-dependent param structure) -- but every subsequent scenario switch after that will no longer touch preprocessing.
+
+**Side benefit**: this also fixes a latent correctness bug, not just a performance one -- `has_glofas`/EVA "ok" gating (which crossings get modelled at all) previously could silently differ for the SAME basin depending on which scenario happened to be requested first, since it was gated on `isfinite(q_rp100)` computed at the scenario-derived RP. It's now a stable, basin-level computation.
+
+## Also fixed while investigating: latent crash building `coast_100`/`river_100` scenarios
+
+`13_build_sfincs.py` unconditionally did `design_rp_river_yr = float(snakemake.params.design_rp_river_yr)` and the same for `design_rp_surge_yr`. For scenarios with a `null` RP on one side (`coast_100`: `river_rp=null` -> `forcing_mode="coastal_only"`; `river_100`: `surge_rp=null` -> `forcing_mode="river_only"`), this is `float(None)`, which raises `TypeError` -- would have crashed the very first real (non-dry-run) build of either scenario. Not caught by `snakemake -n` since it's a runtime error inside the script, not a DAG-building one. Fixed: both params now stay `None` when the underlying scenario value is `None`, matching what their consumers already expect -- `src.river_forcing.build_design_discharge_matrix` already accepts `design_rp_yr: float | None` natively (falls back to a constant bankfull hydrograph), and `design_rp_surge_yr` is only ever dereferenced inside the `forcing_mode != "river_only"` branch, i.e. exactly when it's guaranteed non-None.
+
+## Flagged, not fixed -- needs a decision
+
+`13b_validate_protection_level.smk` hard-codes `scenarios/default/...` in its own inputs even though its outputs are basin-level. This pulls an EXTRA full `build_sfincs` + simulation for the `default` scenario into the DAG on every `build` request, regardless of which scenario was actually asked for (visible in dry-run job stats: `build_sfincs 2` even when only requesting `coast_100`). May be an intentional design choice (validate protection level against one canonical reference scenario rather than per-event) -- left untouched pending a decision on whether it should be scoped differently.
+
 # 2026-07-29d: per-round diagnostics genuinely skipped instead of empty-touched, filenames renamed for cross-round comparison (- JS)
 
 Two refinements to the per-round diagnostic plots added earlier the same day:
