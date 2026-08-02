@@ -119,8 +119,18 @@ storevelmax       = snakemake.params.storevelmax
 storetwet         = snakemake.params.storetwet
 forcing_mode      = snakemake.params.forcing_mode
 river_only_flat_level_m = float(snakemake.params.river_only_flat_level_m)
-design_rp_river_yr = float(snakemake.params.design_rp_river_yr)
-design_rp_surge_yr = float(snakemake.params.design_rp_surge_yr)
+# None for a scenario with no design RP on that side (config/scenarios.yml --
+# e.g. "coast_100" has river_rp=None -> forcing_mode="coastal_only",
+# "river_100" has surge_rp=None -> forcing_mode="river_only") -- NOT forced
+# to float unconditionally here, since float(None) raises. design_rp_river_yr
+# flows into build_design_discharge_matrix, which already accepts None
+# natively (falls back to a constant bankfull hydrograph); design_rp_surge_yr
+# is only ever dereferenced inside the `forcing_mode != "river_only"` branch,
+# i.e. exactly when it's guaranteed non-None.
+design_rp_river_yr = snakemake.params.design_rp_river_yr
+design_rp_river_yr = None if design_rp_river_yr is None else float(design_rp_river_yr)
+design_rp_surge_yr = snakemake.params.design_rp_surge_yr
+design_rp_surge_yr = None if design_rp_surge_yr is None else float(design_rp_surge_yr)
 compound_lag_hr   = float(snakemake.params.compound_lag_hr)
 flat_boundary_point_spacing_m = snakemake.params.flat_boundary_point_spacing_m
 waterlevel_buffer_m = snakemake.params.waterlevel_buffer_m

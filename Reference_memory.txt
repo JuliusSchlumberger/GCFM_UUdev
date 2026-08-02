@@ -126,14 +126,16 @@ Rule files, included by workflow/Snakefile in this exact order:
   08b_optimize_grid_resolution.smk → 08c_build_sfincs_grid.smk →
   09_condition_elevation.smk → 10_depth_estimation_empirical.smk →
   10_depth_estimation_modelled.smk → 11_testing.smk →
-  13_build_sfincs.smk → 13b_validate_protection_level.smk →
+  13_build_sfincs.smk →
   14_run_spinup.smk → 15_sanity_checks.smk → 16_run_event.smk →
   17_flood_metrics.smk
 
 (There is no rule "12" — a consolidation refactor removed the old
 09a/09b/10/11/11b five-rule chain; rule 11 absorbed the former rule 12's
-diagnostic-testing slot, and 13b sits beside 13, not at 12. Don't read
-anything into the numbering gap beyond that history.)
+diagnostic-testing slot. Don't read anything into the numbering gap beyond
+that history. There was briefly a rule "13b", validate_protection_level —
+REMOVED 2026-08-02, see section 14's PROTECTION-LEVEL VALIDATION RULE
+REMOVED entry.)
 
 Scripts:      workflow/scripts/01_*.py … 17_*.py (mirrors rule-file numbering,
               including the 05a/05b/05c sub-letters and the 10_*_empirical /
@@ -191,17 +193,6 @@ DAG shape, not a strictly linear chain:
     sibling ran) and test_bifurcation_calibration_options (needs rule 07's
     river_forcing.nc + the raw SWORD catalogue sources directly). Nothing
     downstream depends on either's output.
-  - Rule 13b (validate_protection_level) is independent of the rules 14-16
-    spin-up/event chain: it re-simulates two short, steady discharge
-    scenarios (protection-level design discharge, and that ×
-    higher_rp_factor) against the ALREADY-BUILT scenario "default"
-    production model — grid/elevation/roughness/subgrid/weir are
-    REFERENCED via relative paths, not rebuilt (same technique
-    14_run_spinup.py already uses). It always targets scenario "default"
-    specifically rather than every scenario in SCENARIOS, because grid/
-    elevation/mask/weir/subgrid are scenario-independent (only the forcing
-    differs per scenario — see section 9), so checking one build is
-    representative of all of them for this purpose.
   - Rule 08b (optimize_grid_resolution) computes a per-basin SFINCS grid
     resolution from channel width (20th-percentile width among
     discharge-thresholded reaches) plus a cell-count budget, replacing a
@@ -224,7 +215,7 @@ DAG shape, not a strictly linear chain:
 
 Named aggregate targets in Snakefile:
   - `preprocess`  → _PREPROCESS_OUTPUTS (rules 01–11, incl. 08b/08c)
-  - `build`       → _BUILD_OUTPUTS (rules 13, 13b, 14–17)
+  - `build`       → _BUILD_OUTPUTS (rules 13, 14–17)
   - `all`         → both (default target)
 
 _PREPROCESS_OUTPUTS / _BUILD_OUTPUTS are the canonical output lists; any new
@@ -241,8 +232,6 @@ Config-conditional blocks:
   - spinup + sanity-check outputs, AND rule 16's (run_event) outputs incl.
     rule 17's metrics, only if sfincs.spinup.enabled — rule 16 needs rule
     14's restart file, so it shares that gate.
-  - rule 13b's protection-validation plots only if
-    sfincs.protection_validation.enabled.
 
 RULE SUMMARY (in DAG order):
   00  common.smk     — catalogue helper (CATALOGUE / catalogue_path), wildcard
@@ -359,10 +348,6 @@ RULE SUMMARY (in DAG order):
                         derived per-scenario via scenario_params(wildcards.
                         scenario) — there is no config-level mode setting
                         anymore (see section 4/9).
-  13b validate_protection_level — independent side check confirming the
-                        ALREADY-BUILT scenario "default" model holds at its
-                        own design protection standard (see DAG-shape note
-                        above). Independent of rules 14/16.
   14  run_spinup      — runs a short SFINCS spin-up simulation (the solver's
                         FIRST execution in the pipeline) to produce a
                         restart file (grid-type agnostic).
@@ -391,9 +376,8 @@ RULE SUMMARY (in DAG order):
 
 NOTE: rules 13, 14, 15, 16, 17 (and their visuals) are scenario-aware — all
 their outputs live under {basin_id}/scenarios/{scenario}/ (see sections 9
-and 12). Rule 13b is the one exception among build-stage rules — it always
-targets scenario "default" specifically (see its DAG-shape entry above).
-Rules 01–11 (incl. 08b/08c) are scenario-free and shared by all scenarios.
+and 12). Rules 01–11 (incl. 08b/08c) are scenario-free and shared by all
+scenarios.
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -557,10 +541,10 @@ terrain — rule 05a only (05b/05c have no config of their own):
     by a CFL condition (dt ~ dx/sqrt(g*h)) shared by the WHOLE domain via
     its single deepest active cell, so genuinely deep offshore water
     otherwise slows the entire run for no modelling benefit. Also reused
-    directly by rule 13b (validate_protection_level) to derive
-    river_only_flat_level_m = -(gebco_max_depth_m + 0.5) for its own
-    river-only test scenario's flat coastal boundary — don't assume this
-    key is 05a-only just because of its section placement.
+    directly by rule 13 (build_sfincs) to derive
+    river_only_flat_level_m = -(gebco_max_depth_m + 0.5) for
+    forcing_mode="river_only"'s own flat, dry coastal boundary — don't
+    assume this key is 05a-only just because of its section placement.
 
 flopros_range — TOP-LEVEL (not nested under boundary_forcings), rule 04
   (get_protection_levels), which depends only on the delta polygon, not on
@@ -625,22 +609,27 @@ boundary_forcings — rule 07:
   river.{period_hr, glofas_buffer_deg, glofas_search_radius_km,
     glofas_min_mean_discharge} — GloFAS discharge extraction and gauge
     matching. (glofas_variable was removed — hardcoded "dis24".)
-  river.eva.{rp_bf, ci_alpha, threshold_start_pct, threshold_step_pct,
+  river.eva.{rp_fl, rp_bf, ci_alpha, threshold_start_pct, threshold_step_pct,
     threshold_min_pct, threshold_max_pct, threshold_max_iter,
     peaks_per_year_min, peaks_per_year_max, min_years_high_confidence,
     min_days, decorr_cut, decorr_max, fit_method} — nested under `river`
     since it is exclusively river-specific (surge return periods come
     pre-tabulated from COAST-RP, no EVA needed). rp_bf drives
-    bankfull_discharge (AMAX/GEV fit) directly. THERE IS NO rp_fl CONFIG
-    KEY ANYMORE (removed along with sfincs.boundary_setup.
-    design_rp_river_yr) — 07_get_boundary_forcings.py injects
-    eva_cfg["rp_fl"] at RUNTIME instead, from rule 07's own
-    design_rp_river_yr param (= SCENARIO_DEFS[SCENARIOS[0]]["river_rp"],
-    i.e. the first CLI-targeted scenario's own river_rp; falls back to
-    rp_bf if that scenario's river_rp is null/mean-conditions), purely so
-    the EVA diagnostic plot/CI reflects the actual design RP being
-    targeted — it does not drive the production discharge_rp_table itself
-    (computed at every standard RP regardless — see section 7).
+    bankfull_discharge (AMAX/GEV fit) directly. rp_fl (default 100.0,
+    RESTORED 2026-08-02 — see section 14's SCENARIO SWITCH RE-TRIGGERED
+    PREPROCESSING entry) is a fixed, scenario-INDEPENDENT diagnostic
+    preview RP for 07_get_boundary_forcings.py's own q_rp100/CI/plot-
+    vertical-line and the has_glofas "ok" gate — read straight from this
+    config value now, NOT derived from SCENARIOS[0] (an earlier version
+    did that, which made this BASIN-level rule's own recorded params — and
+    therefore its own "needs rerun?" status — depend on which scenario was
+    requested, and even on list ORDER, cascading a rerun of the entire
+    preprocessing chain including modelled_depth_estimation on every
+    scenario switch). Does not drive the production discharge_rp_table
+    itself (computed at every standard RP regardless — see section 7); nor
+    does it reflect what any actual scenario's own forcing is built at
+    (rule 13 uses each scenario's own real design_rp_river_yr from
+    scenario_params(), always different from this fixed preview value).
   river.bias_correction.{enabled, min_overlap_days, tail_percentile,
     grdc_search_radius_km} — GRDC empirical quantile-map bias correction of
     GloFAS. grdc_search_radius_km drives GRDC station matching, used by
@@ -662,7 +651,7 @@ testing — TOP-LEVEL (not nested under boundary_forcings, which is reserved
     far enough upstream to avoid surge/tidal interference) doesn't change
     per adaptation scenario, so it is NOT sourced from scenario_params.
 
-sfincs — rules 08b, 08c, 09 (active_mask only), 10-modelled, 13, 13b, 14,
+sfincs — rules 08b, 08c, 09 (active_mask only), 10-modelled, 13, 14,
   15, 16. boundary_setup now LIVES UNDER sfincs (it used to be its own
   config.yml top-level section) — always address it as
   config["sfincs"]["boundary_setup"], not config["boundary_setup"]:
@@ -725,22 +714,20 @@ sfincs — rules 08b, 08c, 09 (active_mask only), 10-modelled, 13, 13b, 14,
     top-discharge boundary crossings.
   simulation.{tref, dtmapout, dtmaxout, dthisout, storevelmax, storetwet,
     sfincs_exe, timeout_s} — MAIN EVENT model config (rule 13); tref,
-    sfincs_exe, AND timeout_s are also read by rule 14, by rule
-    10-modelled's own calibration subprocess, and by rule 13b's own
-    validation subprocess — every place SFINCS is actually invoked shares
-    this one executable path/timeout. storevel (instantaneous u/v output)
-    is hardcoded to 0 in both rule 13 and rule 14 — velocity animation was
-    removed entirely (out of scope for this project).
+    sfincs_exe, AND timeout_s are also read by rule 14 and by rule
+    10-modelled's own calibration subprocess — every place SFINCS is
+    actually invoked shares this one executable path/timeout. storevel
+    (instantaneous u/v output) is hardcoded to 0 in both rule 13 and rule
+    14 — velocity animation was removed entirely (out of scope for this
+    project).
   spinup.{enabled, spinup_days, dthisout_s, dtmapout_s} — rule 14
     (run_spinup — it EXECUTES the solver for a short spin-up; rule 13 only
     assembles config files). enabled also gates rule 16 (run_event), which
     needs this rule's restart file.
-  protection_validation — rule 13b (validate_protection_level):
-    {enabled, higher_rp_factor, simulation_days, convergence_window_hours,
-    convergence_abs_tolerance_m, convergence_rel_tolerance}. Reuses the
-    SAME windowed-flatness convergence check as rule 10-modelled's own
-    calibration (src.river_depth_calibration.check_convergence) — both
-    subsystems share that module.
+  (protection_validation and rule 13b/validate_protection_level were
+  REMOVED 2026-08-02 — see section 14's PROTECTION-LEVEL VALIDATION RULE
+  REMOVED entry. src.river_depth_calibration.check_convergence was removed
+  along with it — it had no other caller.)
   sanity_checks.{min_inundation_depth_m, animation_fps} — shared by rule 15
     (spin-up's own diagnostics) and rule 16 (the event run's diagnostics).
 
@@ -1192,18 +1179,29 @@ REDESIGNED EVA OUTPUT — return-period table, build-time discharge (NEW):
   config.yml value; the removed boundary_setup.design_rp_river_yr and the
   removed boundary_forcings.river.eva.rp_fl config key both predate the
   scenario axis.
-  CONSEQUENCE: switching scenarios (target_scenarios) or adding a new one
-  to scenarios.yml only requires re-running rule 13 (build_sfincs), NOT
-  rule 07 (get_boundary_forcings/EVA) — a much cheaper iteration loop for
-  calibrating the design RP.
-  rp_fl is still read by analyse_cell() internally (unchanged signature),
-  but 07_get_boundary_forcings.py now INJECTS its own design_rp_river_yr
-  PARAM (= SCENARIO_DEFS[SCENARIOS[0]]["river_rp"], i.e. the first
-  CLI-targeted scenario's river_rp, falling back to rp_bf if null) into
-  eva_cfg["rp_fl"] before calling it — purely so the EVA diagnostic plot's
-  vertical line/CI reflect the actual targeted design RP; it has zero
-  effect on the production discharge_rp_table (which is computed at every
-  standard RP regardless of rp_fl).
+  INTENDED CONSEQUENCE: switching scenarios (target_scenarios) or adding a
+  new one to scenarios.yml should only require re-running rule 13
+  (build_sfincs) onward, NOT rule 07 (get_boundary_forcings/EVA) — a much
+  cheaper iteration loop for calibrating the design RP.
+  THIS WAS BROKEN 2026-07-28ish -> FIXED 2026-08-02 (see section 14's
+  SCENARIO SWITCH RE-TRIGGERED PREPROCESSING entry): for a while,
+  07_get_boundary_forcings.py's own rp_fl came from a rule-07 PARAM
+  (design_rp_river_yr = SCENARIO_DEFS[SCENARIOS[0]]["river_rp"], the first
+  CLI-targeted scenario's own river_rp) instead of a plain config value —
+  since rule 07 has no {scenario} wildcard, that made its own recorded
+  params (and therefore whether Snakemake considered it up to date) depend
+  on which scenario(s) were requested and even their LIST ORDER, so
+  switching scenarios DID force rule 07 (and everything downstream,
+  including modelled_depth_estimation) to rerun, exactly what this
+  "intended consequence" note says shouldn't happen. rp_fl is now restored
+  as a plain, scenario-independent config.yml value
+  (boundary_forcings.river.eva.rp_fl, default 100.0) — no param override,
+  no scenario dependence, no rerun on scenario switch.
+  rp_fl is still read by analyse_cell() internally (unchanged signature) —
+  it has zero effect on the production discharge_rp_table (computed at
+  every standard RP regardless of rp_fl) or on any scenario's own actual
+  forcing (rule 13 always uses its own real design_rp_river_yr from
+  scenario_params(), never this diagnostic value).
   Three test scripts (test_discharge_sensitivity.py,
   test_discharge_return_period_response.py, test_river_burning_methods.py)
   now call build_design_discharge_matrix directly instead of each
@@ -1349,7 +1347,7 @@ the same comparison methodology for ad-hoc/manual runs outside Snakemake.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 9. SFINCS MODEL BUILD, SPIN-UP, SANITY CHECKS, EVENT RUN & METRICS
-   (rules 13, 13b, 14-17)
+   (rules 13, 14-17)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Scenario axis: rules 13–17 all carry the {scenario} wildcard; every output
@@ -1360,7 +1358,15 @@ river_forcing.build_design_discharge_matrix() (design_rp_yr=None → constant
 bankfull hydrograph) and surge via surge.build_design_surge_matrix()
 (None → flat tide-only baseline; otherwise exact lookup in
 surge_forcing.nc's storm_tide_rp_table — no interpolation). Changing a
-scenario RP therefore only re-runs the build (13) onward, never rule 07.
+scenario RP is INTENDED to only re-run the build (13) onward, never rule
+07 -- true again as of 2026-08-02 (see section 14's SCENARIO SWITCH
+RE-TRIGGERED PREPROCESSING entry for the period where a rule-07 params
+bug briefly broke this).
+design_rp_river_yr/design_rp_surge_yr in 13_build_sfincs.py are kept as
+None (not force-cast to float) when a scenario's own river_rp/surge_rp is
+null (coast_100/river_100) -- float(None) raised TypeError, a latent
+crash on the FIRST actual (non-dry-run) build of either scenario, fixed
+the same day as the rule-07 params bug above.
 
 13_build_sfincs.py: resolves target_crs via hydromt.gis.parse_crs("utm",
 bbox=...) before building refinement polygons, then branches each of the 6
@@ -1506,10 +1512,11 @@ zsmax envelope) and the flood-progression animation (compute_flood_
 progression + animate_flood_progression), sourced from run_dir=sfincs_root
 instead of spinup_dir, written DIRECTLY into scenarios/{scenario}/visuals/
 (not a model_runs/main_run/ subdirectory — that layer was intentionally
-dropped when the scenario axis was introduced, see section 12; rule 13b's
-own protection-validation plots are the one place visuals/model_runs/ still
-exists, since 13b is scenario-independent). Additionally computes a
-per-timestep flood_timeseries.csv
+dropped when the scenario axis was introduced, see section 12; the
+basin-level visuals/model_runs/ directory no longer exists at all since
+rule 13b/validate_protection_level, its only user, was removed 2026-08-02
+— see section 14's PROTECTION-LEVEL VALIDATION RULE REMOVED entry).
+Additionally computes a per-timestep flood_timeseries.csv
 (flooded_area_km2, flood_volume_m3) via compute_flood_timeseries_stats() —
 a SEPARATE, independent computation from compute_flood_progression()'s
 animation output (see "MESH-NATIVE ANIMATION" below for why they diverged)
@@ -1794,10 +1801,8 @@ src/river_depth_calibration.py — NEW. The core of rule modelled_depth_
                             re-run the model with the CURRENT best
                             excavation + REAL per-reach crest instead of an
                             isolated wall, raising the crest wherever it's
-                            still overtopped. check_convergence() (the same
-                            windowed-flatness check) is ALSO reused by rule
-                            13b (validate_protection_level) — see section 4.
-                            See section 5 for the full round-by-round design
+                            still overtopped. See section 5 for the full
+                            round-by-round design
                             and its known limits (this doc intentionally
                             does not try to keep every mechanic mirrored
                             here — read the module itself for the current
@@ -1834,9 +1839,8 @@ src/sfincs_run.py         — NEW. run_sfincs_subprocess(): shared
                             Popen + threaded stdout/stderr forwarding +
                             timeout wrapper around the SFINCS binary, used
                             by every rule that actually executes SFINCS
-                            (14, 16, 10-modelled's calibration, 13b's
-                            validation) instead of each duplicating
-                            subprocess handling.
+                            (14, 16, 10-modelled's calibration) instead of
+                            each duplicating subprocess handling.
 src/surge.py               — CoastRP EVA, surge station selection, IDW
                             interpolation, MDT vertical correction, AR6 SLR
                             fingerprint; used by rule 07. surge_forcing.nc
@@ -1882,13 +1886,11 @@ than hardcoding "visuals/..." a second time.
 SCENARIO PATHS: everything produced by rules 13, 14, 15, 16, 17 lives under
 {basin_id}/scenarios/{scenario}/ — the tree below reflects this. Rules
 01–11 (incl. 08b/08c) outputs (inputs/, the preprocessing visuals) are
-scenario-free and shared by all scenarios. Rule 13b (validate_
-protection_level) is the ONE build-stage rule that is NOT under
-scenarios/{scenario}/ — it always targets scenario "default" specifically
-and writes to the basin-level visuals/model_runs/protection_validation/
-(see its own DAG-shape note in section 2) — this is the one place the old
-visuals/model_runs/ layer still exists; rule 16's own event-run diagnostics
-do NOT use it (see below).
+scenario-free and shared by all scenarios. There is no basin-level
+visuals/model_runs/ directory at all anymore — its one former user, rule
+13b/validate_protection_level, was removed 2026-08-02 (see section 14's
+PROTECTION-LEVEL VALIDATION RULE REMOVED entry). Rule 16's own event-run
+diagnostics never used it (see below).
 
 D:/GCFM_UU/results/{basin_id}/
 ├── inputs/
@@ -1960,9 +1962,8 @@ D:/GCFM_UU/results/{basin_id}/
 │         # prefix scope, which covers .gpkg/.tif only — see section 4/11).
 ├── visuals/                       ← ONLY the scenario-free preprocessing
     │                                 diagnostics remain here (rules 04–11);
-    │                                 all rule 13,13b–17 plots moved into
-    │                                 scenarios/{scenario}/visuals/ (or,
-    │                                 for 13b only, model_runs/) below
+    │                                 all rule 13–17 plots moved into
+    │                                 scenarios/{scenario}/visuals/ below
     ├── input_data/                 ← rules 04-11 (preprocessing diagnostics)
     │   ├── 04_protection_levels.png
     │   ├── 05a_elevation.png
@@ -2006,13 +2007,6 @@ D:/GCFM_UU/results/{basin_id}/
                                              test_bifurcation_calibration_options), sibling
                                              of input_data/ not inside it — one {root_rid}.png
                                              per bifurcation compared (see section 8)
-├── visuals/model_runs/protection_validation/  ← rule 13b ONLY (scenario-
-    │                                              INDEPENDENT — always checks
-    │                                              scenario "default"'s build)
-    ├── protection_level_max_inundation.png
-    ├── protection_level_water_level.png
-    ├── higher_rp_max_inundation.png
-    └── higher_rp_water_level.png
 └── scenarios/{scenario}/          ← everything from rules 13-17 (one full
     │                                 copy per scenario; "default" for a
     │                                 plain `snakemake build`)
@@ -2054,8 +2048,8 @@ D:/GCFM_UU/results/{basin_id}/
     │   │   └── 02_flood_animation.mp4        ← rule 15
     │   │   # rule 16's diagnostics sit DIRECTLY in visuals/ — the old
     │   │   # model_runs/{spinup,main_run}/ layer was intentionally dropped
-    │   │   # (rule 13b is the one exception that still uses model_runs/,
-    │   │   # at the basin level, not under scenarios/ — see above)
+    │   │   # (no exceptions remain -- rule 13b, the one former exception,
+    │   │   # was removed 2026-08-02)
     │   ├── 01_inundation_ratio.png       ← rule 16 (event run, analysing
     │   ├── 02_flood_animation.mp4           sfincs/sfincs_map.nc)
     │   └── flood_timeseries.csv          ← per-timestep flooded_area_km2,
@@ -2641,6 +2635,87 @@ into question):
   test of the ramp math; NOT YET re-verified against a live SFINCS run
   (next step: re-run basin 2433835's calibration and confirm the seed-cell
   oscillation is actually resolved).
+
+SCENARIO SWITCH RE-TRIGGERED PREPROCESSING, INCLUDING DEPTH CALIBRATION
+(fixed 2026-08-02, found after the user ran a `coast_100` scenario build
+and saw the ENTIRE preprocessing chain -- DEM conditioning, river network,
+the expensive modelled_depth_estimation calibration, base SFINCS build --
+rerun from scratch, despite no input data having changed, only the
+requested scenario):
+  Root cause: workflow/rules/07_boundary_forcings.smk (rule
+  get_boundary_forcings, a BASIN-level rule with NO {scenario} wildcard --
+  runs once per basin, before the scenario axis branches) had a params:
+  entry design_rp_river_yr = SCENARIO_DEFS[SCENARIOS[0]]["river_rp"] --
+  i.e. it read the FIRST entry of whatever --config target_scenarios list
+  was passed on the command line. Snakemake's default rerun-triggers
+  include params, so rule 07's own "needs rerun?" status depended on which
+  scenario(s) were requested and even their LIST ORDER -- confirmed via
+  dry run: target_scenarios=['default','coast_100'] did NOT rerun rule 07,
+  but the reversed ['coast_100','default'] DID, same code, same data. Once
+  rule 07 is dirty, everything downstream cascades: 08 -> 08b -> 08c -> 09
+  -> modelled_depth_estimation (10) -> 13 and on.
+  The value itself only ever drove a DIAGNOSTIC preview inside
+  07_get_boundary_forcings.py (a plot annotation + the EVA return-value
+  feeding has_glofas/"ok") -- the actual production discharge_rp_table
+  (rules 08/10/13) is computed at every standard RP regardless, and rule
+  13 always builds each scenario's own REAL forcing from its own actual
+  design_rp_river_yr (scenario_params()), never from this diagnostic
+  value.
+  Fixed: this diagnostic RP is now a fixed, scenario-independent config
+  value (boundary_forcings.river.eva.rp_fl, default 100.0) instead of
+  being derived from the requested scenario list -- design_rp_river_yr
+  param removed entirely from rule 07; 07_get_boundary_forcings.py just
+  reads rp_fl straight from params.eva now. Verified via dry run: rule
+  07's own recorded "now" params are byte-identical across coast_100,
+  river_100, and reversed scenario-list orderings. One transitional
+  rerun of the whole preprocessing chain is unavoidable the NEXT time
+  ANY scenario is built (on-disk metadata still reflects the old,
+  scenario-dependent param structure) -- every subsequent scenario switch
+  after that no longer touches preprocessing.
+  Side benefit (a correctness fix, not just performance): has_glofas/EVA
+  "ok" gating (which crossings get modelled at all) previously could
+  silently differ for the SAME basin depending on which scenario happened
+  to be requested first, since it was gated on isfinite(q_rp100) computed
+  at the scenario-derived RP. Now a stable, basin-level computation.
+  Also fixed while investigating (a separate, real bug): 13_build_sfincs.py
+  unconditionally did design_rp_river_yr = float(snakemake.params.
+  design_rp_river_yr) (and the same for design_rp_surge_yr) -- for
+  coast_100 (river_rp=null) or river_100 (surge_rp=null) this is
+  float(None), TypeError, a latent crash on the FIRST real (non-dry-run)
+  build of either scenario, not caught by snakemake -n since it's a
+  runtime error inside the script. Fixed: both params stay None when the
+  underlying scenario value is None -- build_design_discharge_matrix
+  already accepts design_rp_yr: float | None natively (falls back to a
+  constant bankfull hydrograph), and design_rp_surge_yr is only ever
+  dereferenced inside the forcing_mode != "river_only" branch, exactly
+  when it's guaranteed non-None.
+  Flagged (hard-coded scenarios/default/... in its own inputs, pulling an
+  EXTRA full build_sfincs + simulation into the DAG on every build request
+  regardless of which scenario was actually asked for) -- RESOLVED
+  2026-08-02 not by scoping it to the requested scenario but by removing
+  the rule entirely; see the PROTECTION-LEVEL VALIDATION RULE REMOVED
+  entry immediately below.
+
+PROTECTION-LEVEL VALIDATION RULE REMOVED (2026-08-02): rule 13b
+(validate_protection_level, workflow/rules/13b_validate_protection_level.smk
++ workflow/scripts/13b_validate_protection_level.py) is gone -- it ran two
+short, steady-discharge simulations (protection-level design discharge, and
+that x a higher-RP factor) against the ALREADY-BUILT scenario "default"
+production model to check the built model held at its own protection
+standard. Removed at the user's own decision after the hard-coded-default
+issue above was flagged -- rather than scope it to the actually-requested
+scenario, it was judged not worth keeping.
+Removed alongside it: config sfincs.protection_validation.* (config.yml),
+the `include:` line and the rule 13b `_BUILD_OUTPUTS` block in
+workflow/Snakefile, and src.river_depth_calibration.check_convergence() (a
+windowed-flatness convergence check that had no other caller -- NOT the
+same thing as rule 10-modelled's own period-max-based calibration, which
+deliberately never used a windowed convergence check at all -- see that
+rule's own module docstring). The basin-level visuals/model_runs/
+directory no longer exists at all, since 13b was its only user.
+Verified via dry run: job count for a single-scenario build dropped from
+14 to 12 (the validate_protection_level job itself, plus the extra
+"default"-scenario build_sfincs job it was pulling in).
 
 WEIR TOPOLOGY GAPS AT THE RECTANGULAR GRID'S OWN BOUNDING-BOX EDGE
 (found, NOT yet fixed):
