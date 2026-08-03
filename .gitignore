@@ -4,6 +4,7 @@
 /input/
 /output/
 pyrightconfig.json
+scatchpat_*
 
 # Snakemake
 .snakemake/

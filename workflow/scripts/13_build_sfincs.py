@@ -186,8 +186,8 @@ with rasterio.open(sea_mask_path) as _src:
 _arr = np.where(_sea_mask_arr == np.float32(1.0), np.float32(baseline_m), np.float32(-9999.0))
 
 # ── connected-component dry-out of isolated sea cells ─────────────────────
-# When baseline_m is significantly negative (e.g. −0.50 m after protection-
-# level correction) shallow connections between isolated depressions and the
+# When baseline_m is significantly negative (e.g. a large negative MDT
+# correction) shallow connections between isolated depressions and the
 # main ocean become dry, trapping pockets of water that were previously able
 # to drain. The same hazard exists even when baseline_m == 0 (e.g. an
 # inland lagoon disconnected from the open ocean by dry land in between), so

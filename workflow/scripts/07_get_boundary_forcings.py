@@ -269,7 +269,6 @@ log.info(f"Written surge forcing ({len(stations)} stations): {snakemake.output.s
 plot_surge_corrections(
     stations,
     output_path=snakemake.output.plot_surge_correction,
-    protection_level_raw=np.full(len(stations), mean_prot_raw),
 )
 log.info(f"Wrote surge correction diagnostic plot: {snakemake.output.plot_surge_correction}")
 

@@ -849,67 +849,27 @@ def plot_forcing_timeseries(
     """
     Two-panel timeseries: surge water level (left) and river discharge (right).
 
-    If the protection-level correction was applied (river_processing.
-    modify_hydrograph -- surge_ds/river_ds then carry
-    'water_level_uncorrected'/'discharge_uncorrected' and
-    'protection_level'/'protection_discharge'), each panel shows three
-    layers per station/crossing instead of just the single effective
-    series: the original (undefended) timeseries, the constant protection
-    level/discharge subtracted, and the resulting effective (modelled)
-    hydrograph -- so the size of the correction is visible directly,
-    not just its end result. Falls back to the single-series plot when
-    disabled.
+    The surge (left) panel always shows the single effective water-level
+    series -- the boundary forcing is never reduced by the FLOPROS coastal
+    protection level (see src.surge.build_design_surge_matrix's own
+    docstring: a weir is a real, SFINCS-modelled barrier, subtracting a
+    scalar from the boundary is not). The river (right) panel shows three
+    layers per crossing instead of one when river_processing.
+    modify_hydrograph is enabled (river_ds then carries
+    'discharge_uncorrected'/'protection_discharge'): the original
+    (undefended) hydrograph, the constant protection discharge netted out,
+    and the resulting effective (modelled) hydrograph -- so the size of
+    that correction is visible directly, not just its end result. Falls
+    back to the single-series plot when disabled.
     """
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
-    surge_corrected = "water_level_uncorrected" in surge_ds
     river_corrected = "discharge_uncorrected" in river_ds
 
     t_surge = surge_ds["time"].values
     wl = surge_ds["water_level"].values
-    if surge_corrected:
-        wl_raw = surge_ds["water_level_uncorrected"].values
-        protection_level = surge_ds["protection_level"].values
-        for i in range(wl.shape[0]):
-            ax1.plot(
-                t_surge,
-                wl_raw[i],
-                color="grey",
-                alpha=0.4,
-                linewidth=0.8,
-                linestyle="--",
-            )
-            ax1.hlines(
-                protection_level[i],
-                t_surge.min(),
-                t_surge.max(),
-                color="darkorange",
-                alpha=0.6,
-                linewidth=0.8,
-                linestyle=":",
-            )
-            ax1.plot(t_surge, wl[i], color="steelblue", alpha=0.7, linewidth=0.8)
-    else:
-        for i in range(wl.shape[0]):
-            ax1.plot(t_surge, wl[i], color="steelblue", alpha=0.5, linewidth=0.8)
-
-    if surge_corrected:
-        ax1.legend(
-            handles=[
-                Line2D([0], [0], color="grey", linestyle="--", label="Original"),
-                Line2D(
-                    [0],
-                    [0],
-                    color="darkorange",
-                    linestyle=":",
-                    label="Protection level",
-                ),
-                Line2D([0], [0], color="steelblue", label="Effective (modelled)"),
-            ],
-            loc="upper left",
-            fontsize=8,
-            framealpha=0.9,
-        )
+    for i in range(wl.shape[0]):
+        ax1.plot(t_surge, wl[i], color="steelblue", alpha=0.5, linewidth=0.8)
 
     ax1.set_xlabel("Time (hours since start)")
     ax1.set_ylabel("Water level (m, GOCO6s frame)")
@@ -917,13 +877,12 @@ def plot_forcing_timeseries(
     ax1.grid(True, alpha=0.3)
 
     # ── per-station correction table ─────────────────────────────────────────
-    # Shows the correction chain: rp_raw → −MDT → +SLR → peak(GOCO6s) → −prot → final_peak
-    # protection_level in nc is stored in local MSL (raw, no MDT correction).
-    # final_peak = peak(GOCO6s) − prot_raw = rp_raw − MDT + SLR − prot_raw (in GOCO6s).
-    # baseline_m = mean(0 − MDT + SLR − prot) = mean over stations.
+    # Shows the correction chain: rp_raw → −MDT → +SLR → peak(GOCO6s) -- the
+    # boundary's actual peak, nothing further is subtracted from it (the
+    # FLOPROS coastal protection level is a separate quantity, used only to
+    # floor the weir crest in rule 13, never netted out of this timeseries).
     has_raw = "rp_level_raw" in surge_ds
     has_mdt = "mdt" in surge_ds
-    has_prot_ds = "protection_level" in surge_ds
     if has_raw and has_mdt:
         rp_levels = surge_ds["rp_level"].values  # peak in GOCO6s (= rp_raw − MDT + SLR)
         rp_levels_raw = surge_ds["rp_level_raw"].values  # raw COAST-RP (local MSL)
@@ -933,40 +892,22 @@ def plot_forcing_timeseries(
             if "slr_m" in surge_ds
             else np.zeros(len(rp_levels))
         )
-        # protection_level stored as local-MSL raw value (no MDT correction)
-        prot_arr = (
-            surge_ds["protection_level"].values
-            if has_prot_ds
-            else np.zeros(len(rp_levels))
-        )
-        # final_peak = rp_raw − MDT + SLR − prot_raw (in GOCO6s)
-        final_peaks = rp_levels - prot_arr
 
-        if has_prot_ds:
-            header = "Stn  rp_raw    −MDT    +SLR  peak(GOCO6s)  −prot  final_peak"
-        else:
-            header = "Stn  rp_raw    −MDT    +SLR  peak(GOCO6s)"
+        header = "Stn  rp_raw    −MDT    +SLR  peak(GOCO6s)"
         rows = [header, "─" * len(header)]
-        for i, (rl_raw, mdt_i, slr_i, rl, pr, fp) in enumerate(
-            zip(rp_levels_raw, mdts, slr_arr, rp_levels, prot_arr, final_peaks)
+        for i, (rl_raw, mdt_i, slr_i, rl) in enumerate(
+            zip(rp_levels_raw, mdts, slr_arr, rp_levels)
         ):
-            if has_prot_ds:
-                rows.append(
-                    f" {i + 1:2d}  {rl_raw:+7.3f}  {-mdt_i:+6.3f}  {slr_i:+6.3f}"
-                    f"    {rl:+7.3f}  {-pr:+6.3f}    {fp:+7.3f}"
-                )
-            else:
-                rows.append(
-                    f" {i + 1:2d}  {rl_raw:+7.3f}  {-mdt_i:+6.3f}  {slr_i:+6.3f}    {rl:+7.3f}"
-                )
-        if has_prot_ds:
-            rows.append("─" * len(header))
-            bm = (
-                float(surge_ds["baseline_m"].values)
-                if "baseline_m" in surge_ds
-                else float(np.mean(-mdts + slr_arr - prot_arr))
+            rows.append(
+                f" {i + 1:2d}  {rl_raw:+7.3f}  {-mdt_i:+6.3f}  {slr_i:+6.3f}    {rl:+7.3f}"
             )
-            rows.append(f"  baseline_m (MWL (=0) − MDT + SLR − prot): {bm:+.4f} m")
+        rows.append("─" * len(header))
+        bm = (
+            float(surge_ds["baseline_m"].values)
+            if "baseline_m" in surge_ds
+            else float(np.mean(-mdts + slr_arr))
+        )
+        rows.append(f"  baseline_m (MWL (=0) − MDT + SLR): {bm:+.4f} m")
 
         ax1.text(
             0.01,
@@ -1041,20 +982,21 @@ def plot_forcing_timeseries(
 def plot_surge_corrections(
     stations: gpd.GeoDataFrame,
     output_path: str,
-    protection_level_raw=None,
 ) -> None:
     """
     Diagnostic stacked-bar plot for all vertical corrections applied to COAST-RP
-    storm-tide levels (MDT shift, SLR fingerprint, flood-protection subtraction).
+    storm-tide levels (MDT shift, SLR fingerprint). The FLOPROS coastal
+    protection level is a separate quantity (floors the weir crest in rule
+    13 only) and is never netted out of this boundary timeseries, so it has
+    no bar here -- see src.surge.build_design_surge_matrix's own docstring.
 
-    Left panel — four sub-bars per station, each anchored at 0 m (local MSL):
+    Left panel — three sub-bars per station, each anchored at 0 m (local MSL):
       1. rp_level_raw  (+ SLR stacked on top if nonzero) — steelblue/seagreen
       2. −MDT correction — darkorange; extends below 0 when MDT > 0, above 0 when MDT < 0
-      3. −protection level (only when enabled) — mediumpurple; always below 0
-      4. Net final peak = rp_raw − MDT + SLR − prot — navy
+      3. Net final peak = rp_raw − MDT + SLR — navy
 
     Each correction has its own x sub-position so even tiny MDT bars are fully
-    visible and cannot be obscured by the protection bar.
+    visible.
 
     Right panel: station locations coloured by the −MDT correction magnitude.
     """
@@ -1072,14 +1014,12 @@ def plot_surge_corrections(
         if "slr_m" in stations.columns
         else np.zeros(n)
     )
-    has_prot = protection_level_raw is not None
-    prot_raw = np.asarray(protection_level_raw) if has_prot else np.zeros(n)
 
     mdt_corr = -mdt  # negative (below 0) when MDT > 0; positive (above 0) when MDT < 0
 
     # ── Sub-bar x positions (each component owns its own column) ─────────────
-    # Layout (left → right): rp_raw | −MDT | −prot (if any) | net_peak
-    n_bars = 3 + (1 if has_prot else 0)
+    # Layout (left → right): rp_raw | −MDT | net_peak
+    n_bars = 3
     w = min(0.20, 0.85 / n_bars)
     g = 0.03
     half = (n_bars - 1) / 2.0 * (w + g)
@@ -1087,11 +1027,7 @@ def plot_surge_corrections(
 
     x_raw = x + centers[0]
     x_mdt = x + centers[1]
-    if has_prot:
-        x_prot = x + centers[2]
-        x_net = x + centers[3]
-    else:
-        x_net = x + centers[2]
+    x_net = x + centers[2]
 
     # ── Bar 1: rp_level_raw + SLR ────────────────────────────────────────────
     ax1.bar(
@@ -1108,25 +1044,15 @@ def plot_surge_corrections(
         x_mdt, mdt_corr, width=w, color="darkorange", label="−MDT  (local MSL → GOCO6s)"
     )
 
-    # ── Bar 3: −protection (anchored at 0, independent of −MDT) ─────────────
-    if has_prot:
-        ax1.bar(
-            x_prot,
-            -prot_raw,
-            width=w,
-            color="mediumpurple",
-            label="−protection level  (FLOPROS coastal, local MSL)",
-        )
-
-    # ── Bar 4: net final peak ─────────────────────────────────────────────────
-    net_peak = raw - mdt + slr - prot_raw
+    # ── Bar 3: net final peak ─────────────────────────────────────────────────
+    net_peak = raw - mdt + slr
     ax1.bar(
         x_net,
         net_peak,
         width=w,
         color="navy",
         alpha=0.75,
-        label="Final peak  (rp_level_raw − MDT + SLR − protection)",
+        label="Final peak  (rp_level_raw − MDT + SLR)",
     )
 
     # ── Value annotations (black outside for small bars, white inside large) ──
@@ -1154,8 +1080,6 @@ def plot_surge_corrections(
     if np.any(slr != 0):
         _annotate_bar(ax1, x_raw, slr, raw)
     _annotate_bar(ax1, x_mdt, mdt_corr, np.zeros(n))
-    if has_prot:
-        _annotate_bar(ax1, x_prot, -prot_raw, np.zeros(n))
     _annotate_bar(ax1, x_net, net_peak, np.zeros(n))
 
     ax1.axhline(
@@ -1167,7 +1091,7 @@ def plot_surge_corrections(
     ax1.set_ylabel("Water level relative to local MSL (m)")
     ax1.set_title(
         "Surge correction decomposition per station\n"
-        "(bars left→right: rp_raw | −MDT | −prot | net peak)"
+        "(bars left→right: rp_raw | −MDT | net peak)"
     )
     ax1.legend(fontsize=7, framealpha=0.9)
     ax1.grid(True, alpha=0.3, axis="y")

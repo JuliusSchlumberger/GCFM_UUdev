@@ -222,10 +222,17 @@ ocean_mask -- never river_channel_mask, so it can only ever be driven by
 genuinely coastal water, never the river itself) and applies the SAME
 two-case update as the river crest to a separate coastal_crest_current
 array, rasterized onto the grid by nearest-probe-cell (_rasterize_nearest,
-following the real coastline shape, bays included, instead of an assumed
-search radius) and combined with river_crest_on_grid via np.maximum inside
+following the real coastline shape, bays included, rather than a uniform
+dilation) and combined with river_crest_on_grid via np.maximum inside
 build_coastal_protection_weir -- never lowers protection, only raises it
-locally where the data says so.
+locally where the data says so. Capped at river_crest_dilation_cells: a
+probe's own reading only propagates that far before falling back to NaN
+(and therefore to the flat coastal_protection_crest_m floor) -- without
+this cap, a single genuinely local reading (e.g. a real hydraulic
+bottleneck at a discharge injection point, see the river boundary probe's
+own docstring below) would otherwise propagate to every cell in the
+domain, however far away, since plain nearest-neighbour has no notion of
+"too far to be relevant".
 
 See src.river_depth_calibration's module docstring for the full rationale.
 This model is intermediate/disposable -- rule 13 builds the production
@@ -720,7 +727,9 @@ log.info(
 # only ever be driven by genuinely coastal water, never creep up the river
 # (that stays entirely the river crest's own job, see the round loop below).
 ocean_mask_grid = landuse_on_grid == LANDUSE_SEA
-_near_land_ocean = ocean_mask_grid & binary_dilation(~ocean_mask_grid, iterations=river_crest_dilation_cells)
+_near_land_ocean = (
+    ocean_mask_grid & grid.valid_mask & binary_dilation(~ocean_mask_grid, iterations=river_crest_dilation_cells)
+)
 coastal_probe_rows, coastal_probe_cols = np.where(_near_land_ocean)
 coastal_probe_x, coastal_probe_y = rasterio.transform.xy(grid.transform, coastal_probe_rows, coastal_probe_cols)
 coastal_probe_x = np.asarray(coastal_probe_x)
@@ -1204,18 +1213,34 @@ def _read_river_boundary_probe_period_max_zs(round_root: Path) -> np.ndarray:
     return result
 
 
-def _rasterize_nearest(rows: np.ndarray, cols: np.ndarray, values: np.ndarray, out_shape: tuple[int, int]) -> np.ndarray:
-    """Full-grid raster where every cell takes the value of its nearest
-    (rows, cols) point -- turns the coastal probes' own discrete,
-    per-cell crest values into a continuous surface covering all
-    surrounding land, the same role build_smoothed_weir_crest_regular's
+def _rasterize_nearest(
+    rows: np.ndarray, cols: np.ndarray, values: np.ndarray, out_shape: tuple[int, int],
+    max_distance_cells: float,
+) -> np.ndarray:
+    """Full-grid raster where every cell within max_distance_cells of its
+    nearest (rows, cols) point takes that point's own value -- turns the
+    probes' own discrete, per-cell crest values into a continuous surface
+    covering surrounding land, the same role build_smoothed_weir_crest_regular's
     own dilation plays for the river crest, but following the actual
-    ocean-cell layout (and therefore the real coastline shape, bays
-    included) instead of a fixed search radius."""
+    ocean-cell/channel layout (and therefore the real coastline shape, bays
+    included) instead of a fixed search radius.
+
+    max_distance_cells is a hard requirement, not a tuning knob to loosen:
+    without it, a single probe's own genuinely local reading (e.g. a real
+    hydraulic bottleneck right at a discharge injection point) propagates
+    to EVERY cell in the entire domain, however far away, since plain
+    nearest-neighbour has no notion of "too far to be relevant" -- cells
+    beyond the cutoff get NaN here instead, which
+    build_coastal_protection_weir's own crest_surface already falls back to
+    the flat crest_elevation_m floor for (see its own docstring), exactly
+    matching how river_crest_on_grid's bounded grid.dilate_values(...)
+    behaves for the river crest."""
     all_rows, all_cols = np.indices(out_shape)
     tree = cKDTree(np.column_stack([rows, cols]))
-    _dist, idx = tree.query(np.column_stack([all_rows.ravel(), all_cols.ravel()]))
-    return values[idx].reshape(out_shape).astype(np.float32)
+    dist, idx = tree.query(np.column_stack([all_rows.ravel(), all_cols.ravel()]))
+    out = values[idx].astype(np.float32)
+    out[dist > max_distance_cells] = np.nan
+    return out.reshape(out_shape)
 
 
 def _gap_contained(gap: np.ndarray | None) -> bool:
@@ -1503,6 +1528,7 @@ for round_idx in range(n_correction_iterations + 1):
             coastal_crest_current = np.full(len(coastal_probe_rows), coastal_protection_crest_m, dtype=np.float32)
         coastal_crest_on_grid = _rasterize_nearest(
             coastal_probe_rows, coastal_probe_cols, coastal_crest_current, landuse_on_grid.shape,
+            max_distance_cells=river_crest_dilation_cells,
         )
     # river_boundary_crest_on_grid: same role as coastal_crest_on_grid, but
     # for LAND cells near the channel (see river boundary probe cells'
@@ -1518,6 +1544,7 @@ for round_idx in range(n_correction_iterations + 1):
             )
         river_boundary_crest_on_grid = _rasterize_nearest(
             river_boundary_probe_rows, river_boundary_probe_cols, river_boundary_crest_current, landuse_on_grid.shape,
+            max_distance_cells=river_crest_dilation_cells,
         )
         coastal_crest_on_grid = (
             river_boundary_crest_on_grid if coastal_crest_on_grid is None
@@ -1993,13 +2020,26 @@ for round_idx in range(n_correction_iterations + 1):
             weir_crest_current = period_max_zs + weir_freeboard_m
             weir_crest_current[is_last_mouth_cell] = _mouth_crest_target(round_root)
             weir_crest_current = np.maximum(weir_crest_current, coastal_protection_crest_m)
+            # np.where(isfinite(...), target, current) here, NOT a plain
+            # np.maximum(...) -- unlike centerline cells (always wet, always
+            # finite), a probe cell can be genuinely dry in the specific
+            # round the snap fires. Overwriting unconditionally would
+            # permanently poison that probe to NaN with no later round ever
+            # able to recover it (the regular per-round update above already
+            # preserves-on-NaN via np.where; the snap must match it).
             if coastal_crest_current is not None:
                 coastal_crest_before_snap = coastal_crest_current.copy()
-                coastal_crest_current = np.maximum(coastal_period_max_zs + weir_freeboard_m, coastal_protection_crest_m)
+                _coastal_snap_target = np.maximum(coastal_period_max_zs + weir_freeboard_m, coastal_protection_crest_m)
+                coastal_crest_current = np.where(
+                    np.isfinite(coastal_period_max_zs), _coastal_snap_target, coastal_crest_current
+                )
             if river_boundary_crest_current is not None:
                 river_boundary_crest_before_snap = river_boundary_crest_current.copy()
-                river_boundary_crest_current = np.maximum(
+                _river_boundary_snap_target = np.maximum(
                     river_boundary_period_max_zs + weir_freeboard_m, coastal_protection_crest_m
+                )
+                river_boundary_crest_current = np.where(
+                    np.isfinite(river_boundary_period_max_zs), _river_boundary_snap_target, river_boundary_crest_current
                 )
             snap_attempted = True
             # deliberately no break -- next round runs as the verification
@@ -2148,10 +2188,12 @@ if snap_reverted:
     if coastal_crest_current is not None:
         _final_coastal_crest_on_grid = _rasterize_nearest(
             coastal_probe_rows, coastal_probe_cols, coastal_crest_current, landuse_on_grid.shape,
+            max_distance_cells=river_crest_dilation_cells,
         )
     if river_boundary_crest_current is not None:
         _final_river_boundary_crest_on_grid = _rasterize_nearest(
             river_boundary_probe_rows, river_boundary_probe_cols, river_boundary_crest_current, landuse_on_grid.shape,
+            max_distance_cells=river_crest_dilation_cells,
         )
         _final_coastal_crest_on_grid = (
             _final_river_boundary_crest_on_grid if _final_coastal_crest_on_grid is None
