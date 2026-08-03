@@ -277,24 +277,19 @@ log.info(f"Wrote surge correction diagnostic plot: {snakemake.output.plot_surge_
 
 log.info("--- River forcing ---")
 
-eva_cfg         = dict(snakemake.params.eva)
-# The "default" scenario's own river_rp (config/scenarios.yml, not
-# boundary_forcings.river.eva) drives the diagnostic q_rp100/CI/plot-
-# vertical-line under the same "rp_fl" key analyse_cell already reads --
-# doesn't change analyse_cell itself, just which RP those diagnostics
-# reflect (the actual production discharge_rp_table below is computed at
-# every standard RP regardless, independent of this value). Falls back to
-# rp_bf (bankfull) if "default" itself has a null river_rp (mean
-# conditions) -- there's no design RP to preview in that case.
-_design_rp_river_yr = snakemake.params.design_rp_river_yr
-if _design_rp_river_yr is None:
-    eva_cfg["rp_fl"] = float(eva_cfg.get("rp_bf", 2))
-    log.info(
-        f"'default' scenario's river_rp is null (mean conditions) -- "
-        f"diagnostic preview uses rp_bf={eva_cfg['rp_fl']:g} yr (bankfull) instead"
-    )
-else:
-    eva_cfg["rp_fl"] = float(_design_rp_river_yr)
+eva_cfg = dict(snakemake.params.eva)
+# eva_cfg["rp_fl"] (boundary_forcings.river.eva.rp_fl, config.yml) drives the
+# diagnostic q_rp100/CI/plot-vertical-line under the same "rp_fl" key
+# analyse_cell already reads -- a fixed, basin-level constant, NOT derived
+# from any requested scenario's own river_rp: this rule has no {scenario}
+# wildcard of its own (it runs once per basin, before the scenario axis
+# branches), so a scenario-derived value here would make this rule's own
+# output -- and therefore everything downstream, including the depth
+# calibration -- rerun on every scenario switch (previously it did, via
+# SCENARIOS[0], which also made this value non-deterministic depending on
+# requested-scenario list order). The actual production discharge_rp_table
+# below is computed at every standard RP regardless, independent of this
+# value.
 # Main grid resolution only -- subgrid does not change what cell size SFINCS
 # actually solves the hydrodynamics on, so it has no bearing on whether a
 # crossing is "visible" at the model's own resolution (see Step 4 below,
@@ -625,10 +620,12 @@ log.info(
     f"{int(has_glofas.sum())} with GloFAS): {snakemake.output.river_forcing}"
 )
 
-# Preview discharge at the currently configured design_rp_river_yr, for the
+# Preview discharge at the fixed diagnostic RP (eva_cfg["rp_fl"]), for the
 # summary timeseries plot only -- NOT written to river_forcing.nc (the file
-# above is already saved). Mirrors exactly what rule 13 will build at this
-# design RP, including the protection-discharge floor.
+# above is already saved). Illustrative only: rule 13 builds its own actual
+# forcing at each scenario's own real design_rp_river_yr (config/scenarios.yml),
+# which generally differs from this fixed preview RP -- but uses the SAME
+# protection-discharge floor logic shown here.
 if int(has_glofas.sum()) > 0:
     preview_matrix = np.full((len(crossings), len(t_river)), np.nan)
     preview_matrix[has_glofas] = build_design_discharge_matrix(
@@ -667,9 +664,10 @@ plot_forcing_timeseries(
 # protection-level correction.
 active_idx = [i for i, g in enumerate(has_glofas) if g]
 if active_idx:
-    # eva.q_rp100 reflects design_rp_river_yr (injected into eva_cfg["rp_fl"]
-    # above), so this still ties the diagnostic to the same quantity driving
-    # the actual forcing/protection-level correction.
+    # eva.q_rp100 reflects the fixed diagnostic RP (eva_cfg["rp_fl"], config.yml),
+    # a stable quantity across every scenario -- not the same RP any given
+    # scenario's own forcing is actually built at, but still a consistent,
+    # basin-level "how big is this crossing" ranking signal.
     diag_i = active_idx[int(np.argmax([results[i].q_rp100 for i in active_idx]))]
 
     i_lat, i_lon = int(cell_i_lat[diag_i]), int(cell_i_lon[diag_i])

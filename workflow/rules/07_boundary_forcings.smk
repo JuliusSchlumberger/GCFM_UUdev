@@ -45,12 +45,6 @@ rule get_boundary_forcings:
         river_period_hr = config["boundary_forcings"]["river"]["period_hr"],
         glofas_buffer_deg = config["boundary_forcings"]["river"]["glofas_buffer_deg"],
         eva = config["boundary_forcings"]["river"]["eva"],
-        # Diagnostic-only preview RP (see 07_get_boundary_forcings.py) -- the
-        # first currently-targeted scenario's own river_rp (SCENARIOS
-        # already resolves target_scenarios, falling back to "default" when
-        # none is given -- this rule has no {scenario} wildcard of its own,
-        # since it runs once per basin before the scenario axis branches).
-        design_rp_river_yr        = SCENARIO_DEFS[SCENARIOS[0]]["river_rp"],
         # Diagnostic-only use (an informational "visible_on_grid" plot
         # column, doesn't gate anything -- see 07_get_boundary_forcings.py).
         # Can't use the rule 08b-computed, width-optimized resolution here:

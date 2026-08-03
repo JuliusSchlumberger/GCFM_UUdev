@@ -86,6 +86,7 @@ boundary_forcings:
     glofas_min_mean_discharge: 10.0  # minimum mean discharge (m³/s) for a GloFAS cell to be considered
 
     eva:  # Extreme value analysis on GloFAS discharge -- river-only
+      rp_fl: 100.0          # diagnostic-only preview return period (yr) for rule get_boundary_forcings' own q_rp100/CI/plot-vertical-line and the has_glofas "ok" gate -- a fixed, basin-level constant, NOT derived from any requested scenario's own river_rp (a scenario-derived value here previously made this basin-level rule's own output -- and therefore everything downstream, including the expensive depth calibration -- rerun on every scenario switch, and even made has_glofas itself vary depending on which scenario happened to be requested first). The actual production discharge_rp_table (rules 08/10/13) is always computed at every standard RP regardless of this value.
       rp_bf: 1.5            # return period for bankfull discharge (yr, AMAX/GEV fit)
       ci_alpha: 0.95
       threshold_start_pct: 90.0
@@ -185,14 +186,6 @@ sfincs:
     spinup_days: 1               # days of constant bankfull forcing to reach steady river state
     dthisout_s: 3600              # obs-point output interval during spinup (s) — for validation plot
     dtmapout_s: 3600              # map snapshot interval during spinup (s) — controls animation frame count
-
-  protection_validation:  # rule 13b -- does the built model actually hold at its own design standard?
-    enabled: true                    # reuses the production build's own dep/msk/manning/subgrid/weir/obs (referenced, not rebuilt) with steady test discharge swapped in
-    higher_rp_factor: 1.10           # second scenario's discharge = protection-level Q * this factor -- tests a modest beyond-design-standard event
-    simulation_days: 4               # short steady run duration per scenario
-    convergence_window_hours: 12     # same windowed-flatness check as rule modelled_depth_estimation's own calibration (src.river_depth_calibration.check_convergence)
-    convergence_abs_tolerance_m: 0.02
-    convergence_rel_tolerance: 0.01
 
   sanity_checks:
     min_inundation_depth_m: 0.0  # threshold for counting a cell as flooded in sanity checks
