@@ -127,9 +127,16 @@ def build_design_surge_matrix(
 
     design_rp_yr=None means mean coastal conditions: zero surge amplitude, a
     flat timeseries at each station's own baseline (tide-only / calm sea).
-    The protection level, if rule 07 stored one, is subtracted in both
-    cases.  At rule 07's own configured RP this reproduces the stored
-    water_level exactly.
+
+    The stored protection_level (if rule 07 wrote one) is deliberately NOT
+    subtracted here -- see 07_get_boundary_forcings.py's own design comment
+    for why: a weir is a real, SFINCS-modelled barrier, whereas subtracting
+    a scalar directly from the boundary assumes the whole coast sits behind
+    a uniform wall that isn't actually there, silently suppressing the flood
+    signal at any land below the corrected level. protection_level already
+    floors the weir crest in rule 13 (coastal_protection_crest_m); applying
+    it again here would double-count the same FLOPROS standard through two
+    independent mechanisms.
 
     Returns:
         (n_station, n_time) np.ndarray, water level (m).
@@ -153,8 +160,6 @@ def build_design_surge_matrix(
             for b, lvl in zip(baselines, rp_level)
         ]
     )
-    if "protection_level" in surge_ds:
-        wave = wave - surge_ds["protection_level"].values[:, None]
     return wave
 
 

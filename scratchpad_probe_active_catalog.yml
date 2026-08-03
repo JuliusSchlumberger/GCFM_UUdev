@@ -1,0 +1,6 @@
+meta:
+  root: D:\GCFM_UU\results\2433835\inputs\domain
+local_elevation_conditioned_sfincs_grid:
+  data_type: RasterDataset
+  uri: D:\GCFM_UU\results\2433835\inputs\domain\2433835_elevation_conditioned_sfincs_grid.tif
+  driver: rasterio
