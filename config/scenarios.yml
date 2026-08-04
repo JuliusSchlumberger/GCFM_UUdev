@@ -2,7 +2,7 @@
 # Referenced by name as the {scenario} wildcard:
 #   snakemake build --config target_scenarios="['coast_100','river_100']"
 # mode is derived from which RPs are set (see scenario_params in
-# 00_common.smk): both set -> compound; exactly one set -> that driver alone
+# 00_common.smk): both set -> compound; exactly one set (the other one null)-> that driver alone
 # (river_only/coastal_only); both null -> invalid (raises) -- a scenario
 # needs at least one real driver, so there is no "both null" entry here.
 
