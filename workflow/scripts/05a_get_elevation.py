@@ -99,8 +99,8 @@ out_plot_path  = snakemake.output.plot_elevation
 # Directory for the extra diagnostic plots below (geoid offset, MDT ocean,
 # datum-correction deltas) — derived from the tracked plot_elevation output
 # rather than out_elev_path's own directory, since the two are not under the
-# same parent (elevation_merged.tif lives under inputs/domain/, plots live
-# under visuals/input_data/).
+# same parent (elevation_merged.tif lives under preprocessing_inputs/domain/,
+# plots live under preprocessing_inputs/visuals/).
 plots_dir = Path(out_plot_path).parent
 
 mdt_variable         = "mdt"  # sole variable in data_catalogue's mdt_cnes_cls22 source

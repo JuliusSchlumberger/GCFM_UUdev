@@ -8,10 +8,6 @@ solves hydrodynamics on (sfincs.dep) — not the finer subgrid reference
 raster used for the subgrid volume/wet-fraction tables (dep_subgrid.tif,
 see src.postprocessing.get_bed_level for that one instead).
 
-Regular grids only (sfincs.grid.quadtree.enabled: false). A quadtree grid is
-an unstructured mesh, not a raster, and would need separate rasterization —
-not handled here.
-
 Requires rule build_sfincs to have already run for the given basin_id
 (reads results/{basin_id}/sfincs/sfincs.inp + sfincs.msk/.ind/.dep directly,
 does not rebuild anything).
@@ -53,11 +49,6 @@ out_png = out_dir / f"{basin_id}_grid_dem.png"
 
 sf = SfincsModel(root=str(sfincs_root), mode="r")
 sf.config.read()
-if sf.grid_type != "regular":
-    raise NotImplementedError(
-        f"basin {basin_id}: grid_type={sf.grid_type!r} — this script only "
-        "supports regular grids; a quadtree mesh needs separate rasterization."
-    )
 sf.grid.read()
 
 dep_da = sf.grid.data["dep"]

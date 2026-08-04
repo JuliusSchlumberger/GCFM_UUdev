@@ -1,11 +1,11 @@
 rule get_boundary_forcings:
     input:
-        spec_basins_meta   = results_path("{basin_id}/inputs/domain/domain_bbox.json"),
-        domain_gpkg        = results_path("{basin_id}/inputs/domain/{basin_id}_domain.gpkg"),
-        spec_river_network = results_path("{basin_id}/inputs/domain/{basin_id}_river_network.gpkg"),
+        spec_basins_meta   = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
+        domain_gpkg        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
+        spec_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network.gpkg"),
         river_discharge = catalogue_path("river_discharge"),
         surge_data = catalogue_path("storm_tide_return_periods"),
-        land_polygons = results_path("{basin_id}/inputs/domain/{basin_id}_land_polygons.gpkg"),
+        land_polygons = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
         grdc_data = catalogue_path("grdc_discharge"),
         mdt_data = catalogue_path("mdt_cnes_cls22"),
         slr_data = lambda wc: (
@@ -18,16 +18,16 @@ rule get_boundary_forcings:
         # which always runs regardless of river_processing.empirical_estimation.modify_hydrograph;
         # only the separate riverine-side discharge correction stays gated on
         # that flag (see 07_get_boundary_forcings.py).
-        protection_levels = results_path("{basin_id}/inputs/domain/protection_levels.json"),
+        protection_levels = results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"),
     output:
-        river_forcing = results_path("{basin_id}/inputs/forcing/river_forcing.nc"),
-        surge_forcing = results_path("{basin_id}/inputs/forcing/surge_forcing.nc"),
-        glofas_clip   = results_path("{basin_id}/inputs/forcing/glofas_clip.nc"),
-        plot_map             = results_path("{basin_id}/visuals/input_data/07_forcing_locations.png"),
-        plot_timeseries      = results_path("{basin_id}/visuals/input_data/07_forcing_timeseries.png"),
-        plot_eva_diagnostics = results_path("{basin_id}/visuals/input_data/07_forcing_eva.png"),
-        plot_bias_correction = directory(results_path("{basin_id}/visuals/input_data/07_bias_correction")),
-        plot_surge_correction = results_path("{basin_id}/visuals/input_data/07_surge_correction.png"),
+        river_forcing = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
+        surge_forcing = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
+        glofas_clip   = results_path("{basin_id}/preprocessing_inputs/forcing/glofas_clip.nc"),
+        plot_map             = results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_locations.png"),
+        plot_timeseries      = results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_timeseries.png"),
+        plot_eva_diagnostics = results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_eva.png"),
+        plot_bias_correction = directory(results_path("{basin_id}/preprocessing_inputs/visuals/07_bias_correction")),
+        plot_surge_correction = results_path("{basin_id}/preprocessing_inputs/visuals/07_surge_correction.png"),
     params:
         # shared (surge + river forcing timeseries axis)
         lead_days = config["boundary_forcings"]["lead_days"],

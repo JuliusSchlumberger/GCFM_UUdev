@@ -227,8 +227,9 @@ def gather_calibration_round_profile(
     simulation, which this round's own zs was never checked against.
 
     Args:
-        calib_root: Basin's own sfincs_calibration directory (round{i}/
-            calibration_state.csv must exist for i in 0..n_rounds).
+        calib_root: Basin's own preprocessing_inputs/depth_crest_calibration
+            directory (round{i}/calibration_state.csv must exist for i in
+            0..n_rounds).
         rivers_utm: River network (any CRS accepted; only 'reach_id',
             'rch_id_dn', 'width' are used, via trace_widest_path/
             compute_seed_path_offsets -- reprojection to a metric CRS for

@@ -102,7 +102,7 @@ FIGS_DIR = REPO_ROOT / "figs" / "discharge_sensitivity"
 EXPERIMENTS_DIR.mkdir(parents=True, exist_ok=True)
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
 
-basin_inputs_dir = RESULTS_DIR / BASIN_ID / "inputs"
+basin_inputs_dir = RESULTS_DIR / BASIN_ID / "preprocessing_inputs"
 
 domain_path = basin_inputs_dir / "domain" / f"{BASIN_ID}_domain.gpkg"
 elevation_merged_path = basin_inputs_dir / "domain" / f"{BASIN_ID}_elevation_merged.tif"

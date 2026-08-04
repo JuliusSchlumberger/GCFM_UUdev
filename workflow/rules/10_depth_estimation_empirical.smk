@@ -16,23 +16,23 @@ if config["river_processing"]["depth_method"] == "empirical":
 
     rule empirical_depth_estimation:
         input:
-            spec_basins_meta    = results_path("{basin_id}/inputs/domain/domain_bbox.json"),
-            domain_gpkg         = results_path("{basin_id}/inputs/domain/{basin_id}_domain.gpkg"),
-            clean_river_network = results_path("{basin_id}/inputs/domain/{basin_id}_river_network_clean.gpkg"),
-            land_polygons       = results_path("{basin_id}/inputs/domain/{basin_id}_land_polygons.gpkg"),
-            delta_polygon       = results_path("{basin_id}/inputs/domain/{basin_id}_delta_polygon.gpkg"),
+            spec_basins_meta    = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
+            domain_gpkg         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
+            clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
+            land_polygons       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
+            delta_polygon       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
             nienhuis            = catalogue_path("nienhuis_delta_characteristics"),
             # Every basin gets a conditioned elevation and its own burned DEM
             # (see 10_depth_estimation_empirical.py's module docstring).
-            elevation_conditioned = results_path("{basin_id}/inputs/domain/{basin_id}_elevation_conditioned.tif"),
-            sfincs_grid            = results_path("{basin_id}/inputs/domain/{basin_id}_sfincs_grid.json"),
+            elevation_conditioned = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned.tif"),
+            sfincs_grid            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sfincs_grid.json"),
         output:
-            depth_estimated_river_network = results_path("{basin_id}/inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
-            river_burned_dem              = results_path("{basin_id}/inputs/domain/{basin_id}_river_burned_dem.tif"),
-            river_burned_dem_sfincs_grid  = results_path("{basin_id}/inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"),
-            plot_river_depth                   = results_path("{basin_id}/visuals/input_data/10_river_depth.png"),
-            plot_river_network_width_discharge = results_path("{basin_id}/visuals/input_data/10_river_width_q.png"),
-            plot_hydraulic_relations            = results_path("{basin_id}/visuals/input_data/10_river_hydraulics.png"),
+            depth_estimated_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
+            river_burned_dem              = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem.tif"),
+            river_burned_dem_sfincs_grid  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"),
+            plot_river_depth                   = results_path("{basin_id}/preprocessing_inputs/visuals/10_river_depth.png"),
+            plot_river_network_width_discharge = results_path("{basin_id}/preprocessing_inputs/visuals/10_river_width_q.png"),
+            plot_hydraulic_relations            = results_path("{basin_id}/preprocessing_inputs/visuals/10_river_hydraulics.png"),
         params:
             hg_c = config["river_processing"]["empirical_estimation"]["hydraulic_geometry"]["c"],
             hg_f = config["river_processing"]["empirical_estimation"]["hydraulic_geometry"]["f"],

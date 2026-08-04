@@ -4,10 +4,14 @@ sanity-check diagnostics.
 
 The main model's sfincs.inp (written by rule 13, build_sfincs) is already
 configured for this exact run: tstart = spin-up end, tstop = end of the full
-forcing timeseries, rstfile pointing at rule 14's restart file. This script
-only executes it — cwd = sfincs_root itself (not a subdirectory, unlike rule
-14's spinup/), since that's where sfincs.inp and all the geometry/forcing
-files it references already live.
+forcing timeseries, rstfile pointing at rule 14's own basin-level restart
+file (results/{basin_id}/spin_up/, shared by every scenario of this basin
+-- see 14_run_spinup.py's own module docstring for why spin-up is no
+longer scenario-scoped). This script only executes it — cwd = sfincs_root
+itself, since that's where sfincs.inp and its own forcing files
+(sfincs.bzs/.dis/etc, written by rule 13) live; the geometry files it also
+references (dep/msk/manning/subgrid/weir) resolve via relative path back
+to the basin's own sfincs_skeleton/ (rule build_sfincs_skeleton).
 
 After the run, produces the same kind of sanity-check diagnostics as rule 15
 (sanity_checks) — inundation-ratio map, flood-progression animation — but
@@ -53,6 +57,10 @@ log = setup_logging(snakemake.log[0])
 
 # ── params ────────────────────────────────────────────────────────────────────
 sfincs_root                = Path(snakemake.params.sfincs_root)
+# Subgrid reference raster for postprocessing lives here, not physically in
+# sfincs_root -- this scenario's own model only references it via a
+# relative path in its own sfincs.inp (see 13_build_sfincs.py).
+skeleton_root              = Path(snakemake.params.skeleton_root)
 sfincs_exe                 = Path(snakemake.params.sfincs_exe)
 timeout_s                  = int(snakemake.params.timeout_s)
 threshold_m                = float(snakemake.params.min_inundation_depth_m)
@@ -91,7 +99,7 @@ log.info(f"Event map output written: {sfincs_map_path} ({sfincs_map_path.stat().
 plot_ratio_path = Path(snakemake.output.plot_inundation_ratio)
 
 da_hmax, da_dep = compute_max_inundation(
-    sfincs_root, sfincs_root, landuse_path, hmin=threshold_m, include_subgrid=include_subgrid,
+    sfincs_root, skeleton_root, landuse_path, hmin=threshold_m, include_subgrid=include_subgrid,
 )
 if da_hmax is None or da_dep is None:
     log.warning("Could not compute max inundation depth (missing 'zsmax' or bed level) — skipping")
@@ -168,7 +176,7 @@ else:
     # occurred), so the max of flood_volume_m3 here is the physically
     # correct peak total flood volume for the event.
     df = compute_flood_timeseries_stats(
-        sfincs_root, sfincs_root, landuse_path, threshold_m,
+        sfincs_root, skeleton_root, landuse_path, threshold_m,
         include_subgrid=include_subgrid,
     )
     if df is None:

@@ -8,17 +8,14 @@ Unlike tests/test_river_burning_sfincs.py (which recomputes the bed-level
 estimation standalone, on the whole unblocked raster, via
 hydromt_sfincs.workflows.bathymetry.burn_river_rect -- not necessarily
 identical to what a real build actually wrote), this reads the real, final
-product: each
-basin's sfincs/subgrid/dep_subgrid_lev*.tif (quadtree) or dep_subgrid.tif
-(regular grid). No standalone re-burning logic here at all -- just
-sampling what's actually on disk.
+product: each basin's sfincs/subgrid/dep_subgrid.tif. No standalone
+re-burning logic here at all -- just sampling what's actually on disk.
 
-Samples via rasterio's windowed point .sample() (finest quadtree level
-first, falling back to coarser levels where the finest has no data) rather
-than src.postprocessing.get_bed_level/_mosaic_quadtree_dep_levels, which
-materializes a full-domain mosaic at finest-subgrid resolution -- several
-GiB and an easy MemoryError for a large basin, when all that's actually
-needed here is a handful of narrow river corridors.
+Samples via rasterio's windowed point .sample() rather than
+src.postprocessing.get_bed_level, which materializes a full-domain mosaic
+at finest-subgrid resolution -- several GiB and an easy MemoryError for a
+large basin, when all that's actually needed here is a handful of narrow
+river corridors.
 
 For every basin under results_dir with a built subgrid (sfincs/subgrid/
 contains dep_subgrid*.tif), traces the downstream mainstem path from every
@@ -89,17 +86,8 @@ def list_basins_with_subgrid() -> list[str]:
 
 
 def find_subgrid_dep_paths(sfincs_root: Path) -> list[Path]:
-    """
-    Dep-elevation raster(s) for a built model, finest-resolution first.
-    Quadtree builds write one dep_subgrid_lev*.tif per refinement level
-    (each NaN/nodata outside that level's own cells); a regular grid
-    writes a single dep_subgrid.tif. Resolution is read from each file's
-    own metadata only (rasterio.open, no data read) to decide priority.
-    """
+    """Dep-elevation raster for a built model (subgrid/dep_subgrid.tif)."""
     subgrid_dir = sfincs_root / "subgrid"
-    level_paths = list(subgrid_dir.glob("dep_subgrid_lev*.tif"))
-    if level_paths:
-        return sorted(level_paths, key=lambda p: abs(rasterio.open(p).res[0]))
     single_path = subgrid_dir / "dep_subgrid.tif"
     return [single_path] if single_path.exists() else []
 
@@ -112,9 +100,8 @@ def sample_bed_along_line(
     rasterio's windowed point .sample() (reads only the blocks touched by
     the requested points, never the full raster). Tries each raster in
     `dep_paths_finest_first` order, keeping the first valid (non-nodata,
-    finite) value found per point -- mirrors
-    src.postprocessing._mosaic_quadtree_dep_levels' finest-takes-priority
-    convention without ever materializing a full-domain mosaic.
+    finite) value found per point, without ever materializing a
+    full-domain mosaic.
     """
     length = line.length
     n = 1 if length == 0 else max(2, int(np.ceil(length / step_m)) + 1)
@@ -181,7 +168,7 @@ def plot_seed_profile(
 
 
 def process_basin(basin_id: str) -> None:
-    basin_dir = RESULTS_DIR / basin_id / "inputs"
+    basin_dir = RESULTS_DIR / basin_id / "preprocessing_inputs"
     sfincs_root = RESULTS_DIR / basin_id / "sfincs"
     river_path = basin_dir / "domain" / f"{basin_id}_river_network_processed.gpkg"
     elevation_path = (

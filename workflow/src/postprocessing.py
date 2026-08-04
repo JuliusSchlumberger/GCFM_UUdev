@@ -17,7 +17,6 @@ import numpy as np
 import pandas as pd
 import rioxarray  # noqa: F401 -- registers the .rio accessor used below
 import xarray as xr
-import xugrid as xu
 import geopandas as gpd
 
 from hydromt_sfincs import SfincsModel
@@ -60,121 +59,20 @@ def load_sfincs_output(run_dir: str | Path) -> SfincsModel:
     return mod
 
 
-def _mosaic_quadtree_dep_levels(
-    level_paths: list[Path], max_bytes: float = 5e8
-) -> xr.DataArray:
-    """
-    Mosaic per-refinement-level ``dep_subgrid_lev*.tif`` files (written by
-    ``quadtree_subgrid.create(write_dep_tif=True)`` — one full-domain raster
-    per quadtree refinement level, each NaN outside that level's mesh cells)
-    into a single regular raster, reading every level pre-downsampled to a
-    shared, memory-bounded target resolution via rasterio's own decimated
-    read (``out_shape`` + ``Resampling.average``) rather than at native
-    resolution.
-
-    The finest quadtree level's native pixel size, applied across the WHOLE
-    domain (not just its own actually-refined footprint), can be hundreds of
-    millions of pixels for a big domain — multiple GiB per array. Building
-    the mosaic at that resolution (reprojecting every coarser level onto
-    that huge native grid) would risk exhausting available memory before
-    anything downstream actually needs it (nothing needs subgrid-level pixel
-    detail — see ``_coarsen_for_memory``). Levels are combined finest-first,
-    so refined-zone detail still takes priority over the coarser base level
-    where they overlap, at a bounded resolution from the start.
-    """
-    import rasterio
-    from rasterio.enums import Resampling
-    from rasterio.transform import from_bounds
-
-    metas = []
-    for p in level_paths:
-        with rasterio.open(p) as src:
-            metas.append(
-                {
-                    "path": p,
-                    "res": abs(src.res[0]),
-                    "crs": src.crs,
-                    "bounds": src.bounds,
-                    "height": src.height,
-                    "width": src.width,
-                    "dtype": src.dtypes[0],
-                    "nodata": src.nodata,
-                }
-            )
-    metas.sort(key=lambda m: m["res"])  # finest first
-
-    finest = metas[0]
-    itemsize = np.dtype(finest["dtype"]).itemsize
-    total_bytes = finest["height"] * finest["width"] * itemsize
-    if total_bytes > max_bytes:
-        factor = int(np.ceil((total_bytes / max_bytes) ** 0.5))
-        target_h = max(1, finest["height"] // factor)
-        target_w = max(1, finest["width"] // factor)
-    else:
-        target_h, target_w = finest["height"], finest["width"]
-    target_transform = from_bounds(*finest["bounds"], target_w, target_h)
-
-    mosaic_arr = None
-    for m in metas:
-        with rasterio.open(m["path"]) as src:
-            arr = src.read(
-                1, out_shape=(target_h, target_w), resampling=Resampling.average
-            ).astype("float64")
-        if m["nodata"] is not None:
-            arr = np.where(arr == m["nodata"], np.nan, arr)
-        mosaic_arr = (
-            arr
-            if mosaic_arr is None
-            else np.where(np.isnan(mosaic_arr), arr, mosaic_arr)
-        )
-
-    x_coords = target_transform.c + (np.arange(target_w) + 0.5) * target_transform.a
-    y_coords = target_transform.f + (np.arange(target_h) + 0.5) * target_transform.e
-    mosaic = xr.DataArray(
-        mosaic_arr,
-        dims=("y", "x"),
-        coords={"y": y_coords, "x": x_coords},
-        name="dep",
-    )
-    # inplace=True: .rio.write_crs()/.rio.write_transform() deep-copy the
-    # WHOLE array by default even though they only touch metadata -- for an
-    # array already sized right at the memory budget, chaining two
-    # out-of-place calls would need multiple simultaneous full-size copies.
-    # inplace=True sets the metadata directly with no copy.
-    mosaic.rio.write_crs(finest["crs"], inplace=True)
-    mosaic.rio.write_transform(target_transform, inplace=True)
-    return mosaic
-
-
 def get_bed_level(
     mod: SfincsModel,
     sfincs_root: str | Path,
     include_subgrid: bool = True,
-    max_bytes: float = 5e8,
 ) -> xr.DataArray | None:
     """
     Bed level (dep) used to convert water levels to inundation depths.
 
-    Prefers the subgrid reference raster — the resolution SFINCS uses
-    internally for subgrid runs — and falls back to the coarser model-grid
-    ``zb`` written to the run output. For a regular grid this is the single
-    ``subgrid/dep_subgrid.tif``; for a quadtree grid, ``write_dep_tif=True``
-    instead writes one full-domain raster per refinement level
-    (``dep_subgrid_lev0.tif``, ``lev1.tif``, ...), which are mosaicked here
-    into one combined raster (bounded to ``max_bytes`` — see
-    ``_mosaic_quadtree_dep_levels``). Returns None when neither is available.
-
-    Per-level files are checked first: their presence reliably indicates the
-    model currently on disk is quadtree, whereas a single ``dep_subgrid.tif``
-    can be a stale leftover from an earlier regular-grid build of the same
-    ``sfincs_root`` (rebuilding doesn't clear the subgrid directory) and
-    would silently give the wrong bed level if trusted unconditionally.
+    Prefers the subgrid reference raster (``subgrid/dep_subgrid.tif``) --
+    the resolution SFINCS uses internally for subgrid runs -- and falls
+    back to the coarser model-grid ``zb`` written to the run output.
+    Returns None when neither is available.
     """
     subgrid_dir = Path(sfincs_root) / "subgrid"
-    if include_subgrid:
-        level_paths = sorted(subgrid_dir.glob("dep_subgrid_lev*.tif"))
-        if level_paths:
-            return _mosaic_quadtree_dep_levels(level_paths, max_bytes=max_bytes)
     dep_subgrid_path = subgrid_dir / "dep_subgrid.tif"
     if include_subgrid and dep_subgrid_path.exists():
         return mod.data_catalog.get_rasterdataset(str(dep_subgrid_path))
@@ -189,7 +87,7 @@ def _coarsen_for_memory(da_ref: xr.DataArray, max_bytes: float = 5e8) -> xr.Data
     ``hydromt_sfincs.utils.downscale_floodmap`` target grid.
 
     ``get_bed_level``'s subgrid-resolution reference raster can be large
-    enough on its own (for a big domain + fine subgrid/quadtree resolution,
+    enough on its own (for a big domain + fine subgrid resolution,
     hundreds of millions of pixels — multiple GiB per array) to blow past
     available memory for a single 2D field such as ``compute_max_inundation``'s
     ``zsmax``. Neither of this module's stats computations need subgrid-level
@@ -217,8 +115,8 @@ def _coarsen_for_memory(da_ref: xr.DataArray, max_bytes: float = 5e8) -> xr.Data
     da_coarse = da_chunked.coarsen(x=factor, y=factor, boundary="trim").mean().compute()
     # coarsen().mean() does not reliably carry the "spatial_ref" CRS
     # coordinate through the reduction -- restore it explicitly. inplace=True
-    # avoids write_crs's default full-array deep copy (see
-    # _mosaic_quadtree_dep_levels for why that matters at this array size).
+    # avoids write_crs's default full-array deep copy, which matters at this
+    # array size.
     da_coarse.rio.write_crs(da_ref.rio.crs, inplace=True)
     return da_coarse
 
@@ -258,14 +156,12 @@ def compute_max_inundation(
     if "timemax" in da_zsmax.dims:
         da_zsmax = da_zsmax.max(dim="timemax")
 
-    da_dep = get_bed_level(mod, sfincs_root, include_subgrid, max_bytes=max_bytes)
+    da_dep = get_bed_level(mod, sfincs_root, include_subgrid)
     if da_dep is None:
         return None, None
-    # Bound da_dep's memory regardless of grid type -- a large enough REGULAR
-    # grid's own full-extent subgrid reference raster (get_bed_level's
-    # dep_subgrid.tif) can just as easily exceed max_bytes as a quadtree
-    # mosaic can; _coarsen_for_memory is already a no-op below its own
-    # threshold, so there is no reason to gate this on da_zsmax's type.
+    # Bound da_dep's memory -- a large enough full-extent subgrid reference
+    # raster (get_bed_level's dep_subgrid.tif) can exceed max_bytes;
+    # _coarsen_for_memory is already a no-op below its own threshold.
     da_dep = _coarsen_for_memory(da_dep, max_bytes=max_bytes)
 
     da_hmax = sfincs_utils.downscale_floodmap(zsmax=da_zsmax, dep=da_dep, hmin=hmin)
@@ -283,30 +179,12 @@ def compute_max_inundation(
     return da_hmax, da_dep
 
 
-def _ensure_ugrid_crs(da: xu.UgridDataArray, crs) -> xu.UgridDataArray:
-    """
-    Ensure a ``UgridDataArray``'s mesh carries CRS metadata, restoring it
-    from the model's own CRS (``SfincsModel.crs``) if missing.
-
-    Needed for mesh-native animation (``plots.animate_flood_progression``),
-    which reprojects the land/river overlay layers onto the mesh's own
-    native CRS via ``da.ugrid.grid.crs`` rather than reprojecting the mesh
-    itself (xugrid has no simple ``.rio.reproject()`` equivalent for a mesh)
-    — a missing CRS there would silently misalign the overlays instead of
-    raising, so it's worth restoring defensively rather than assuming the
-    mesh always carries it already.
-    """
-    if da.ugrid.grid.crs is None and crs is not None:
-        da.ugrid.grid.set_crs(crs)
-    return da
-
-
 def compute_flood_progression(
     run_dir: str | Path,
     landuse_path: str | Path,
     water_landuse_codes: tuple[int, ...] = WATER_LANDUSE_CODES,
     variable: str = "depth",
-) -> xr.DataArray | xu.UgridDataArray | None:
+) -> xr.DataArray | None:
     """
     Instantaneous time series for an animation of flood progression.
 
@@ -314,24 +192,16 @@ def compute_flood_progression(
     ``h = max(zs - zb, 0)``, derived from the instantaneous water level
     ``zs`` (one frame per ``dtmapout``) and the static bed level ``zb`` from
     the run's map output — both already at the resolution SFINCS itself
-    wrote to the map output (cell/mesh resolution), with NO subgrid
-    downscaling applied, since this is for animation only (see
-    ``compute_max_inundation`` for the downscaled, subgrid-aware version used
-    for area/volume statistics).
-
-    For a REGULAR grid, ``h`` is additionally masked to exclude water bodies
-    via the land-use raster reprojected onto the model grid (``landuse_path``
-    required in that case). For a QUADTREE run, ``h`` is returned as a
-    mesh-native ``UgridDataArray`` with NO land/water masking — plotting it
-    directly (``plots.animate_flood_progression``'s mesh-native path) avoids
-    ever rasterizing the mesh, and the land polygon overlay already shows the
-    water boundary visually, so per-cell land-use sampling isn't worth the
-    extra spatial-join step for what both approaches use only cosmetically.
+    wrote to the map output (cell resolution), with NO subgrid downscaling
+    applied, since this is for animation only (see ``compute_max_inundation``
+    for the downscaled, subgrid-aware version used for area/volume
+    statistics). ``h`` is additionally masked to exclude water bodies via
+    the land-use raster reprojected onto the model grid.
 
     ``variable="level"``: the raw water level ``zs`` itself, returned
-    unmasked over the whole grid/mesh -- unlike depth, water level is
-    physically meaningful over open sea and inland water too (e.g. watching
-    a surge propagate), so there's no water body to exclude.
+    unmasked over the whole grid -- unlike depth, water level is physically
+    meaningful over open sea and inland water too (e.g. watching a surge
+    propagate), so there's no water body to exclude.
 
     Returns None when ``zs`` (the full time-series map output, as opposed to
     just the ``zsmax`` envelope) is not present in the run output, or (for
@@ -346,19 +216,13 @@ def compute_flood_progression(
     da_zs_native = mod.output.data["zs"]
 
     if variable == "level":
-        da_zs_native = da_zs_native.rename("zs")
-        if isinstance(da_zs_native, xu.UgridDataArray):
-            return _ensure_ugrid_crs(da_zs_native, mod.crs)
-        return da_zs_native
+        return da_zs_native.rename("zs")
 
     if "zb" not in mod.output.data:
         return None
     da_zb_native = mod.output.data["zb"].squeeze()
     da_h = (da_zs_native - da_zb_native).clip(min=0.0)
     da_h.name = "h"
-
-    if isinstance(da_h, xu.UgridDataArray):
-        return _ensure_ugrid_crs(da_h, mod.crs)
 
     da_lu = mod.data_catalog.get_rasterdataset(str(landuse_path))
     da_lu_grid = da_lu.raster.reproject_like(da_h, method="nearest")
@@ -389,12 +253,9 @@ def compute_flood_timeseries_stats(
     total flood volume means; ``threshold_m`` is applied afterwards, only to
     decide which pixels count towards ``flooded_area_km2``. Using
     ``downscale_floodmap`` (rather than a plain ``dep`` subtraction) matters
-    for a REGULAR grid too, not just quadtree: SFINCS subgrid refines a
-    regular grid's own coarse cells onto the fine subgrid pixel grid the
-    same way it projects a quadtree mesh onto one, so both grid types need
-    the real downscaling step to land on the correct (fine) resolution — a
-    plain mesh-to-raster projection (``_rasterize_like``) is a no-op for a
-    regular grid and would silently leave it at the coarse model resolution.
+    because SFINCS subgrid refines the grid's own coarse cells onto the fine
+    subgrid pixel grid, so the real downscaling step is needed to land on
+    the correct (fine) resolution.
 
     Processes ONE timestep at a time: downscales that single frame onto the
     (already memory-bounded, see ``get_bed_level`` / ``_coarsen_for_memory``)
@@ -414,12 +275,11 @@ def compute_flood_timeseries_stats(
 
     da_zs_native = mod.output.data["zs"]
 
-    da_dep = get_bed_level(mod, sfincs_root, include_subgrid, max_bytes=max_bytes)
+    da_dep = get_bed_level(mod, sfincs_root, include_subgrid)
     if da_dep is None:
         return None
-    # See compute_max_inundation's identical fix: bound da_dep regardless of
-    # grid type, not just for quadtree -- a large REGULAR grid's own
-    # full-extent subgrid reference raster needs the same protection.
+    # See compute_max_inundation's identical fix: bound da_dep -- a large
+    # full-extent subgrid reference raster needs this protection.
     da_dep = _coarsen_for_memory(da_dep, max_bytes=max_bytes)
 
     da_lu = mod.data_catalog.get_rasterdataset(str(landuse_path))
