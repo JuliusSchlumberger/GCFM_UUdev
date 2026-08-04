@@ -21,32 +21,32 @@ if config["river_processing"]["depth_method"] == "modelled":
 
     rule modelled_depth_estimation:
         input:
-            elevation_conditioned = results_path("{basin_id}/inputs/domain/{basin_id}_elevation_conditioned.tif"),
-            elevation_conditioned_sfincs_grid = results_path("{basin_id}/inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"),
+            elevation_conditioned = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned.tif"),
+            elevation_conditioned_sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"),
             # Max conditioned river centerline elevation (rule
             # enforce_river_monotonicity, 09) -- used to set the active-cell
             # mask's own elevation ceiling, matching rule 13's production
             # build (see active_mask params below).
-            river_elevation_max = results_path("{basin_id}/inputs/domain/{basin_id}_river_elevation_max.json"),
-            clean_river_network      = results_path("{basin_id}/inputs/domain/{basin_id}_river_network_clean.gpkg"),
-            river_forcing           = results_path("{basin_id}/inputs/forcing/river_forcing.nc"),
-            protection_levels        = results_path("{basin_id}/inputs/domain/protection_levels.json"),
-            grid_resolution          = results_path("{basin_id}/inputs/domain/{basin_id}_grid_resolution.json"),
-            roughness                = results_path("{basin_id}/inputs/domain/{basin_id}_roughness.tif"),
-            land_polygons            = results_path("{basin_id}/inputs/domain/{basin_id}_land_polygons.gpkg"),
-            domain_gpkg              = results_path("{basin_id}/inputs/domain/{basin_id}_domain.gpkg"),
-            spec_basins_meta         = results_path("{basin_id}/inputs/domain/domain_bbox.json"),
-            landuse                  = results_path("{basin_id}/inputs/domain/{basin_id}_landuse.tif"),
+            river_elevation_max = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_elevation_max.json"),
+            clean_river_network      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
+            river_forcing           = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
+            protection_levels        = results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"),
+            grid_resolution          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_grid_resolution.json"),
+            roughness                = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"),
+            land_polygons            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
+            domain_gpkg              = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
+            spec_basins_meta         = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
+            landuse                  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
             # Real, steady coastal baseline (mean sea level + SLR/MDT
             # correction) for the water-level boundary, see
             # 10_depth_estimation_modelled.py.
-            surge_forcing            = results_path("{basin_id}/inputs/forcing/surge_forcing.nc"),
+            surge_forcing            = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
             # Sea/land classification (rule get_landuse, 05b) -- builds this
             # rule's own spatially-varying zsini (sea cells start at
             # baseline_m, matching 13_build_sfincs.py's own zsini.tif) rather
             # than a uniform dry start that produces a transient "boundary
             # flooding in" spike at coastal/mouth cells.
-            sea_mask                 = results_path("{basin_id}/inputs/domain/{basin_id}_sea_mask.tif"),
+            sea_mask                 = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sea_mask.tif"),
             # Points where a non-seed, non-mouth, non-bifurcation reach
             # crosses the delta polygon's own outline (rule clean_river_network) --
             # a genuine place flow exits the modelled network without
@@ -55,9 +55,9 @@ if config["river_processing"]["depth_method"] == "modelled":
             # Registered as a free outflow boundary below, matching rule
             # 13's own production build exactly -- always present (possibly
             # empty).
-            delta_outflow_points     = results_path("{basin_id}/inputs/domain/{basin_id}_delta_outflow_points.gpkg"),
+            delta_outflow_points     = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_outflow_points.gpkg"),
         output:
-            depth_estimated_river_network = results_path("{basin_id}/inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
+            depth_estimated_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
             # Same filenames rule empirical_depth_estimation writes -- see this
             # rule's own module docstring: rule 13 imports whichever sibling ran,
             # never re-derives its own burn from the flattened rivdph/
@@ -65,22 +65,22 @@ if config["river_processing"]["depth_method"] == "modelled":
             # round's own already-computed burn (both resolutions already
             # exist internally every round; this just persists the
             # converged round's own copies under the canonical name).
-            river_burned_dem              = results_path("{basin_id}/inputs/domain/{basin_id}_river_burned_dem.tif"),
-            river_burned_dem_sfincs_grid  = results_path("{basin_id}/inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"),
+            river_burned_dem              = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem.tif"),
+            river_burned_dem_sfincs_grid  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"),
             # Modelled-mode-only production input -- the converged round's
             # own actual traced weir (seed-head/domain-edge closure,
             # coastal-probe correction, per-cell smoothing all baked in),
             # not re-derivable from any per-reach scalar. See rule 13's own
             # import of this file.
-            coastal_protection_weir       = results_path("{basin_id}/inputs/domain/{basin_id}_coastal_protection_weir.gpkg"),
+            coastal_protection_weir       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"),
             # Canonical outputs -- copies of the LAST round's own numbered
             # files below (round n_correction_iterations), for downstream
             # consumers/convention that expect these fixed filenames.
-            plot_calibration             = results_path("{basin_id}/visuals/input_data/10_calibration/river_depth.png"),
-            plot_water_level_timeseries  = results_path("{basin_id}/visuals/input_data/10_calibration/water_level_timeseries.png"),
-            plot_max_inundation          = results_path("{basin_id}/visuals/input_data/10_calibration/max_inundation.png"),
-            animation_flood_progress     = results_path("{basin_id}/visuals/input_data/10_calibration/flood_animation.mp4"),
-            plot_crest_gap_map           = results_path("{basin_id}/visuals/input_data/10_calibration/crest_gap_map.png"),
+            plot_calibration             = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/river_depth.png"),
+            plot_water_level_timeseries  = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/water_level_timeseries.png"),
+            plot_max_inundation          = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/max_inundation.png"),
+            animation_flood_progress     = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/flood_animation.mp4"),
+            plot_crest_gap_map           = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/crest_gap_map.png"),
             # Per-round diagnostics (round 0 = isolated calibration, rounds
             # 1..n_correction_iterations = coupled-system corrections) are
             # DELIBERATELY NOT declared here (same convention as
@@ -95,10 +95,9 @@ if config["river_processing"]["depth_method"] == "modelled":
             # final round's own real files are what the canonical outputs
             # above are copied from.
         params:
-            calib_root  = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_calibration"),
+            calib_root  = lambda wildcards: results_path(f"{wildcards.basin_id}/preprocessing_inputs/depth_crest_calibration"),
             sfincs_exe  = config["sfincs"]["simulation"]["sfincs_exe"],
             timeout_s   = config["sfincs"]["simulation"]["timeout_s"],
-            quadtree_enabled = config["sfincs"]["grid"]["quadtree"]["enabled"],
             active_mask_enabled = config["sfincs"]["grid"]["active_mask"]["enabled"],
             active_mask_elevation_buffer_m = config["sfincs"]["grid"]["active_mask"]["elevation_buffer_m"],
             outflow_buffer_m = config["sfincs"]["boundary_setup"]["outflow_buffer_m"],

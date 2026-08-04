@@ -16,14 +16,14 @@ rule get_protection_levels:
     independent of that toggle.
     """
     input:
-        specific_delta  = results_path("{basin_id}/inputs/domain/{basin_id}_delta_polygon.gpkg"),
+        specific_delta  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
         flopros_table   = catalogue_path("protection_levels_flopros"),
         geogunit_raster = catalogue_path("wri_geogunit_107"),
         geogunit_list   = catalogue_path("wri_geogunit_107_list"),
         osm_land        = catalogue_path("osm_land"),
     output:
-        protection_levels = results_path("{basin_id}/inputs/domain/protection_levels.json"),
-        plot_protection   = results_path("{basin_id}/visuals/input_data/04_protection_levels.png"),
+        protection_levels = results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"),
+        plot_protection   = results_path("{basin_id}/preprocessing_inputs/visuals/04_protection_levels.png"),
     params:
         default_rp_yr = config["flopros_range"]["default_rp_yr"],
         max_rp_yr     = config["flopros_range"]["max_rp_yr"],

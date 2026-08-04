@@ -64,12 +64,6 @@ def results_path(pattern):
     return f"{RESULTS_DIR}/{pattern}"
 
 
-if config["sfincs"]["grid"]["quadtree"]["enabled"] and not config["sfincs"]["subgrid"]["enabled"]:
-    raise ValueError(
-        "sfincs.grid.quadtree.enabled requires sfincs.subgrid.enabled = true "
-        "(quadtree postprocessing relies on the subgrid dep_subgrid.tif reference raster)"
-    )
-
 # ── scenario axis ─────────────────────────────────────────────────────────────
 # Scenarios (incl. the reserved name "default", used when no target_scenarios
 # is given) are defined by name in scenarios_file (config/scenarios.yml) and
@@ -114,6 +108,20 @@ SCENARIOS = list(config.get("target_scenarios", ["default"]))
 _unknown = sorted(set(SCENARIOS) - set(SCENARIO_DEFS))
 if _unknown:
     raise ValueError(f"target_scenarios {_unknown} not defined in {config['scenarios_file']}")
+
+# Basin-level (not scenario-level) restart filename: run_spinup (14) always
+# runs at a fixed RP=1/spinup_days, entirely independent of any scenario's
+# own RP, so its restart file -- and this filename -- is the SAME for every
+# scenario of a basin. Computed here (00_common.smk, included first) rather
+# than in 14_run_spinup.smk itself since rules build_sfincs (13, sets
+# rstfile) and run_event (16, reads the restart file) both need it too, and
+# Snakemake's include: shares one global namespace regardless of order --
+# defining it centrally avoids a fragile "must be included after 14" dependency.
+from datetime import datetime as _datetime, timedelta as _timedelta
+
+_tref       = _datetime.strptime(config["sfincs"]["simulation"]["tref"], "%Y-%m-%d %H:%M:%S")
+_spinup_end = _tref + _timedelta(days=config["sfincs"]["spinup"]["spinup_days"])
+RST_FNAME   = f"sfincs.{_spinup_end.strftime('%Y%m%d.%H%M%S')}.rst"
 
 
 wildcard_constraints:

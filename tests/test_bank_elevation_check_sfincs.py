@@ -6,8 +6,7 @@ test_bank_elevation_check.py, but against the ACTUAL built SFINCS grid
 test_bank_elevation_check.py checks the pre-model DEM (elevation_merged vs.
 elevation_conditioned). This script instead checks the bed level SFINCS will
 actually run with: the subgrid reference raster written by rule 13
-(quadtree_subgrid.create(write_dep_tif=True) -> dep_subgrid_lev*.tif per
-refinement level, or dep_subgrid.tif for a regular grid). That matters
+(subgrid.create(write_dep_tif=True) -> dep_subgrid.tif). That matters
 because burn_river_rect (the river-burning step inside subgrid table
 creation) can carve/reshape the channel bed differently from what
 elevation_conditioned alone would suggest — this test asks whether the
@@ -54,7 +53,6 @@ import rasterio
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
-from src.postprocessing import _mosaic_quadtree_dep_levels
 from src.river_network import (
     _as_linestring,
     _sample_line_cells,
@@ -70,7 +68,6 @@ BASIN_ID = sys.argv[1] if len(sys.argv) > 1 else "4267691"
 WIDTH_COLUMN = (
     "width"  # SWORD reach-average channel width -- matches rivwth in 13_build_sfincs.py
 )
-MOSAIC_MAX_BYTES = 1.5e9  # same order of magnitude as postprocessing.STATS_MAX_BYTES
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
@@ -78,7 +75,7 @@ RESULTS_DIR = Path(config["results_dir"])
 FIGS_DIR = REPO_ROOT / "figs" / "bank_elevation_check_sfincs"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
 
-domain_dir = RESULTS_DIR / BASIN_ID / "inputs" / "domain"
+domain_dir = RESULTS_DIR / BASIN_ID / "preprocessing_inputs" / "domain"
 sfincs_root = RESULTS_DIR / BASIN_ID / "sfincs"
 river_path = domain_dir / f"{BASIN_ID}_river_network_estuarine.gpkg"
 sfincs_inp_path = sfincs_root / "sfincs.inp"
@@ -94,18 +91,9 @@ if not river_path.exists():
 # ── load the SFINCS subgrid bed level (the SAME raster serves as both the
 # centerline benchmark and the bank samples) ──────────────────────────────────
 subgrid_dir = sfincs_root / "subgrid"
-level_paths = sorted(subgrid_dir.glob("dep_subgrid_lev*.tif"))
 dep_subgrid_path = subgrid_dir / "dep_subgrid.tif"
 
-if level_paths:
-    log.info(f"Quadtree subgrid: mosaicking {len(level_paths)} refinement level(s)")
-    mosaic = _mosaic_quadtree_dep_levels(level_paths, max_bytes=MOSAIC_MAX_BYTES)
-    dep_arr = mosaic.values.astype(np.float32)
-    transform = mosaic.rio.transform()
-    dep_nd = None  # _mosaic_quadtree_dep_levels already converts nodata to NaN
-    raster_crs = mosaic.rio.crs
-elif dep_subgrid_path.exists() and dep_subgrid_path.stat().st_size > 0:
-    log.info("Regular-grid subgrid: reading dep_subgrid.tif directly")
+if dep_subgrid_path.exists() and dep_subgrid_path.stat().st_size > 0:
     with rasterio.open(dep_subgrid_path) as _src:
         dep_arr = _src.read(1).astype(np.float32)
         transform = _src.transform
@@ -114,7 +102,7 @@ elif dep_subgrid_path.exists() and dep_subgrid_path.stat().st_size > 0:
 else:
     raise FileNotFoundError(
         f"No subgrid bed-level raster found under {subgrid_dir} "
-        f"(dep_subgrid_lev*.tif or dep_subgrid.tif) — was the model built with "
+        f"(dep_subgrid.tif) — was the model built with "
         f"sfincs.subgrid.enabled = true?"
     )
 

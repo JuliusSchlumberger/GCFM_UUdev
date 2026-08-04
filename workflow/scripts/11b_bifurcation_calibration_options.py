@@ -55,7 +55,7 @@ Diagnostic-only side branch: only needs rule 06's raw river network sources
 (read directly from the data catalogue, not rule 06's own output) and rule
 07's river_forcing.nc -- nothing downstream depends on this rule's output.
 One figure per bifurcation, written to
-visuals/input_data/bifurcation_calibration_options/{upstream_reach_id}.png.
+preprocessing_inputs/visuals/bifurcation_calibration_options/{upstream_reach_id}.png.
 """
 
 import math

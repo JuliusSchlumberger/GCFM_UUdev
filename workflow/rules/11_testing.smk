@@ -27,19 +27,19 @@ rule test_upstream_boundary:
     13_build_sfincs.py actually uses.
     """
     input:
-        spec_basins_meta        = results_path("{basin_id}/inputs/domain/domain_bbox.json"),
-        domain_gpkg             = results_path("{basin_id}/inputs/domain/{basin_id}_domain.gpkg"),
+        spec_basins_meta        = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
+        domain_gpkg             = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         # Empirical or SFINCS-modelled (rule 10, whichever alternative ran),
         # per river_processing.depth_method -- both write the same unified
         # filename, so this input needs no mode conditional (same as
         # build_sfincs/13).
-        river_network_depth_estimated = results_path("{basin_id}/inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
-        river_forcing           = results_path("{basin_id}/inputs/forcing/river_forcing.nc"),
-        surge_forcing           = results_path("{basin_id}/inputs/forcing/surge_forcing.nc"),
-        land_polygons           = results_path("{basin_id}/inputs/domain/{basin_id}_land_polygons.gpkg"),
-        spec_landuse            = results_path("{basin_id}/inputs/domain/{basin_id}_landuse.tif"),
+        river_network_depth_estimated = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
+        river_forcing           = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
+        surge_forcing           = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
+        land_polygons           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
+        spec_landuse            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
     output:
-        plot_upstream_check = results_path("{basin_id}/visuals/input_data/11_upstream_boundary_check.png"),
+        plot_upstream_check = results_path("{basin_id}/preprocessing_inputs/visuals/11_upstream_boundary_check.png"),
     params:
         effective_period_fraction    = config["testing"]["upstream_boundary_check"]["effective_period_fraction"],
         channel_manning_n            = config["testing"]["upstream_boundary_check"]["channel_manning_n"],
@@ -71,14 +71,14 @@ rule test_bifurcation_calibration_options:
     build_sfincs (13).
     """
     input:
-        spec_basins_meta       = results_path("{basin_id}/inputs/domain/domain_bbox.json"),
-        domain_gpkg            = results_path("{basin_id}/inputs/domain/{basin_id}_domain.gpkg"),
-        delta_polygon          = results_path("{basin_id}/inputs/domain/{basin_id}_delta_polygon.gpkg"),
-        river_forcing          = results_path("{basin_id}/inputs/forcing/river_forcing.nc"),
+        spec_basins_meta       = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
+        domain_gpkg            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
+        delta_polygon          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
+        river_forcing          = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
         river_network_original = catalogue_path("river_network_original"),
         river_network          = catalogue_path("river_network"),
     output:
-        plot_dir = directory(results_path("{basin_id}/visuals/input_data/11b_bifurcation_calibration_options")),
+        plot_dir = directory(results_path("{basin_id}/preprocessing_inputs/visuals/11b_bifurcation_calibration_options")),
     params:
         n_iterations       = config["river_processing"]["flow_accumulation"]["iterations"],
         discharge_variable = config["river_processing"]["flow_accumulation"]["discharge_variable"],

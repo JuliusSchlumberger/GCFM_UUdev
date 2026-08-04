@@ -65,8 +65,10 @@ N_ROUNDS = int(
 
 
 def process_basin(basin_id: str) -> None:
-    basin_dir = RESULTS_DIR / basin_id / "inputs"
-    calib_root = RESULTS_DIR / basin_id / "sfincs_calibration"
+    basin_dir = RESULTS_DIR / basin_id / "preprocessing_inputs"
+    calib_root = (
+        RESULTS_DIR / basin_id / "preprocessing_inputs" / "depth_crest_calibration"
+    )
     network_path = (
         basin_dir / "domain" / f"{basin_id}_river_network_depth_estimated.gpkg"
     )

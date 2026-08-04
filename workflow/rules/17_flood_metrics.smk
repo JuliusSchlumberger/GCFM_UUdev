@@ -4,14 +4,15 @@
 
 rule compute_flood_metrics:
     input:
-        sfincs_map_nc = results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs_map.nc"),
-        landuse       = results_path("{basin_id}/inputs/domain/{basin_id}_landuse.tif"),
-        delta_polygon = results_path("{basin_id}/inputs/domain/{basin_id}_delta_polygon.gpkg"),
+        sfincs_map_nc = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"),
+        landuse       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
+        delta_polygon = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
     output:
-        flood_map_tif = results_path("{basin_id}/scenarios/{scenario}/metrics/max_flood_depth.tif"),
-        metrics_csv   = results_path("{basin_id}/scenarios/{scenario}/metrics/flood_metrics.csv"),
+        flood_map_tif = results_path("{basin_id}/runs/{scenario}/metrics/max_flood_depth.tif"),
+        metrics_csv   = results_path("{basin_id}/runs/{scenario}/metrics/flood_metrics.csv"),
     params:
-        sfincs_root     = lambda wildcards: results_path(f"{wildcards.basin_id}/scenarios/{wildcards.scenario}/sfincs"),
+        sfincs_root     = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),
+        skeleton_root   = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         hmin          = config["metrics"]["hmin"],
         urban_code      = config["metrics"]["urban_landuse_code"],
         include_subgrid = config["sfincs"]["subgrid"]["enabled"],

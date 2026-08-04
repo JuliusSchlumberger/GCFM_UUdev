@@ -376,7 +376,7 @@ else:
     # against the SFINCS grid resolution. Deliberately informational only
     # (used by the diagnostic plot), not a gate on Step 5: gating on it would
     # couple river-network cleaning (rule 08's BFS seed set, and therefore
-    # which reaches survive at all) to the SFINCS grid/subgrid/quadtree
+    # which reaches survive at all) to the SFINCS grid/subgrid
     # configuration -- a narrow crossing failing this check at a fine
     # resolution could strand and drop an entire otherwise-valid downstream
     # branch, purely because of this width heuristic rather than any genuine

@@ -20,7 +20,6 @@ from rasterio.features import shapes as _rio_shapes
 from rasterio.warp import calculate_default_transform, transform_geom as _transform_geom
 import rioxarray  # noqa: F401  — registers the .rio accessor used for reprojection
 import xarray as xr
-import xugrid as xu
 from scipy.spatial import cKDTree
 from matplotlib.collections import LineCollection
 from matplotlib.lines import Line2D
@@ -1807,80 +1806,6 @@ _OVERLAY_LEGEND_HANDLES = [
 # ── rule 13 plots (build_sfincs) ───────────────────────────────────────────────
 
 
-def plot_refinement_zones(
-    refinement_gdf: gpd.GeoDataFrame,
-    domain_poly: Polygon,
-    land_polygons_path: str,
-    river_network_path: str,
-    output_path: str,
-    basin_id: str = "",
-) -> None:
-    """
-    Quadtree refinement-zone diagnostic map: river and coastal buffer
-    polygons colored by refinement level, with land outline, river network,
-    and domain boundary overlaid.
-
-    Args:
-        refinement_gdf:     Output of ``quadtree_refinement.build_refinement_polygons``
-                            (columns: geometry, refinement_level).
-        domain_poly:        Domain polygon in WGS84 (from ``load_domain``).
-        land_polygons_path: Path to the OSM land polygons geopackage.
-        river_network_path: Path to the clipped river network geopackage.
-        output_path:        Destination PNG path.
-        basin_id:           Basin identifier for the plot title.
-    """
-    refinement_wgs = refinement_gdf.to_crs("EPSG:4326")
-    bounds = refinement_wgs.total_bounds
-
-    land, rivers, domain_gdf = _overlay_layers(
-        "EPSG:4326", tuple(bounds), domain_poly, land_polygons_path, river_network_path
-    )
-
-    levels = sorted(refinement_gdf["refinement_level"].unique())
-    cmap = plt.get_cmap("YlOrRd")
-    norm = (
-        mcolors.Normalize(vmin=min(levels), vmax=max(levels))
-        if len(levels) > 1
-        else None
-    )
-
-    fig, ax = plt.subplots(figsize=(10, 8))
-    _draw_overlays(ax, land, rivers, domain_gdf, zorder=1)
-    for level in levels:
-        color = cmap(norm(level)) if norm is not None else cmap(1.0)
-        refinement_wgs[refinement_wgs["refinement_level"] == level].plot(
-            ax=ax,
-            facecolor=color,
-            edgecolor="none",
-            alpha=0.5,
-            zorder=4,
-            label=f"Refinement level {level}",
-        )
-
-    lon_min, lat_min, lon_max, lat_max = domain_poly.bounds
-    _margin = max(lon_max - lon_min, lat_max - lat_min) * 0.3
-    ax.set_xlim(lon_min - _margin, lon_max + _margin)
-    ax.set_ylim(lat_min - _margin, lat_max + _margin)
-    ax.set_aspect("equal")
-    title = "Quadtree refinement zones"
-    if basin_id:
-        title = f"{title} | {basin_id}"
-    ax.set_title(title)
-    handles = _OVERLAY_LEGEND_HANDLES + [
-        Patch(
-            facecolor=cmap(norm(level) if norm is not None else 1.0),
-            alpha=0.5,
-            label=f"Refinement level {level}",
-        )
-        for level in levels
-    ]
-    ax.legend(handles=handles, loc="lower right", framealpha=0.9, fontsize=8)
-    ax.set_xlabel("Longitude (°)")
-    ax.set_ylabel("Latitude (°)")
-    ax.grid(True, alpha=0.3, linewidth=0.5)
-    _save(fig, output_path)
-
-
 def plot_coastal_protection_weir(
     grid,
     diagnostics: dict,
@@ -1895,12 +1820,9 @@ def plot_coastal_protection_weir(
     Single overview diagnostic for the coastal protection weir baked into
     the model at rule 13 (src.protection_weir.build_coastal_protection_weir):
     ocean + river channel (filled) and the derived weir line, which now
-    hugs the coast/riverbank directly (no inland offset). Works for both
-    regular grids (imshow) and quadtree meshes (per-face scatter squares,
-    since there's no ready-made triangulation and cell sizes vary) -- kept
-    in the model's own (UTM) CRS rather than reprojected to WGS84 like most
-    other diagnostics, since the underlying masks/mesh are native to that
-    CRS and quadtree meshes have no reproject path at all.
+    hugs the coast/riverbank directly (no inland offset). Kept in the
+    model's own (UTM) CRS rather than reprojected to WGS84 like most other
+    diagnostics, since the underlying masks are native to that CRS.
 
     Args:
         grid:                A src.protection_weir.GridArrays instance.
@@ -1932,20 +1854,12 @@ def plot_coastal_protection_weir(
     weir_lines = diagnostics["weir_lines"]
     crest_elevation_m = diagnostics["crest_elevation_m"]
 
-    if grid.grid_type == "regular":
-        transform = grid.transform
-        nrows, ncols = grid.shape
-        x0, y0 = transform * (0, 0)
-        x1, y1 = transform * (ncols, nrows)
-        bounds = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
-        origin = "lower" if transform.e > 0 else "upper"
-    else:
-        bounds = (
-            float(grid.face_x.min()),
-            float(grid.face_y.min()),
-            float(grid.face_x.max()),
-            float(grid.face_y.max()),
-        )
+    transform = grid.transform
+    nrows, ncols = grid.shape
+    x0, y0 = transform * (0, 0)
+    x1, y1 = transform * (ncols, nrows)
+    bounds = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+    origin = "lower" if transform.e > 0 else "upper"
 
     land, rivers, domain_gdf = _overlay_layers(
         grid.crs, bounds, domain_poly, land_polygons_path, river_network_path
@@ -1954,43 +1868,27 @@ def plot_coastal_protection_weir(
     fig, ax = plt.subplots(figsize=(10, 10))
     _draw_overlays(ax, land, rivers, domain_gdf, zorder=0)
 
-    if grid.grid_type == "regular":
-        extent = (bounds[0], bounds[2], bounds[1], bounds[3])
-        ocean_plot = np.where(ocean_mask, 1.0, np.nan)
-        ax.imshow(
-            ocean_plot,
-            extent=extent,
-            origin=origin,
-            cmap=mcolors.ListedColormap(["steelblue"]),
-            vmin=0,
-            vmax=1,
-            zorder=1,
-        )
-        channel_plot = np.where(channel_mask & ~ocean_mask, 1.0, np.nan)
-        ax.imshow(
-            channel_plot,
-            extent=extent,
-            origin=origin,
-            cmap=mcolors.ListedColormap(["cornflowerblue"]),
-            vmin=0,
-            vmax=1,
-            zorder=1.1,
-        )
-    else:
-        for mask_arr, color, z in (
-            (ocean_mask, "steelblue", 1.0),
-            (channel_mask & ~ocean_mask, "cornflowerblue", 1.1),
-        ):
-            if mask_arr.any():
-                ax.scatter(
-                    grid.face_x[mask_arr],
-                    grid.face_y[mask_arr],
-                    s=grid.cell_size_m[mask_arr] ** 2 / 3000.0,
-                    color=color,
-                    marker="s",
-                    linewidths=0,
-                    zorder=z,
-                )
+    extent = (bounds[0], bounds[2], bounds[1], bounds[3])
+    ocean_plot = np.where(ocean_mask, 1.0, np.nan)
+    ax.imshow(
+        ocean_plot,
+        extent=extent,
+        origin=origin,
+        cmap=mcolors.ListedColormap(["steelblue"]),
+        vmin=0,
+        vmax=1,
+        zorder=1,
+    )
+    channel_plot = np.where(channel_mask & ~ocean_mask, 1.0, np.nan)
+    ax.imshow(
+        channel_plot,
+        extent=extent,
+        origin=origin,
+        cmap=mcolors.ListedColormap(["cornflowerblue"]),
+        vmin=0,
+        vmax=1,
+        zorder=1.1,
+    )
 
     has_crest_values = (
         weir_gdf is not None and not weir_gdf.empty and "elevation" in weir_gdf.columns
@@ -2050,9 +1948,9 @@ def reproject_max_for_plot(
     rather than reprojecting at native resolution and stride-decimating
     afterward.
 
-    Reprojecting a fine-resolution SFINCS run raster (e.g. a quadtree run's
-    subgrid, down to ~1.5 m pixels, or compute_max_inundation's own
-    subgrid-resolution output) to WGS84 for a whole delta domain can produce
+    Reprojecting a fine-resolution SFINCS run raster (e.g. compute_max_
+    inundation's own subgrid-resolution output, down to ~1.5 m pixels) to
+    WGS84 for a whole delta domain can produce
     tens of thousands of pixels per side. Reprojecting at native resolution
     first and only downsampling afterward has two problems: (a) the
     reproject call itself still momentarily allocates the huge full-
@@ -2547,32 +2445,6 @@ def plot_max_inundation_map(
     _save(fig, output_path)
 
 
-def _mesh_overlay_setup(
-    da_mesh: xu.UgridDataArray,
-    domain_poly: Polygon,
-    land_polygons_path: str,
-    river_network_path: str,
-):
-    """
-    Common setup for mesh-native (quadtree) animations: the mesh's own native
-    CRS/bounds, and the land/river/domain overlay layers reprojected to that
-    CRS via ``_overlay_layers``.
-
-    Plots the mesh directly in its native (projected, e.g. UTM) CRS rather
-    than reprojecting to WGS84 like every raster-based plot in this module —
-    xugrid has no simple ``.rio.reproject()`` equivalent for a mesh's
-    topology (unlike a raster, reprojecting would mean rebuilding every cell
-    polygon in the new CRS), so it's the overlays that get reprojected here
-    instead, onto the mesh's own CRS.
-    """
-    crs = da_mesh.ugrid.grid.crs
-    bounds = da_mesh.ugrid.total_bounds  # (xmin, ymin, xmax, ymax), native CRS
-    land, rivers, domain_gdf = _overlay_layers(
-        crs, bounds, domain_poly, land_polygons_path, river_network_path
-    )
-    return crs, bounds, land, rivers, domain_gdf
-
-
 #: Per-``variable`` display style for animate_flood_progression: colormap,
 #: colorbar label, and whether the low end is pinned at 0 (depth, which is
 #: never negative) or left to the data's own low percentile (water level,
@@ -2621,7 +2493,7 @@ def _flood_animation_bounds(vals: np.ndarray, style: dict) -> tuple[float, float
 
 
 def animate_flood_progression(
-    da_h: xr.DataArray | xu.UgridDataArray,
+    da_h: xr.DataArray,
     domain_poly: Polygon,
     land_polygons_path: str,
     river_network_path: str,
@@ -2636,29 +2508,17 @@ def animate_flood_progression(
     water level (output of ``postprocessing.compute_flood_progression``),
     saved as an MP4.
 
-    For a REGULAR grid, the land outline, river network, and domain boundary
-    are drawn once as a static background; an imshow layer of the
-    instantaneous variable (already masked to non-water land-use areas, for
-    ``variable="depth"``) is then updated for each time step.
-
-    For a QUADTREE run, ``da_h`` arrives as a mesh-native ``xu.UgridDataArray``
-    (unmasked — see ``postprocessing.compute_flood_progression``) and is
-    rendered directly as mesh cell polygons (``.ugrid.plot()``, a
-    ``matplotlib.collections.PolyCollection``) updated per frame via
-    ``set_array()`` — this never rasterizes the mesh, avoiding the memory
-    cost that rasterizing a large quadtree domain at its native pixel
-    resolution would incur (see ``src.postprocessing``'s
-    ``_coarsen_for_memory``).
+    The land outline, river network, and domain boundary are drawn once as a
+    static background; an imshow layer of the instantaneous variable
+    (already masked to non-water land-use areas, for ``variable="depth"``)
+    is then updated for each time step.
 
     Args:
         da_h:               Instantaneous water depth or water level (see
                             ``variable``) with a ``time`` dimension; NaN =
-                            dry / water / outside domain (regular-grid depth
-                            case only — level and the quadtree case are
-                            unmasked). Regular-grid arrays must carry CRS
-                            metadata (``rio.crs``); quadtree arrays must carry
-                            mesh CRS metadata (``ugrid.grid.crs`` — see
-                            ``postprocessing._ensure_ugrid_crs``).
+                            dry / water / outside domain (depth case only —
+                            level is unmasked). Must carry CRS metadata
+                            (``rio.crs``).
         domain_poly:        Domain polygon in WGS84 (from ``load_domain``).
         land_polygons_path: Path to the OSM land polygons geopackage.
         river_network_path: Path to the clipped river network geopackage.
@@ -2695,63 +2555,6 @@ def animate_flood_progression(
             "animate_flood_progression: da_h has no 'time' dimension — skipping"
         )
         Path(output_path).touch()
-        return
-
-    if isinstance(da_h, xu.UgridDataArray):
-        _, bounds, land, rivers, domain_gdf = _mesh_overlay_setup(
-            da_h, domain_poly, land_polygons_path, river_network_path
-        )
-
-        vals = da_h.values
-        vmin, vmax = _flood_animation_bounds(vals, style)
-
-        fig, ax = plt.subplots(figsize=(10, 8))
-        _draw_overlays(ax, land, rivers, domain_gdf, zorder=1)
-        coll = da_h.isel(time=0).ugrid.plot(
-            ax=ax, cmap=style["cmap"], vmin=vmin, vmax=vmax, zorder=2
-        )
-        extend = "max" if style["vmin"] is not None else "both"
-        cb = fig.colorbar(coll, ax=ax, fraction=0.03, pad=0.04, extend=extend)
-        cb.set_label(style["label"])
-
-        xmin, ymin, xmax, ymax = bounds
-        _margin = max(xmax - xmin, ymax - ymin) * 0.3
-        ax.set_xlim(xmin - _margin, xmax + _margin)
-        ax.set_ylim(ymin - _margin, ymax + _margin)
-        ax.set_xlabel("Easting (m)")
-        ax.set_ylabel("Northing (m)")
-        ax.set_aspect("equal")
-        ax.grid(True, alpha=0.3, linewidth=0.5)
-        ax.legend(
-            handles=_OVERLAY_LEGEND_HANDLES,
-            loc="lower right",
-            framealpha=0.9,
-            fontsize=8,
-        )
-
-        title_prefix = title_word
-        if run_label:
-            title_prefix = f"{title_prefix} — {run_label}"
-        if basin_id:
-            title_prefix = f"{title_prefix} | {basin_id}"
-        title_artist = ax.set_title(title_prefix)
-
-        times = da_h["time"].values
-        n_frames = da_h.sizes["time"]
-
-        def _update_mesh(i):
-            coll.set_array(da_h.isel(time=i).values.ravel())
-            title_artist.set_text(
-                f"{title_prefix}\n{np.datetime_as_string(times[i], unit='m')}"
-            )
-            return coll, title_artist
-
-        anim = FuncAnimation(fig, _update_mesh, frames=n_frames, blit=False)
-        out_path = Path(output_path)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        anim.save(str(out_path), writer=_make_writer())
-        plt.close(fig)
-        log.info(f"Written: {output_path}")
         return
 
     # Reproject from the model's metric UTM grid to EPSG:4326 so this animation

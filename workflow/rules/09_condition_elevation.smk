@@ -34,19 +34,19 @@ rule enforce_river_monotonicity:
     elevation and the depth-estimated network.
     """
     input:
-        elevation_merged       = results_path("{basin_id}/inputs/domain/{basin_id}_elevation_merged.tif"),
-        river_network          = results_path("{basin_id}/inputs/domain/{basin_id}_river_network_clean.gpkg"),
-        sfincs_grid            = results_path("{basin_id}/inputs/domain/{basin_id}_sfincs_grid.json"),
+        elevation_merged       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"),
+        river_network          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
+        sfincs_grid            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sfincs_grid.json"),
     output:
-        elevation_conditioned  = results_path("{basin_id}/inputs/domain/{basin_id}_elevation_conditioned.tif"),
-        elevation_conditioned_sfincs_grid = results_path("{basin_id}/inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"),
+        elevation_conditioned  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned.tif"),
+        elevation_conditioned_sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"),
         # Max conditioned (post-monotonicity) elevation along the river's own
         # centerline -- rule modelled_depth_estimation (10)/13 add
         # sfincs.grid.active_mask's own elevation_buffer_m on top to set the
         # active-cell mask's elevation ceiling (see enforce_river_monotonicity's
         # own docstring).
-        river_elevation_max    = results_path("{basin_id}/inputs/domain/{basin_id}_river_elevation_max.json"),
-        plot_conditioning      = results_path("{basin_id}/visuals/input_data/09_condition_elevation.png"),
+        river_elevation_max    = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_elevation_max.json"),
+        plot_conditioning      = results_path("{basin_id}/preprocessing_inputs/visuals/09_condition_elevation.png"),
     log:
         "logs/{basin_id}/09_condition_elevation.log"
     script:

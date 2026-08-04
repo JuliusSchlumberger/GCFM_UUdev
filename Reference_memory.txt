@@ -228,15 +228,13 @@ Config-conditional blocks:
     animation — the two branches produce genuinely different output sets,
     not just different code paths to the same files.
   - sfincs_subgrid.nc only if sfincs.subgrid.enabled.
-  - refinement_polygons.gpkg + plot only if sfincs.grid.quadtree.enabled.
   - spinup + sanity-check outputs, AND rule 16's (run_event) outputs incl.
     rule 17's metrics, only if sfincs.spinup.enabled — rule 16 needs rule
     14's restart file, so it shares that gate.
 
 RULE SUMMARY (in DAG order):
   00  common.smk     — catalogue helper (CATALOGUE / catalogue_path), wildcard
-                        constraints, BASINS list, config validation (quadtree
-                        requires subgrid). BASINS is auto-discovered from
+                        constraints, BASINS list. BASINS is auto-discovered from
                         delta_polygons but can be restricted via an optional
                         CLI-only config override, target_basins (not a
                         config.yml key) — see "RUNNING A SINGLE BASIN" in
@@ -336,14 +334,26 @@ RULE SUMMARY (in DAG order):
                             SWORD sources (needs 07's river_forcing.nc +
                             the raw SWORD catalogue entries directly, not
                             rule 06's output — see section 8).
-  13  build_sfincs    — HydroMT-SFINCS model build (regular or quadtree grid,
-                        see section 10); elevation source priority:
-                        river_burned_dem(_sfincs_grid) (10) >
-                        elevation_conditioned(_sfincs_grid) (09) >
-                        elevation_merged.tif (05a). Only ASSEMBLES config/
-                        input files — does NOT execute the SFINCS solver
-                        (that happens in rule 14). Scenario-aware: outputs
-                        live under scenarios/{scenario}/; forcing_mode /
+  13  build_sfincs_skeleton (basin-level, 2026-08-04 split) + build_sfincs
+                        (per-scenario forcing only, since the same split) —
+                        HydroMT-SFINCS model build (regular grid only);
+                        elevation source priority (in the
+                        skeleton): river_burned_dem(_sfincs_grid) (10) >
+                        elevation_conditioned(_sfincs_grid) (09) -- a
+                        TWO-level fallback, NOT three: the raw
+                        elevation_merged.tif (05a) is never used here at
+                        all, only elevation_conditioned (native and
+                        SFINCS-grid resolution). The skeleton's own input
+                        key/variable/catalog key were literally named
+                        "elevation_merged"/"local_elevation_merged" until
+                        2026-08-04 despite always pointing at
+                        elevation_conditioned.tif -- a stale name from
+                        before rule enforce_river_monotonicity existed,
+                        fixed for clarity (no behavior change). build_sfincs
+                        (forcing-only) does NOT execute the SFINCS solver
+                        either (that happens in rule run_spinup/run_event).
+                        Scenario-aware: build_sfincs's own outputs live
+                        under runs/{scenario}/; forcing_mode /
                         design_rp_river_yr / design_rp_surge_yr are all
                         derived per-scenario via scenario_params(wildcards.
                         scenario) — there is no config-level mode setting
@@ -365,7 +375,7 @@ RULE SUMMARY (in DAG order):
   17  flood_metrics   — calculated flood metrics per scenario from rule
                         16's finished event run; cheap postprocessing only,
                         never re-runs SFINCS. Writes
-                        scenarios/{scenario}/metrics/max_flood_depth.tif
+                        runs/{scenario}/metrics/max_flood_depth.tif
                         (downscaled max-depth GeoTIFF — input for later
                         flood-source attribution / adaptation measures) and
                         flood_metrics.csv (one row of scalar risk metrics
@@ -375,7 +385,7 @@ RULE SUMMARY (in DAG order):
                         (TOP-LEVEL config keys, not nested under sfincs).
 
 NOTE: rules 13, 14, 15, 16, 17 (and their visuals) are scenario-aware — all
-their outputs live under {basin_id}/scenarios/{scenario}/ (see sections 9
+their outputs live under {basin_id}/runs/{scenario}/ (see sections 9
 and 12). Rules 01–11 (incl. 08b/08c) are scenario-free and shared by all
 scenarios.
 
@@ -578,9 +588,8 @@ river_processing — rules 06, 08, 09, 10 (both siblings):
     weir_crest_fraction (round-0-only initial isolated-confinement crest/
     excavation split), n_correction_iterations / freeboard_m /
     min_crest_increment_per_round_m / river_crest_dilation_cells
-    (correction-round convergence), min_component_cells / weir_par1 /
-    weir_crest_junction_blend_m (weir-building, shared with rule 13's own
-    quadtree fallback). This is the single most involved subsystem in the
+    (correction-round convergence), min_component_cells / weir_par1
+    (weir-building). This is the single most involved subsystem in the
     current pipeline (round 0 isolated calibration → N correction rounds →
     a final crest-tightening snap, with per-round convergence checked
     against the model's own simulated water surface) — see
@@ -695,11 +704,6 @@ sfincs — rules 08b, 08c, 09 (active_mask only), 10-modelled, 13, 14,
     reaches) instead of one fixed value for every basin; max_active_cells
     (analytic polygon_area / resolution²) caps the result unconditionally
     either way.
-  grid.quadtree.{enabled, river_refinement_level, river_buffer_factor,
-    coastal_refinement_enabled, coastal_refinement_level, coastal_buffer_m}
-    — see section 10. NEVER used by rule 10-modelled's own calibration
-    (calibration always runs on the regular grid — see its own
-    NotImplementedError guard for quadtree).
   grid.active_mask — rule 09 / rule 10-modelled / rule 13:
     {enabled, elevation_buffer_m}. Excludes cells far above anything the
     river itself ever reaches: active-cell elevation ceiling =
@@ -958,8 +962,8 @@ WIDTH NORMALIZATION (applied via src.river_network.normalize_channel_widths
     max_width < width (SWORD data-quality fix)
   - select_width_column() — overwrites `width` with the chosen column so
     every downstream consumer (discharge propagation, hydraulic depth,
-    boundary-forcing grid visibility, quadtree river-refinement buffer,
-    SFINCS rivwth subgrid burning) sees the same, single corrected value.
+    boundary-forcing grid visibility, SFINCS rivwth subgrid burning) sees
+    the same, single corrected value.
     The column is always "width" now (the width_column config choice was
     removed — the function keyword still defaults to "width" but is no
     longer driven by config).
@@ -1337,7 +1341,7 @@ section 3 — so the two sources' discharge partitioning at every bifurcation
 can be compared side by side. One figure per bifurcation (1 or 2 panels,
 depending on whether the manual correction actually touched that
 bifurcation's neighbourhood) written to the directory output
-visuals/input_data/11b_bifurcation_calibration_options/{root_rid}.png. Only
+preprocessing_inputs/visuals/11b_bifurcation_calibration_options/{root_rid}.png. Only
 needs rule 07's river_forcing.nc (for seed crossings/discharges) and the two
 raw SWORD catalogue sources directly — does not depend on rule 06/08's own
 output.
@@ -1351,7 +1355,7 @@ the same comparison methodology for ad-hoc/manual runs outside Snakemake.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Scenario axis: rules 13–17 all carry the {scenario} wildcard; every output
-lives under {basin_id}/scenarios/{scenario}/. Rule 13 resolves the
+lives under {basin_id}/runs/{scenario}/. Rule 13 resolves the
 scenario's forcings itself — scenario_params() gives (mode, surge_rp,
 river_rp), then discharge is rebuilt via
 river_forcing.build_design_discharge_matrix() (design_rp_yr=None → constant
@@ -1368,16 +1372,11 @@ null (coast_100/river_100) -- float(None) raised TypeError, a latent
 crash on the FIRST actual (non-dry-run) build of either scenario, fixed
 the same day as the rule-07 params bug above.
 
-13_build_sfincs.py: resolves target_crs via hydromt.gis.parse_crs("utm",
-bbox=...) before building refinement polygons, then branches each of the 6
-components (grid, elevation, mask, initial_conditions, roughness, subgrid)
-on quadtree_enabled to call sf.quadtree_X instead of sf.X. SfincsModel
-auto-sets grid_type="quadtree" internally. The active-mask step uses
-mask_component.create_active(include_polygon=delta_domain) only — a
-commented-out alternative using include_zmax remains in the script as
-documentation of a rejected approach, harmless but dead. Rule 13 only
-ASSEMBLES config/input files — the SFINCS solver itself is never executed
-here (that happens for the first time in rule 14, run_spinup).
+13_build_sfincs_skeleton.py builds the regular grid via
+sf.grid.create_from_region(region={"geom": delta_domain}, res=resolution,
+crs="utm"). Rule 13 only ASSEMBLES config/input files — the SFINCS solver
+itself is never executed here (that happens for the first time in rule 14,
+run_spinup).
 
 Script internal section numbering (13_build_sfincs.py, 1-11): 1 Grid,
 2 Elevation, 3 Mask: active cells, 4 Mask: waterlevel boundary,
@@ -1400,9 +1399,17 @@ next entry:
     its own sf.elevation.create() source (byte-identical, not just
     same-resolution).
   elevation_list_subgrid (sf.subgrid.create()) =
-    [river_burned_dem (native), elevation_merged (native)] — subgrid needs
-    real sub-cell detail finer than one grid cell, so it stays at native
-    FathomDEM resolution rather than the coarser SFINCS-grid version.
+    [river_burned_dem (native), elevation_conditioned (native)] — subgrid
+    needs real sub-cell detail finer than one grid cell, so it stays at
+    native resolution rather than the coarser SFINCS-grid version. The
+    fallback is elevation_conditioned (post-monotonicity), NOT the raw
+    elevation_merged.tif — the skeleton's own catalog key was literally
+    named "local_elevation_merged" until 2026-08-04 despite always
+    pointing at elevation_conditioned.tif (a stale name predating rule
+    enforce_river_monotonicity), fixed for clarity with no behavior
+    change. This is the SAME file rule modelled_depth_estimation's own
+    subgrid step reads under its own "local_elevation_conditioned" key --
+    confirmed identical, not just same-named, 2026-08-04.
 There is no more gdf_zb/zbed_anchors.gpkg path at all — hydromt's own
 burn_river_rect is never called (river_list=[] unconditionally); every
 channel burn comes from src/river_burn.py's burn_river_channel(), run
@@ -1440,36 +1447,6 @@ the boundary (shapely nearest_points + a small REGION_SNAP_NUDGE_M=1.0 nudge
 toward representative_point(), since floating point can otherwise leave a
 "snapped" point still failing region.intersects()).
 
-Section 5 (Initial conditions, quadtree only) has TWO separate hydromt_sfincs
-bugs worked around inline, not just one:
-  1. quadtree_initial_conditions.create()'s default reproj_method="average"
-     is not a valid xugrid.OverlapRegridder method in the installed xugrid
-     version — worked around by passing reproj_method="mean" explicitly.
-  2. create() sets config key "ncinifile", but SfincsQuadtreeGrid.write()
-     (the code that actually writes the "ini" variable to a netCDF) looks up
-     "inifile" (no "nc" prefix) to decide whether/where to write it — a
-     genuine key-name mismatch in hydromt_sfincs (confirmed via direct
-     source read: quadtree_initial_conditions.py sets f"nc{mname}file",
-     quadtree.py's write loop reads f"{var}file"; sibling components like
-     quadtree_roughness.py/quadtree_storage_volume.py set "manningfile"/
-     "volfile" without the "nc" prefix and work correctly — initial
-     conditions is the one inconsistent case). Without the workaround, the
-     carefully-computed spatially-varying initial water level (sea/land
-     split from rule 05b, corrected for baseline_m) is SILENTLY never
-     written to disk for ANY quadtree basin — ncinifile in sfincs.inp
-     dangles, referencing a file that was never created, and SFINCS falls
-     back to its own uniform default with no warning anywhere. First
-     noticed via basin 4267691's production sfincs_ini.nc genuinely missing
-     on disk while writing tests/test_discharge_step_response.py. Fixed by
-     `sf.config.update({"inifile": sf.config.get("ncinifile")})`
-     immediately after create() — reuses the exact filename create()
-     already (uselessly) set, just under the key write() actually reads.
-     This is a workaround in OUR OWN script, not a fix to the hydromt_sfincs
-     library itself (a separate git repo at C:\Users\Schlu005\repos\
-     hydromt_sfincs, editable-installed) — if hydromt_sfincs is ever
-     updated/reinstalled from upstream, re-check whether this is still
-     needed.
-
 Observation points (section 11): for each of the N_TOP_CROSSINGS
 (sfincs.observation_points.n_top_crossings) boundary crossings with the
 highest bankfull discharge, place N_OBS_PER_CROSSING
@@ -1492,8 +1469,10 @@ active scenario's own derived value.
 
 14_run_spinup.py / 15_sanity_checks.py / 16_run_event.py: all three are
 grid-type agnostic. Rule 14 executes SFINCS via subprocess with the working
-directory set to spinup/ so all relative paths in the spinup .inp resolve
-correctly; the restart filename follows SFINCS v2.3 naming
+directory set to spinup/ (a SIBLING of sfincs/, both under runs/{scenario}/,
+2026-08-04 reorg) so all relative paths in the spinup .inp (now
+"../sfincs/<file>", not the pre-reorg "../<file>") resolve correctly; the
+restart filename follows SFINCS v2.3 naming
 (sfincs.YYYYMMDD.HHMMSS.rst, timestamp = tref + spinup_days), computed in
 14_run_spinup.smk as RST_FNAME so Snakemake knows exactly which file to
 expect (also referenced directly in 16_run_event.smk's input:, since
@@ -1505,12 +1484,12 @@ subdirectory) — unlike rule 14, it does not write its own sfincs.inp; rule
 13's main sfincs.inp is already fully configured for this exact run
 (tstart = spin-up end via "Phase 2 config" in 13_build_sfincs.py, tstop =
 end of the forcing timeseries, rstfile = the spin-up restart file). This
-produces scenarios/{scenario}/sfincs/sfincs_map.nc (the event's own map
-output, alongside — not inside — spinup/'s own sfincs_map.nc). Diagnostics
-mirror rule 15's Check 1 (compute_max_inundation + plot_inundation_check,
+produces runs/{scenario}/sfincs/sfincs_map.nc (the event's own map
+output, in the sibling sfincs/ dir — not spinup/'s own sfincs_map.nc).
+Diagnostics mirror rule 15's Check 1 (compute_max_inundation + plot_inundation_check,
 zsmax envelope) and the flood-progression animation (compute_flood_
 progression + animate_flood_progression), sourced from run_dir=sfincs_root
-instead of spinup_dir, written DIRECTLY into scenarios/{scenario}/visuals/
+instead of spinup_dir, written DIRECTLY into runs/{scenario}/visuals/
 (not a model_runs/main_run/ subdirectory — that layer was intentionally
 dropped when the scenario axis was introduced, see section 12; the
 basin-level visuals/model_runs/ directory no longer exists at all since
@@ -1525,36 +1504,11 @@ flood volume (volume actually present in the domain at one real instant),
 which is NOT the same as summing each pixel's own zsmax envelope maximum
 (different pixels can peak at different times).
 
-sfincs_subgrid.nc naming: identical default filename for both grid types.
-
-QUADTREE GRID SUPPORT (rules 13, 14, 15, 16):
-Enabled by default. Toggle: sfincs.grid.quadtree.enabled. VALIDATION:
-quadtree.enabled requires subgrid.enabled = true (checked in 00_common.smk)
-— subgrid is the only place a regular reference raster (dep_subgrid.tif)
-exists for quadtree runs, and every postprocessing step that turns ugrid
-data into a raster depends on it.
-
-Refinement zones (workflow/src/quadtree_refinement.py,
-build_refinement_polygons()):
-  - River zone: river_network reaches buffered by width × river_buffer_factor
-    (metric CRS via pick_utm_crs).
-  - Coastal zone: land_polygons.gpkg coastline boundary buffered by
-    coastal_buffer_m.
-  - No overlay/priority logic needed — hydromt_sfincs's quadtree_grid
-    refines each polygon's footprint independently to its own
-    refinement_level, so a cell covered by both zones ends up at
-    whichever level is higher regardless of GeoDataFrame row order.
-  - Diagnostic plot: plot_refinement_zones() in src/plots.py →
-    figs/01b_refinement_zones.png.
-
-Any new diagnostic that reprojects a quadtree run's fine-resolution raster
-output to WGS84 should use plots.py's _downsample_wgs_dataarray() helper —
-see section 10. For a diagnostic driven by mesh-native data instead (e.g.
-zs/zb, which stay mesh-native for animation — see "MESH-NATIVE ANIMATION"
-in section 14), prefer plots.py's _mesh_overlay_setup() + da.ugrid.plot()
-pattern (used by animate_flood_progression) over rasterizing first — it
-plots actual mesh cell polygons via a PolyCollection, memory-scaled to cell
-count rather than a dense raster.
+Quadtree grid support (rules 13/14/15/16, src/quadtree_refinement.py, and
+the regular/quadtree dispatch throughout src/protection_weir.py,
+src/river_burn.py, src/plots.py, src/postprocessing.py) was removed
+2026-08-04 — the project now builds regular grids only. See the REMOVED:
+QUADTREE GRID SUPPORT entry in section 14 for what was taken out.
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1580,14 +1534,13 @@ sanity_checks), rule 05a (elevation datum-correction diagnostics).
 
 _downsample_wgs_dataarray() — mirrors the file's numpy-array downsampling
 convention (_PLOT_MAX_PX = 2,000,000 px) but for xarray DataArrays
-reprojected to WGS84. Reprojecting a fine-resolution SFINCS run raster (e.g.
-a quadtree run's subgrid, down to ~1.5 m pixels) to WGS84 for a whole delta
-domain can produce tens of thousands of pixels per side; handing that
+reprojected to WGS84. Reprojecting a fine-resolution SFINCS run raster
+(down to ~1.5 m pixels) to WGS84 for a whole delta domain can produce tens
+of thousands of pixels per side; handing that
 straight to imshow/FuncAnimation can exhaust memory (matplotlib allocates an
 RGBA buffer sized to the full array). Wired into plot_max_inundation_map(),
-plot_inundation_check(), and animate_flood_progression()'s regular-grid path
-(its quadtree path is mesh-native — see "MESH-NATIVE ANIMATION" below — so
-it never reprojects/rasterizes at all). Any new function that reprojects a
+plot_inundation_check(), and animate_flood_progression(). Any new function
+that reprojects a
 SFINCS output raster/DataArray to WGS84 for plotting should call this helper
 right after the `.rio.reproject("EPSG:4326")` call.
 
@@ -1618,15 +1571,12 @@ Current plot functions:
                                      rp_level) and a map of the MDT
                                      correction. Always generated (even with
                                      both corrections off).
-  plot_refinement_zones()        — quadtree refinement-zone diagnostic
-                                     (visuals/sfincs_build/01b_refinement_zones.png)
   plot_max_inundation_map()      — validation_max_inundation.png
-                                     (scenarios/{scenario}/visuals/spinup/,
-                                     rule 14 only)
+                                     (runs/{scenario}/spinup/, rule 14 only)
   animate_flood_progression()    — 02_flood_animation.mp4 — shared by rule 15
-                                     (scenarios/{scenario}/visuals/spinup/,
+                                     (runs/{scenario}/spinup/,
                                      run_label="spinup") and rule 16
-                                     (scenarios/{scenario}/visuals/ directly,
+                                     (runs/{scenario}/visuals/ directly,
                                      run_label="event" — NOT a model_runs/
                                      main_run/ subdirectory, that layer was
                                      dropped with the scenario axis, see
@@ -1676,20 +1626,15 @@ src/postprocessing.py    — SFINCS output processing, flood extent calculation
                             map, legacy analyse.py-compatible columns (rule 17).
                             compute_max_inundation()/compute_flood_timeseries_
                             stats() bound da_dep's memory via
-                            _coarsen_for_memory() for BOTH regular and
-                            quadtree grids now, not just quadtree — a large
-                            regular grid's own full-extent subgrid reference
-                            raster can exceed max_bytes just as easily (see
-                            section 14's QUADTREE POSTPROCESSING MEMORY entry,
-                            despite the name — the fix wasn't actually
-                            quadtree-specific).
+                            _coarsen_for_memory() — a large full-extent
+                            subgrid reference raster can exceed max_bytes.
 src/profiling.py         — ScriptProfiler: wraps functions with timing logs
 src/protection_levels.py — FLOPROS × WRI geounit dominant-protection lookup;
                             used by rule 04
 src/protection_weir.py   — NEW. Builds a coastal/riverbank protection weir
-                            directly on the SFINCS grid (regular or
-                            quadtree) — the weir represents the protection
-                            standard as a continuous defense along the WHOLE
+                            directly on the SFINCS regular grid — the weir
+                            represents the protection standard as a
+                            continuous defense along the WHOLE
                             coast/river network, hugging it directly with no
                             inland offset. Used, unmodified, by BOTH rule 13
                             (production, real per-reach crest) AND rule
@@ -1719,24 +1664,19 @@ src/protection_weir.py   — NEW. Builds a coastal/riverbank protection weir
                             dropped as if it were a separate tiny island —
                             see section 14's WEIR TOPOLOGY GAPS (DIAGONAL
                             4-CONNECTIVITY) entry.
-src/quadtree_refinement.py — build_refinement_polygons(): river-buffer +
-                            optional coastal-buffer refinement-zone polygons
-                            for SFINCS quadtree grid; used by rule 13
 src/raster.py             — find_fathomdem_tiles() (the only tile finder),
                             merging, roughness reclassification,
                             resample_to_utm_array(), compute_geoid_offset_arr(),
                             reproject_to_reference_grid()
 src/river_burn.py         — burn_river_channel() (+ build_channel_mask_
-                            regular/quadtree, build_smoothed_weir_crest_
-                            regular/quadtree): burns a per-reach, in-memory
-                            river-bed anchor profile (never a standalone
-                            zbed_anchors file anymore) directly into a
-                            channel-only DEM at native resolution,
-                            per-reach-independent to avoid hydromt_sfincs's
-                            own burn_river_rect cross-tile contamination bug.
-                            Called directly by BOTH rule-10 siblings (see
-                            section 5) and by rule 13's own quadtree
-                            fallback weir smoothing.
+                            regular, build_smoothed_weir_crest_regular):
+                            burns a per-reach, in-memory river-bed anchor
+                            profile (never a standalone zbed_anchors file
+                            anymore) directly into a channel-only DEM at
+                            native resolution, per-reach-independent to
+                            avoid hydromt_sfincs's own burn_river_rect
+                            cross-tile contamination bug. Called directly by
+                            BOTH rule-10 siblings (see section 5).
                             build_centerline_cells_regular() — every grid
                             cell a reach's own RAW centerline (not the
                             buffered channel_mask corridor) actually
@@ -1759,9 +1699,8 @@ src/river_burn.py         — burn_river_channel() (+ build_channel_mask_
                             basin 4267691's round-0 369 m spike — see
                             section 14). Used by BOTH rule 10-modelled and
                             rule 13's regular-grid discharge forcing.
-                            Regular grid only — no quadtree equivalent of
-                            build_centerline_cells_regular exists yet, so
-                            quadtree builds don't get this snap.
+                            Used by BOTH rule 10-modelled and rule 13's
+                            discharge forcing.
                             build_nearest_weir_crest_regular() — NEW
                             (2026-07-29). Sibling of build_smoothed_weir_
                             crest_regular: paints every raster cell with
@@ -1769,17 +1708,20 @@ src/river_burn.py         — burn_river_channel() (+ build_channel_mask_
                             directly, no along-reach interpolation/
                             junction blending — used by rule 10-modelled's
                             own correction rounds only (section 14, crest
-                            redesign entry); build_smoothed_weir_crest_
-                            regular itself is untouched and still used by
-                            rule 13's quadtree fallback.
+                            redesign entry). build_smoothed_weir_crest_
+                            regular itself has no remaining caller as of
+                            2026-08-04's quadtree removal (its only caller
+                            was rule 13's quadtree fallback) — left in place,
+                            flagged as dead code rather than removed, since
+                            that's outside quadtree-removal scope.
                             _flush_capped_buffer() / _half_plane_beyond() —
                             NEW. line.buffer(width/2) with the round end
                             cap clipped to a flat cut at clip_start/
-                            clip_end, used by ALL FOUR per-reach buffer
-                            call sites (burn_river_channel,
+                            clip_end, used by ALL per-reach buffer call
+                            sites (burn_river_channel,
                             _channel_buffer_polygons/build_channel_mask_
-                            regular, build_smoothed_weir_crest_regular/
-                            quadtree) with clip_start=is_seed — see
+                            regular, build_smoothed_weir_crest_regular)
+                            with clip_start=is_seed — see
                             section 14's SEED REACH ROUNDED-CAP entry for
                             why the default round cap is wrong at a
                             network seed specifically.
@@ -1883,17 +1825,61 @@ from an already-tracked snakemake.output.X path (plots_dir / figs_dir) so
 they automatically follow wherever the rule's output: block points, rather
 than hardcoding "visuals/..." a second time.
 
-SCENARIO PATHS: everything produced by rules 13, 14, 15, 16, 17 lives under
-{basin_id}/scenarios/{scenario}/ — the tree below reflects this. Rules
-01–11 (incl. 08b/08c) outputs (inputs/, the preprocessing visuals) are
-scenario-free and shared by all scenarios. There is no basin-level
-visuals/model_runs/ directory at all anymore — its one former user, rule
-13b/validate_protection_level, was removed 2026-08-02 (see section 14's
-PROTECTION-LEVEL VALIDATION RULE REMOVED entry). Rule 16's own event-run
-diagnostics never used it (see below).
+SCENARIO PATHS: rule 13 (build_sfincs) was SPLIT 2026-08-04 into a
+basin-level "skeleton" build (rule build_sfincs_skeleton -- grid,
+elevation, mask, coastal protection weir, roughness, subgrid,
+observation points: everything that does NOT depend on a scenario's own
+forcing_mode/design_rp_river_yr/design_rp_surge_yr) and a much smaller
+per-scenario "forcing" build (rule build_sfincs, unchanged name -- initial
+conditions, water-level boundary, river discharge, this scenario's own
+hand-crafted sfincs.inp referencing the skeleton's geometry files via a
+relative path). Rule run_spinup (14) was moved the SAME way: it always
+runs at a fixed RP=1 (coast AND river, both tabulated exactly -- COAST-RP
+and the river GPD return-value table both include RP=1 natively, no
+extrapolation), entirely independent of any scenario's own RP, borrowing
+its own geometry from the SAME skeleton -- so it is now basin-level too,
+not one copy per scenario. Rule sanity_checks (15) followed suit (it only
+ever analyses spin-up's own output). Only build_sfincs, run_event (16),
+and compute_flood_metrics (17) still run once per scenario -- see each
+rule's own module docstring for the full mechanism (SfincsModel loaded
+from the skeleton in read mode, sf.root.set() redirects writes to the
+scenario's own directory, ONLY the new forcing components are written,
+src.sfincs_run.parse_sfincs_inp/forward_geometry_files hand-craft the
+final sfincs.inp -- HydroMT's own config writer silently absolutizes any
+cross-directory relative file reference, so this can't be done via
+sf.write()/sf.config.write() directly).
+
+Basin-level: {basin_id}/sfincs_skeleton/ (rule build_sfincs_skeleton) and
+{basin_id}/spin_up/ (rules run_spinup, sanity_checks) -- both siblings of
+preprocessing_inputs/ and runs/, not nested under either. Per-scenario:
+{basin_id}/runs/{scenario}/ (renamed from scenarios/{scenario}/, 2026-08-04
+reorg) -- rules build_sfincs (forcing only now), run_event, compute_flood_metrics.
+Rules 01–11 (incl. 08b/08c) outputs live under {basin_id}/preprocessing_inputs/
+(renamed from inputs/, same reorg) -- scenario-free, shared by all
+scenarios. Preprocessing diagnostic plots moved from a separate top-level
+visuals/input_data/ tree into preprocessing_inputs/visuals/ (the
+"input_data" segment dropped as redundant) -- this is ALSO where
+build_sfincs_skeleton's own (non-forcing) diagnostic plots live now,
+alongside the rules 04-11 ones. The depth/crest calibration model's own
+intermediate directory moved from a bare top-level sfincs_calibration/
+into preprocessing_inputs/depth_crest_calibration/. There is no
+basin-level visuals/model_runs/ directory at all anymore — its one former
+user, rule 13b/validate_protection_level, was removed 2026-08-02 (see
+section 14's PROTECTION-LEVEL VALIDATION RULE REMOVED entry).
+
+IMPORTANT for postprocessing: the subgrid reference raster
+(subgrid/dep_subgrid.tif) used by src.postprocessing.compute_max_inundation/
+compute_flood_timeseries_stats now physically lives ONLY in
+sfincs_skeleton/ -- runs/{scenario}/sfincs/ no longer contains it (only
+references it via a relative path in that scenario's own sfincs.inp).
+Every caller of these two functions for a scenario's own event run (rules
+run_event, compute_flood_metrics) must pass sfincs_skeleton/ as the
+SECOND argument (the subgrid-lookup root), not that scenario's own
+sfincs_root -- passing sfincs_root there silently falls back to the
+coarser cell/mesh-resolution zb instead of raising.
 
 D:/GCFM_UU/results/{basin_id}/
-├── inputs/
+├── preprocessing_inputs/
 │   ├── domain/
 │   │   ├── domain_bbox.json                       ← bounds, UTM CRS, basin_id (no prefix — see below)
 │   │   ├── {basin_id}_delta_polygon.gpkg           ← rule 01
@@ -1921,7 +1907,13 @@ D:/GCFM_UU/results/{basin_id}/
 │   │   │                                              boundary (mask=3)
 │   │   ├── {basin_id}_grid_resolution.json         ← rule 08b (optimize_grid_resolution)
 │   │   ├── {basin_id}_sfincs_grid.json             ← rule 08c (build_sfincs_grid): shared
-│   │   │                                              transform/shape/CRS for rules 09/10-modelled/13
+│   │   │                                              transform/shape/CRS for rules 09/10-modelled/13.
+│   │   │                                              Computed by calling hydromt.model.processes.
+│   │   │                                              create_grid_from_region directly (2026-08-04
+│   │   │                                              fix) -- NOT by instantiating a SfincsModel,
+│   │   │                                              which used to leave behind a permanently
+│   │   │                                              empty {basin_id}/sfincs_grid/ scratch
+│   │   │                                              directory (sf.write() was never called).
 │   │   ├── {basin_id}_elevation_conditioned.tif    ← rule 09 (ALWAYS runs — no longer opt-in),
 │   │   │                                              native FathomDEM resolution
 │   │   ├── {basin_id}_elevation_conditioned_sfincs_grid.tif ← rule 09's SECOND output,
@@ -1960,103 +1952,162 @@ D:/GCFM_UU/results/{basin_id}/
 │       └── glofas_clip.nc            ← rule 07 output
 │         # forcing/*.nc are NOT prefixed either (out of the {basin_id}_
 │         # prefix scope, which covers .gpkg/.tif only — see section 4/11).
-├── visuals/                       ← ONLY the scenario-free preprocessing
-    │                                 diagnostics remain here (rules 04–11);
-    │                                 all rule 13–17 plots moved into
-    │                                 scenarios/{scenario}/visuals/ below
-    ├── input_data/                 ← rules 04-11 (preprocessing diagnostics)
-    │   ├── 04_protection_levels.png
-    │   ├── 05a_elevation.png
-    │   ├── 05a_elevation_geoid_offset.png
-    │   ├── 05a_elevation_mdt_ocean.png
-    │   ├── 05a_elevation_datum_correction.png
-    │   ├── 05a_elevation_gebco_correction.png
-    │   ├── 05b_landuse.png
-    │   ├── 05b_sea_mask.png
-    │   ├── 05b_zsini.png
-    │   ├── 05c_roughness.png
-    │   ├── 06_river_network.png
-    │   ├── 07_forcing_locations.png
-    │   ├── 07_forcing_timeseries.png
-    │   ├── 07_forcing_eva.png
-    │   ├── 07_bias_correction/       ← directory; one 6-panel PNG per
-    │   │                                crossing/cell with a GRDC bias
-    │   │                                correction applied, or a single
-    │   │                                07_bias_correction_none.png
-    │   ├── 07_surge_correction.png
-    │   ├── 08_river_clean.png
-    │   ├── 08_river_discharge.png
-    │   ├── 09_condition_elevation.png  ← rule 09 (ALWAYS produced now)
-    │   ├── 10_river_depth.png          ← rule 10-empirical ONLY
-    │   ├── 10_river_width_q.png        ← rule 10-empirical ONLY
-    │   ├── 10_river_hydraulics.png     ← rule 10-empirical ONLY
-    │   ├── 10_calibration/             ← rule 10-modelled ONLY, sibling of the
-    │   │   ├── river_depth.png            three plots above (mutually exclusive
-    │   │   ├── water_level_timeseries.png with them — see section 2's rule-10
-    │   │   ├── max_inundation.png         DAG-shape note): canonical copies of
-    │   │   ├── flood_animation.mp4        the LAST converged round's own plots
-    │   │   └── rounds/                    below
-    │   │       └── round{i}_{river_depth.png,water_level_timeseries.png,
-    │   │                     max_inundation.png,flood_animation.mp4}
-    │   │           ← one full set per round (0..n_correction_iterations),
-    │   │             i.e. the isolated round-0 calibration through every
-    │   │             coupled-system correction round — see section 5
-    │   └── 11_upstream_boundary_check.png  ← tracked output (rule 11,
-    │                                          test_upstream_boundary)
-    └── 11b_bifurcation_calibration_options/  ← tracked output (rule 11,
-                                             test_bifurcation_calibration_options), sibling
-                                             of input_data/ not inside it — one {root_rid}.png
-                                             per bifurcation compared (see section 8)
-└── scenarios/{scenario}/          ← everything from rules 13-17 (one full
-    │                                 copy per scenario; "default" for a
-    │                                 plain `snakemake build`)
+│   ├── visuals/                    ← ONLY the scenario-free preprocessing
+    │   │                              diagnostics (rules 04-11); all rule
+    │   │                              13-17 plots live under
+    │   │                              runs/{scenario}/visuals/ below.
+    │   │                              "input_data" segment DROPPED
+    │   │                              2026-08-04 (redundant once already
+    │   │                              nested under preprocessing_inputs/)
+    │   │   ├── 04_protection_levels.png
+    │   │   ├── 05a_elevation.png
+    │   │   ├── 05a_elevation_geoid_offset.png
+    │   │   ├── 05a_elevation_mdt_ocean.png
+    │   │   ├── 05a_elevation_datum_correction.png
+    │   │   ├── 05a_elevation_gebco_correction.png
+    │   │   ├── 05b_landuse.png
+    │   │   ├── 05b_sea_mask.png
+    │   │   ├── 05b_zsini.png
+    │   │   ├── 05c_roughness.png
+    │   │   ├── 06_river_network.png
+    │   │   ├── 07_forcing_locations.png
+    │   │   ├── 07_forcing_timeseries.png
+    │   │   ├── 07_forcing_eva.png
+    │   │   ├── 07_bias_correction/       ← directory; one 6-panel PNG per
+    │   │   │                                crossing/cell with a GRDC bias
+    │   │   │                                correction applied, or a single
+    │   │   │                                07_bias_correction_none.png
+    │   │   ├── 07_surge_correction.png
+    │   │   ├── 08_river_clean.png
+    │   │   ├── 08_river_discharge.png
+    │   │   ├── 09_condition_elevation.png  ← rule 09 (ALWAYS produced now)
+    │   │   ├── 10_river_depth.png          ← rule 10-empirical ONLY
+    │   │   ├── 10_river_width_q.png        ← rule 10-empirical ONLY
+    │   │   ├── 10_river_hydraulics.png     ← rule 10-empirical ONLY
+    │   │   ├── 10_calibration/             ← rule 10-modelled ONLY, sibling of the
+    │   │   │   ├── river_depth.png            three plots above (mutually exclusive
+    │   │   │   ├── water_level_timeseries.png with them — see section 2's rule-10
+    │   │   │   ├── max_inundation.png         DAG-shape note): canonical copies of
+    │   │   │   ├── flood_animation.mp4        the LAST converged round's own plots
+    │   │   │   └── rounds/                    below
+    │   │   │       └── round{i}_{river_depth.png,water_level_timeseries.png,
+    │   │   │                     max_inundation.png,flood_animation.mp4}
+    │   │   │           ← one full set per round (0..n_correction_iterations),
+    │   │   │             i.e. the isolated round-0 calibration through every
+    │   │   │             coupled-system correction round — see section 5
+    │   │   └── 11_upstream_boundary_check.png  ← tracked output (rule 11,
+    │   │                                          test_upstream_boundary)
+    │   └── 11b_bifurcation_calibration_options/  ← tracked output (rule 11,
+    │                                            test_bifurcation_calibration_options), sibling
+    │                                            of visuals/ not inside it — one {root_rid}.png
+    │                                            per bifurcation compared (see section 8)
+    └── depth_crest_calibration/       ← rule 10-modelled's own intermediate/
+                                          disposable calibration model
+                                          (round{i}/ subdirs, calibration_state.csv,
+                                          river_burned_round{i}_native.tif) --
+                                          renamed+moved from a bare top-level
+                                          sfincs_calibration/, 2026-08-04 reorg.
+                                          NOT where the canonical diagnostic
+                                          plots live (those are copied out to
+                                          preprocessing_inputs/visuals/10_calibration/
+                                          above) — this is the disposable model
+                                          itself, see section 5.
+├── sfincs_skeleton/                ← rule build_sfincs_skeleton, BASIN-LEVEL
+│                                      (no {scenario}), 2026-08-04. Everything
+│                                      scenario-independent: grid, elevation,
+│                                      mask, weir, roughness, subgrid,
+│                                      observation points, plus the DEFAULT
+│                                      (non-river_only) spatially-varying
+│                                      initial condition ("ini", baked into
+│                                      sfincs.inp's own inifile key -- see
+│                                      SfincsInitialConditions.write() being a
+│                                      no-op, bundled into the grid component's
+│                                      own write() instead). NOT directly
+│                                      runnable (no tref/tstart/tstop/forcing
+│                                      at all) -- build_sfincs and run_spinup
+│                                      each load it read-only and hand-craft
+│                                      their OWN sfincs.inp forwarding these
+│                                      files via a relative path.
+│   ├── sfincs.inp                   ← grid header + geometry file refs only
+│   ├── sfincs.weir                  ← production weir (imported directly from
+│   │                                   rule 10-modelled when it ran)
+│   ├── {basin_id}_coastal_protection_weir.gpkg
+│   ├── sfincs_subgrid.nc            ← real subgrid file (if enabled); 0-byte
+│   │                                   placeholder otherwise
+│   └── zsini.tif                    ← baseline_m spatially-varying raster
+├── spin_up/                        ← rules run_spinup + sanity_checks,
+│                                      BASIN-LEVEL (no {scenario}), 2026-08-04.
+│                                      Always RP=1 (coast AND river, both
+│                                      exactly tabulated -- no extrapolation),
+│                                      held CONSTANT over spinup_days -- see
+│                                      14_run_spinup.py's own module
+│                                      docstring. Borrows ALL geometry from
+│                                      sfincs_skeleton/ the SAME way
+│                                      build_sfincs does (load read-only,
+│                                      sf.root.set() redirect, hand-craft its
+│                                      own sfincs.inp referencing
+│                                      "../sfincs_skeleton/<file>"). Every
+│                                      scenario's own event run (rule
+│                                      run_event) references the SAME restart
+│                                      file here via its own sfincs.inp's
+│                                      rstfile entry -- this is the whole
+│                                      point: changing a scenario's own RP
+│                                      never touches this directory.
+│   ├── sfincs.inp                     ← rule run_spinup's own config
+│   ├── sfincs_map.nc                  ← rule run_spinup
+│   ├── sfincs.YYYYMMDD.HHMMSS.rst     ← rule run_spinup (restart file, consumed
+│   │                                     by EVERY scenario's own sfincs.inp)
+│   ├── validation_spinup.png          ← rule run_spinup
+│   ├── validation_max_inundation.png  ← rule run_spinup
+│   ├── 01_inundation_ratio.png        ← rule sanity_checks
+│   └── 02_flood_animation.mp4         ← rule sanity_checks
+└── runs/{scenario}/               ← rules build_sfincs (forcing only, since
+    │                                 2026-08-04), run_event, compute_flood_metrics
+    │                                 (one full copy per scenario; "default" for a
+    │                                 plain `snakemake build`). Renamed from
+    │                                 scenarios/{scenario}/, 2026-08-04 reorg.
     ├── sfincs/
-    │   ├── sfincs.inp                 ← MAIN EVENT config (rule 13); already
-    │   │                                 configured for rule 16's run (tstart =
-    │   │                                 spin-up end, tstop = forcing end,
-    │   │                                 rstfile = rule 14's restart file)
-    │   ├── sfincs.weir                 ← rule 13's production weir (ALWAYS
-    │   │                                 produced now, imported directly from
-    │   │                                 rule 10-modelled when it ran)
-    │   ├── {basin_id}_coastal_protection_weir.gpkg ← rule 13's own copy,
-    │   │                                 alongside sfincs.weir
-    │   ├── sfincs_subgrid.nc          ← real subgrid file (if subgrid enabled);
-    │   │                                 0-byte placeholder otherwise
-    │   ├── sfincs_map.nc              ← rule 16's own map output (event run;
-    │   │                                 distinct from spinup/sfincs_map.nc below)
-    │   ├── {basin_id}_refinement_polygons.gpkg   ← quadtree mode only (rule 13)
-    │   └── spinup/                    ← rule 14, run_spinup
-    │       ├── sfincs_map.nc
-    │       └── sfincs.YYYYMMDD.HHMMSS.rst
+    │   ├── sfincs.inp                 ← THIS SCENARIO's own forcing config
+    │   │                                 (rule build_sfincs) -- grid-header/
+    │   │                                 geometry keys forwarded from
+    │   │                                 sfincs_skeleton/ via relative path,
+    │   │                                 this scenario's own bzs/bnd/dis/src
+    │   │                                 forcing files referenced directly
+    │   │                                 (they live right here), rstfile =
+    │   │                                 "../../../spin_up/<restart file>"
+    │   │                                 (basin-level, shared -- computed via
+    │   │                                 os.path.relpath, not hand-derived).
+    │   │                                 Already configured for rule
+    │   │                                 run_event's run (tstart = spin-up
+    │   │                                 end, tstop = forcing end).
+    │   │                                 sfincs.dep/msk/manning/subgrid/weir
+    │   │                                 do NOT physically exist here anymore
+    │   │                                 -- only referenced via sfincs.inp.
+    │   ├── sfincs.bzs / sfincs.bnd     ← this scenario's own water-level
+    │   │                                 forcing (rule build_sfincs)
+    │   ├── sfincs.dis / sfincs.src     ← this scenario's own discharge forcing
+    │   └── sfincs_map.nc               ← rule run_event's own map output (event
+    │                                      run; distinct from spin_up/sfincs_map.nc)
     ├── visuals/
-    │   ├── sfincs_build/           ← rule 13 (build_sfincs's own diagnostics)
-    │   │   ├── 01_grid.png
-    │   │   ├── 01b_refinement_zones.png  ← quadtree mode only
-    │   │   ├── 02_elevation.png
-    │   │   ├── 03_mask.png
-    │   │   ├── 04_roughness.png
-    │   │   ├── 05_forcing.png            ← untracked side-effect plot (not in
-    │   │   │                                the rule's output:, just follows figs_dir)
-    │   │   ├── 06_zsini.png              ← untracked side-effect plot (same as above)
-    │   │   └── 07_coastal_protection_weir.png ← rule 13's own weir diagnostic
-    │   ├── spinup/                 ← rule 14's own plots + rule 15's sanity
-    │   │   │                          checks, both analysing the spin-up's
-    │   │   │                          own sfincs/spinup/sfincs_map.nc
-    │   │   ├── validation_spinup.png         ← rule 14
-    │   │   ├── validation_max_inundation.png ← rule 14
-    │   │   ├── 01_inundation_ratio.png       ← rule 15
-    │   │   └── 02_flood_animation.mp4        ← rule 15
-    │   │   # rule 16's diagnostics sit DIRECTLY in visuals/ — the old
+    │   ├── sfincs_build/           ← rule build_sfincs's own diagnostic (forcing
+    │   │   │                          only now -- grid/elevation/mask/roughness/
+    │   │   │                          weir plots moved to
+    │   │   │                          preprocessing_inputs/visuals/sfincs_build/,
+    │   │   │                          built once by build_sfincs_skeleton)
+    │   │   └── 05_forcing.png      ← untracked side-effect plot (not in the
+    │   │                              rule's output:, just follows figs_dir)
+    │   │   # rule run_event's diagnostics sit DIRECTLY in visuals/ — the old
     │   │   # model_runs/{spinup,main_run}/ layer was intentionally dropped
     │   │   # (no exceptions remain -- rule 13b, the one former exception,
-    │   │   # was removed 2026-08-02)
-    │   ├── 01_inundation_ratio.png       ← rule 16 (event run, analysing
+    │   │   # was removed 2026-08-02); spin-up's own diagnostics live in the
+    │   │   # basin-level spin_up/ above, not here at all (2026-08-04)
+    │   ├── 01_inundation_ratio.png       ← rule run_event (event run, analysing
     │   ├── 02_flood_animation.mp4           sfincs/sfincs_map.nc)
     │   └── flood_timeseries.csv          ← per-timestep flooded_area_km2,
     │                                        flood_volume_m3 (flood_volume_m3's
     │                                        max = the true peak total flood
     │                                        volume — see section 9)
-    └── metrics/                   ← rule 17, flood_metrics
+    └── metrics/                   ← rule compute_flood_metrics
         ├── max_flood_depth.tif       ← downscaled max-depth GeoTIFF (hmin
         │                                threshold applied) — input for later
         │                                flood-source attribution / adaptation
@@ -3085,6 +3136,29 @@ decision):
   Deliberately left as-is pending developer investigation (not reverted
   automatically) — check with the developer before relying on flood-area/
   volume outputs if this hasn't been resolved yet.
+
+REMOVED: QUADTREE GRID SUPPORT (2026-08-04):
+  The project no longer builds quadtree grids — sfincs.grid.quadtree was
+  removed from config.yml entirely, and every regular/quadtree dispatch
+  branch throughout the codebase was collapsed to the regular-grid path
+  only. Deleted: src/quadtree_refinement.py (whole file), GridArrays.
+  from_quadtree/weighted_graph/_seaward_edges_quadtree(_with_values) in
+  src/protection_weir.py, build_channel_mask_quadtree/build_smoothed_weir_
+  crest_quadtree/_quadtree_face_polygons in src/river_burn.py,
+  plot_refinement_zones/_mesh_overlay_setup and the mesh-native branch of
+  animate_flood_progression in src/plots.py, _mosaic_quadtree_dep_levels
+  and the UgridDataArray branches of compute_flood_progression in
+  src/postprocessing.py, and the "rule 13's own quadtree fallback" weir
+  branch (and its now-orphaned weir_crest_junction_blend_m config key) in
+  13_build_sfincs_skeleton.py. All the entries above this one that mention
+  quadtree (QUADTREE POSTPROCESSING MEMORY, MESH-NATIVE ANIMATION, etc.)
+  describe history from when the feature still existed — left as-is since
+  they're accurate records of past debugging, not claims about current code.
+  build_smoothed_weir_crest_regular (+ its helper _smoothed_weir_crest_
+  profiles) in river_burn.py is now dead code with zero remaining callers
+  (its only caller was the removed quadtree fallback) — left in place,
+  flagged to the user, rather than removed, since that's a separate,
+  pre-existing dead-code question outside quadtree-removal scope.
 
 See CHANGELOG.md (repo root) for a full, theme-organized list of what
 changed in this branch relative to the last commit — this section only

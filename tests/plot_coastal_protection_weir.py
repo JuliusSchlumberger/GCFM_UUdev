@@ -31,7 +31,7 @@ basin_id = sys.argv[1]
 with open(REPO_ROOT / "config" / "config.yml") as f:
     config = yaml.safe_load(f)
 results_dir = Path(config["results_dir"])
-domain_dir = results_dir / str(basin_id) / "inputs" / "domain"
+domain_dir = results_dir / str(basin_id) / "preprocessing_inputs" / "domain"
 
 weir_path = domain_dir / f"{basin_id}_coastal_protection_weir.gpkg"
 if not weir_path.exists():

@@ -829,9 +829,9 @@ def select_width_column(
     """
     Overwrite 'width' with the values of ``width_column``, so every
     downstream consumer that reads 'width' (discharge propagation, hydraulic
-    depth, boundary-forcing grid-visibility, quadtree refinement buffer,
-    SFINCS rivwth) picks up a single, consistently-chosen representative
-    channel width, rather than each reading 'width' or 'max_width' independently.
+    depth, boundary-forcing grid-visibility, SFINCS rivwth) picks up a
+    single, consistently-chosen representative channel width, rather than
+    each reading 'width' or 'max_width' independently.
 
     Args:
         rivers:       River network with 'width' and 'max_width' columns.
