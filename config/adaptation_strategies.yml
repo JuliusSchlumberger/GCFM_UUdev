@@ -8,22 +8,43 @@ meta:
   root: D:/GCFM_UU/raw_data
 
 advance:
-  x
+  measures:
+    offshore_island: {elevation: 2.0,
+                      locations: adaptation/offshore_island.geojson }
+    pumps: {discharge: 1000,
+            locations: adaptation/pumps.geojson }
 
 NbS_protect_open:
-  x
+  measures:
+    nbs_land_reclamation: {attenuation_rate: 0.5,
+                           distance: 500,
+                           locations: adaptation/land_reclamation.geojson,
+                           elevation: 2.0,
+                           land_use_code: 60,
+                           dep_subgrid: adaptation/dep_subgrid.tif }
+    water_retention: {storage_fraction: 10000,
+                      locations: adaptation/water_retention.geojson,
+                      dep_subgrid: adaptation/dep_subgrid.tif}
 
 grey_protect_open:
-  x
+  measures:
+    coastal_and_river_levee: {elevation: 2.0,
+                              locations: adaptation/levee.geojson }
+    storm_surge_barrier: {elevation: 2.0,
+                          locations: adaptation/storm_surge_barrier.geojson }
 
 protect_closed:
   measures:
-    coastal_levee: { elevation: 2.0, locations: adaptation/levee.geojson }
-    pumps:         { discharge: 1000 }
+    coastal_levee: {elevation: 2.0,
+                    locations: adaptation/levee.geojson }
+    pumps:         {discharge: 1000 }
 
 accommodate:
   measures:
-    retreat: { retreat_fraction: 0.5 }
+    dike_ring: {elevation: 2.0,
+                locations: adaptation/dike_ring.geojson }
 
 retreat:
-  x
+  measures:
+    retreat: {retreat_fraction: 0.5,
+              depsubgrid: adaptation/dep_subgrid.tif }

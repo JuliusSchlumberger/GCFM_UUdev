@@ -1,15 +1,36 @@
-# Measures is the menu of measures possible to implement
-# They are combined in the strategies.yml file - this is the composision
-
+# The menu: What measures exist and what are their parameters?
+# static definition of what measures exist and their allowed scales (never changes per run)
 
 adaptation_measures:
-
+  # Advance
   offshore_island:
     type: offshore_island
     description: Offshore island to reduce wave height and storm surge
-    # params:
-      # x
+    params:
+      elevation:
+        min: 0.5
+        max: 9.0 # in m
+        required_for: [postprocessing, preprocessing]
+      locations:
+        min: null
+        max: null # path, data source name, or GeoDataFrame with the island polygon(s)
+        required_for: [preprocessing]
 
+  pumps:
+    type: pumps
+    description: Pumps to remove river discharge
+    params:
+      discharge:
+        min: 0
+        max: 100000 # in m3/s
+        required_for: [postprocessing, preprocessing]
+      locations:
+        min: null
+        max: null # path, data source name, or GeoDataFrame with the pump locations
+        required_for: [preprocessing]
+
+
+  # NBS Protect-open
   nbs_land_reclamation:
     type: nbs_land_reclamation
     description: Extension of coastline by land reclamation seaward
@@ -39,6 +60,29 @@ adaptation_measures:
         max: null # path to dep_subgrid.tif, or an already-opened xr.DataArray of it (elevation source)
         required_for: [preprocessing]
 
+  water_retention:
+    type: water_retention
+    description: Water retention area in floodplain to store excess river discharge during flood events
+    params:
+      storage_fraction: # fraction
+        min: 0
+        max: 1
+        required_for: [postprocessing, preprocessing]
+      locations:
+        min: null
+        max: null # path, data source name, or GeoDataFrame with the retention area polygon(s)
+        required_for: [preprocessing]
+      baseline_excess_volume:
+        min: null
+        max: null # in m3, the excess flood volume from the uncontrolled baseline run
+        required_for: [preprocessing]
+      dep_subgrid:
+        min: null
+        max: null # path to dep_subgrid.tif, or an already-opened xr.DataArray of it (elevation source)
+        required_for: [preprocessing]
+
+
+  # Greys protect-open
   coastal_and_river_levee:
     type: coastal_and_river_levee
     description: Combination of coastal levee along coast and river levees along rivers
@@ -81,6 +125,8 @@ adaptation_measures:
           max: null # path, data source name, or GeoDataFrame with the barrier polyline(s)
           required_for: [preprocessing]
 
+
+  # Protect-closed
   coastal_levee:
     type : levee
     description: Coastal levee along entire coast, drawn from a user-supplied polyline geojson.
@@ -94,33 +140,22 @@ adaptation_measures:
         max: null # path, data source name, or GeoDataFrame with the levee polyline(s)
         required_for: [preprocessing]
 
-  pumps:
-    type: pumps
-    description: Pumps to remove river discharge
+  # Accommodate
+  dike_ring:
+    type: dike_ring
+    description: Dike ring around areas (e.g. cities)
     params:
-      discharge:
-        min: 0
-        max: 100000 # in m3/s
-        required_for: [postprocessing, preprocessing]
-      locations:
-        min: null
-        max: null # path, data source name, or GeoDataFrame with the pump locations
-        required_for: [preprocessing]
-      # height?
-
-  accommodate:
-    type: raise_urban_areas
-    description: Raise urban areas by certain height
-    params:
-      raise_height:
+      elevation:
         min: 0.5
         max: 9.0 # in m
         required_for: [postprocessing, preprocessing]
-      dep_subgrid:
+      locations:
         min: null
-        max: null # path, data source name, or already-opened DataArray of the subgrid raster
-        required_for: [preprocessing]
+        max: null # path, data source name, or GeoDataFrame of the urban dike ring
+        required_for: [preprocessing, postprocessing]
 
+
+  # Retreat
   retreat:
     type: planned relocation outside flooded areas
     description: Retreat from flooded areas
@@ -137,33 +172,3 @@ adaptation_measures:
         min: null
         max: null # path, data source name, or GeoDataFrame with the subgrid raster
         required_for: [preprocessing]
-
-  water_retention:
-    type: water_retention
-    description: Water retention area in floodplain to store excess river discharge during flood events
-    params:
-      storage_fraction: # fraction
-        min: 0
-        max: 1
-        required_for: [postprocessing, preprocessing]
-      locations:
-        min: null
-        max: null # path, data source name, or GeoDataFrame with the retention area polygon(s)
-        required_for: [preprocessing]
-      baseline_excess_volume:
-        min: null
-        max: null # in m3, the excess flood volume from the uncontrolled baseline run
-        required_for: [preprocessing]
-      dep_subgrid:
-        min: null
-        max: null # path to dep_subgrid.tif, or an already-opened xr.DataArray of it (elevation source)
-        required_for: [preprocessing]
-
-  dike_ring:
-    type: dike_ring
-    description: Dike ring around areas (e.g. cities)
-    params:
-      elevation:
-        min: 0.5
-        max: 9.0 # in m
-        required_for: [postprocessing, preprocessing]
