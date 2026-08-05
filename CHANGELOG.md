@@ -6,6 +6,65 @@ and why*.
 
 #
 
+# 2026-08-04d: removed quadtree grid support entirely -- regular grid only from now on (- JS)
+
+The project will not use quadtree grids, so every quadtree-specific code path was removed rather than left as dead, never-enabled config.
+
+**Removed**: `sfincs.grid.quadtree` config block (and the now-orphaned `weir_crest_junction_blend_m` key, whose only caller was the quadtree weir fallback below) from `config.yml`; the `quadtree.enabled requires subgrid.enabled` validation in `00_common.smk`; `src/quadtree_refinement.py` (whole file, `build_refinement_polygons`); `GridArrays.from_quadtree`/`weighted_graph`/`_seaward_edges_quadtree(_with_values)` and the `grid_type` dispatch in `src/protection_weir.py` (now regular-grid only); `build_channel_mask_quadtree`/`build_smoothed_weir_crest_quadtree`/`_quadtree_face_polygons` in `src/river_burn.py`; `plot_refinement_zones`/`_mesh_overlay_setup` and the mesh-native (`xu.UgridDataArray`) branch of `animate_flood_progression` in `src/plots.py`; `_mosaic_quadtree_dep_levels` and the `UgridDataArray` branches of `compute_flood_progression` in `src/postprocessing.py` (`get_bed_level` now only reads `dep_subgrid.tif`); the `elif depth_method == "modelled" and quadtree_enabled:` weir-building branch and the post-write `ncinifile`/`inifile` workaround in `13_build_sfincs_skeleton.py`; the `quadtree_enabled`-conditional centerline-snapping branches in `13_build_sfincs.py`/`14_run_spinup.py` (now unconditional); the `refinement_polygons.gpkg`/`01b_refinement_zones.png` conditional outputs in `13_build_sfincs_skeleton.smk` and the `Snakefile`; and the quadtree-only `dep_subgrid_lev*.tif` handling in `tests/test_subgrid_river_depth_profile.py`/`tests/test_bank_elevation_check_sfincs.py`/`tests/plot_main_grid.py`.
+
+**Not removed** (flagged instead, since it's a separate, pre-existing dead-code question outside this scope): `build_smoothed_weir_crest_regular` (+ its helper `_smoothed_weir_crest_profiles`) in `river_burn.py` now has zero remaining callers -- its only caller was the removed quadtree fallback. Left in place for the user to decide on separately.
+
+Verified via `tests/check_code_health.py` and a `snakemake -n` dry run.
+
+# 2026-08-04c: fixed a stale "elevation_merged" name in build_sfincs_skeleton that actually meant elevation_conditioned (- JS)
+
+While confirming grid/subgrid generation is handled identically for both `depth_method` modes, found that `build_sfincs_skeleton`'s own input key, Python variable, and data-catalog key were all named `elevation_merged`/`local_elevation_merged` -- but the rule's own input mapping had always pointed that key at `elevation_conditioned.tif` (post-monotonicity), never the actual raw `elevation_merged.tif` (rule 05a's output). This predates today's skeleton split -- it was already this way in the original monolithic `13_build_sfincs.py`, just carried forward faithfully. Initially misread this as a real raw-vs-conditioned inconsistency between the skeleton's own subgrid fallback and `10_depth_estimation_modelled.py`'s own subgrid fallback (which correctly uses a key named `local_elevation_conditioned`) -- they were already reading the identical file, just under a confusing name.
+
+**Fixed**: renamed the input key (`elevation_merged` → `elevation_conditioned`), the Python variable (`elevation_merged_path` → `elevation_conditioned_path`), and the data-catalog key (`local_elevation_merged` → `local_elevation_conditioned`) throughout `13_build_sfincs_skeleton.smk`/`.py` to say what they've always actually been. No behavior change -- `elevation_list_subgrid`'s fallback source is the same file as before, just correctly named now, and now visibly matches `modelled_depth_estimation`'s own convention. Also corrected two `Reference_memory.txt` passages that had independently inherited the same stale naming (one claimed a 3-level elevation fallback for the main grid -- burned > conditioned > raw merged -- that was never real; the code has always been a 2-level fallback, burned > conditioned only).
+
+# 2026-08-04b: decoupled spin-up from scenario RP changes -- split rule build_sfincs into a basin-level skeleton + per-scenario forcing (- JS)
+
+Changing a scenario's own design RP (surge_rp/river_rp in config/scenarios.yml) used to force rule `run_spinup` to re-run too, even though spin-up physically doesn't depend on the event's design RP at all -- it depended on that scenario's own `sfincs.inp`, which rule `build_sfincs` rewrote in full (grid/elevation/mask/weir/roughness/subgrid/forcing, one atomic `sf.write()`) on every RP change.
+
+**Root cause**: traced through the whole of `13_build_sfincs.py` and confirmed most of it (grid, elevation, mask, weir, roughness, subgrid, observation points, simulation timing) is scenario-INDEPENDENT -- only initial conditions (forcing_mode-dependent), water-level/discharge forcing, and `rstfile`/`tstart` actually vary by scenario. But since the whole model was written as one atomic `sf.write()`, even the independent files got rewritten (mtime touched) on every RP change, which is enough to invalidate any downstream Snakemake rule depending on them regardless of which specific file it declared as input.
+
+**Fixed** by splitting rule `build_sfincs` into two:
+- **`build_sfincs_skeleton`** (new, basin-level, no `{scenario}` wildcard): builds everything scenario-independent, writes to a new `results/{basin_id}/sfincs_skeleton/`.
+- **`build_sfincs`** (per-scenario, much smaller now): loads the skeleton read-only, redirects writes to `runs/{scenario}/sfincs/` (`sf.root.set(...)`, the same pattern already used in `10_depth_estimation_modelled.py`'s own calibration round loop), builds only the forcing components, writes ONLY those (`sf.water_level.write()`/`sf.discharge_points.write()` -- confirmed independently callable per-component writers), and hand-crafts this scenario's own `sfincs.inp`: the skeleton's grid-header and geometry `*file` entries are forwarded via a relative path (new `src.sfincs_run.parse_sfincs_inp`/`forward_geometry_files` helpers, same technique `14_run_spinup.py` already used for borrowing from the old per-scenario build). HydroMT's own config-writing path (`get_set_file_variable`) silently absolutizes any file reference outside the model's current root instead of preserving a relative path, so this genuinely can't be done via `sf.write()`/`sf.config.write()` -- confirmed via a scoped investigation of the `hydromt_sfincs` source.
+
+Rule `run_spinup` was rewritten the same way, and moved to basin-level (`results/{basin_id}/spin_up/`, confirmed with the user -- since it's now provably identical for every scenario of a basin, running it once per scenario would just be redundant SFINCS execution): it always runs at a fixed **RP=1** (coast AND river -- both exactly tabulated in COAST-RP and the river GPD return-value table respectively, no extrapolation needed), held CONSTANT over `spinup_days` (a flat 2-point timeseries, not a sinusoidal ramp), built via the existing `lookup_storm_tide_at_rp`/`interpolate_discharge_at_rp` lookups -- no longer sliced from any scenario's own event hydrograph. Rule `sanity_checks` moved to basin-level too (it only ever analyses spin-up's own output).
+
+**Side fix found along the way**: `compute_max_inundation`/`compute_flood_timeseries_stats` (rules `run_event`, `compute_flood_metrics`) take a separate "subgrid lookup root" argument -- previously always the scenario's own `sfincs_root` (correct, since subgrid lived there). Now that the subgrid reference raster physically lives only in `sfincs_skeleton/`, both call sites needed a new `skeleton_root` param; without this fix they would have silently fallen back to the coarser cell/mesh-resolution bed level instead of raising.
+
+Verified via `snakemake -n` with two scenarios (`coast_100`, `river_100`): `build_sfincs_skeleton`/`run_spinup`/`sanity_checks` each appear exactly once in the job stats, while `build_sfincs`/`run_event`/`compute_flood_metrics` appear once per scenario -- confirming the decoupling actually works, not just in theory.
+
+# 2026-08-04: reorganized results/{basin_id}/ folder structure (- JS)
+
+Preprocessing visuals lived in a separate top-level `visuals/input_data/` tree instead of next to the `inputs/` they document, calibration lived in a bare `sfincs_calibration/` instead of being grouped with the other preprocessing inputs, and spin-up's own inputs/outputs/visuals were split across two different subtrees nested inside each scenario's own `sfincs/`/`visuals/` folders. Reorganized to:
+
+```
+results/{basin_id}/
+├── preprocessing_inputs/               (renamed from inputs/)
+│   ├── domain/                         (unchanged)
+│   ├── forcing/                        (unchanged)
+│   ├── visuals/                        (moved from top-level visuals/input_data/, "input_data" segment dropped)
+│   └── depth_crest_calibration/        (renamed+moved from top-level sfincs_calibration/)
+└── runs/{scenario}/                    (renamed from scenarios/{scenario}/)
+    ├── sfincs/                         (build outputs -- unchanged, except rstfile now points sideways to ../spinup/)
+    ├── spinup/                         (NEW sibling of sfincs/ -- spin-up's own sfincs.inp, referencing
+    │                                     ../sfincs/<file> instead of today's "../<file>"; its own
+    │                                     rst/map.nc/his.nc outputs; and its own visuals, all in one
+    │                                     place instead of split across sfincs/spinup/ and visuals/spinup/)
+    ├── visuals/                        (unchanged, except no nested spinup/ subfolder anymore)
+    └── metrics/
+```
+
+Existing on-disk results are NOT migrated -- old folders are left as-is (or deleted manually later); everything rebuilds fresh under the new layout on the next run.
+
+**`sfincs_grid/` empty-folder fix**: `rule build_sfincs_grid` (08c) used to instantiate a throwaway `SfincsModel(root=..., mode="w+")` purely to call `create_from_region()` and read back the grid's transform/shape -- `sf.write()` was never called, but HydroMT still created the root directory on init, leaving a permanently empty `{basin_id}/sfincs_grid/` folder. Investigated whether the rule could be removed entirely (its only consumer, rule `enforce_river_monotonicity`/09, deliberately has no hydromt import -- a plain rasterio/Affine consumer per 08c's own docstring, so inlining would add a new dependency there). Kept the rule, but rewrote its implementation to call `hydromt.model.processes.create_grid_from_region()` directly -- the same standalone function `SfincsModel.grid.create_from_region()` delegates to internally -- instead of instantiating a `SfincsModel`. No Model root directory is ever created now, not just cleaned up after the fact.
+
+Every `.smk` rule file, the `Snakefile`'s own output lists, several script docstrings, two standalone `tests/*.py` dev scripts, and `Reference_memory.txt`'s folder-tree documentation were updated to match. Three folders (`visuals/model_runs/`, `sfincs/validation_higher_rp/`, `sfincs/validation_protection_level/`) are confirmed stale leftovers from rule 13b (removed 2026-08-02) that no code regenerates -- left for manual deletion whenever convenient.
+
 # 2026-08-03c: updated surge diagnostic plots to stop showing protection as part of the boundary correction chain (- JS)
 
 Follow-up to the previous entry's `surge.py` fix (protection level no longer subtracted from the boundary water level): two diagnostic plots still described/displayed that subtraction as if it still happened, which would now be actively misleading.

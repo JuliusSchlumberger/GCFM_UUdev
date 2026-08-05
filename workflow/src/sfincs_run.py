@@ -1,7 +1,16 @@
 """
 sfincs_run.py -- Shared SFINCS subprocess execution (Popen + threaded
 stdout/stderr forwarding + timeout), used by every rule that executes the
-SFINCS binary.
+SFINCS binary. Also holds the shared "hand-craft a sfincs.inp that borrows
+geometry from a DIFFERENT SFINCS model directory via relative paths"
+helpers used by both 13_build_sfincs.py (borrows from sfincs_skeleton/)
+and 14_run_spinup.py (borrows from sfincs_skeleton/ too, as a sibling of
+its own spinup/ directory) -- see either script's own module docstring
+for why this is hand-written rather than done via HydroMT's own
+sf.config.write(): HydroMT's get_set_file_variable silently absolutizes
+any file reference outside the model's own root instead of preserving a
+relative ../ path, so a genuinely portable cross-directory reference has
+to be written by hand.
 """
 
 from __future__ import annotations
@@ -11,6 +20,54 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+
+
+def parse_sfincs_inp(path: str | Path) -> dict[str, str]:
+    """Parse a sfincs.inp file into a lowercased {key: value} dict.
+
+    SFINCS's own format is plain ``key = value`` lines (comments start with
+    ``!``) -- this is a generic reader, not aware of which keys mean what.
+    """
+    cfg: dict[str, str] = {}
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if "=" in line and not line.startswith("!"):
+                key, _, val = line.partition("=")
+                cfg[key.strip().lower()] = val.strip()
+    return cfg
+
+
+def forward_geometry_files(
+    cfg: dict[str, str],
+    source_root: str | Path,
+    dest_root: str | Path,
+    exclude: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Build ``"key = <relative path>"`` lines forwarding every non-empty
+    ``*file`` entry in ``cfg`` (as parsed by parse_sfincs_inp from
+    ``source_root``'s own sfincs.inp) to a NEW sfincs.inp being written at
+    ``dest_root``, via a relative path computed with os.path.relpath (not
+    hand-derived ``../`` counting -- robust to whatever the actual nesting
+    depth between the two directories turns out to be).
+
+    Skips keys in ``exclude`` (typically {"rstfile"}: a restart file
+    reference must never be forwarded from a source model that doesn't
+    have one yet) and any ``*file`` entry whose target doesn't exist or is
+    a 0-byte placeholder (e.g. sfincs_subgrid.nc/sfincs.weir when that
+    feature is disabled for this basin).
+    """
+    source_root = Path(source_root)
+    dest_root = Path(dest_root)
+    lines = []
+    for key, value in cfg.items():
+        if not key.endswith("file") or key in exclude:
+            continue
+        fpath = source_root / value
+        if fpath.exists() and fpath.stat().st_size > 0:
+            rel = os.path.relpath(fpath, start=dest_root)
+            lines.append(f"{key:<20} = {rel}")
+    return lines
 
 
 def run_sfincs_subprocess(

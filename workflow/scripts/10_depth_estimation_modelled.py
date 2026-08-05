@@ -354,15 +354,6 @@ from src.sfincs_run import run_sfincs_subprocess
 
 log = setup_logging(snakemake.log[0])
 
-# ── scope guard: regular grid only ───────────────────────────────────────────
-if snakemake.params.quadtree_enabled:
-    raise NotImplementedError(
-        "River depth calibration (river_processing.depth_method='modelled') "
-        "only supports regular grids in this version -- quadtree calibration "
-        "is explicitly out of scope for now. Disable sfincs.grid.quadtree.enabled "
-        "or use river_processing.depth_method='empirical' instead."
-    )
-
 # ── paths & params ────────────────────────────────────────────────────────────
 elevation_path       = Path(snakemake.input.elevation_conditioned)
 elevation_sfincs_grid_path = Path(snakemake.input.elevation_conditioned_sfincs_grid)
@@ -673,8 +664,7 @@ if delta_outflow_enabled:
 # identical choice for why "average" would dilute/NaN-out genuine sea
 # cells at the native/SFINCS-grid resolution boundary. mask must exist
 # first (create_active/create_boundary above), matching production's own
-# ordering. quadtree is out of scope for this rule (guarded above), so no
-# quadtree_initial_conditions/ncinifile workaround is needed here.
+# ordering.
 sf.initial_conditions.create(ini="local_zsini", reproj_method="nearest")
 log.info("Initial conditions: spatially-varying zsini (sea cells start at baseline_m, land dry)")
 
@@ -2220,9 +2210,9 @@ log.info(f"Written: {snakemake.output.coastal_protection_weir} ({len(weir_gdf)} 
 # actually calibrated with, not a reconstruction of it (see
 # gather_calibration_round_profile's own docstring). Written under the SAME
 # persistent visuals directory as the other canonical diagnostic plots
-# (results/{basin_id}/visuals/input_data/10_calibration/) rather than
-# calib_root -- calib_root is this rule's own intermediate/disposable model
-# directory, not where user-facing output belongs.
+# (results/{basin_id}/preprocessing_inputs/visuals/10_calibration/) rather
+# than calib_root -- calib_root is this rule's own intermediate/disposable
+# model directory, not where user-facing output belongs.
 visuals_dir = Path(snakemake.output.plot_calibration).parent
 visuals_dir.mkdir(parents=True, exist_ok=True)
 seed_ids = sorted(

@@ -124,7 +124,7 @@ rivers_clean = remove_reaches_with_missing_width(rivers_clean)
 # Some SWORD reaches have max_width < width (swapped back) -- see
 # normalize_channel_widths. The resulting 'width' is what every downstream
 # width-dependent step uses (discharge propagation here, hydraulic depth,
-# quadtree refinement buffer, SFINCS rivwth).
+# SFINCS rivwth).
 
 rivers_clean = normalize_channel_widths(rivers_clean)
 

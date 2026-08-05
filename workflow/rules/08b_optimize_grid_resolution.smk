@@ -12,11 +12,11 @@
 
 rule optimize_grid_resolution:
     input:
-        domain_gpkg          = results_path("{basin_id}/inputs/domain/{basin_id}_domain.gpkg"),
-        spec_basins_meta     = results_path("{basin_id}/inputs/domain/domain_bbox.json"),
-        clean_river_network  = results_path("{basin_id}/inputs/domain/{basin_id}_river_network_clean.gpkg"),
+        domain_gpkg          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
+        spec_basins_meta     = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
+        clean_river_network  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
     output:
-        grid_resolution = results_path("{basin_id}/inputs/domain/{basin_id}_grid_resolution.json"),
+        grid_resolution = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_grid_resolution.json"),
     params:
         enabled                 = config["sfincs"]["grid"]["optimize_resolution"]["enabled"],
         default_resolution_m    = config["sfincs"]["grid"]["optimize_resolution"]["default_resolution_m"],

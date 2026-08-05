@@ -54,7 +54,7 @@ with open(REPO_ROOT / "config" / "config.yml") as f:
 results_dir = Path(config["results_dir"])
 animation_fps = int(config["sfincs"]["sanity_checks"]["animation_fps"])
 
-domain_dir = results_dir / basin_id / "inputs" / "domain"
+domain_dir = results_dir / basin_id / "preprocessing_inputs" / "domain"
 sfincs_root = results_dir / basin_id / "sfincs"
 run_dir = sfincs_root / "spinup" if run_label == "spinup" else sfincs_root
 visuals_subdir = "spinup" if run_label == "spinup" else "main_run"

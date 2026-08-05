@@ -14,16 +14,18 @@ rule's own output is a small JSON (transform, shape, CRS, resolution) so a
 plain rasterio consumer (rule 10's resample step) can target the same grid
 without needing to spin up hydromt just to read it.
 
-Only the REGULAR grid is shared -- quadtree refinement (rule 13's own
-quadtree branch) stays built separately inside 13_build_sfincs.py when
-sfincs.grid.quadtree.enabled, since calibration never uses quadtree.
+Calls hydromt.model.processes.create_grid_from_region directly -- the same
+standalone function SfincsModel.grid.create_from_region() itself delegates
+to internally -- instead of instantiating a SfincsModel, so this rule never
+creates a Model root directory at all (a SfincsModel(mode="w+") would
+create one on init even though nothing is ever written to it).
 """
 
 import json
 from pathlib import Path
 
 import geopandas as gpd
-from hydromt_sfincs import SfincsModel
+from hydromt.model.processes.grid import create_grid_from_region
 
 from src.log import setup_logging
 
@@ -34,22 +36,18 @@ with open(snakemake.input.grid_resolution) as f:
 
 delta_domain = gpd.read_file(snakemake.input.domain_gpkg)
 
-sf = SfincsModel(root=snakemake.params.sfincs_grid_root, mode="w+", write_gis=False)
-sf.grid.create_from_region(region={"geom": delta_domain}, res=resolution, crs="utm", rotated=False)
-sf.mask.create_active(include_polygon=delta_domain)
-log.info(f"Shared SFINCS grid created: {resolution} m, auto-UTM CRS={sf.crs}")
-
-# mask is always present after mask.create_active(); "dep" only exists once
-# sf.elevation.create() has been called, which this shared-grid-only step
-# deliberately never does -- sf.grid.data only has
-# ['y', 'x', 'spatial_ref', 'mask'] at this point, no 'dep'.
-mask_da = sf.grid.data["mask"]
-transform = mask_da.raster.transform
-height, width = mask_da.shape
+ds = create_grid_from_region(
+    region={"geom": delta_domain}, res=resolution, crs="utm", region_crs=4326,
+    rotated=False, add_mask=False, align=True,
+)
+transform = ds.raster.transform
+height, width = ds.raster.shape
+crs = ds.raster.crs
+log.info(f"Shared SFINCS grid created: {resolution} m, auto-UTM CRS={crs}")
 
 grid_def = {
     "resolution": resolution,
-    "crs": sf.crs.to_string(),
+    "crs": crs.to_string(),
     "height": int(height),
     "width": int(width),
     # affine six-tuple (a, b, c, d, e, f) -- rasterio.Affine(*transform_six)

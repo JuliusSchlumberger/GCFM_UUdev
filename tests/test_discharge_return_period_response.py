@@ -155,12 +155,18 @@ sfincs_exe = Path(sfincs_cfg["simulation"]["sfincs_exe"]).resolve()
 include_subgrid = sfincs_cfg["subgrid"]["enabled"]
 min_inundation_depth_m = sfincs_cfg["sanity_checks"]["min_inundation_depth_m"]
 
-prod_sfincs_root = (
-    RESULTS_DIR / BASIN_ID / "scenarios" / _target_scenario_name / "sfincs"
-)
+prod_sfincs_root = RESULTS_DIR / BASIN_ID / "runs" / _target_scenario_name / "sfincs"
 prod_inp_path = prod_sfincs_root / "sfincs.inp"
-landuse_path = RESULTS_DIR / BASIN_ID / "inputs" / "domain" / f"{BASIN_ID}_landuse.tif"
-river_forcing_path = RESULTS_DIR / BASIN_ID / "inputs" / "forcing" / "river_forcing.nc"
+landuse_path = (
+    RESULTS_DIR
+    / BASIN_ID
+    / "preprocessing_inputs"
+    / "domain"
+    / f"{BASIN_ID}_landuse.tif"
+)
+river_forcing_path = (
+    RESULTS_DIR / BASIN_ID / "preprocessing_inputs" / "forcing" / "river_forcing.nc"
+)
 
 # ── parse the production sfincs.inp verbatim ──────────────────────────────────
 # This is the same sfincs.inp rule 16 (run_event) uses directly: rule 13

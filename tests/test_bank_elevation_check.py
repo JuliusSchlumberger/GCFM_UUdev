@@ -75,7 +75,7 @@ RESULTS_DIR = Path(config["results_dir"])
 FIGS_DIR = REPO_ROOT / "figs" / "bank_elevation_check"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
 
-domain_dir = RESULTS_DIR / BASIN_ID / "inputs" / "domain"
+domain_dir = RESULTS_DIR / BASIN_ID / "preprocessing_inputs" / "domain"
 river_path = domain_dir / f"{BASIN_ID}_river_network_processed.gpkg"
 merged_path = domain_dir / f"{BASIN_ID}_elevation_merged.tif"
 cond_path = domain_dir / f"{BASIN_ID}_elevation_conditioned.tif"

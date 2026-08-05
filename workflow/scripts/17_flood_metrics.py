@@ -10,10 +10,14 @@ from src.postprocessing import compute_max_inundation, compute_risk_metrics
 
 # inputs / params
 sfincs_root = Path(snakemake.params.sfincs_root)
+# Subgrid reference raster for postprocessing lives here, not physically in
+# sfincs_root -- this scenario's own model only references it via a
+# relative path in its own sfincs.inp (see 13_build_sfincs.py).
+skeleton_root = Path(snakemake.params.skeleton_root)
 
 da_hmax, da_dep = compute_max_inundation(
     sfincs_root,                    # run_dir: event output lives in the model root
-    sfincs_root,
+    skeleton_root,
     snakemake.input.landuse,
     hmin=float(snakemake.params.hmin),
     include_subgrid=snakemake.params.include_subgrid,

@@ -39,7 +39,8 @@ river_network_path = Path(snakemake.input.clean_river_network)
 domain_gpkg_path   = Path(snakemake.input.domain_gpkg)
 plot_out_path      = Path(snakemake.output.plot_inundation_ratio)
 animation_out_path      = Path(snakemake.output.animation_flood_progress)
-sfincs_root             = Path(snakemake.params.sfincs_root)
+spin_up_root            = Path(snakemake.params.spin_up_root)
+skeleton_root           = Path(snakemake.params.skeleton_root)
 threshold_m             = float(snakemake.params.min_inundation_depth_m)
 include_subgrid         = bool(snakemake.params.include_subgrid)
 animation_fps           = int(snakemake.params.animation_fps)
@@ -52,8 +53,8 @@ _union = _domain_gdf.geometry.union_all()
 domain_poly = cast(Polygon, _union if isinstance(_union, Polygon) else _union.convex_hull)
 
 plot_out_path.parent.mkdir(parents=True, exist_ok=True)
-basin_id   = sfincs_root.parent.name
-spinup_dir = sfincs_root / "spinup"
+basin_id   = spin_up_root.parent.name
+spinup_dir = spin_up_root
 
 # ── guard: empty sentinel from rule 14 ───────────────────────────────────────
 if sfincs_map_nc_path.stat().st_size == 0:
@@ -61,8 +62,11 @@ if sfincs_map_nc_path.stat().st_size == 0:
     plot_out_path.touch()
 else:
     # ── 1. compute max inundation depth & land-domain reference grid ─────────
+    # skeleton_root (NOT spinup_dir) is where the subgrid reference raster
+    # actually lives -- spin_up only references it via a relative path in
+    # its own sfincs.inp, it isn't physically present under spin_up_root.
     da_hmax, da_dep = compute_max_inundation(
-        spinup_dir, sfincs_root, landuse_path,
+        spinup_dir, skeleton_root, landuse_path,
         hmin=threshold_m, include_subgrid=include_subgrid,
     )
 

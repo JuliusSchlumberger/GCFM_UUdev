@@ -1,6 +1,6 @@
 """
 protection_weir.py — Builds a coastal/riverbank protection weir directly on
-the SFINCS model grid (regular or quadtree).
+the SFINCS model's regular grid.
 
 The weir represents the protection-level standard itself: flood defenses
 are assumed to run continuously along the whole coast and river network (not
@@ -52,14 +52,11 @@ import logging
 import geopandas as gpd
 import numpy as np
 import rasterio
-import scipy.sparse
 from affine import Affine
 from rasterio.warp import Resampling as _Resampling
 from rasterio.warp import reproject as _rio_reproject
 from scipy.ndimage import binary_dilation, generate_binary_structure
 from scipy.ndimage import label as ndimage_label
-from scipy.sparse.csgraph import connected_components as sparse_connected_components
-from scipy.sparse.csgraph import dijkstra
 from shapely.geometry import LineString, Polygon
 from shapely.ops import linemerge, unary_union
 
@@ -70,43 +67,28 @@ LANDUSE_SEA = 200
 
 class GridArrays:
     """
-    Uniform interface over a SFINCS regular grid or quadtree mesh's
-    already-loaded arrays (built from sf.grid.data/sf.quadtree_grid.data
-    mid-build, or from a read-mode model's own data -- either works, this
-    class only needs the arrays themselves).
+    Uniform interface over a SFINCS regular grid's already-loaded arrays
+    (built from sf.grid.data mid-build, or from a read-mode model's own
+    data -- either works, this class only needs the arrays themselves).
     """
 
     def __init__(
         self,
-        grid_type: str,
         crs,
         bed_elevation: np.ndarray,
         valid_mask: np.ndarray,
         cell_size_m,
-        transform=None,
-        ugrid=None,
+        transform,
     ):
-        self.grid_type = grid_type
         self.crs = crs
         self.bed_elevation = bed_elevation
         self.valid_mask = valid_mask
         self.cell_size_m = cell_size_m
-
-        if grid_type == "regular":
-            self.transform = transform
-            self.shape = bed_elevation.shape
-            self.n_cells = bed_elevation.size
-            self._struct4 = generate_binary_structure(2, 1)
-            self._struct8 = generate_binary_structure(2, 2)
-            self.ugrid = None
-        elif grid_type == "quadtree":
-            self.ugrid = ugrid
-            xy = ugrid.face_coordinates
-            self.face_x, self.face_y = xy[:, 0], xy[:, 1]
-            self.n_cells = len(self.face_x)
-            self._weighted_graph = None
-        else:
-            raise NotImplementedError(f"grid_type={grid_type!r}")
+        self.transform = transform
+        self.shape = bed_elevation.shape
+        self.n_cells = bed_elevation.size
+        self._struct4 = generate_binary_structure(2, 1)
+        self._struct8 = generate_binary_structure(2, 2)
 
     @classmethod
     def from_regular(cls, dep_da, mask_da, crs) -> "GridArrays":
@@ -114,38 +96,12 @@ class GridArrays:
         valid_mask = (mask_da.values > 0) & np.isfinite(bed_elevation)
         dx = abs(float(dep_da.raster.transform.a))
         return cls(
-            "regular",
             crs,
             bed_elevation,
             valid_mask,
             dx,
             transform=dep_da.raster.transform,
         )
-
-    @classmethod
-    def from_quadtree(cls, ds, crs) -> "GridArrays":
-        bed_elevation = ds["z"].values.astype(np.float32)
-        valid_mask = (ds["mask"].values > 0) & np.isfinite(bed_elevation)
-        ugrid = ds.grid
-        cell_size_m = np.sqrt(ugrid.area)
-        return cls("quadtree", crs, bed_elevation, valid_mask, cell_size_m, ugrid=ugrid)
-
-    @property
-    def weighted_graph(self):
-        """Distance-weighted face-face adjacency graph (quadtree only), built
-        once and reused by every dilate() call. face_face_connectivity's own
-        `.data` holds EDGE indices, not distances -- the real distance graph
-        is rebuilt from the sparsity pattern plus centroid coordinates.
-        """
-        if self._weighted_graph is None:
-            ffc = self.ugrid.face_face_connectivity.tocoo()
-            dx_ = self.face_x[ffc.row] - self.face_x[ffc.col]
-            dy_ = self.face_y[ffc.row] - self.face_y[ffc.col]
-            dist = np.hypot(dx_, dy_)
-            self._weighted_graph = scipy.sparse.csr_matrix(
-                (dist, (ffc.row, ffc.col)), shape=ffc.shape
-            )
-        return self._weighted_graph
 
     def sample_landuse(self, landuse_path) -> np.ndarray:
         """Classify each cell/face by landuse code. NOT
@@ -158,24 +114,19 @@ class GridArrays:
         with rasterio.open(landuse_path) as src:
             band = src.read(1)
             src_transform, src_crs, src_nodata = src.transform, src.crs, src.nodata
-        if self.grid_type == "regular":
-            dst = np.zeros(self.shape, dtype=band.dtype)
-            _rio_reproject(
-                source=band,
-                destination=dst,
-                src_transform=src_transform,
-                src_crs=src_crs,
-                dst_transform=self.transform,
-                dst_crs=rasterio.crs.CRS.from_user_input(self.crs),
-                src_nodata=src_nodata,
-                dst_nodata=src_nodata,
-                resampling=_Resampling.nearest,
-            )
-            return dst
-        rows, cols = rasterio.transform.rowcol(src_transform, self.face_x, self.face_y)
-        rows = np.clip(np.asarray(rows), 0, band.shape[0] - 1)
-        cols = np.clip(np.asarray(cols), 0, band.shape[1] - 1)
-        return band[rows, cols]
+        dst = np.zeros(self.shape, dtype=band.dtype)
+        _rio_reproject(
+            source=band,
+            destination=dst,
+            src_transform=src_transform,
+            src_crs=src_crs,
+            dst_transform=self.transform,
+            dst_crs=rasterio.crs.CRS.from_user_input(self.crs),
+            src_nodata=src_nodata,
+            dst_nodata=src_nodata,
+            resampling=_Resampling.nearest,
+        )
+        return dst
 
     def close_gaps(self, mask: np.ndarray, iterations: int = 1) -> np.ndarray:
         """Small, FIXED hop dilation of a boolean mask -- a safety net for
@@ -183,25 +134,13 @@ class GridArrays:
         one destination cell in only a handful of spots). See dilate_values
         for the equivalent operation on a real-valued array.
         """
-        if self.grid_type == "regular":
-            return binary_dilation(mask, structure=self._struct4, iterations=iterations)
-        seed_idx = np.where(mask)[0]
-        if seed_idx.size == 0:
-            return mask.copy()
-        hop_dist = dijkstra(
-            self.weighted_graph,
-            directed=False,
-            indices=seed_idx,
-            min_only=True,
-            unweighted=True,
-        )
-        return mask | (hop_dist <= iterations)
+        return binary_dilation(mask, structure=self._struct4, iterations=iterations)
 
     def dilate_values(self, value_grid: np.ndarray, iterations: int = 1) -> np.ndarray:
-        """Propagate each finite cell/face's own value outward to nearby NaN
-        cells/faces via nearest-value fill, up to `iterations` cells/hops
-        away (same distance semantics as close_gaps, generalized from a
-        boolean mask to a real-valued array).
+        """Propagate each finite cell's own value outward to nearby NaN
+        cells via nearest-value fill, up to `iterations` cells away (same
+        distance semantics as close_gaps, generalized from a boolean mask to
+        a real-valued array).
 
         Needed because a per-reach value rasterized only onto a channel's
         own buffered footprint (e.g. river_crest_on_grid) otherwise has no
@@ -215,58 +154,35 @@ class GridArrays:
         valid = np.isfinite(value_grid)
         if not valid.any():
             return value_grid.copy()
-        if self.grid_type == "regular":
-            from scipy.ndimage import distance_transform_edt
+        from scipy.ndimage import distance_transform_edt
 
-            dist, (idx_r, idx_c) = distance_transform_edt(~valid, return_indices=True)
-            nearest_value = value_grid[idx_r, idx_c]
-            return np.where(dist <= iterations, nearest_value, value_grid)
-        seed_idx = np.where(valid)[0]
-        dist, _, sources = dijkstra(
-            self.weighted_graph,
-            directed=False,
-            indices=seed_idx,
-            unweighted=True,
-            min_only=True,
-            return_predecessors=True,
-        )
-        reached = np.isfinite(dist) & (dist <= iterations)
-        nearest_value = np.where(
-            reached, value_grid[np.where(reached, sources, 0)], np.nan
-        )
-        return np.where(reached, nearest_value, value_grid)
+        dist, (idx_r, idx_c) = distance_transform_edt(~valid, return_indices=True)
+        nearest_value = value_grid[idx_r, idx_c]
+        return np.where(dist <= iterations, nearest_value, value_grid)
 
     def connected_components(self, mask: np.ndarray) -> tuple:
-        """Connected components WITHIN mask (cells/faces outside mask are
-        never connected to anything). Returns (labels, n_labels).
+        """Connected components WITHIN mask (cells outside mask are never
+        connected to anything). Returns (labels, n_labels).
 
-        Regular grid: uses 8-CONNECTIVITY (self._struct8, diagonals count
-        as connected), not scipy.ndimage.label's own 4-connectivity
-        default. A real, physically continuous coastline/riverbank
-        commonly narrows to a single diagonal-only pixel-to-pixel
-        connection at some point (a thin, jagged spit -- an ordinary
-        raster-discretization artifact, not a genuine break in the
-        landform). Under 4-connectivity that diagonal touch does NOT count
-        as connected, so discard_small_components (this method's only
-        caller) sees the far side as a SEPARATE, small component and drops
-        it as if it were a real, isolated small island -- leaving a
-        dangling gap in the traced weir exactly at that pinch point, since
-        the dropped cells become neither land_mask nor water_like and the
-        edge tracer draws no segment against either side of them (see
-        Reference_memory.txt section 14, WEIR TOPOLOGY GAPS (DIAGONAL
-        4-CONNECTIVITY) entry). 8-connectivity treats a diagonal touch as
-        one continuous component, matching the physical reality.
+        Uses 8-CONNECTIVITY (self._struct8, diagonals count as connected),
+        not scipy.ndimage.label's own 4-connectivity default. A real,
+        physically continuous coastline/riverbank commonly narrows to a
+        single diagonal-only pixel-to-pixel connection at some point (a
+        thin, jagged spit -- an ordinary raster-discretization artifact,
+        not a genuine break in the landform). Under 4-connectivity that
+        diagonal touch does NOT count as connected, so
+        discard_small_components (this method's only caller) sees the far
+        side as a SEPARATE, small component and drops it as if it were a
+        real, isolated small island -- leaving a dangling gap in the traced
+        weir exactly at that pinch point, since the dropped cells become
+        neither land_mask nor water_like and the edge tracer draws no
+        segment against either side of them (see Reference_memory.txt
+        section 14, WEIR TOPOLOGY GAPS (DIAGONAL 4-CONNECTIVITY) entry).
+        8-connectivity treats a diagonal touch as one continuous component,
+        matching the physical reality.
         """
-        if self.grid_type == "regular":
-            labeled, n_labels = ndimage_label(mask, structure=self._struct8)
-            return labeled, n_labels
-        ffc = self.ugrid.face_face_connectivity.tocoo()
-        keep = mask[ffc.row] & mask[ffc.col]
-        restricted = scipy.sparse.csr_matrix(
-            (ffc.data[keep], (ffc.row[keep], ffc.col[keep])), shape=ffc.shape
-        )
-        n_labels, labels = sparse_connected_components(restricted, directed=False)
-        return labels, n_labels
+        labeled, n_labels = ndimage_label(mask, structure=self._struct8)
+        return labeled, n_labels
 
     def seaward_edges(
         self,
@@ -276,13 +192,13 @@ class GridArrays:
         ocean_exempt: np.ndarray | None = None,
     ) -> list:
         """Linestrings tracing the boundary between mask_a and water_like
-        cells/faces -- the seaward edge the weir should follow. Generic:
-        mask_a is the protected/dry side (land, or a confined channel).
+        cells -- the seaward edge the weir should follow. Generic: mask_a is
+        the protected/dry side (land, or a confined channel).
 
-        valid_mask: which cells/faces get force-closed to "land" wherever
+        valid_mask: which cells get force-closed to "land" wherever
         water_like reaches them (see _pad_for_edge_tracing) -- defaults to
         self.valid_mask (the grid's own true active-cell mask).
-        ocean_exempt: which cells/faces are exempt from that force-closure
+        ocean_exempt: which cells are exempt from that force-closure
         even when invalid, because they're genuinely open ocean rather
         than land (see _pad_for_edge_tracing) -- defaults to all-False (no
         exemption). Callers with domain knowledge of which cells are ocean
@@ -292,11 +208,9 @@ class GridArrays:
             valid_mask = self.valid_mask
         if ocean_exempt is None:
             ocean_exempt = np.zeros_like(valid_mask)
-        if self.grid_type == "regular":
-            return _seaward_edges_regular(
-                mask_a, water_like, valid_mask, ocean_exempt, self.transform
-            )
-        return _seaward_edges_quadtree(self.ugrid, mask_a, water_like)
+        return _seaward_edges_regular(
+            mask_a, water_like, valid_mask, ocean_exempt, self.transform
+        )
 
     def seaward_edges_with_values(
         self,
@@ -321,12 +235,8 @@ class GridArrays:
             valid_mask = self.valid_mask
         if ocean_exempt is None:
             ocean_exempt = np.zeros_like(valid_mask)
-        if self.grid_type == "regular":
-            return _seaward_edges_regular_with_values(
-                mask_a, water_like, value_grid, valid_mask, ocean_exempt, self.transform
-            )
-        return _seaward_edges_quadtree_with_values(
-            self.ugrid, mask_a, water_like, value_grid
+        return _seaward_edges_regular_with_values(
+            mask_a, water_like, value_grid, valid_mask, ocean_exempt, self.transform
         )
 
 
@@ -476,57 +386,6 @@ def _seaward_edges_regular_with_values(
     return segments, values
 
 
-def _seaward_edges_quadtree(ugrid, mask_a: np.ndarray, water_like: np.ndarray) -> list:
-    efc = ugrid.edge_face_connectivity  # dense (n_edge, 2), fill=-1 on exterior edges
-    f0, f1 = efc[:, 0], efc[:, 1]
-    interior = f1 != -1
-    safe_f0 = np.where(interior, f0, 0)
-    safe_f1 = np.where(interior, f1, 0)
-    is_seaward = interior & (
-        (mask_a[safe_f0] & water_like[safe_f1])
-        | (water_like[safe_f0] & mask_a[safe_f1])
-    )
-    edge_ids = np.where(is_seaward)[0]
-    if len(edge_ids) == 0:
-        return []
-    node_idx = ugrid.edge_node_connectivity[edge_ids, :]
-    x = ugrid.node_x[node_idx]
-    y = ugrid.node_y[node_idx]
-    segments = [LineString(np.column_stack((x[i], y[i]))) for i in range(len(edge_ids))]
-    return _explode_lines(linemerge(unary_union(segments)))
-
-
-def _seaward_edges_quadtree_with_values(
-    ugrid, mask_a: np.ndarray, water_like: np.ndarray, value_grid: np.ndarray
-) -> tuple[list, list]:
-    efc = ugrid.edge_face_connectivity
-    f0, f1 = efc[:, 0], efc[:, 1]
-    interior = f1 != -1
-    safe_f0 = np.where(interior, f0, 0)
-    safe_f1 = np.where(interior, f1, 0)
-    is_seaward = interior & (
-        (mask_a[safe_f0] & water_like[safe_f1])
-        | (water_like[safe_f0] & mask_a[safe_f1])
-    )
-    edge_ids = np.where(is_seaward)[0]
-    if len(edge_ids) == 0:
-        return [], []
-    land_face = np.where(
-        mask_a[safe_f0[edge_ids]], safe_f0[edge_ids], safe_f1[edge_ids]
-    )
-    edge_values = value_grid[land_face]
-    keep = ~np.isnan(edge_values)
-    edge_ids = edge_ids[keep]
-    edge_values = edge_values[keep]
-    if len(edge_ids) == 0:
-        return [], []
-    node_idx = ugrid.edge_node_connectivity[edge_ids, :]
-    x = ugrid.node_x[node_idx]
-    y = ugrid.node_y[node_idx]
-    segments = [LineString(np.column_stack((x[i], y[i]))) for i in range(len(edge_ids))]
-    return segments, [float(v) for v in edge_values]
-
-
 def discard_small_components(
     mask: np.ndarray, grid: GridArrays, min_cells: int
 ) -> tuple[np.ndarray, int, int]:
@@ -603,10 +462,8 @@ def _remove_small_dikerings(
 
     coord_ndigits rounds endpoint coordinates before matching -- segments
     come from exact grid-edge construction, so this is a floating-point-
-    noise safety margin, not a real snapping tolerance. cell_size_m is a
-    single representative scalar (regular grid: the uniform cell size;
-    quadtree: pass a representative size, e.g. the median face size, since
-    this is an approximate area-based screen, not an exact face count).
+    noise safety margin, not a real snapping tolerance. cell_size_m is the
+    grid's uniform cell size.
     """
     if weir_gdf.empty:
         return weir_gdf
@@ -724,17 +581,16 @@ def build_coastal_protection_weir(
             would otherwise push the traced weir line one cell outside the
             true excavated boundary, leaving a thin un-excavated ring around
             the whole channel perimeter. False (default) preserves the
-            dilation for `build_channel_mask_quadtree`'s independently-
-            rasterized mask, which can still have genuine sub-cell gaps
-            this safety net exists to catch.
-        river_crest_on_grid: Optional per-cell/face calibrated riverbank
-            weir crest (NaN where not covered by a modelled reach), from
+            dilation for an independently-rasterized mask, which can still
+            have genuine sub-cell gaps this safety net exists to catch.
+        river_crest_on_grid: Optional per-cell calibrated riverbank weir
+            crest (NaN where not covered by a modelled reach), from
             river_processing.depth_method == "modelled" (rule
             modelled_depth_estimation's weir_crest_calibrated column,
             rasterized -- with smoothing
             across reach junctions so two adjacent reaches' calibrated
             crests don't meet at a hard step -- via
-            src.river_burn.build_smoothed_weir_crest_regular/_quadtree).
+            src.river_burn.build_smoothed_weir_crest_regular).
             When provided: the river channel participates in water_like,
             and each resulting weir segment gets its own crest --
             river-covered land cells use max(crest_elevation_m,

@@ -18,13 +18,12 @@ geometry — unlike burn_river_rect, which clips the centerline per subgrid
 tile but matches it against the GLOBAL, un-clipped zbed_anchors (no distance
 cutoff), causing spurious cross-tile contamination in the burned bed level.
 
-Also provides build_channel_mask_regular()/build_channel_mask_quadtree(): a
-much lighter sibling that just rasterizes each reach's own buffered channel
-polygon directly onto an arbitrary target grid (e.g. the SFINCS model grid,
-not the DEM working grid) — no elevation interpolation, zbed_anchors, or
-natural-DEM reference needed, since these only ever produce a boolean
-"is this cell/face part of the channel" mask (used by the coastal
-protection weir, src/protection_weir.py).
+Also provides build_channel_mask_regular(): a much lighter sibling that
+just rasterizes each reach's own buffered channel polygon directly onto an
+arbitrary target grid (e.g. the SFINCS model grid, not the DEM working
+grid) — no elevation interpolation, zbed_anchors, or natural-DEM reference
+needed, since this only ever produces a boolean "is this cell part of the
+channel" mask (used by the coastal protection weir, src/protection_weir.py).
 """
 
 from __future__ import annotations
@@ -519,9 +518,8 @@ def _smoothed_weir_crest_profiles(
     among all of them.
 
     This blend only ever matters in the flat-per-reach-scalar mode
-    (crest_anchors=None, today only rule 13's own quadtree fallback --
-    see build_coastal_protection_weir's own module docstring) -- two
-    reaches sharing a junction can genuinely disagree there, since each
+    (crest_anchors=None -- see build_coastal_protection_weir's own module
+    docstring) -- two reaches sharing a junction can genuinely disagree there, since each
     carries a single reach-wide value. With crest_anchors given (every
     caller on the regular grid, including rule modelled_depth_estimation's
     own calibration round loop), two reaches sharing a junction cell are computed from
@@ -775,11 +773,8 @@ def build_nearest_weir_crest_regular(
     cell within a reach's own buffer is assigned its NEAREST centerline
     anchor's own crest value directly (nearest (x, y) match against every
     cell_gdf row, any reach), not a value interpolated between anchors
-    along a smoothed profile. Companion to build_smoothed_weir_crest_regular,
-    kept as a SEPARATE function rather than a mode switch on it -- rule 13's
-    own quadtree fallback still needs the smoothed/interpolated profile
-    machinery (_smoothed_weir_crest_profiles) unchanged, so that function
-    is left untouched for that consumer.
+    along a smoothed profile. Kept as a SEPARATE function from
+    build_smoothed_weir_crest_regular rather than a mode switch on it.
 
     Searching the FULL cell_gdf anchor set (not just the current reach's
     own anchors) rather than reusing per-reach along-line profiles also
@@ -842,55 +837,6 @@ def build_nearest_weir_crest_regular(
         )
 
     return output
-
-
-def build_smoothed_weir_crest_quadtree(
-    rivers: gpd.GeoDataFrame,
-    width_column: str,
-    crest_column: str,
-    ugrid,
-    blend_distance_m: float = 1000.0,
-    crest_anchors: gpd.GeoDataFrame | None = None,
-) -> np.ndarray:
-    """Quadtree counterpart of build_smoothed_weir_crest_regular -- per-face
-    calibrated weir crest, smoothed across reach junctions the same way
-    (including what `crest_anchors` does -- see
-    _smoothed_weir_crest_profiles). Where two reaches' buffers legitimately
-    overlap the same face, the HIGHER value wins.
-    """
-    profiles = _smoothed_weir_crest_profiles(
-        rivers, crest_column, blend_distance_m, crest_anchors=crest_anchors
-    )
-    n_faces = ugrid.face_node_connectivity.shape[0]
-    result = np.full(n_faces, np.nan, dtype=np.float32)
-    if not profiles:
-        return result
-    face_polys = _quadtree_face_polygons(ugrid)
-    tree = shapely.STRtree(face_polys)
-    xy = ugrid.face_coordinates
-    face_x, face_y = xy[:, 0], xy[:, 1]
-
-    for row in rivers.itertuples(index=False):
-        rid = normalize_reach_id(row.reach_id)
-        width = getattr(row, width_column, np.nan)
-        if rid is None or rid not in profiles or pd.isna(width) or width <= 0:
-            continue
-        line, _length, profile = profiles[rid]
-
-        buf_poly = _flush_capped_buffer(
-            line, float(width), clip_start=bool(getattr(row, "is_seed", False))
-        )
-        hit_idx = tree.query(buf_poly, predicate="intersects")
-        if len(hit_idx) == 0:
-            continue
-        pts = shapely.points(face_x[hit_idx], face_y[hit_idx])
-        pts_along = shapely.line_locate_point(line, pts)
-        vals = profile(pts_along)
-
-        current = result[hit_idx]
-        result[hit_idx] = np.where(np.isnan(current), vals, np.maximum(current, vals))
-
-    return result
 
 
 def build_channel_mask_regular(
@@ -1188,41 +1134,3 @@ def snap_points_to_centerline_cells(
             f"{snap_dist_m.max():.0f} m) -- check reach_id resolution for these points"
         )
     return out
-
-
-def _quadtree_face_polygons(ugrid) -> list:
-    """One shapely Polygon per mesh face, built from face_node_connectivity
-    (dense (n_face, max_vertices), fill=-1 for unused vertex slots on faces
-    with fewer sides than the widest face in the mesh) + node_x/node_y.
-    """
-    fnc = ugrid.face_node_connectivity
-    node_x, node_y = ugrid.node_x, ugrid.node_y
-    polys = []
-    for row in fnc:
-        idx = row[row != -1]
-        polys.append(shapely.Polygon(np.column_stack((node_x[idx], node_y[idx]))))
-    return polys
-
-
-def build_channel_mask_quadtree(
-    rivers: gpd.GeoDataFrame, width_column: str, ugrid
-) -> np.ndarray:
-    """
-    Boolean per-face river-channel mask for a quadtree mesh: each reach's
-    own buffered channel polygon tested against every mesh face's own
-    polygon via an STRtree intersects query -- not centroid containment,
-    for the same narrow-channel-must-not-vanish reason build_channel_mask_
-    regular() uses all_touched=True (a channel could pass through a face
-    without ever containing its centroid).
-    """
-    polys = _channel_buffer_polygons(rivers, width_column)
-    n_faces = ugrid.face_node_connectivity.shape[0]
-    if not polys:
-        return np.zeros(n_faces, dtype=bool)
-    channel_union = shapely.unary_union(polys)
-    face_polys = _quadtree_face_polygons(ugrid)
-    tree = shapely.STRtree(face_polys)
-    hit_idx = tree.query(channel_union, predicate="intersects")
-    mask = np.zeros(n_faces, dtype=bool)
-    mask[hit_idx] = True
-    return mask

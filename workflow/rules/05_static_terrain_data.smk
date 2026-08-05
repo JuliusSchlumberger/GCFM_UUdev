@@ -30,20 +30,20 @@ rule get_elevation:
     later, in rule build_sfincs (13), once baseline_m is known.
     """
     input:
-        spec_basins_meta        = results_path("{basin_id}/inputs/domain/domain_bbox.json"),
-        domain_gpkg             = results_path("{basin_id}/inputs/domain/{basin_id}_domain.gpkg"),
+        spec_basins_meta        = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
+        domain_gpkg             = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         global_topography_tiles = catalogue_path("fathomdem"),
         global_bathymetry       = catalogue_path("coastal_bathymetry"),
         deltadtm_mask           = catalogue_path("deltadtm_mask"),
-        land_polygons           = results_path("{basin_id}/inputs/domain/{basin_id}_land_polygons.gpkg"),
+        land_polygons           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
         # Datum-correction inputs (mandatory — FathomDEM's native EGM2008 datum
         # must not be blended with GEBCO/COAST-RP/MDT, which share GOCO06s).
         goco06s_gfc = catalogue_path("goco06s"),
         egm2008_gfc = catalogue_path("egm2008_geoid"),
         mdt         = catalogue_path("mdt_cnes_cls22"),
     output:
-        elevation_merged = results_path("{basin_id}/inputs/domain/{basin_id}_elevation_merged.tif"),
-        plot_elevation   = results_path("{basin_id}/visuals/input_data/05a_elevation.png"),
+        elevation_merged = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"),
+        plot_elevation   = results_path("{basin_id}/preprocessing_inputs/visuals/05a_elevation.png"),
     params:
         mdt_load_margin_deg = config["datum_correction"]["mdt_load_margin_deg"],
         gebco_max_depth_m   = config["terrain"]["gebco_max_depth_m"],
@@ -63,16 +63,16 @@ rule get_landuse:
     pure classification, not the initial water level itself -- rule
     build_sfincs (13) turns it into zsini.tif once baseline_m is known."""
     input:
-        spec_basins_meta = results_path("{basin_id}/inputs/domain/domain_bbox.json"),
-        domain_gpkg      = results_path("{basin_id}/inputs/domain/{basin_id}_domain.gpkg"),
+        spec_basins_meta = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
+        domain_gpkg      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         global_landuse   = catalogue_path("land_use"),
-        land_polygons    = results_path("{basin_id}/inputs/domain/{basin_id}_land_polygons.gpkg"),
-        elevation_merged = results_path("{basin_id}/inputs/domain/{basin_id}_elevation_merged.tif"),
+        land_polygons    = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
+        elevation_merged = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"),
     output:
-        spec_landuse  = results_path("{basin_id}/inputs/domain/{basin_id}_landuse.tif"),
-        sea_mask      = results_path("{basin_id}/inputs/domain/{basin_id}_sea_mask.tif"),
-        plot_landuse  = results_path("{basin_id}/visuals/input_data/05b_landuse.png"),
-        plot_sea_mask = results_path("{basin_id}/visuals/input_data/05b_sea_mask.png"),
+        spec_landuse  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
+        sea_mask      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sea_mask.tif"),
+        plot_landuse  = results_path("{basin_id}/preprocessing_inputs/visuals/05b_landuse.png"),
+        plot_sea_mask = results_path("{basin_id}/preprocessing_inputs/visuals/05b_sea_mask.png"),
     log:
         "logs/{basin_id}/05b_landuse.log"
     script:
@@ -81,14 +81,14 @@ rule get_landuse:
 
 rule get_roughness:
     input:
-        spec_basins_meta      = results_path("{basin_id}/inputs/domain/domain_bbox.json"),
-        domain_gpkg           = results_path("{basin_id}/inputs/domain/{basin_id}_domain.gpkg"),
-        spec_landuse          = results_path("{basin_id}/inputs/domain/{basin_id}_landuse.tif"),
+        spec_basins_meta      = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
+        domain_gpkg           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
+        spec_landuse          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
         matching_lu_roughness = catalogue_path("lu_to_roughness_lookup"),
-        land_polygons              = results_path("{basin_id}/inputs/domain/{basin_id}_land_polygons.gpkg"),
+        land_polygons              = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
     output:
-        spec_roughness = results_path("{basin_id}/inputs/domain/{basin_id}_roughness.tif"),
-        plot_roughness = results_path("{basin_id}/visuals/input_data/05c_roughness.png"),
+        spec_roughness = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"),
+        plot_roughness = results_path("{basin_id}/preprocessing_inputs/visuals/05c_roughness.png"),
     log:
         "logs/{basin_id}/05c_roughness.log"
     script:

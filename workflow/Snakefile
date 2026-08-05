@@ -36,6 +36,7 @@ include: "rules/09_condition_elevation.smk"
 include: "rules/10_depth_estimation_empirical.smk"
 include: "rules/10_depth_estimation_modelled.smk"
 include: "rules/11_testing.smk"
+include: "rules/13_build_sfincs_skeleton.smk"
 include: "rules/13_build_sfincs.smk"
 include: "rules/14_run_spinup.smk"
 include: "rules/15_sanity_checks.smk"
@@ -45,37 +46,37 @@ include: "rules/17_flood_metrics.smk"
 # ── Shared output lists (used by named targets and rule all) ─────────────────
 
 _PREPROCESS_OUTPUTS = [
-    expand(results_path("{basin_id}/inputs/domain/{basin_id}_delta_polygon.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/domain_bbox.json"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/{basin_id}_domain.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/{basin_id}_land_polygons.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/protection_levels.json"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/04_protection_levels.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/{basin_id}_elevation_merged.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/05a_elevation.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/{basin_id}_landuse.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/{basin_id}_sea_mask.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/05b_landuse.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/05b_sea_mask.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/{basin_id}_roughness.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/05c_roughness.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/{basin_id}_river_network.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/06_river_network.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/forcing/surge_forcing.nc"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/forcing/river_forcing.nc"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/forcing/glofas_clip.nc"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/07_forcing_locations.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/07_forcing_timeseries.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/07_forcing_eva.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/07_bias_correction"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/07_surge_correction.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/{basin_id}_river_network_clean.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/08_river_clean.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/08_river_discharge.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/{basin_id}_sfincs_grid.json"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/{basin_id}_elevation_conditioned.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/09_condition_elevation.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/04_protection_levels.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/05a_elevation.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sea_mask.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/05b_landuse.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/05b_sea_mask.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/05c_roughness.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/06_river_network.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/forcing/glofas_clip.nc"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_locations.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_timeseries.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_eva.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_bias_correction"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_surge_correction.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/08_river_clean.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/08_river_discharge.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sfincs_grid.json"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/09_condition_elevation.png"), basin_id=BASINS),
     # river_network_depth_estimated.gpkg + river_burned_dem* -- the unified
     # outputs of whichever depth-estimation rule ran (empirical_depth_estimation
     # or modelled_depth_estimation, both numbered 10, sibling alternatives
@@ -84,54 +85,68 @@ _PREPROCESS_OUTPUTS = [
     # mode produced them. Both rules burn their own channel directly --
     # every basin always gets a conditioned DEM and a directly-burned river
     # channel.
-    *(expand(results_path("{basin_id}/inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/inputs/domain/{basin_id}_river_burned_dem.tif"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/input_data/10_river_depth.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/input_data/10_river_width_q.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/input_data/10_river_hydraulics.png"), basin_id=BASINS)
+    *(expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem.tif"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_river_depth.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_river_width_q.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_river_hydraulics.png"), basin_id=BASINS)
       if config["river_processing"]["depth_method"] == "empirical" else
-      expand(results_path("{basin_id}/inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/inputs/domain/{basin_id}_river_burned_dem.tif"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/inputs/domain/{basin_id}_coastal_protection_weir.gpkg"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/input_data/10_calibration/river_depth.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/input_data/10_calibration/water_level_timeseries.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/input_data/10_calibration/max_inundation.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/visuals/input_data/10_calibration/flood_animation.mp4"), basin_id=BASINS)),
-    expand(results_path("{basin_id}/visuals/input_data/11_upstream_boundary_check.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/visuals/input_data/11b_bifurcation_calibration_options"), basin_id=BASINS),
+      expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem.tif"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/river_depth.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/water_level_timeseries.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/max_inundation.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/flood_animation.mp4"), basin_id=BASINS)),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/11_upstream_boundary_check.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/11b_bifurcation_calibration_options"), basin_id=BASINS),
 ]
 
-_BUILD_OUTPUTS = [
-    expand(results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs.inp"), basin_id=BASINS, scenario=SCENARIOS),
-    expand(results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs.weir"), basin_id=BASINS, scenario=SCENARIOS),
-    expand(results_path("{basin_id}/scenarios/{scenario}/sfincs/{basin_id}_coastal_protection_weir.gpkg"), basin_id=BASINS, scenario=SCENARIOS),
-    expand(results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/01_grid.png"), basin_id=BASINS, scenario=SCENARIOS),
-    expand(results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/02_elevation.png"), basin_id=BASINS, scenario=SCENARIOS),
-    expand(results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/03_mask.png"), basin_id=BASINS, scenario=SCENARIOS),
-    expand(results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/04_roughness.png"), basin_id=BASINS, scenario=SCENARIOS),
-    expand(results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/07_coastal_protection_weir.png"), basin_id=BASINS, scenario=SCENARIOS),
-    *(expand(results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs_subgrid.nc"), basin_id=BASINS, scenario=SCENARIOS)
+# Basin-level (no {scenario} wildcard): the SFINCS skeleton (grid/
+# elevation/mask/weir/roughness/subgrid/observation points -- rule
+# build_sfincs_skeleton) and the spin-up built on top of it (rule
+# run_spinup, fixed RP=1, plus its own sanity_checks) are both genuinely
+# scenario-independent now -- changing a scenario's own RP never
+# invalidates either of these, so they're expanded over basin_id only,
+# never once per scenario. See 13_build_sfincs_skeleton.smk/14_run_spinup.smk's
+# own module comments for the full rationale.
+_BUILD_OUTPUTS_BASIN = [
+    expand(results_path("{basin_id}/sfincs_skeleton/sfincs.inp"), basin_id=BASINS),
+    expand(results_path("{basin_id}/sfincs_skeleton/sfincs.weir"), basin_id=BASINS),
+    expand(results_path("{basin_id}/sfincs_skeleton/{basin_id}_coastal_protection_weir.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/01_grid.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/02_elevation.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/03_mask.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/04_roughness.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/07_coastal_protection_weir.png"), basin_id=BASINS),
+    *(expand(results_path("{basin_id}/sfincs_skeleton/sfincs_subgrid.nc"), basin_id=BASINS)
       if config["sfincs"]["subgrid"]["enabled"] else []),
-    *(expand(results_path("{basin_id}/scenarios/{scenario}/sfincs/{basin_id}_refinement_polygons.gpkg"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand(results_path("{basin_id}/scenarios/{scenario}/visuals/sfincs_build/01b_refinement_zones.png"), basin_id=BASINS, scenario=SCENARIOS)
-      if config["sfincs"]["grid"]["quadtree"]["enabled"] else []),
-    *(expand(results_path("{basin_id}/scenarios/{scenario}/sfincs/spinup/" + RST_FNAME), basin_id=BASINS, scenario=SCENARIOS)
-      + expand(results_path("{basin_id}/scenarios/{scenario}/sfincs/spinup/sfincs_map.nc"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand(results_path("{basin_id}/scenarios/{scenario}/visuals/spinup/validation_spinup.png"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand(results_path("{basin_id}/scenarios/{scenario}/visuals/spinup/validation_max_inundation.png"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand(results_path("{basin_id}/scenarios/{scenario}/visuals/spinup/01_inundation_ratio.png"), basin_id=BASINS, scenario=SCENARIOS)
-      # run_event (rule 16) needs rule 14's restart file, same gate as the
-      # spin-up/sanity outputs directly above:
-      + expand(results_path("{basin_id}/scenarios/{scenario}/sfincs/sfincs_map.nc"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand(results_path("{basin_id}/scenarios/{scenario}/visuals/01_inundation_ratio.png"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand(results_path("{basin_id}/scenarios/{scenario}/visuals/02_flood_animation.mp4"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand(results_path("{basin_id}/scenarios/{scenario}/visuals/flood_timeseries.csv"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand (results_path("{basin_id}/scenarios/{scenario}/metrics/max_flood_depth.tif"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand (results_path("{basin_id}/scenarios/{scenario}/metrics/flood_metrics.csv"), basin_id=BASINS, scenario=SCENARIOS)
+    *(expand(results_path("{basin_id}/spin_up/" + RST_FNAME), basin_id=BASINS)
+      + expand(results_path("{basin_id}/spin_up/sfincs_map.nc"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/spin_up/validation_spinup.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/spin_up/validation_max_inundation.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/spin_up/01_inundation_ratio.png"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/spin_up/02_flood_animation.mp4"), basin_id=BASINS)
       if config["sfincs"]["spinup"]["enabled"] else []),
 ]
+
+# Per-scenario: build_sfincs's own forcing-only output, plus run_event and
+# compute_flood_metrics, both of which still need one copy per scenario
+# (each scenario's own design RP genuinely drives a different event run).
+_BUILD_OUTPUTS_SCENARIO = [
+    expand(results_path("{basin_id}/runs/{scenario}/sfincs/sfincs.inp"), basin_id=BASINS, scenario=SCENARIOS),
+    *(expand(results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand(results_path("{basin_id}/runs/{scenario}/visuals/01_inundation_ratio.png"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand(results_path("{basin_id}/runs/{scenario}/visuals/02_flood_animation.mp4"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand(results_path("{basin_id}/runs/{scenario}/visuals/flood_timeseries.csv"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand (results_path("{basin_id}/runs/{scenario}/metrics/max_flood_depth.tif"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand (results_path("{basin_id}/runs/{scenario}/metrics/flood_metrics.csv"), basin_id=BASINS, scenario=SCENARIOS)
+      if config["sfincs"]["spinup"]["enabled"] else []),
+]
+
+_BUILD_OUTPUTS = _BUILD_OUTPUTS_BASIN + _BUILD_OUTPUTS_SCENARIO
 
 # ── Named partial-pipeline targets ───────────────────────────────────────────
 
@@ -151,8 +166,15 @@ rule preprocess:
 rule build:
     """
     Run the SFINCS model build, spin-up, spin-up sanity checks, and the main
-    flood-event simulation with its own sanity checks (rules 13–16).
-    Preprocessing outputs must already exist.
+    flood-event simulation with its own sanity checks (rules
+    build_sfincs_skeleton, build_sfincs, run_spinup, sanity_checks,
+    run_event, compute_flood_metrics). Preprocessing outputs must already
+    exist.
+
+    build_sfincs_skeleton and run_spinup/sanity_checks run ONCE per basin
+    (not once per scenario) -- they're entirely independent of any
+    scenario's own design RP, see 13_build_sfincs_skeleton.smk/
+    14_run_spinup.smk's own module comments.
 
     Usage:  snakemake build --cores N
     """
