@@ -21,6 +21,10 @@ coast_250:
   surge_rp: 250
   river_rp: null
 
+coast_500:
+  surge_rp: 500
+  river_rp: null
+
 coast_1000:
   surge_rp: 1000
   river_rp: null
