@@ -14,6 +14,7 @@ advance:
     pumps: {discharge: 1000,
             locations: adaptation/pumps.geojson }
 
+
 NbS_protect_open:
   measures:
     nbs_land_reclamation: {attenuation_rate: 0.5,

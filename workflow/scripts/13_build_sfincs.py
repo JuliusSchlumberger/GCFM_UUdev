@@ -152,6 +152,19 @@ log.info(
     f"({sim_hours:.0f} h from forcing files)"
 )
 
+# sf.water_level.create()/sf.discharge_points.create() below call
+# self.model.get_model_time() (reads sf.config["tstart"]/["tstop"]) to
+# time-slice the forcing dataframe against. The skeleton's own config still
+# carries its placeholder tref/tstart/tstop (today's date) at this point --
+# same failure mode 14_run_spinup.py hit. Set it to this scenario's own full
+# forcing window now so neither create() call truncates the timeseries; the
+# scenario's own tstart/tstop actually written to sfincs.inp below (possibly
+# tstart_event, after spin-up) is written directly from local variables, not
+# from sf.config, so this has no effect on the final on-disk file.
+sf.config.set("tref", tref.strftime("%Y%m%d %H%M%S"))
+sf.config.set("tstart", tref.strftime("%Y%m%d %H%M%S"))
+sf.config.set("tstop", tstop.strftime("%Y%m%d %H%M%S"))
+
 # ── initial conditions ────────────────────────────────────────────────────────
 # forcing_mode="river_only": leave every cell (sea AND land) at the uniform
 # zsini=-9999 default -- i.e. every cell starts dry at its own bed level,

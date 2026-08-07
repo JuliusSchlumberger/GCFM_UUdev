@@ -61,7 +61,7 @@ river_processing:
 
 # ── Boundary forcings (rule 07) ─────────────────────────────────────────────
 boundary_forcings:
-  lead_days: 12
+  lead_days: 6 # was 12
   dt_hr: 1
   surge:
     min_stations: 6
@@ -69,7 +69,7 @@ boundary_forcings:
     dedupe_radius_km: 1
     return_period: 100
     search_radii_km: [10, 25, 50, 1000]
-    period_hr: 12
+    period_hr: 48 # was 12
     slr: # IPCC AR6 sea-level-rise fingerprint, scaled to a single global-mean target (slr_m) and added to each station's storm-tide level.
       enabled: true
       slr_m: 0.0                 # target global-mean SLR (m); 0 = no SLR added
@@ -79,7 +79,7 @@ boundary_forcings:
       quantile: 0.5
       fallback_search_deg: 3.0   # +/- deg to search for a valid AR6 location if the nearest is NaN
   river:
-    period_hr: 24 # Choice of discharge variable from GLOFAS used.
+    period_hr: 48 # was 24. Choice of discharge variable from GLOFAS used.
     glofas_buffer_deg: 1.0
     glofas_search_radius_km: 5.0    # radius around inside-domain reach centroid to search for GloFAS cells
     glofas_min_mean_discharge: 10.0  # minimum mean discharge (m³/s) for a GloFAS cell to be considered

@@ -109,6 +109,16 @@ spinup_times = pd.DatetimeIndex([tref, tstop])  # 2-point constant timeseries
 
 log.info(f"Spin-up: {tref} → {tstop} ({spinup_days} days), restart written at t={trstout_sec} s")
 
+# Set the model's own tref/tstart/tstop NOW (not just when the sfincs.inp is
+# hand-crafted below): sf.water_level.create()/sf.discharge_points.create()
+# call self.model.get_model_time() (reads sf.config["tstart"]/["tstop"]) to
+# time-slice the forcing dataframe against. Left at the skeleton's own
+# placeholder tref/tstart/tstop (today's date), that slice would be disjoint
+# from spinup_times and raise NoDataException.
+sf.config.set("tref", tref.strftime("%Y%m%d %H%M%S"))
+sf.config.set("tstart", tref.strftime("%Y%m%d %H%M%S"))
+sf.config.set("tstop", tstop.strftime("%Y%m%d %H%M%S"))
+
 # ── water-level boundary forcing: RP=1, constant over time ──────────────────
 surge_ds = xr.open_dataset(surge_forcing_path, decode_times=False)
 n_stations = surge_ds.sizes["station"]
@@ -305,3 +315,4 @@ else:
         str(plot_inundation_path), basin_id=spin_up_root.parent.name, run_label="spinup",
     )
     log.info(f"Max inundation plot written: {plot_inundation_path}")
+
