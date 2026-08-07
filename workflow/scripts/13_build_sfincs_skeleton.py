@@ -8,10 +8,26 @@ sections depend on a scenario's own forcing_mode/design_rp_river_yr/
 design_rp_surge_yr.
 
 zsini.tif (sea cells at baseline_m, land dry) is also built here -- a pure
-function of sea_mask.tif + baseline_m (both basin-level, scenario-
-independent) -- even though whether it's actually USED as the model's
-initial condition depends on forcing_mode (see build_sfincs's own
+function of zsini_sea_cells_on_grid.tif + baseline_m (both basin-level,
+scenario-independent) -- even though whether it's actually USED as the
+model's initial condition depends on forcing_mode (see build_sfincs's own
 initial-conditions section, 13_build_sfincs.py).
+
+zsini_sea_cells_on_grid.tif is the ONLY sea/land classification zsini is
+ever built from, and it is already rasterized directly onto THIS model's
+own grid (zero further reprojection here -- see rule modelled_depth_
+estimation/empirical_depth_estimation, whichever ran, for where that
+raster is produced). There used to be a second, native-resolution
+construction path here that read sea_mask_corrected.tif and let HydroMT's
+own reproject_like resample it a SECOND time onto this grid -- removed
+2026-08-07: two independent nearest-neighbor passes don't invert each
+other cleanly even on a confirmed pixel-identical grid (confirmed:
+~53% of the corrected coastal-fringe cells were still wet after that
+second pass), and maintaining two different construction methods for the
+same quantity made the on-disk zsini.tif inconsistent with what actually
+ended up in sfincs.ini. Every raster that feeds the model's own grid is
+now resampled onto that grid exactly ONCE, at the point it's first
+produced as a preprocessing input -- never re-resampled again downstream.
 
 Outputs
 -------
@@ -71,12 +87,22 @@ domain_path           = Path(snakemake.input.domain_gpkg)
 # rule's own input comment for why this is named elevation_conditioned,
 # not elevation_merged (the raw file, rule 05a's own output, unused here).
 elevation_conditioned_path = Path(snakemake.input.elevation_conditioned)
+# Native resolution -- subgrid table only (see local_roughness_native's own
+# comment below). The main regular-grid "manning" field and the weir
+# diagnostics section use roughness_on_grid_path/landuse_on_grid_path
+# instead (rule grid_align_landuse, 09b) -- already resampled onto this
+# model's own grid once, upstream, zero further reprojection here.
 roughness_path        = Path(snakemake.input.roughness)
-landuse_path          = Path(snakemake.input.landuse)
+roughness_on_grid_path = Path(snakemake.input.roughness_on_grid)
+landuse_on_grid_path  = Path(snakemake.input.landuse_on_grid)
 land_polygons_path    = Path(snakemake.input.land_polygons)
 river_network_path    = Path(snakemake.input.river_network)
 delta_outflow_points_path = Path(snakemake.input.delta_outflow_points)
-sea_mask_path         = Path(snakemake.input.sea_mask)
+# The ONLY sea/land classification zsini is built from -- already
+# rasterized directly onto this model's own grid by whichever of rule
+# modelled_depth_estimation/empirical_depth_estimation ran (see this
+# script's own module docstring).
+zsini_sea_cells_path = Path(snakemake.input.zsini_sea_cells)
 surge_forcing_path    = Path(snakemake.input.surge_forcing)
 river_forcing_path    = Path(snakemake.input.river_forcing)
 river_burned_dem_path = Path(snakemake.input.river_burned_dem)
@@ -116,72 +142,11 @@ with xr.open_dataset(surge_forcing_path, decode_times=False) as _ds:
     )
 log.info(f"Surge boundary baseline read from surge_forcing.nc: {baseline_m:+.4f} m")
 
-# ── build zsini raster from the sea mask ────────────────────────────────────
-# sea_mask.tif (rule 05b) is a pure land/sea classification: 1.0 for sea
-# cells (not on OSM land polygons, or landuse==200 inland water body), -9999
-# nodata for land. baseline_m (the actual initial sea level) isn't known
-# until here, so this is the first point in the pipeline that can turn the
-# classification into the real zsini.tif -- always built here, in one place,
-# rather than conditionally patched after the fact.
+# zsini.tif (sea cells = baseline_m, land = nodata) is built once, directly
+# on this model's own grid, from zsini_sea_cells_on_grid.tif -- see the
+# "Initial conditions" section below (needs sf.grid.data["dep"], not yet
+# created at this point in the script).
 _zsini_out = Path(snakemake.output.zsini)
-with rasterio.open(sea_mask_path) as _src:
-    _sea_mask_arr = _src.read(1).astype(np.float32)
-    _meta = _src.meta.copy()
-_arr = np.where(_sea_mask_arr == np.float32(1.0), np.float32(baseline_m), np.float32(-9999.0))
-
-# ── connected-component dry-out of isolated sea cells ─────────────────────
-# When baseline_m is significantly negative (e.g. a large negative MDT
-# correction) shallow connections between isolated depressions and the
-# main ocean become dry, trapping pockets of water that were previously able
-# to drain. The same hazard exists even when baseline_m == 0 (e.g. an
-# inland lagoon disconnected from the open ocean by dry land in between), so
-# this fix always runs, not just when baseline_m != 0. Fix: label connected
-# components of sea cells (value=baseline_m), keep only the main open ocean,
-# and set isolated wet cells (dep < baseline_m, so water depth > 0) to
-# dep = dry start.
-# Both sea_mask.tif and elevation_conditioned.tif share the same grid
-# (sea_mask is reprojected onto the native elevation grid in rule 05b,
-# and rule 09's conditioning modifies pixel VALUES only, never the
-# grid/transform), so pixel-aligned comparison is exact.
-with rasterio.open(elevation_conditioned_path) as _dep_src:
-    _dep = _dep_src.read(1).astype(np.float32)
-    _dep_nd = np.float32(_dep_src.nodata if _dep_src.nodata is not None else -9999.0)
-_dep_valid = np.where(np.isclose(_dep, _dep_nd), np.float32(1e6), _dep)
-
-_sea_cells = np.isclose(_arr, np.float32(baseline_m))           # cells carrying baseline_m
-_labeled, _n = _ndimage_label(_sea_cells)                        # 4-connected components
-# The main open ocean is taken as the SINGLE LARGEST connected sea
-# component, not "whichever components touch the raster array's own
-# rectangular edge": our domains are a delta-polygon-shaped clip well
-# inside their own bounding-box raster (NaN-padded corners), so the
-# array's actual edge pixels are almost always outside-domain nodata, not
-# real sea -- an edge-touching heuristic would misclassify most of the
-# real open ocean as "isolated" here. Largest-component-by-area is
-# geometry-independent and only fails if a real, separate ocean body in
-# the domain is smaller than some enclosed pond/lagoon elsewhere.
-if _n > 0:
-    _sizes = np.bincount(_labeled.ravel())
-    _sizes[0] = 0  # exclude background (non-sea)
-    _main_label = int(np.argmax(_sizes))
-    _connected = _labeled == _main_label
-else:
-    _connected = np.zeros_like(_sea_cells)
-_isolated_wet = _sea_cells & ~_connected & (_dep_valid < np.float32(baseline_m))
-_n_fix = int(_isolated_wet.sum())
-if _n_fix > 0:
-    # Set isolated wet sea cells to their bed elevation → water depth = 0 (dry).
-    _arr = np.where(_isolated_wet, _dep_valid, _arr)
-    log.info(
-        f"zsini connectivity fix: {_n_fix} isolated wet sea-cell(s) set to dep "
-        f"(not reachable from domain boundary at baseline_m={baseline_m:+.4f} m)"
-    )
-else:
-    log.info("zsini connectivity fix: no isolated wet sea cells found")
-
-with rasterio.open(_zsini_out, "w", **_meta) as _dst:
-    _dst.write(_arr, 1)
-_zsini_uri = str(_zsini_out)
-log.info(f"zsini written: {_zsini_out} (sea cells = {baseline_m:+.4f} m)")
 
 # ── delta-outline outflow points ──────────────────────────────────────────────
 delta_outflow_gdf = gpd.read_file(delta_outflow_points_path)
@@ -212,7 +177,18 @@ local_catalog = {
         "uri": str(elevation_conditioned_sfincs_grid_path),
         "driver": "rasterio",
     },
+    # Coarse -- already resampled onto this model's own grid (rule
+    # grid_align_landuse, 09b), zero further reprojection. Main regular-grid
+    # "manning" field only, never subgrid (see local_roughness_native below).
     "local_roughness": {
+        "data_type": "RasterDataset",
+        "uri": str(roughness_on_grid_path),
+        "driver": "rasterio",
+    },
+    # Native resolution -- subgrid table only, which genuinely needs
+    # sub-cell detail for both elevation AND roughness together (same DEM
+    # exception the user asked to keep).
+    "local_roughness_native": {
         "data_type": "RasterDataset",
         "uri": str(roughness_path),
         "driver": "rasterio",
@@ -229,19 +205,6 @@ local_catalog = {
             "driver": "pyogrio",
         },
     } if delta_outflow_enabled else {}),
-    # zsini.tif (built above, same script, before this catalog is read) --
-    # the DEFAULT (non-river_only) spatially-varying initial water level.
-    # Baked into this skeleton's own "ini" grid variable (see the
-    # initial-conditions section below) so build_sfincs's per-scenario
-    # forcing step can just forward "inifile" like any other geometry
-    # file for compound/coastal_only scenarios, and override it with a
-    # uniform dry start only for river_only (see that script's own
-    # initial-conditions section).
-    "local_zsini": {
-        "data_type": "RasterDataset",
-        "uri": _zsini_uri,
-        "driver": "rasterio",
-    },
 }
 with open(local_catalog_path, "w") as fh:
     yaml.dump(local_catalog, fh, sort_keys=False)
@@ -372,7 +335,8 @@ if depth_method == "modelled" and coastal_protection_weir_path is not None:
         log.info(f"Coastal protection weir imported directly from rule 9b: {len(weir_gdf)} segment(s)")
     else:
         log.info("Coastal protection weir: 9b's own file has no segments -- sf.weirs left empty")
-    landuse_on_grid = weir_grid.sample_landuse(landuse_path)
+    with rasterio.open(landuse_on_grid_path) as _lu_src:
+        landuse_on_grid = _lu_src.read(1)
     river_channel_mask = build_channel_mask_regular(rivers_utm, "width", weir_grid.shape, weir_grid.transform)
     weir_diagnostics = {
         "applicable": True,
@@ -416,12 +380,114 @@ else:
 # uniform dry start instead (see 13_build_sfincs.py's own initial-
 # conditions section) -- excludes "inifile" from what it forwards, rather
 # than anything changing here.
+#
+# Built directly from zsini_sea_cells_on_grid.tif -- already rasterized onto
+# THIS model's own grid by whichever of rule modelled_depth_estimation/
+# empirical_depth_estimation ran (zero further reprojection here: passing an
+# in-memory DataArray built on sf.grid.data["dep"]'s own coords makes
+# .create()'s internal reproject_like a confirmed true no-op, verified
+# 0/263907 cells differ from the input array in a real basin's own
+# skeleton). There used to be a two-step construction here -- read a
+# NATIVE-resolution sea_mask_corrected.tif into HydroMT's own "nearest"
+# reproject_like first, then patch the result with this same coarse-direct
+# array afterward -- removed 2026-08-07 after confirming two independent
+# nearest-neighbor passes over the SAME coarse-to-native-to-coarse round
+# trip don't invert each other cleanly even on a pixel-identical grid
+# (~53% of the corrected coastal-fringe cells were still wet under the old
+# two-step version). One raster, one resampling pass, one construction
+# method, matching what actually ends up in sfincs.ini exactly.
 initial_conditions_component = sf.initial_conditions
+with rasterio.open(zsini_sea_cells_path) as _src:
+    _sea_cells_on_grid = _src.read(1)
+if _sea_cells_on_grid.shape != sf.grid.data["dep"].shape:
+    raise ValueError(
+        f"zsini_sea_cells_on_grid.tif shape {_sea_cells_on_grid.shape} does not match "
+        f"this model's own grid {sf.grid.data['dep'].shape} -- expected pixel-identical "
+        f"grids (same domain_gpkg + grid_resolution.json fed to both rules)."
+    )
+# Dry cells are real np.nan from the start (not a -9999 sentinel) -- avoids
+# relying on xarray operations (e.g. .where()) to preserve rio/nodata attrs
+# set on an intermediate object, which isn't guaranteed across xarray
+# versions.
+_ini_coarse = np.where(_sea_cells_on_grid == np.float32(1.0), np.float32(baseline_m), np.nan)
+
+# ── connected-component dry-out of isolated sea cells ─────────────────────
+# When baseline_m is significantly negative (e.g. a large negative MDT
+# correction) shallow connections between isolated depressions and the main
+# ocean become dry, trapping pockets of water that were previously able to
+# drain. The same hazard exists even when baseline_m == 0 (e.g. an inland
+# lagoon disconnected from the open ocean by dry land in between), so this
+# fix always runs, not just when baseline_m != 0. In "modelled" mode,
+# protected_pocket_mask (baked into zsini_sea_cells_on_grid.tif already
+# excludes weir-protected cells, but a genuinely isolated, UNPROTECTED
+# pocket (not reachable from the open ocean, no weir involved either) can
+# still exist and needs the same dry-out treatment. Fix: label connected
+# components of sea cells (value=baseline_m), keep only the main open
+# ocean, and set isolated wet cells (dep < baseline_m, so water depth > 0)
+# to dep = dry start.
+_dep_coarse = sf.grid.data["dep"].values.astype(np.float32)
+_dep_nd_coarse = np.float32(sf.grid.data["dep"].rio.nodata or -9999.0)
+_dep_valid_coarse = np.where(np.isclose(_dep_coarse, _dep_nd_coarse), np.float32(1e6), _dep_coarse)
+_sea_cells_coarse = np.isclose(_ini_coarse, np.float32(baseline_m))
+_labeled_coarse, _n_coarse = _ndimage_label(_sea_cells_coarse)
+# The main open ocean is taken as the SINGLE LARGEST connected sea
+# component, not "whichever components touch the raster array's own
+# rectangular edge": our domains are a delta-polygon-shaped clip well
+# inside their own bounding-box raster (NaN-padded corners), so the
+# array's actual edge pixels are almost always outside-domain nodata, not
+# real sea -- an edge-touching heuristic would misclassify most of the
+# real open ocean as "isolated" here.
+if _n_coarse > 0:
+    _sizes_coarse = np.bincount(_labeled_coarse.ravel())
+    _sizes_coarse[0] = 0  # exclude background (non-sea)
+    _main_label_coarse = int(np.argmax(_sizes_coarse))
+    _connected_coarse = _labeled_coarse == _main_label_coarse
+else:
+    _connected_coarse = np.zeros_like(_sea_cells_coarse)
+_isolated_wet_coarse = _sea_cells_coarse & ~_connected_coarse & (_dep_valid_coarse < np.float32(baseline_m))
+_n_fix_coarse = int(_isolated_wet_coarse.sum())
+if _n_fix_coarse > 0:
+    # Set isolated wet sea cells to their bed elevation → water depth = 0 (dry).
+    _ini_coarse = np.where(_isolated_wet_coarse, _dep_valid_coarse, _ini_coarse)
+    log.info(
+        f"zsini connectivity fix: {_n_fix_coarse} isolated wet sea-cell(s) set to dep "
+        f"(not reachable from domain boundary at baseline_m={baseline_m:+.4f} m)"
+    )
+else:
+    log.info("zsini connectivity fix: no isolated wet sea cells found")
+
 # reproj_method="nearest", NOT the default "average": zsini is a
-# near-binary field (baseline_m at sea, NaN/nodata on land) -- see
-# 13_build_sfincs.py's own identical comment for the full rationale.
-initial_conditions_component.create(ini="local_zsini", reproj_method="nearest")
-log.info(f"Default initial conditions set: sea = {baseline_m:+.4f} m, land = -9999 (bed level / dry)")
+# near-binary field (baseline_m at sea, NaN/nodata on land), and the
+# source/destination grids are already identical here so this is a no-op
+# resample regardless -- see 13_build_sfincs.py's own identical comment for
+# the full "average" vs "nearest" rationale.
+_da_ini_coarse = xr.DataArray(
+    _ini_coarse, dims=sf.grid.data["dep"].dims, coords=sf.grid.data["dep"].coords,
+)
+_da_ini_coarse = _da_ini_coarse.rio.write_crs(sf.grid.data["dep"].rio.crs)
+_da_ini_coarse = _da_ini_coarse.rio.write_transform(sf.grid.data["dep"].rio.transform())
+_da_ini_coarse.raster.set_nodata(np.nan)
+
+initial_conditions_component.create(ini=_da_ini_coarse, reproj_method="nearest")
+_n_wet_coarse = int((sf.grid.data["ini"].values > -9998.0).sum())
+log.info(
+    f"Default initial conditions set: sea = {baseline_m:+.4f} m, land = -9999 (bed level / dry) "
+    f"-- {_n_wet_coarse:,} wet cell(s) at this model's own grid resolution"
+)
+
+# zsini.tif (the file, declared as this rule's own output) mirrors
+# sf.grid.data["ini"] exactly -- same array, written at this model's own
+# grid resolution, so a standalone inspection of the file always matches
+# what actually ends up in sfincs.ini.
+_zsini_meta_coarse = {
+    "driver": "GTiff", "dtype": "float32", "count": 1,
+    "height": _ini_coarse.shape[0], "width": _ini_coarse.shape[1],
+    "transform": sf.grid.data["dep"].rio.transform(), "crs": sf.grid.data["dep"].rio.crs,
+    "nodata": np.float32(-9999.0), "compress": "deflate",
+}
+with rasterio.open(_zsini_out, "w", **_zsini_meta_coarse) as _dst:
+    _dst.write(np.where(np.isnan(_ini_coarse), np.float32(-9999.0), _ini_coarse).astype(np.float32), 1)
+log.info(f"zsini written: {_zsini_out} (sea cells = {baseline_m:+.4f} m, this model's own grid resolution)")
 
 # ── 6. Roughness ─────────────────────────────────────────────────────────────
 roughness_component = sf.roughness
@@ -449,7 +515,7 @@ if include_subgrid:
     subgrid_component = sf.subgrid
     subgrid_component.create(
         elevation_list=elevation_list_subgrid,
-        roughness_list=[{"manning": "local_roughness"}],
+        roughness_list=[{"manning": "local_roughness_native"}],
         river_list=river_list,
         nr_subgrid_pixels=nr_subgrid_pixels,
         nr_levels=nr_levels,

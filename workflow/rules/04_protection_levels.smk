@@ -8,6 +8,11 @@ rule get_protection_levels:
     Depends only on the delta polygon (rule split_delta_polygons, 01), not
     the model domain/river network — it is not "static terrain data" and
     doesn't need to be grouped with elevation/landuse/roughness (rules 05a-05c).
+    The plot's own background (2026-08-06: landuse-derived, not OSM anymore
+    -- see 04_get_protection_levels.py's own comment) is vectorized directly
+    from the raw global landuse catalogue source, deliberately NOT from rule
+    get_land_polygons' (03) own per-basin output, to avoid pulling in the
+    model-domain dependency chain (02/03) this rule otherwise avoids entirely.
     Always runs and always produces its outputs; river_processing.empirical_estimation.modify_hydrograph
     (consumed by rule get_boundary_forcings, 07, empirical depth_method only)
     only gates whether the identified protection level is actually subtracted
@@ -20,7 +25,7 @@ rule get_protection_levels:
         flopros_table   = catalogue_path("protection_levels_flopros"),
         geogunit_raster = catalogue_path("wri_geogunit_107"),
         geogunit_list   = catalogue_path("wri_geogunit_107_list"),
-        osm_land        = catalogue_path("osm_land"),
+        global_landuse  = catalogue_path("land_use"),
     output:
         protection_levels = results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"),
         plot_protection   = results_path("{basin_id}/preprocessing_inputs/visuals/04_protection_levels.png"),

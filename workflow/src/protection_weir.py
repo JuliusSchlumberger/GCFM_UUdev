@@ -51,10 +51,7 @@ import logging
 
 import geopandas as gpd
 import numpy as np
-import rasterio
 from affine import Affine
-from rasterio.warp import Resampling as _Resampling
-from rasterio.warp import reproject as _rio_reproject
 from scipy.ndimage import binary_dilation, generate_binary_structure
 from scipy.ndimage import label as ndimage_label
 from shapely.geometry import LineString, Polygon
@@ -102,31 +99,6 @@ class GridArrays:
             dx,
             transform=dep_da.raster.transform,
         )
-
-    def sample_landuse(self, landuse_path) -> np.ndarray:
-        """Classify each cell/face by landuse code. NOT
-        src.raster.reproject_to_reference_grid: that helper clips its
-        source by a WGS84 lon/lat box first, correct for the ORIGINAL
-        global Copernicus LC100 raster it's normally used on, but
-        landuse.tif is already basin-clipped and UTM-projected -- clipping
-        it again with a WGS84 box doesn't overlap at all.
-        """
-        with rasterio.open(landuse_path) as src:
-            band = src.read(1)
-            src_transform, src_crs, src_nodata = src.transform, src.crs, src.nodata
-        dst = np.zeros(self.shape, dtype=band.dtype)
-        _rio_reproject(
-            source=band,
-            destination=dst,
-            src_transform=src_transform,
-            src_crs=src_crs,
-            dst_transform=self.transform,
-            dst_crs=rasterio.crs.CRS.from_user_input(self.crs),
-            src_nodata=src_nodata,
-            dst_nodata=src_nodata,
-            resampling=_Resampling.nearest,
-        )
-        return dst
 
     def close_gaps(self, mask: np.ndarray, iterations: int = 1) -> np.ndarray:
         """Small, FIXED hop dilation of a boolean mask -- a safety net for
@@ -741,6 +713,72 @@ def build_coastal_protection_weir(
             "no weir ring around them"
         )
 
+    # ── protected ocean pockets ────────────────────────────────────────────
+    # Two distinct sources of "still landuse==200 despite the weir already
+    # deciding otherwise":
+    #  (a) GRID-RESOLUTION MISALIGNMENT (the dominant, coastline-wide case):
+    #      the weir is traced on landuse_on_grid -- the native landuse.tif
+    #      (~30 m) resampled via NEAREST-NEIGHBOR onto the much coarser
+    #      SFINCS regular grid (~70 m, rule grid_align_landuse, 09b). That
+    #      resampling necessarily generalizes the true coastline to the coarse grid's
+    #      own cell edges, so land_mask (the model's own "this is the
+    #      protected/dry side" decision, at grid resolution) and the fine
+    #      native landuse.tif disagree right along the coast -- overlaying
+    #      the weir on the native-resolution raster shows native "sea"
+    #      pixels sitting on the land side, continuously, not as isolated
+    #      pockets (confirmed: basin 2433835's own landuse.tif/sea_mask.tif
+    #      have exactly ONE connected sea component at native resolution --
+    #      there is no disconnected "pocket" to find via component analysis
+    #      at all). land_mask (final, post small-component reclassification
+    #      below) IS the ground truth for "the weir-building algorithm
+    #      considers this land" -- trusting it directly, rather than
+    #      re-deriving connectivity, is what actually fixes the overlap:
+    #      correct_sea_mask_from_grid_mask (src/raster.py, called from
+    #      10_depth_estimation_modelled.py) reprojects this mask back onto
+    #      NATIVE resolution and only touches pixels that are STILL
+    #      landuse==200 there, so this naturally scopes down to exactly the
+    #      fringe of mismatch pixels along the coast (an ordinary inland
+    #      cell is never landuse==200 in the first place).
+    #  (b) a separately-ringed pocket: an ocean_mask component large enough
+    #      to survive into water_like but NOT the main open ocean (the
+    #      SINGLE LARGEST water_like component, same convention already
+    #      used for zsini's own isolated-sea-pocket fix in
+    #      13_build_sfincs_skeleton.py) -- the weir walls it off with its
+    #      OWN ring, so it's no longer open sea either, despite staying
+    #      classified water_like (not land_mask) throughout.
+    # Returned so callers can clear these cells from sea to land in
+    # sea_mask.tif (see src.raster.correct_sea_mask_from_grid_mask) --
+    # both for zsini (13_build_sfincs_skeleton.py) and for flood-diagnostic
+    # masking downstream (src.postprocessing reads the same corrected file
+    # directly, since sea_mask already encodes exactly the "is this
+    # genuinely open sea" boolean those functions need).
+    water_like_labels, n_water_like_components = grid.connected_components(water_like)
+    if n_water_like_components > 0:
+        comp_sizes = np.bincount(
+            water_like_labels[water_like], minlength=n_water_like_components + 1
+        )
+        comp_sizes[0] = 0  # label 0 = outside mask, never the "main" component
+        main_ocean_label = int(np.argmax(comp_sizes))
+        separately_ringed_pocket = (
+            ocean_mask & water_like & (water_like_labels != main_ocean_label)
+        )
+    else:
+        separately_ringed_pocket = np.zeros_like(ocean_mask)
+    protected_pocket_mask = land_mask | separately_ringed_pocket
+    n_separately_ringed = int(separately_ringed_pocket.sum())
+    if n_separately_ringed:
+        log.info(
+            f"{n_separately_ringed:,} ocean-classified (landuse==200) grid cell(s) form their "
+            f"own separately-ringed pocket, disconnected from the main open ocean component"
+        )
+    # protected_pocket_mask itself (land_mask | separately_ringed_pocket) is
+    # grid-resolution and deliberately broad (essentially the whole
+    # protected-side footprint) -- the actual number of pixels this affects
+    # is only known once it's reprojected onto native landuse.tif resolution
+    # and intersected with landuse==200 there (see relabel_landuse_from_grid_
+    # mask's own return value / 10_depth_estimation_modelled.py's log line),
+    # so no cell count is logged for it here.
+
     n_final = int(land_mask.sum())
 
     # Restrict the closure exemption to cells that SURVIVED small-component
@@ -835,5 +873,6 @@ def build_coastal_protection_weir(
         "n_land_discarded": n_land_discarded,
         "n_water_discarded": n_water_discarded,
         "crest_elevation_m": crest_elevation_m,
+        "protected_pocket_mask": protected_pocket_mask,
     }
     return weir_gdf, diagnostics

@@ -78,7 +78,7 @@ include_subgrid     = bool(snakemake.params.include_subgrid)
 timeout_s           = int(snakemake.params.timeout_s)
 waterlevel_buffer_m = snakemake.params.waterlevel_buffer_m
 land_polygons_path  = Path(snakemake.input.land_polygons)
-landuse_path        = Path(snakemake.input.landuse)
+sea_mask_path       = Path(snakemake.input.sea_mask)
 river_network_path  = Path(snakemake.input.clean_river_network)
 domain_gpkg_path    = Path(snakemake.input.domain_gpkg)
 surge_forcing_path  = Path(snakemake.input.surge_forcing)
@@ -108,6 +108,20 @@ trstout_sec = int(spinup_days * 86400)
 spinup_times = pd.DatetimeIndex([tref, tstop])  # 2-point constant timeseries
 
 log.info(f"Spin-up: {tref} → {tstop} ({spinup_days} days), restart written at t={trstout_sec} s")
+
+# sf.water_level.create()/sf.discharge_points.create() below both slice their
+# own timeseries against self.model.get_model_time() (tstart/tstop read
+# straight off the in-memory sf.config) -- the skeleton's own sfincs.inp
+# deliberately never sets tref/tstart/tstop (it's not meant to be runnable
+# on its own), so without this, sf.config still carries hydromt_sfincs's own
+# Pydantic defaults (today's date), which never overlaps spinup_times (indexed
+# at `tref`, e.g. 2000-01-01) -- NoDataException: "DataFrame has no data
+# after time slicing." This has no effect on the actual sfincs.inp written to
+# disk below (hand-crafted via plain file I/O, never sf.config.write()) --
+# it only fixes what these in-memory .create() calls see.
+sf.config.set("tref", tref)
+sf.config.set("tstart", tref)
+sf.config.set("tstop", tstop)
 
 # ── water-level boundary forcing: RP=1, constant over time ──────────────────
 surge_ds = xr.open_dataset(surge_forcing_path, decode_times=False)
@@ -294,7 +308,7 @@ else:
 plot_inundation_path = Path(snakemake.output.plot_max_inundation)
 
 da_hmax, _da_dep = compute_max_inundation(
-    spin_up_root, skeleton_root, landuse_path, hmin=0.0, include_subgrid=include_subgrid,
+    spin_up_root, skeleton_root, sea_mask_path, hmin=0.0, include_subgrid=include_subgrid,
 )
 if da_hmax is None:
     log.warning("No max inundation data available — creating empty plot sentinel")

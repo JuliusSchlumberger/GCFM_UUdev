@@ -22,11 +22,30 @@ import geopandas as gpd
 from hydromt_sfincs import SfincsModel
 from hydromt_sfincs import utils as sfincs_utils
 
-# Copernicus LC100 land-use codes that represent water bodies (see _LC_NAMES
-# in src.plots): 80 = "Inland water", 200 = "Sea". Deliberately not (80, 200)
-# here -- set to values that match no real land-use class, so rivers/ocean
-# stay unmasked and visible in these diagnostics.
-WATER_LANDUSE_CODES: tuple[int, ...] = (0, 2000)
+# 2026-08-06: compute_max_inundation/compute_flood_timeseries_stats/
+# compute_flood_progression exclude open sea (NOT inland water/rivers,
+# which stay visible on purpose) from flood-extent depth/area/volume stats
+# and from the inundation/animation plots. Previously done via a
+# landuse.isin(WATER_LANDUSE_CODES=(200,)) check against a separate
+# landuse_corrected.tif (itself relabeling 200->80 wherever the coastal
+# weir protects a grid-resolution-mismatch fringe -- see
+# src.protection_weir.build_coastal_protection_weir's own
+# protected_pocket_mask docstring). Sea_mask.tif/zsini_sea_cells_on_grid.tif
+# (rule get_landuse / modelled_depth_estimation / empirical_depth_estimation)
+# already encode EXACTLY this same "is this genuinely open sea" boolean
+# (sea_mask itself is built as landuse==200, nothing else) -- checking it
+# directly here is equivalent, and avoids maintaining a second, duplicate
+# corrected raster purely to re-derive the same information. Removed
+# 2026-08-06 in favor of the sea_mask_path argument each function below now
+# takes directly. 2026-08-07b: sea_mask_path now points at
+# zsini_sea_cells_on_grid.tif (coarse, grid-aligned -- the SAME file zsini
+# itself is built from) rather than a separate native-resolution
+# sea_mask_corrected.tif -- that file was pure duplication of the identical
+# boolean, and reprojecting FROM it onto this module's own subgrid-/cell-
+# resolution output grid (see the reproject_like calls below) is only
+# well-defined when the source is already grid-aligned (subgrid is an exact
+# integer subdivision of the coarse grid, sharing its origin/axes -- unlike
+# the arbitrary-origin native landuse/DEM pixel grid).
 
 # Memory budget for area/volume STATISTICS (compute_max_inundation,
 # compute_flood_timeseries_stats) rather than _coarsen_for_memory's
@@ -124,7 +143,7 @@ def _coarsen_for_memory(da_ref: xr.DataArray, max_bytes: float = 5e8) -> xr.Data
 def compute_max_inundation(
     run_dir: str | Path,
     sfincs_root: str | Path,
-    landuse_path: str | Path,
+    sea_mask_path: str | Path,
     hmin: float = 0.0,
     include_subgrid: bool = True,
     max_bytes: float = STATS_MAX_BYTES,
@@ -136,10 +155,12 @@ def compute_max_inundation(
     Takes the max of ``zsmax`` over the ``timemax`` dimension, determines the
     bed level via ``get_bed_level`` (subgrid-aware), derives the flood depth
     via ``hydromt_sfincs.utils.downscale_floodmap``, and masks both the flood
-    depth and the bed-level reference grid to pixels where the land-use raster
-    is in ``WATER_LANDUSE_CODES`` (80 = "Inland water", 200 = "Sea") — so all
-    water bodies are excluded from both the flooded count and the land-domain
-    denominator.
+    depth and the bed-level reference grid to pixels where ``sea_mask_path``
+    reads 1.0 (genuinely open sea) — so open sea is excluded from both the
+    flooded count and the land-domain denominator. Pass the CORRECTED
+    sea/land classification (``zsini_sea_cells_on_grid.tif``, rule
+    modelled_depth_estimation/empirical_depth_estimation) so fringe cells
+    the coastal weir protects count as land, not sea.
 
     Returns:
         (da_hmax, da_dep): the downscaled, land-masked flood depth and the
@@ -166,13 +187,13 @@ def compute_max_inundation(
 
     da_hmax = sfincs_utils.downscale_floodmap(zsmax=da_zsmax, dep=da_dep, hmin=hmin)
 
-    da_lu = mod.data_catalog.get_rasterdataset(str(landuse_path))
-    # Compute eagerly: da_lu is dask-backed, and a dask-backed mask would force
+    da_sea = mod.data_catalog.get_rasterdataset(str(sea_mask_path))
+    # Compute eagerly: da_sea is dask-backed, and a dask-backed mask would force
     # da_dep/da_hmax to become lazy too via .where() below — breaking the
     # .item() calls in 15_sanity_checks.py ("'item' is not yet a valid method
     # on dask arrays").
-    da_lu_grid = da_lu.raster.reproject_like(da_dep, method="nearest").compute()
-    water_mask = da_lu_grid.isin(list(WATER_LANDUSE_CODES))
+    da_sea_grid = da_sea.raster.reproject_like(da_dep, method="nearest").compute()
+    water_mask = da_sea_grid == 1.0
 
     da_dep = da_dep.where(~water_mask).compute()
     da_hmax = da_hmax.where(~water_mask).compute()
@@ -181,8 +202,7 @@ def compute_max_inundation(
 
 def compute_flood_progression(
     run_dir: str | Path,
-    landuse_path: str | Path,
-    water_landuse_codes: tuple[int, ...] = WATER_LANDUSE_CODES,
+    sea_mask_path: str | Path,
     variable: str = "depth",
 ) -> xr.DataArray | None:
     """
@@ -195,8 +215,13 @@ def compute_flood_progression(
     wrote to the map output (cell resolution), with NO subgrid downscaling
     applied, since this is for animation only (see ``compute_max_inundation``
     for the downscaled, subgrid-aware version used for area/volume
-    statistics). ``h`` is additionally masked to exclude water bodies via
-    the land-use raster reprojected onto the model grid.
+    statistics). ``h`` is additionally masked to exclude open sea via
+    ``sea_mask_path`` (pass the CORRECTED sea/land classification,
+    ``zsini_sea_cells_on_grid.tif`` from rule modelled_depth_estimation/
+    empirical_depth_estimation, so weir-protected fringe cells count as
+    land) reprojected onto the model grid -- a no-op reproject in practice,
+    since this file is already built on the same coarse SFINCS grid ``zb``
+    lives on.
 
     ``variable="level"``: the raw water level ``zs`` itself, returned
     unmasked over the whole grid -- unlike depth, water level is physically
@@ -224,18 +249,17 @@ def compute_flood_progression(
     da_h = (da_zs_native - da_zb_native).clip(min=0.0)
     da_h.name = "h"
 
-    da_lu = mod.data_catalog.get_rasterdataset(str(landuse_path))
-    da_lu_grid = da_lu.raster.reproject_like(da_h, method="nearest")
-    water_mask = da_lu_grid.isin(list(water_landuse_codes))
+    da_sea = mod.data_catalog.get_rasterdataset(str(sea_mask_path))
+    da_sea_grid = da_sea.raster.reproject_like(da_h, method="nearest")
+    water_mask = da_sea_grid == 1.0
     return da_h.where(~water_mask)
 
 
 def compute_flood_timeseries_stats(
     run_dir: str | Path,
     sfincs_root: str | Path,
-    landuse_path: str | Path,
+    sea_mask_path: str | Path,
     threshold_m: float,
-    water_landuse_codes: tuple[int, ...] = WATER_LANDUSE_CODES,
     include_subgrid: bool = True,
     max_bytes: float = STATS_MAX_BYTES,
 ) -> pd.DataFrame | None:
@@ -282,9 +306,9 @@ def compute_flood_timeseries_stats(
     # full-extent subgrid reference raster needs this protection.
     da_dep = _coarsen_for_memory(da_dep, max_bytes=max_bytes)
 
-    da_lu = mod.data_catalog.get_rasterdataset(str(landuse_path))
-    da_lu_grid = da_lu.raster.reproject_like(da_dep, method="nearest").compute()
-    water_mask = da_lu_grid.isin(list(water_landuse_codes))
+    da_sea = mod.data_catalog.get_rasterdataset(str(sea_mask_path))
+    da_sea_grid = da_sea.raster.reproject_like(da_dep, method="nearest").compute()
+    water_mask = da_sea_grid == 1.0
 
     try:
         res_x, res_y = da_dep.rio.resolution()

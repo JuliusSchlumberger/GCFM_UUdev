@@ -649,42 +649,6 @@ datasets:
       automatically for basins outside the current test set instead of
       falling back to GloFAS-as-truth.
 
-  - name: osm_land
-    description: >
-      Global land polygons derived from OpenStreetMap (OSM) data, split into a grid
-      with slight overlap between tiles. Provides a high-detail vector representation
-      of the world's coastline and inland water boundaries, suitable for masking,
-      clipping, or rendering land vs ocean.
-    source: "OpenStreetMap contributors (2026). Land polygons extract from https://osmdata.openstreetmap.de/data/land-polygons.html (data snapshot: 2026-04-30). © OpenStreetMap contributors, available under the Open Database License (ODbL): https://www.openstreetmap.org/copyright"
-    license: ODbL (Open Database License)
-    provider: ogr
-    file_format: geopackage
-    file_path: OSM/land_polygons.gpkg
-    layer: land_polygons
-    geometry_type: Polygon
-    feature_count: 864818
-    crs:
-      epsg: 4326
-      name: WGS 84
-      type: Geographic (2D)
-      units: degrees
-    coverage:
-      latitude_range: [-90, 83.665]   # no data north of ~83.67°N
-      longitude_range: [-180, 180]
-      spatial_extent: global (excluding high Arctic above 83.665°N)
-    temporal_coverage:
-      data_snapshot: 2026-04-30
-    notes: >
-      Polygons are split into tiles with slight overlap, so spatial queries near tile
-      boundaries may return duplicate or overlapping geometries — dissolve or de-duplicate
-      if topologically clean output is required. Attribution to OpenStreetMap contributors
-      is required when using or redistributing derivative products (ODbL).
-      The GeoPackage carries TWO layers: 'land_polygons' (the actual polygon geometries,
-      used here) and 'marine_buffer' (an x/y tile-grid index). gpd.read_file()/pyogrio
-      silently default to the first layer ('marine_buffer') if layer= is not given,
-      which yields empty results for small bbox queries — always read with
-      layer="land_polygons".
-
   - name: goco06s
     description: >
       GOCO06s combined gravity field model (satellite-only, degree/order 300).
