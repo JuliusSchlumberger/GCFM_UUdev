@@ -18,7 +18,7 @@ skeleton_root = Path(snakemake.params.skeleton_root)
 da_hmax, da_dep = compute_max_inundation(
     sfincs_root,                    # run_dir: event output lives in the model root
     skeleton_root,
-    snakemake.input.landuse,
+    snakemake.input.sea_mask,
     hmin=float(snakemake.params.hmin),
     include_subgrid=snakemake.params.include_subgrid,
 )

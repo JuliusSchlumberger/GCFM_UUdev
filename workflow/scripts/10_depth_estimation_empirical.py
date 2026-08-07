@@ -27,6 +27,7 @@ import rasterio
 from rasterio.transform import Affine
 
 from src.domain import load_domain
+from src.protection_weir import LANDUSE_SEA
 from src.estuarine_depth import (
     compute_estuarine_depths,
     enforce_mouth_depth_monotonic,
@@ -246,6 +247,36 @@ plot_hydraulic_relations_with_estuarine(
     L_e_m=L_e_m,
 )
 log.info(f"Plot written: {snakemake.output.plot_hydraulic_relations}")
+
+# ── zsini sea cells, at THIS RULE'S OWN GRID resolution ───────────────────
+# Same unified filename rule modelled_depth_estimation writes (see that
+# rule's own comment for the full rationale) -- built directly from
+# landuse_on_grid.tif (rule grid_align_landuse, 09b), already rasterized
+# onto the SFINCS grid with zero further reprojection needed here. No
+# protected_pocket_mask term: this sibling builds no coastal protection
+# weir at all, so there's nothing for the classification to disagree with.
+with rasterio.open(snakemake.input.landuse_on_grid) as _lu_src:
+    _lu_on_grid = _lu_src.read(1)
+if _lu_on_grid.shape != sfincs_grid_shape:
+    raise ValueError(
+        f"landuse_on_grid.tif shape {_lu_on_grid.shape} does not match this basin's "
+        f"own SFINCS grid {sfincs_grid_shape} -- expected pixel-identical grids."
+    )
+_sea_cells_on_grid = _lu_on_grid == LANDUSE_SEA
+_sea_cells_arr = np.where(_sea_cells_on_grid, np.float32(1.0), np.float32(-9999.0))
+_sea_cells_profile = {
+    "driver": "GTiff", "height": _sea_cells_arr.shape[0], "width": _sea_cells_arr.shape[1],
+    "count": 1, "dtype": "float32", "crs": utm_crs, "transform": sfincs_grid_transform,
+    "nodata": -9999.0,
+}
+Path(snakemake.output.zsini_sea_cells).parent.mkdir(parents=True, exist_ok=True)
+with rasterio.open(snakemake.output.zsini_sea_cells, "w", **_sea_cells_profile) as _dst:
+    _dst.write(_sea_cells_arr, 1)
+log.info(
+    f"zsini sea cells (this rule's own grid, no reprojection): "
+    f"{int(_sea_cells_on_grid.sum()):,} real open-sea cell(s). "
+    f"Written: {snakemake.output.zsini_sea_cells}"
+)
 
 profiler.stop()
 log.info("Done")

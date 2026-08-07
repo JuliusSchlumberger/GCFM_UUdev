@@ -26,10 +26,18 @@ if config["river_processing"]["depth_method"] == "empirical":
             # (see 10_depth_estimation_empirical.py's module docstring).
             elevation_conditioned = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned.tif"),
             sfincs_grid            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sfincs_grid.json"),
+            # Already rasterized directly onto this basin's own SFINCS grid
+            # (rule grid_align_landuse, 09b) -- zsini_sea_cells' own source
+            # below, zero further reprojection.
+            landuse_on_grid       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_on_grid.tif"),
         output:
             depth_estimated_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
             river_burned_dem              = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem.tif"),
             river_burned_dem_sfincs_grid  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"),
+            # Same filename rule modelled_depth_estimation writes -- see
+            # this rule's own script for why empirical mode builds it too
+            # (no protected_pocket_mask term, no weir to disagree with).
+            zsini_sea_cells               = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
             plot_river_depth                   = results_path("{basin_id}/preprocessing_inputs/visuals/10_river_depth.png"),
             plot_river_network_width_discharge = results_path("{basin_id}/preprocessing_inputs/visuals/10_river_width_q.png"),
             plot_hydraulic_relations            = results_path("{basin_id}/preprocessing_inputs/visuals/10_river_hydraulics.png"),

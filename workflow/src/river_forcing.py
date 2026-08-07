@@ -771,6 +771,7 @@ def build_design_discharge_matrix(
     active: np.ndarray,
     design_rp_yr: float | None,
     apply_protection_floor: bool = True,
+    discharge_multiplier: float = 1.0,
 ) -> np.ndarray:
     """
     Build the discharge timeseries actually fed to SFINCS for the given
@@ -795,6 +796,16 @@ def build_design_discharge_matrix(
       3. Build the hydrograph via sinusoidal_wave(bankfull_q, Q_f,
          river_ds.time.values, river_ds.attrs["lead_days"],
          river_ds.attrs["period_hr"]).
+      4. Scale the entire built hydrograph (bankfull lead-in AND event peak
+         alike) by discharge_multiplier -- applied HERE, at build time, not
+         baked into river_forcing.nc (mirrors src.surge's deferred SLR
+         fingerprint: keeps river_forcing.nc, rule 10's weir/depth
+         calibration, and the skeleton build all independent of this
+         factor; changing it only reruns this per-scenario build and its
+         downstream event run). Multiplying the whole matrix uniformly is
+         equivalent to scaling bankfull_q and Q_f by the same factor before
+         building the hydrograph, since sinusoidal_wave is affine in its
+         two endpoints.
 
     Args:
         river_ds: Opened river_forcing.nc (xr.Dataset).
@@ -812,6 +823,8 @@ def build_design_discharge_matrix(
                   protection infrastructure, so flooring the discharge too
                   would double-count it -- pass False there even if rule 07
                   wrote protection_discharge into river_forcing.nc.
+        discharge_multiplier: Uniform scaling factor applied to the built
+                  hydrograph (default 1.0 = no-op). See step 4 above.
 
     Returns:
         (n_active, n_time) np.ndarray, discharge (m3 s-1) per active crossing.
@@ -844,6 +857,8 @@ def build_design_discharge_matrix(
         discharge_matrix[i] = sinusoidal_wave(
             bankfull_q[i], design_q[i], times, lead_days, period_hr
         )
+    if discharge_multiplier != 1.0:
+        discharge_matrix *= discharge_multiplier
     return discharge_matrix
 
 

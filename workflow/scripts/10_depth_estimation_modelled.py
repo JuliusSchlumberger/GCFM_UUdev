@@ -362,12 +362,21 @@ river_network_path   = Path(snakemake.input.clean_river_network)
 river_forcing_path   = Path(snakemake.input.river_forcing)
 protection_levels_path = Path(snakemake.input.protection_levels)
 grid_resolution_path = Path(snakemake.input.grid_resolution)
-roughness_path       = Path(snakemake.input.roughness)
 land_polygons_path   = Path(snakemake.input.land_polygons)
 domain_gpkg_path     = Path(snakemake.input.domain_gpkg)
-landuse_path         = Path(snakemake.input.landuse)
+# landuse_on_grid.tif / roughness_on_grid.tif (rule grid_align_landuse, 09b)
+# -- already resampled onto the SFINCS grid once, upstream; this rule reads
+# them directly with zero further reprojection (see this rule's own zsini
+# and roughness sections below).
+landuse_on_grid_path = Path(snakemake.input.landuse_on_grid)
+roughness_on_grid_path = Path(snakemake.input.roughness_on_grid)
+# Native-resolution roughness.tif (rule get_roughness, 05c) -- used ONLY by
+# the subgrid table below (sf.subgrid.create), which genuinely needs
+# sub-cell detail for both elevation AND roughness together (same DEM
+# exception the user asked to keep) -- never for the main regular-grid
+# "manning" field, which uses roughness_on_grid_path (coarse) instead.
+roughness_path        = Path(snakemake.input.roughness)
 surge_forcing_path   = Path(snakemake.input.surge_forcing)
-sea_mask_path        = Path(snakemake.input.sea_mask)
 delta_outflow_points_path = Path(snakemake.input.delta_outflow_points)
 
 calib_root  = Path(snakemake.params.calib_root)
@@ -384,7 +393,22 @@ weir_par1          = float(snakemake.params.weir_par1)
 weir_crest_fraction = float(snakemake.params.weir_crest_fraction)
 n_correction_iterations = int(snakemake.params.n_correction_iterations)
 min_crest_increment_per_round_m = float(snakemake.params.min_crest_increment_per_round_m)
+# weir_freeboard_m (config) is reserved for the REAL production top-up,
+# added once, uniformly, on the FINAL exported weir only (see the
+# "canonical production outputs" section near the end of this script).
+# The calibration loop's own internal convergence margin (every
+# badly_overtopped/near_zero threshold and every snap target below) uses
+# the SEPARATE, fixed _CALIBRATION_FREEBOARD_M instead -- deliberately NOT
+# config-driven, since it's an algorithmic convergence tolerance, not a
+# production design choice: changing config's freeboard_m should change
+# how much margin ends up in the built model, not how aggressively the
+# iterative solver converges. 2026-08-05: previously the config value drove
+# BOTH roles, which meant the final weir never actually reflected it at all
+# (the final trace always passed freeboard_m=0.0, since it assumed the
+# margin was already baked into the tracked crest arrays by this same
+# config value) -- config's freeboard_m was silently a no-op in production.
 weir_freeboard_m = float(snakemake.params.weir_freeboard_m)
+_CALIBRATION_FREEBOARD_M = 0.5
 # river_crest_dilation_cells_min: FLOOR only -- the actual value used is
 # computed per basin (see below, once rivers_utm/grid are available) as
 # max(this floor, width / (2 * coarse_resolution)), tying the dilation
@@ -459,44 +483,14 @@ log.info(
     f"real coastal protection crest: {coastal_protection_crest_m:+.4f} m"
 )
 
-# ── spatially-varying zsini: sea cells start AT baseline_m, not bone-dry ─────
-# Replicates 13_build_sfincs.py's own zsini.tif construction verbatim (same
-# sea_mask.tif + baseline_m + connected-component isolated-pocket fix) --
-# a coastal/mouth cell starting bone-dry instead would take time to fill in
-# from the boundary, producing a sharp transient spike well above its own
-# true settled level before declining back down over the following hours.
-# Since compute_period_max_zs takes the maximum over the ENTIRE run (no
-# windowing), that transient alone would inflate the calibrated crest at
-# every affected coastal cell by roughly the spike's own size.
-with rasterio.open(sea_mask_path) as _sea_src:
-    _sea_mask_arr = _sea_src.read(1).astype(np.float32)
-    _sea_meta = _sea_src.meta.copy()
-_zsini_arr = np.where(_sea_mask_arr == np.float32(1.0), np.float32(baseline_m), np.float32(-9999.0))
-
-with rasterio.open(elevation_path) as _dep_src_zsini:
-    _dep_zsini = _dep_src_zsini.read(1).astype(np.float32)
-    _dep_nd_zsini = np.float32(_dep_src_zsini.nodata if _dep_src_zsini.nodata is not None else -9999.0)
-_dep_valid_zsini = np.where(np.isclose(_dep_zsini, _dep_nd_zsini), np.float32(1e6), _dep_zsini)
-
-_sea_cells_zsini = np.isclose(_zsini_arr, np.float32(baseline_m))
-_labeled_zsini, _n_zsini = _ndimage_label(_sea_cells_zsini)
-if _n_zsini > 0:
-    _sizes_zsini = np.bincount(_labeled_zsini.ravel())
-    _sizes_zsini[0] = 0
-    _main_label_zsini = int(np.argmax(_sizes_zsini))
-    _connected_zsini = _labeled_zsini == _main_label_zsini
-else:
-    _connected_zsini = np.zeros_like(_sea_cells_zsini)
-_isolated_wet_zsini = _sea_cells_zsini & ~_connected_zsini & (_dep_valid_zsini < np.float32(baseline_m))
-_n_fix_zsini = int(_isolated_wet_zsini.sum())
-if _n_fix_zsini > 0:
-    _zsini_arr = np.where(_isolated_wet_zsini, _dep_valid_zsini, _zsini_arr)
-    log.info(f"zsini connectivity fix: {_n_fix_zsini} isolated wet sea-cell(s) set to dep")
-
-_zsini_path = calib_root / "zsini.tif"
-with rasterio.open(_zsini_path, "w", **_sea_meta) as _zsini_dst:
-    _zsini_dst.write(_zsini_arr, 1)
-log.info(f"zsini written: {_zsini_path} (sea cells = {baseline_m:+.4f} m)")
+# Spatially-varying zsini (sea cells start at baseline_m, not bone-dry) is
+# built further below, right after this model's own grid/mask are created
+# (needs sf.grid.data["dep"] at THIS model's own exact grid shape -- see
+# that section for why landuse_on_grid.tif can't be compared against
+# elevation_conditioned_sfincs_grid.tif directly: the latter is
+# deliberately EXTENDED beyond the exact SFINCS grid bounds for HydroMT's
+# own edge-margin needs, rule enforce_river_monotonicity/09, so its shape
+# does not match landuse_on_grid.tif's exact grid shape).
 
 # Native resolution/CRS reference for correction rounds' own native-resolution
 # burn (subgrid's source) -- same role elevation_merged plays for rule 11b.
@@ -552,12 +546,14 @@ local_catalog = {
         "uri": str(elevation_sfincs_grid_path),
         "driver": "rasterio",
     },
-    "local_zsini": {
+    "local_roughness": {
         "data_type": "RasterDataset",
-        "uri": str(_zsini_path),
+        "uri": str(roughness_on_grid_path),
         "driver": "rasterio",
     },
-    "local_roughness": {
+    # Native resolution -- subgrid table only, see roughness_path's own
+    # comment above.
+    "local_roughness_native": {
         "data_type": "RasterDataset",
         "uri": str(roughness_path),
         "driver": "rasterio",
@@ -659,13 +655,66 @@ if delta_outflow_enabled:
         f"crossing(s), {outflow_buffer_m:.0f} m buffer -> mask=3"
     )
 
+# ── spatially-varying zsini: sea cells start AT baseline_m, not bone-dry ─────
+# Built directly from landuse_on_grid.tif (rule grid_align_landuse, 09b),
+# read here (not earlier) so the connected-component dry-out check below can
+# compare against sf.grid.data["dep"] -- THIS model's own grid, guaranteed
+# the same exact shape landuse_on_grid.tif was built on (both "auto-UTM"-fit
+# from the same domain_gpkg + grid_resolution.json/sfincs_grid.json).
+# elevation_conditioned_sfincs_grid.tif (rule enforce_river_monotonicity/09)
+# is NOT usable for this comparison despite being on the same coarse grid's
+# transform/phase -- it's deliberately EXTENDED beyond the exact SFINCS grid
+# bounds for HydroMT's own edge-margin needs, so its shape doesn't match. A
+# coastal/mouth cell starting bone-dry instead would take time to fill in
+# from the boundary, producing a sharp transient spike well above its own
+# true settled level before declining back down over the following hours.
+# Since compute_period_max_zs takes the maximum over the ENTIRE run (no
+# windowing), that transient alone would inflate the calibrated crest at
+# every affected coastal cell by roughly the spike's own size.
+with rasterio.open(landuse_on_grid_path) as _lu_src_zsini:
+    _lu_on_grid_zsini = _lu_src_zsini.read(1)
+if _lu_on_grid_zsini.shape != sf.grid.data["dep"].shape:
+    raise ValueError(
+        f"landuse_on_grid.tif shape {_lu_on_grid_zsini.shape} does not match this "
+        f"rule's own grid {sf.grid.data['dep'].shape} -- expected pixel-identical grids."
+    )
+_zsini_arr = np.where(_lu_on_grid_zsini == LANDUSE_SEA, np.float32(baseline_m), np.nan)
+
+# Connected-component dry-out of isolated sea cells (same rationale/
+# mechanism as 13_build_sfincs_skeleton.py's identical fix): label connected
+# components of sea cells, keep only the main open ocean, and set isolated
+# wet cells (dep < baseline_m, so water depth > 0) to dep = dry start.
+_dep_zsini = sf.grid.data["dep"].values.astype(np.float32)
+_dep_nd_zsini = np.float32(sf.grid.data["dep"].rio.nodata or -9999.0)
+_dep_valid_zsini = np.where(np.isclose(_dep_zsini, _dep_nd_zsini), np.float32(1e6), _dep_zsini)
+_sea_cells_zsini = np.isclose(_zsini_arr, np.float32(baseline_m))
+_labeled_zsini, _n_zsini = _ndimage_label(_sea_cells_zsini)
+if _n_zsini > 0:
+    _sizes_zsini = np.bincount(_labeled_zsini.ravel())
+    _sizes_zsini[0] = 0
+    _main_label_zsini = int(np.argmax(_sizes_zsini))
+    _connected_zsini = _labeled_zsini == _main_label_zsini
+else:
+    _connected_zsini = np.zeros_like(_sea_cells_zsini)
+_isolated_wet_zsini = _sea_cells_zsini & ~_connected_zsini & (_dep_valid_zsini < np.float32(baseline_m))
+_n_fix_zsini = int(_isolated_wet_zsini.sum())
+if _n_fix_zsini > 0:
+    _zsini_arr = np.where(_isolated_wet_zsini, _dep_valid_zsini, _zsini_arr)
+    log.info(f"zsini connectivity fix: {_n_fix_zsini} isolated wet sea-cell(s) set to dep")
+
 # reproj_method="nearest" (not "average"): zsini is a near-binary field
-# (baseline_m at sea, NaN/nodata on land) -- see 13_build_sfincs.py's own
-# identical choice for why "average" would dilute/NaN-out genuine sea
-# cells at the native/SFINCS-grid resolution boundary. mask must exist
-# first (create_active/create_boundary above), matching production's own
-# ordering.
-sf.initial_conditions.create(ini="local_zsini", reproj_method="nearest")
+# (baseline_m at sea, NaN/nodata on land) -- and source/destination grids
+# are already identical here, so this is a no-op resample regardless (same
+# in-memory-DataArray pattern as 13_build_sfincs_skeleton.py's identical
+# construction). mask must exist first (create_active/create_boundary
+# above), matching production's own ordering.
+_da_zsini = xr.DataArray(
+    _zsini_arr, dims=sf.grid.data["dep"].dims, coords=sf.grid.data["dep"].coords,
+)
+_da_zsini = _da_zsini.rio.write_crs(sf.grid.data["dep"].rio.crs)
+_da_zsini = _da_zsini.rio.write_transform(sf.grid.data["dep"].rio.transform())
+_da_zsini.raster.set_nodata(np.nan)
+sf.initial_conditions.create(ini=_da_zsini, reproj_method="nearest")
 log.info("Initial conditions: spatially-varying zsini (sea cells start at baseline_m, land dry)")
 
 sf.roughness.create(roughness_list=[{"manning": "local_roughness"}])
@@ -686,7 +735,21 @@ sf.roughness.create(roughness_list=[{"manning": "local_roughness"}])
 rivers_utm = rivers.to_crs(sf.crs)
 grid = GridArrays.from_regular(sf.grid.data["dep"], sf.grid.data["mask"], sf.crs)
 channel_mask = build_channel_mask_regular(rivers_utm, "width", grid.shape, grid.transform)
-landuse_on_grid = grid.sample_landuse(landuse_path)
+# landuse_on_grid.tif (rule grid_align_landuse, 09b) -- already rasterized
+# directly onto this rule's own grid (confirmed pixel-identical to
+# sfincs_grid.json, both "auto-UTM"-fit from the same domain_gpkg +
+# grid_resolution.json), read here with zero further reprojection, rather
+# than this rule independently resampling native landuse.tif a second time
+# (the previous GridArrays.sample_landuse call -- removed 2026-08-07, see
+# 09b_grid_align_landuse.py's own module docstring for why every consumer
+# now shares one canonical resample).
+with rasterio.open(landuse_on_grid_path) as _lu_src:
+    landuse_on_grid = _lu_src.read(1)
+if landuse_on_grid.shape != grid.shape:
+    raise ValueError(
+        f"landuse_on_grid.tif shape {landuse_on_grid.shape} does not match this "
+        f"rule's own grid {grid.shape} -- expected pixel-identical grids."
+    )
 
 # river_crest_dilation_cells: scaled by this basin's own widest reach
 # relative to the coarse grid resolution, floored at the configured
@@ -717,6 +780,24 @@ log.info(
 # only ever be driven by genuinely coastal water, never creep up the river
 # (that stays entirely the river crest's own job, see the round loop below).
 ocean_mask_grid = landuse_on_grid == LANDUSE_SEA
+
+# Coarse-grid ocean mask FILE (compute_max_inundation/compute_flood_
+# progression need a path, not an in-memory array -- they call
+# data_catalog.get_rasterdataset internally) -- used by the round loop's own
+# per-round diagnostics below instead of native-resolution sea_mask.tif, so
+# every sea/land check in this rule shares the same single coarse-grid
+# source (no protected_pocket_mask yet at this point -- the weir isn't
+# final until after the round loop -- but round diagnostics never claimed
+# weir-aware precision either; ocean_mask_grid alone is the same "is this
+# genuinely open sea" classification the old native sea_mask.tif gave).
+_round_ocean_mask_path = calib_root / "ocean_mask_on_grid.tif"
+with rasterio.open(
+    _round_ocean_mask_path, "w", driver="GTiff", dtype="float32", count=1,
+    height=ocean_mask_grid.shape[0], width=ocean_mask_grid.shape[1],
+    crs=grid.crs, transform=grid.transform, nodata=-9999.0,
+) as _dst:
+    _dst.write(np.where(ocean_mask_grid, np.float32(1.0), np.float32(-9999.0)), 1)
+
 _near_land_ocean = (
     ocean_mask_grid & grid.valid_mask & binary_dilation(~ocean_mask_grid, iterations=river_crest_dilation_cells)
 )
@@ -1152,7 +1233,7 @@ def _read_mouth_ocean_period_max_zs(round_root: Path) -> np.ndarray:
 def _mouth_crest_target(round_root: Path) -> np.ndarray:
     """The mouth's own last centerline cell's CREST target, every round
     including round 0 and the final snap -- max(the real, seaward water
-    level there + freeboard_m, the real coastal protection standard).
+    level there + _CALIBRATION_FREEBOARD_M, the real coastal protection standard).
     Deliberately NOT the mouth cell's own bed elevation (natural
     bathymetry stays a separate, unrelated BED/depth concern, hard-forced
     elsewhere) -- a coastal outlet still needs an actual protective crest
@@ -1164,7 +1245,7 @@ def _mouth_crest_target(round_root: Path) -> np.ndarray:
     if len(mouth_ocean_rows) == 0:
         return np.zeros(0, dtype=np.float32)
     mouth_ocean_period_max_zs = _read_mouth_ocean_period_max_zs(round_root)
-    return np.maximum(mouth_ocean_period_max_zs + weir_freeboard_m, coastal_protection_crest_m)
+    return np.maximum(mouth_ocean_period_max_zs + _CALIBRATION_FREEBOARD_M, coastal_protection_crest_m)
 
 
 def _read_river_boundary_probe_period_max_zs(round_root: Path) -> np.ndarray:
@@ -1339,7 +1420,6 @@ mouth_ocean_cols = np.zeros(0, dtype=int)
 mouth_ocean_x = np.zeros(0, dtype=float)
 mouth_ocean_y = np.zeros(0, dtype=float)
 gap = None
-round0_inundated_count = None
 converged_round_idx = None
 crest_before_snap = None
 snap_attempted = False
@@ -1498,12 +1578,17 @@ for round_idx in range(n_correction_iterations + 1):
     # (coastal) crests instead of a faithful production replica, which is
     # the whole point of these rounds.
     round_crest_elevation_m = weir_crest_m if round_idx == 0 else coastal_protection_crest_m
-    # freeboard_m=0.0 always: weir_crest_current is used AS-IS to run the
-    # model, with no separate freeboard added on top of it during
-    # simulation -- correction rounds' own ensure-minimum-freeboard update
-    # (see the round-0/correction-round branch below) already guarantees
-    # weir_freeboard_m of margin directly in the tracked/output crest value
-    # itself, so adding it again here would double-count it.
+    # freeboard_m=0.0 always: this is the CALIBRATION's own per-round
+    # simulation weir, not the final production output (see the
+    # "canonical production outputs" section near the end of this script,
+    # which always re-traces the actually-exported weir separately with
+    # the real, config-driven weir_freeboard_m). weir_crest_current is used
+    # AS-IS to run the model here, with no separate freeboard added on top
+    # of it during simulation -- correction rounds' own ensure-minimum-
+    # freeboard update (see the round-0/correction-round branch below)
+    # already guarantees _CALIBRATION_FREEBOARD_M of margin directly in the
+    # tracked crest value itself, so adding it again here would double-
+    # count it for purposes of the iterative convergence check.
     #
     # coastal_crest_on_grid: round 0 has no per-probe tracking at all (its
     # own uniform weir_crest_m confinement already covers near-coast land
@@ -1582,7 +1667,7 @@ for round_idx in range(n_correction_iterations + 1):
             ]
         sf.subgrid.create(
             elevation_list=subgrid_elevation_list,
-            roughness_list=[{"manning": "local_roughness"}],
+            roughness_list=[{"manning": "local_roughness_native"}],
             river_list=[],
             nr_subgrid_pixels=nr_subgrid_pixels,
             nr_levels=nr_levels,
@@ -1752,8 +1837,8 @@ for round_idx in range(n_correction_iterations + 1):
         if len(coastal_probe_rows) > 0:
             coastal_period_max_zs = _read_coastal_probe_period_max_zs(round_root)
             coastal_gap = coastal_crest_current - coastal_period_max_zs
-            coastal_badly_overtopped = coastal_gap < -weir_freeboard_m
-            coastal_near_zero = np.abs(coastal_gap) <= weir_freeboard_m
+            coastal_badly_overtopped = coastal_gap < -_CALIBRATION_FREEBOARD_M
+            coastal_near_zero = np.abs(coastal_gap) <= _CALIBRATION_FREEBOARD_M
             coastal_excess = -coastal_gap
             coastal_crest_current = np.where(
                 coastal_badly_overtopped,
@@ -1783,8 +1868,8 @@ for round_idx in range(n_correction_iterations + 1):
         if len(river_boundary_probe_rows) > 0:
             river_boundary_period_max_zs = _read_river_boundary_probe_period_max_zs(round_root)
             river_boundary_gap = river_boundary_crest_current - river_boundary_period_max_zs
-            river_boundary_badly_overtopped = river_boundary_gap < -weir_freeboard_m
-            river_boundary_near_zero = np.abs(river_boundary_gap) <= weir_freeboard_m
+            river_boundary_badly_overtopped = river_boundary_gap < -_CALIBRATION_FREEBOARD_M
+            river_boundary_near_zero = np.abs(river_boundary_gap) <= _CALIBRATION_FREEBOARD_M
             river_boundary_excess = -river_boundary_gap
             river_boundary_crest_current = np.where(
                 river_boundary_badly_overtopped,
@@ -1880,7 +1965,7 @@ for round_idx in range(n_correction_iterations + 1):
     # round_root doubles as both run_dir and sfincs_root for THIS round's
     # own disposable model.
     da_hmax, _da_dep = compute_max_inundation(
-        round_root, round_root, landuse_path, hmin=0.0, include_subgrid=include_subgrid,
+        round_root, round_root, _round_ocean_mask_path, hmin=0.0, include_subgrid=include_subgrid,
     )
     if da_hmax is None:
         log.warning(f"[{round_label}] No max inundation data available -- creating empty plot sentinel")
@@ -1892,7 +1977,7 @@ for round_idx in range(n_correction_iterations + 1):
             basin_id=calib_root.parent.name, run_label=f"calibration -- {round_label}",
         )
 
-    da_h = compute_flood_progression(round_root, landuse_path)
+    da_h = compute_flood_progression(round_root, _round_ocean_mask_path)
     if da_h is None:
         log.warning(f"[{round_label}] compute_flood_progression returned None -- skipping flood animation")
         animation_path.touch()
@@ -1920,27 +2005,35 @@ for round_idx in range(n_correction_iterations + 1):
     # ── early-stopping check (correction rounds only) ────────────────────────
     # n_correction_iterations is a MAXIMUM, not a fixed target: once the crest
     # already exceeds the period-max water level everywhere (no raw
-    # overtopping under this round's own simulation) AND the realized
-    # inundated-land-cell count (same da_hmax already computed above) has
-    # settled back down to within 10% of round 0's own (near-zero, since
-    # round 0 is confined by an effectively un-overtoppable 1000 m wall)
-    # count, the raise-only correction process has nothing left to correct --
-    # but it can leave real excess margin behind (it only ever raises crest,
-    # never lowers it, by design -- see the correction-round update's own
-    # comment for why). So instead of stopping immediately, this first
-    # convergence tightens every cell's crest down to exactly
-    # period_max_zs + freeboard_m in one shot (removing that excess) and
-    # spends exactly one more round verifying the tightened crest still
-    # holds. If it does, THAT round is the final, converged one. If not
-    # (the network's own coupling pushed some other cell back over), the
-    # whole snap is abandoned and reverted -- not patched cell-by-cell --
-    # and the round before the snap becomes the converged one instead. Both
-    # outcomes stop the loop and backfill whatever round slots remain (see
-    # just after the loop) rather than spending further SFINCS runtime on
-    # rounds that can't change the outcome.
-    current_inundated_count = int((da_hmax.values > 0).sum()) if da_hmax is not None else None
+    # overtopping under this round's own simulation, centerline + coastal
+    # probes + river boundary probes), the raise-only correction process has
+    # nothing left to correct -- but it can leave real excess margin behind
+    # (it only ever raises crest, never lowers it, by design -- see the
+    # correction-round update's own comment for why). So instead of stopping
+    # immediately, this first convergence tightens every cell's crest down to
+    # exactly period_max_zs + freeboard_m in one shot (removing that excess)
+    # and spends exactly one more round verifying the tightened crest still
+    # holds. If it does, THAT round is the final, converged one. If not (the
+    # network's own coupling pushed some other cell back over), the whole
+    # snap is abandoned and reverted -- not patched cell-by-cell -- and the
+    # round before the snap becomes the converged one instead. Both outcomes
+    # stop the loop and backfill whatever round slots remain (see just after
+    # the loop) rather than spending further SFINCS runtime on rounds that
+    # can't change the outcome.
+    #
+    # 2026-08-06: previously ALSO required the realized inundated-land-cell
+    # count (da_hmax, already computed above) to settle within 10% of round
+    # 0's own count before convergence would fire -- round 0 is confined by
+    # an effectively un-overtoppable 1000 m wall, so its own flooded footprint
+    # is artificially tiny, and a real (correctly contained) crest can easily
+    # have a much larger, but perfectly genuine and stable, flooded footprint
+    # than that -- removed per explicit direction: containment (no overtopping
+    # anywhere) is the real, physically meaningful criterion; comparing total
+    # flooded area against an artificially walled-off baseline was overly
+    # protective and could block convergence indefinitely even with zero
+    # overtopping observed for many rounds running.
     if round_idx == 0:
-        round0_inundated_count = current_inundated_count
+        pass  # round 0's own 1000 m confinement is never eligible for convergence
     elif snap_attempted:
         # This round is the verification of the PREVIOUS round's own snap
         # (see the snap applied in the branch below) -- checked regardless
@@ -1952,11 +2045,7 @@ for round_idx in range(n_correction_iterations + 1):
         # correctly reflects whether the snap itself held, independent of
         # whatever that update did on top of it afterward.
         contained = _gap_contained(gap) and _gap_contained(coastal_gap) and _gap_contained(river_boundary_gap)
-        flood_stable = (
-            current_inundated_count is not None and round0_inundated_count is not None
-            and abs(current_inundated_count - round0_inundated_count) <= 0.10 * max(round0_inundated_count, 1)
-        )
-        if contained and flood_stable:
+        if contained:
             log.info(
                 f"[{round_label}] Snap verified: crest still exceeds the period-max water level "
                 f"everywhere (centerline, coastal probes, river boundary probes) after tightening "
@@ -1993,21 +2082,16 @@ for round_idx in range(n_correction_iterations + 1):
         break
     elif round_idx < n_correction_iterations:
         contained = _gap_contained(gap) and _gap_contained(coastal_gap) and _gap_contained(river_boundary_gap)
-        flood_stable = (
-            current_inundated_count is not None and round0_inundated_count is not None
-            and abs(current_inundated_count - round0_inundated_count) <= 0.10 * max(round0_inundated_count, 1)
-        )
-        if contained and flood_stable:
+        if contained:
             log.info(
                 f"[{round_label}] Converged: crest exceeds the period-max water level everywhere "
-                f"(centerline, coastal probes, river boundary probes), and inundated-cell count "
-                f"({current_inundated_count}) is within 10% of round 0's own ({round0_inundated_count}) "
-                f"-- tightening every cell's crest down to exactly period_max_zs + freeboard_m "
-                f"(removing whatever excess margin the raise-only correction process left behind) "
-                f"and spending one more round to verify it still holds"
+                f"(centerline, coastal probes, river boundary probes) -- tightening every cell's "
+                f"crest down to exactly period_max_zs + freeboard_m (removing whatever excess "
+                f"margin the raise-only correction process left behind) and spending one more "
+                f"round to verify it still holds"
             )
             crest_before_snap = weir_crest_current.copy()
-            weir_crest_current = period_max_zs + weir_freeboard_m
+            weir_crest_current = period_max_zs + _CALIBRATION_FREEBOARD_M
             weir_crest_current[is_last_mouth_cell] = _mouth_crest_target(round_root)
             weir_crest_current = np.maximum(weir_crest_current, coastal_protection_crest_m)
             # np.where(isfinite(...), target, current) here, NOT a plain
@@ -2019,21 +2103,21 @@ for round_idx in range(n_correction_iterations + 1):
             # preserves-on-NaN via np.where; the snap must match it).
             if coastal_crest_current is not None:
                 coastal_crest_before_snap = coastal_crest_current.copy()
-                _coastal_snap_target = np.maximum(coastal_period_max_zs + weir_freeboard_m, coastal_protection_crest_m)
+                _coastal_snap_target = np.maximum(coastal_period_max_zs + _CALIBRATION_FREEBOARD_M, coastal_protection_crest_m)
                 coastal_crest_current = np.where(
                     np.isfinite(coastal_period_max_zs), _coastal_snap_target, coastal_crest_current
                 )
             if river_boundary_crest_current is not None:
                 river_boundary_crest_before_snap = river_boundary_crest_current.copy()
                 _river_boundary_snap_target = np.maximum(
-                    river_boundary_period_max_zs + weir_freeboard_m, coastal_protection_crest_m
+                    river_boundary_period_max_zs + _CALIBRATION_FREEBOARD_M, coastal_protection_crest_m
                 )
                 river_boundary_crest_current = np.where(
                     np.isfinite(river_boundary_period_max_zs), _river_boundary_snap_target, river_boundary_crest_current
                 )
             snap_attempted = True
             # deliberately no break -- next round runs as the verification
-        elif not contained:
+        else:
             _still_over = []
             if not _gap_contained(gap):
                 _still_over.append("centerline")
@@ -2044,11 +2128,6 @@ for round_idx in range(n_correction_iterations + 1):
             log.info(
                 f"[{round_label}] Not yet converged: crest does not exceed the period-max water "
                 f"level everywhere ({', '.join(_still_over)})"
-            )
-        else:
-            log.info(
-                f"[{round_label}] Not yet converged: inundated-cell count ({current_inundated_count}) "
-                f"still more than 10% away from round 0's own ({round0_inundated_count})"
             )
 
 # ── backfill round slot(s) skipped by early stopping ──────────────────────────
@@ -2157,50 +2236,118 @@ log.info(
     f"({_stats2['n_reaches_burned']} reach(es) burned, {_stats2['n_pixels_burned']:,} pixel(s))"
 )
 
-# weir_gdf: normally already the final round's own actual traced weir (loop-
-# persistent, correctly holds whichever round the loop last executed -- the
-# converged round if early-stopping fired, round n_correction_iterations
-# otherwise), written as-is. The ONE exception is a failed snap
-# verification: there, weir_crest_current/coastal_crest_current/
-# river_boundary_crest_current were all reverted back to their PRE-snap
-# (accepted) values above, but weir_gdf itself still holds the FAILED,
-# over-tightened snap's own traced geometry -- re-traced here from the
-# now-reverted, actually-accepted crest arrays instead, so the exported
-# gpkg always matches the crest that was actually accepted, never a
-# rejected one.
-if snap_reverted:
-    log.info("Snap was reverted -- re-tracing the exported weir from the accepted (pre-snap) crest")
-    _final_river_crest_on_grid = build_nearest_weir_crest_regular(
-        rivers_utm, "width", grid.shape, grid.transform,
-        cell_gdf=cell_gdf, crest_values=weir_crest_current,
+# weir_gdf: ALWAYS re-traced here from the final, accepted crest arrays
+# (weir_crest_current/coastal_crest_current/river_boundary_crest_current),
+# never reused directly from the loop's own last per-round weir_gdf --
+# that per-round weir was built with freeboard_m=0.0 for the calibration's
+# own internal simulation purposes (see its own comment above), so reusing
+# it as-is would export a weir carrying only _CALIBRATION_FREEBOARD_M of
+# margin and silently ignore config's real weir_freeboard_m. This is also
+# needed for a failed snap verification specifically: there,
+# weir_crest_current/coastal_crest_current/river_boundary_crest_current
+# were reverted back to their PRE-snap (accepted) values, but the loop's
+# own weir_gdf still holds the FAILED, over-tightened snap's own traced
+# geometry -- re-tracing from the now-reverted arrays instead ensures the
+# exported gpkg always matches the crest that was actually accepted, never
+# a rejected one.
+# 2026-08-05: previously this re-trace only ran `if snap_reverted`, and
+# even then passed freeboard_m=0.0 -- meaning config's weir_freeboard_m was
+# NEVER actually applied to the exported weir in either code path. Now
+# unconditional, and uses the real config value as the one place freeboard
+# actually reaches the final crest, on top of _CALIBRATION_FREEBOARD_M
+# already baked into the tracked arrays above.
+_final_river_crest_on_grid = build_nearest_weir_crest_regular(
+    rivers_utm, "width", grid.shape, grid.transform,
+    cell_gdf=cell_gdf, crest_values=weir_crest_current,
+)
+_final_coastal_crest_on_grid = None
+if coastal_crest_current is not None:
+    _final_coastal_crest_on_grid = _rasterize_nearest(
+        coastal_probe_rows, coastal_probe_cols, coastal_crest_current, landuse_on_grid.shape,
+        max_distance_cells=river_crest_dilation_cells,
     )
-    _final_coastal_crest_on_grid = None
-    if coastal_crest_current is not None:
-        _final_coastal_crest_on_grid = _rasterize_nearest(
-            coastal_probe_rows, coastal_probe_cols, coastal_crest_current, landuse_on_grid.shape,
-            max_distance_cells=river_crest_dilation_cells,
-        )
-    if river_boundary_crest_current is not None:
-        _final_river_boundary_crest_on_grid = _rasterize_nearest(
-            river_boundary_probe_rows, river_boundary_probe_cols, river_boundary_crest_current, landuse_on_grid.shape,
-            max_distance_cells=river_crest_dilation_cells,
-        )
-        _final_coastal_crest_on_grid = (
-            _final_river_boundary_crest_on_grid if _final_coastal_crest_on_grid is None
-            else np.maximum(_final_coastal_crest_on_grid, _final_river_boundary_crest_on_grid)
-        )
-    weir_gdf, _final_weir_diagnostics = build_coastal_protection_weir(
-        grid, landuse_on_grid, channel_mask, coastal_protection_crest_m,
-        min_component_cells, weir_par1, river_crest_on_grid=_final_river_crest_on_grid,
-        coastal_crest_on_grid=_final_coastal_crest_on_grid,
-        freeboard_m=0.0, channel_mask_gap_free=True,
-        river_crest_dilation_cells=river_crest_dilation_cells,
+if river_boundary_crest_current is not None:
+    _final_river_boundary_crest_on_grid = _rasterize_nearest(
+        river_boundary_probe_rows, river_boundary_probe_cols, river_boundary_crest_current, landuse_on_grid.shape,
+        max_distance_cells=river_crest_dilation_cells,
     )
-    log.info(f"Re-traced weir: {len(weir_gdf)} segment(s) (was built from the rejected snap before this)")
+    _final_coastal_crest_on_grid = (
+        _final_river_boundary_crest_on_grid if _final_coastal_crest_on_grid is None
+        else np.maximum(_final_coastal_crest_on_grid, _final_river_boundary_crest_on_grid)
+    )
+weir_gdf, _final_weir_diagnostics = build_coastal_protection_weir(
+    grid, landuse_on_grid, channel_mask, coastal_protection_crest_m,
+    min_component_cells, weir_par1, river_crest_on_grid=_final_river_crest_on_grid,
+    coastal_crest_on_grid=_final_coastal_crest_on_grid,
+    freeboard_m=weir_freeboard_m, channel_mask_gap_free=True,
+    river_crest_dilation_cells=river_crest_dilation_cells,
+)
+log.info(
+    f"Re-traced weir for export: {len(weir_gdf)} segment(s), "
+    f"+{weir_freeboard_m:.2f} m production freeboard applied uniformly"
+    + (" (snap was reverted -- traced from the accepted, pre-snap crest)" if snap_reverted else "")
+)
 
 Path(snakemake.output.coastal_protection_weir).parent.mkdir(parents=True, exist_ok=True)
 weir_gdf.to_file(snakemake.output.coastal_protection_weir, driver="GPKG")
 log.info(f"Written: {snakemake.output.coastal_protection_weir} ({len(weir_gdf)} segment(s))")
+
+# ── real open sea, AT THIS RULE'S OWN GRID resolution (no reprojection at
+# all -- written using grid.transform/grid.crs exactly as-is) ───────────────
+# Mostly a GRID-RESOLUTION MISALIGNMENT fix, not an isolated-pocket one --
+# the weir is traced on landuse_on_grid (rule grid_align_landuse, 09b:
+# native landuse.tif resampled via nearest-neighbor onto the much coarser
+# SFINCS regular grid, ONCE, upstream), so land_mask (the model's own
+# "this is the protected side" decision) disagrees with the fine native
+# landuse.tif right along the coast -- overlaying the weir on the
+# native-resolution raster shows native "sea" (200) pixels sitting on the
+# land side, continuously along the coastline, wherever the coarse grid's
+# own cell edges cut across the true coastline -- see src.protection_weir.
+# build_coastal_protection_weir's own protected_pocket_mask docstring for
+# the full mechanism (confirmed via basin 2433835: its landuse.tif/
+# sea_mask.tif have exactly ONE connected sea component at native
+# resolution, so there was never an isolated "pocket" to find via
+# component analysis -- the mismatch is a coastline-wide fringe, not
+# discrete blobs).
+#
+# zsini_sea_cells_on_grid.tif is THE single sea/land classification every
+# downstream consumer reads directly, zero further reprojection: THIS
+# rule's own zsini (13_build_sfincs_skeleton.py, needs the fix for the
+# SIMULATION itself -- the uncorrected classification would start these
+# fringe cells wet at baseline_m regardless of the weir, so SFINCS would
+# show them as flooded from t=0 purely from the mismatched initial
+# condition) AND flood-diagnostic consumers downstream (rules run_spinup/
+# sanity_checks/run_event/compute_flood_metrics, via src.postprocessing's
+# own sea_mask_path argument). There used to be a SEPARATE, native-
+# resolution sea_mask_corrected.tif for the flood-diagnostic consumers --
+# removed 2026-08-07b: those consumers reproject whatever sea_mask_path
+# they're given onto their own (subgrid- or cell-resolution) output grid
+# anyway (src.postprocessing's own da_sea.raster.reproject_like calls), and
+# that reprojection is only well-defined/alignment-safe when the SOURCE is
+# already grid-aligned (subgrid is an exact integer subdivision of the
+# coarse grid, sharing its origin/axes -- unlike the arbitrary-origin
+# native FathomDEM/landuse pixel grid). A second, redundant native file
+# encoding the exact same boolean was pure duplication once that was
+# recognized -- one raster, one resampling pass, one source of truth,
+# same principle already applied to zsini/landuse/roughness above.
+_protected_pocket_mask = _final_weir_diagnostics.get(
+    "protected_pocket_mask", np.zeros(landuse_on_grid.shape, dtype=bool)
+)
+_sea_cells_on_grid = (landuse_on_grid == LANDUSE_SEA) & ~_protected_pocket_mask
+_sea_cells_arr = np.where(_sea_cells_on_grid, np.float32(1.0), np.float32(-9999.0))
+_sea_cells_profile = {
+    "driver": "GTiff", "height": _sea_cells_arr.shape[0], "width": _sea_cells_arr.shape[1],
+    "count": 1, "dtype": "float32", "crs": grid.crs, "transform": grid.transform,
+    "nodata": -9999.0,
+}
+Path(snakemake.output.zsini_sea_cells).parent.mkdir(parents=True, exist_ok=True)
+with rasterio.open(snakemake.output.zsini_sea_cells, "w", **_sea_cells_profile) as _dst:
+    _dst.write(_sea_cells_arr, 1)
+log.info(
+    f"zsini sea cells (this rule's own grid, no reprojection): "
+    f"{int(_sea_cells_on_grid.sum()):,} real open-sea cell(s). "
+    f"Written: {snakemake.output.zsini_sea_cells}"
+)
 
 # ── seed-to-mouth round-profile diagnostics (bed/crest/water-level per round) ─
 # Automatically produced here (not a declared Snakemake output, same

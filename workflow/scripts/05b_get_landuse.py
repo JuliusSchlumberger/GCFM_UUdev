@@ -1,9 +1,7 @@
 from pathlib import Path
 
-import geopandas as gpd
 import numpy as np
 import rasterio
-from rasterio.features import rasterize as rio_rasterize
 
 from src.domain import load_domain
 from src.log import setup_logging
@@ -24,8 +22,7 @@ log.info(f"Domain WGS84 bounds: {wgs84_bounds}")
 # Reproject onto elevation_merged.tif's exact UTM grid rather than landuse's
 # own native WGS84 resolution -- so landuse/roughness share one pixel grid
 # with elevation/zsini instead of each downstream consumer reprojecting
-# landuse independently (and risking a land/sea split that disagrees with
-# the one already baked into elevation/zsini from OSM land polygons).
+# landuse independently.
 with rasterio.open(snakemake.input.elevation_merged) as ref:
     ref_meta = ref.meta.copy()
     elevation_arr = ref.read(1).astype(np.float32)
@@ -40,31 +37,29 @@ with rasterio.open(snakemake.output.spec_landuse, "w", **out_meta) as dst:
     dst.write(data, 1)
 log.info(f"Written: {snakemake.output.spec_landuse}")
 
-# ── sea mask: land/sea classification + water-body override ──────────────────
-# Rasterise OSM land polygons onto elevation_merged.tif's exact grid (the
-# same grid landuse was just reprojected to) to get the land/sea split: 1.0
-# (sea/inland-water) vs nodata (land). Cells with landuse==200 (permanent
-# inland water body) are then overridden to sea regardless of the land
-# polygon, and any cell with no elevation data (outside the domain polygon /
-# no DEM+GEBCO coverage) is excluded. This is a pure classification -- it
-# carries no water-level value. The actual initial water level (zsini.tif,
-# sea cells = baseline_m) is built later in rule build_sfincs (13), which is
-# the first point in the pipeline baseline_m is actually known.
-land_gdf = gpd.read_file(snakemake.input.land_polygons).to_crs(ref_meta["crs"])
-if land_gdf.empty:
-    land_mask = np.zeros((ref_meta["height"], ref_meta["width"]), dtype=bool)
-    log.warning("No land polygons — sea mask is all-sea (within domain)")
-else:
-    land_mask = rio_rasterize(
-        shapes=[(geom, 1) for geom in land_gdf.geometry if geom is not None],
-        out_shape=(ref_meta["height"], ref_meta["width"]),
-        transform=ref_meta["transform"],
-        fill=0, dtype=np.uint8, all_touched=False,
-    ).astype(bool)
-
+# ── sea mask: landuse-only classification ─────────────────────────────────────
+# landuse==200 (sea) alone, on elevation_merged.tif's exact grid (the same
+# grid landuse was just reprojected to) -- 1.0 (sea) vs nodata (land). Any
+# cell with no elevation data (outside the domain polygon / no DEM+GEBCO
+# coverage) is excluded. This is a pure classification -- it carries no
+# water-level value. The actual initial water level (zsini.tif, sea cells =
+# baseline_m) is built later in rule build_sfincs (13), which is the first
+# point in the pipeline baseline_m is actually known.
+#
+# 2026-08-06: previously unioned with OSM land polygons (~land_mask |
+# lu_arr==200) so a cell OSM didn't consider land was also sea regardless of
+# its own landuse code. Dropped -- OSM's own coastline data disagreed with
+# landuse at this basin's tidal flats/lagoons (landuse==80, "inland water",
+# not 200), and since src.protection_weir's own ocean_mask (used to trace
+# the coastal protection weir) has only ever checked landuse==200, that
+# mismatch let zsini start cells wet that the weir never walled off against
+# -- already-flooded land at t=0 with no barrier. Landuse-only makes
+# zsini and the weir agree by construction: they were already reading the
+# same landuse==200 criterion, this just stops sea_mask from disagreeing
+# with it via a second, inconsistent source.
 lu_arr = data[0] if data.ndim == 3 else data
 NODATA = np.float32(-9999.0)
-sea_mask = ~land_mask | (lu_arr == 200)
+sea_mask = lu_arr == 200
 sea_mask_arr = np.where(sea_mask, np.float32(1.0), NODATA).astype(np.float32)
 
 if elevation_nodata is not None:
@@ -74,18 +69,18 @@ sea_mask_arr[~np.isfinite(elevation_arr)] = NODATA
 sea_mask_meta = ref_meta.copy()
 sea_mask_meta.update(nodata=float(NODATA))
 
-n_wb = int(((lu_arr == 200) & land_mask).sum())
 n_water = int((sea_mask_arr == 1.0).sum())
-log.info(
-    f"sea_mask: {n_water:,} sea/inland-water px "
-    f"({n_wb:,} inland water-body px added inside the land mask)"
-)
+log.info(f"sea_mask: {n_water:,} sea px (landuse==200 only, no OSM land-polygon input)")
 
 with rasterio.open(snakemake.output.sea_mask, "w", **sea_mask_meta) as zdst:
     zdst.write(sea_mask_arr, 1)
 log.info(f"Written: {snakemake.output.sea_mask}")
 
 # ── plots ──────────────────────────────────────────────────────────────────────
+# land_polygons here is rule get_land_polygons' (03) own output -- landuse-
+# derived since 2026-08-06 (see that rule's own module docstring), NOT OSM
+# -- used only for these plots' own background overlay, same as every other
+# consumer project-wide.
 plot_landuse(
     snakemake.output.spec_landuse, domain_poly,
     snakemake.input.land_polygons, snakemake.output.plot_landuse,

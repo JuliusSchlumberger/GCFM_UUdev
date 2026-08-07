@@ -110,6 +110,12 @@ log.info("--- Surge forcing ---")
 surge_lead    = snakemake.params.lead_days
 surge_period  = snakemake.params.surge_period_hr
 surge_dt      = snakemake.params.dt_hr
+# Diagnostic-preview RP only (rp_level/rp_level_raw columns below, the
+# 07_surge_correction.png plot) -- the "default" scenario's own surge_rp
+# (config/scenarios.yml), NOT whichever scenario is actually requested (see
+# 07_boundary_forcings.smk's own comment). The real production surge
+# boundary (rule 13) always uses the ACTUAL requested scenario's own
+# surge_rp via src.surge.build_design_surge_matrix, never this value.
 return_period = snakemake.params.surge_return_period
 
 stations = load_coastrp_stations(snakemake.input.surge_data, return_period)
@@ -142,30 +148,40 @@ if n_nan_mdt:
     )
     stations["mdt"] = stations["mdt"].fillna(0.0)
 stations["rp_level"] = stations["rp_level_raw"] - stations["mdt"]
-baseline_m = float(stations["mdt"].mean())
 log.info(
     f"MDT vertical correction applied (local MSL -> GOCO06s): "
     f"delta = [{(-stations['mdt']).min():.3f}, {(-stations['mdt']).max():.3f}] m"
 )
-# ── SLR fingerprint scenario ───────────────────────────────────────────────
+# ── SLR fingerprint (dimensionless, target-independent) ─────────────────────
+# Deliberately does NOT scale by slr_cfg["slr_m"] or touch rp_level here --
+# only the reference distribution (ssp_scenario/confidence_level/year/
+# quantile) is baked into this rule's output, so surge_forcing.nc stays
+# byte-identical (mtime-wise, to Snakemake) regardless of the slr_m target.
+# slr_m itself is read as a param ONLY by rule 13_build_sfincs and
+# rule run_spinup, which multiply it by slr_fingerprint at build time (see
+# src.surge.lookup_storm_tide_at_rp/build_design_surge_matrix). Changing
+# slr_m therefore reruns only those (cheap) per-scenario builds and the
+# event runs below them, never this rule, rule 10's weir/depth calibration,
+# or rule 13's skeleton build.
 slr_cfg = snakemake.params.surge_slr
-if slr_cfg["enabled"] and slr_cfg["slr_m"] != 0:
+if slr_cfg["enabled"]:
     slr_ds = load_slr_fingerprint(
         snakemake.input.slr_data, slr_cfg["ssp_scenario"],
         slr_cfg["confidence_level"], slr_cfg["year"], slr_cfg["quantile"],
     )
     global_mean_slr = compute_global_mean_slr(slr_ds)
     stations = apply_slr_fingerprint(
-        stations, slr_ds, global_mean_slr, slr_cfg["slr_m"], slr_cfg["fallback_search_deg"]
+        stations, slr_ds, global_mean_slr, slr_cfg["fallback_search_deg"]
     )
     log.info(
-        f"Applied SLR fingerprint ({slr_cfg['ssp_scenario']}, {slr_cfg['year']}, "
-        f"target {slr_cfg['slr_m']} m global mean): "
-        f"delta = [{stations['slr_m'].min():.3f}, {stations['slr_m'].max():.3f}] m"
+        f"SLR fingerprint computed ({slr_cfg['ssp_scenario']}, {slr_cfg['year']}, "
+        f"confidence={slr_cfg['confidence_level']}, quantile={slr_cfg['quantile']}): "
+        f"ratio range [{stations['slr_fingerprint'].min():.3f}, "
+        f"{stations['slr_fingerprint'].max():.3f}] (dimensionless; scaled by the "
+        f"actual slr_m target downstream, at scenario build time)"
     )
 else:
     stations["slr_fingerprint"] = np.nan
-    stations["slr_m"] = 0.0
 
 # River shares lead_days/dt_hr with surge (build_time_axis's single, shared
 # time axis); only period_hr genuinely differs (tidal-like vs. river event
@@ -183,18 +199,19 @@ log.info(
 )
 t_surge = build_time_axis(surge_lead, surge_period, surge_dt, total_hr=forcing_total_hr)
 
-# Baseline = mean of total correction actually applied to rp_level (MDT + SLR,
-# but only when the respective flag is enabled).  Always 0.0 when both are off.
-# Stored in surge_forcing.nc and read by rule 13 to initialise sea cells at the
-# same vertical reference as the boundary forcing lead period.
+# Baseline = mean MDT correction actually applied to rp_level. Deliberately
+# MDT-only -- SLR is NOT applied to rp_level at all in this rule anymore (see
+# the SLR fingerprint section above), so this stays independent of the slr_m
+# target. Stored in surge_forcing.nc and read by rule 10's calibration and
+# rule 13's skeleton to initialise sea cells at a stable vertical reference.
 baseline_m = float((stations["rp_level"] - stations["rp_level_raw"]).mean())
 log.info(
-    f"Surge boundary baseline: {baseline_m:+.4f} m "
-    f"(= mean(−MDT + SLR) across {len(stations)} stations — local MSL in model coords)"
+    f"Surge boundary baseline (MDT-only, SLR applied downstream): {baseline_m:+.4f} m "
+    f"(= mean(−MDT) across {len(stations)} stations — local MSL in model coords)"
 )
 
 # Per-station lead-period baselines: each station's own local MSL in model
-# coordinates (= rp_level_i - rp_level_raw_i = -mdt_i + slr_m_i).
+# coordinates (= rp_level_i - rp_level_raw_i = -mdt_i, MDT-only).
 # Using these (not the scalar mean) ensures each station's sinusoidal wave
 # amplitude = rp_level_raw_i exactly, regardless of how MDT varies across
 # the selected stations.  The scalar baseline_m is still stored for zsini.

@@ -1,3 +1,10 @@
+if scenario_params("default")["surge_rp"] is None:
+    raise ValueError(
+        "scenario 'default' has surge_rp=null -- rule get_boundary_forcings needs "
+        "a real, tabulated surge_rp from it for its own diagnostic-preview RP "
+        "(rp_level/07_surge_correction.png); give 'default' a real surge_rp."
+    )
+
 rule get_boundary_forcings:
     input:
         spec_basins_meta   = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
@@ -36,11 +43,28 @@ rule get_boundary_forcings:
         min_surge_stations = config["boundary_forcings"]["surge"]["min_stations"],
         max_surge_stations = config["boundary_forcings"]["surge"]["max_stations"],
         surge_dedupe_radius_km = config["boundary_forcings"]["surge"]["dedupe_radius_km"],
-        surge_return_period = config["boundary_forcings"]["surge"]["return_period"],
+        # Diagnostic-preview RP only (rp_level/rp_level_raw columns, the
+        # 07_surge_correction.png plot) -- NOT derived from whichever
+        # scenario is actually requested (target_scenarios), which would
+        # couple this basin-level rule's own output to the scenario axis
+        # (see the river side's eva.rp_fl for the identical rationale).
+        # Sourced from the "default" scenario's own surge_rp instead of a
+        # separate config.yml constant, so there's a single source of truth
+        # for "the representative RP" rather than two numbers that can drift
+        # apart. The actual production surge boundary (rule 13) always uses
+        # the ACTUAL requested scenario's own surge_rp, never this value.
+        surge_return_period = scenario_params("default")["surge_rp"],
         search_radii_km = config["boundary_forcings"]["surge"]["search_radii_km"],
         surge_period_hr = config["boundary_forcings"]["surge"]["period_hr"],
         mdt_fallback_search_deg = config["datum_correction"]["fallback_search_deg"],
-        surge_slr = config["boundary_forcings"]["surge"]["slr"],
+        # Deliberately excludes slr_m: the target global-mean SLR value must
+        # NOT be a param of this rule, or changing it would bump
+        # surge_forcing.nc's mtime and force rule 10's weir/depth calibration
+        # and rule 13's skeleton build to rerun for no physical reason (they
+        # only ever read the MDT-only baseline_m). slr_m is instead a param
+        # of rule build_sfincs/run_spinup, applied at build time to
+        # slr_fingerprint (see 07_get_boundary_forcings.py, src.surge).
+        surge_slr = {k: v for k, v in config["boundary_forcings"]["surge"]["slr"].items() if k != "slr_m"},
         # river
         river_period_hr = config["boundary_forcings"]["river"]["period_hr"],
         glofas_buffer_deg = config["boundary_forcings"]["river"]["glofas_buffer_deg"],

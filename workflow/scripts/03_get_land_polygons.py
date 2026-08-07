@@ -1,24 +1,31 @@
 """
-03_get_land_polygons.py — Clip OSM land polygons to the domain bounding box.
+03_get_land_polygons.py — Vectorize the global landuse raster (landuse != 200,
+i.e. not sea) clipped to the basin model domain, in its native WGS84
+resolution/CRS.
 
-The clipped file is passed to the SFINCS mask setup (rule 13 / build_sfincs.py)
-as a catalog source under the key 'local_land_polygons'.  Active-domain edge
-cells NOT covered by land become waterlevel boundary cells (mask=2), which
-represents the coastal / open-water perimeter of the model domain.
+2026-08-06: replaces the previous OSM land-polygons clip entirely (OSM's own
+coastline data disagreed with landuse at some basins' tidal flats/lagoons --
+see CHANGELOG). Every other consumer of "land_polygons" project-wide (every
+diagnostic plot's own background overlay, plus the two real, functional
+exclude_polygon uses in 10_depth_estimation_modelled.py/
+13_build_sfincs_skeleton.py's own waterlevel boundary mask) now traces back
+to this same landuse==200 criterion -- the same one sea_mask.tif (rule 05b)
+and src.protection_weir's own ocean_mask already use -- so there is exactly
+one source of truth for "is this land or sea" everywhere, not several
+independently-derived opinions that can disagree with each other.
 """
 
 from pathlib import Path
 
-import geopandas as gpd
-
 from src.domain import load_domain
 from src.log import setup_logging
 from src.profiling import ScriptProfiler
+from src.raster import vectorize_land_from_landuse
 
 log = setup_logging(snakemake.log[0])
 
 profiler = ScriptProfiler(snakemake)
-gpd_read_file = profiler.wrap(gpd.read_file)
+vectorize_land_from_landuse = profiler.wrap(vectorize_land_from_landuse)
 
 # ── domain bounds ─────────────────────────────────────────────────────────────
 wgs84_bounds, _, _ = load_domain(
@@ -26,14 +33,9 @@ wgs84_bounds, _, _ = load_domain(
 )
 log.info(f"Domain WGS84 bounds: {wgs84_bounds}")
 
-# ── clip OSM land to domain bbox ──────────────────────────────────────────────
-# bbox= in read_file uses (minx, miny, maxx, maxy) — same as wgs84_bounds.
-# This GeoPackage carries two layers ('marine_buffer' — an x/y tile-grid
-# index — and 'land_polygons' — the actual polygon geometries). Without an
-# explicit layer=, gpd.read_file silently defaults to 'marine_buffer'.
-land = gpd_read_file(snakemake.input.osm_land, bbox=wgs84_bounds, engine="pyogrio",
-                     layer="land_polygons")
-log.info(f"OSM land clipped: {len(land)} polygon(s)")
+# ── vectorize landuse != 200 ──────────────────────────────────────────────────
+land = vectorize_land_from_landuse(snakemake.input.global_landuse, wgs84_bounds)
+log.info(f"Landuse land polygons: {len(land)} polygon(s) (landuse != 200)")
 
 # ── write ─────────────────────────────────────────────────────────────────────
 out_path = Path(snakemake.output.land_polygons)

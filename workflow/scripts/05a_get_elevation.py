@@ -42,7 +42,7 @@ Processing chain
     datum-correction delta maps for both the DEM and GEBCO corrections.
 
 zsini.tif is NOT produced here — it needs the land/water-body distinction
-(OSM land polygons + landuse), which rule get_landuse (05b) already computes
+(landuse), which rule get_landuse (05b) already computes
 for its own reprojection step, so the full zsini is built there instead of
 splitting the land-mask computation across two rules.
 """

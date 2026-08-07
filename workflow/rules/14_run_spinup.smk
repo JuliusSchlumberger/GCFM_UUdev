@@ -15,7 +15,15 @@ rule run_spinup:
     input:
         skeleton_inp         = results_path("{basin_id}/sfincs_skeleton/sfincs.inp"),
         land_polygons        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
-        landuse              = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
+        # Corrected sea/land classification (rule modelled_depth_estimation/
+        # empirical_depth_estimation, whichever ran) -- cells the final weir
+        # protects are cleared to "land" so they aren't masked as open sea in
+        # this rule's own flood-diagnostic plot. Coarse, grid-aligned (rule
+        # 09b's landuse_on_grid.tif is this file's own source) -- the SAME
+        # file 13_build_sfincs_skeleton.py's own zsini reads. No separate
+        # native-resolution sea_mask_corrected.tif anymore (removed
+        # 2026-08-07b as pure duplication of this same boolean).
+        sea_mask             = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
         domain_gpkg          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
         surge_forcing        = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
