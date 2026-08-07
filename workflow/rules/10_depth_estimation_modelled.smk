@@ -32,21 +32,26 @@ if config["river_processing"]["depth_method"] == "modelled":
             river_forcing           = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
             protection_levels        = results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"),
             grid_resolution          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_grid_resolution.json"),
+            # Native resolution -- subgrid table only (needs sub-cell
+            # detail, same as elevation). The main regular-grid "manning"
+            # field and this rule's own zsini/weir/ocean_mask sections all
+            # use roughness_on_grid/landuse_on_grid below instead (rule
+            # grid_align_landuse, 09b) -- see that rule's own module
+            # docstring for why every consumer of the landuse/roughness
+            # classification now shares one canonical coarse-grid resample.
             roughness                = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"),
             land_polygons            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
             domain_gpkg              = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
             spec_basins_meta         = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
-            landuse                  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
+            # Already rasterized directly onto this rule's own grid (rule
+            # grid_align_landuse, 09b) -- read with zero further
+            # reprojection for the weir/ocean_mask/zsini sections below.
+            landuse_on_grid          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_on_grid.tif"),
+            roughness_on_grid        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness_on_grid.tif"),
             # Real, steady coastal baseline (mean sea level + SLR/MDT
             # correction) for the water-level boundary, see
             # 10_depth_estimation_modelled.py.
             surge_forcing            = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
-            # Sea/land classification (rule get_landuse, 05b) -- builds this
-            # rule's own spatially-varying zsini (sea cells start at
-            # baseline_m, matching 13_build_sfincs.py's own zsini.tif) rather
-            # than a uniform dry start that produces a transient "boundary
-            # flooding in" spike at coastal/mouth cells.
-            sea_mask                 = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sea_mask.tif"),
             # Points where a non-seed, non-mouth, non-bifurcation reach
             # crosses the delta polygon's own outline (rule clean_river_network) --
             # a genuine place flow exits the modelled network without
@@ -73,6 +78,32 @@ if config["river_processing"]["depth_method"] == "modelled":
             # not re-derivable from any per-reach scalar. See rule 13's own
             # import of this file.
             coastal_protection_weir       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"),
+            # THE single sea/land classification every downstream consumer
+            # reads directly, zero further reprojection: this rule's own
+            # zsini (13_build_sfincs_skeleton.py) AND flood-diagnostic
+            # consumers downstream (rules 14/15/16/17, via
+            # src.postprocessing's own sea_mask_path argument -- those
+            # reproject this coarse, grid-aligned raster onto their own
+            # subgrid-/cell-resolution output grid, which is well-defined
+            # since subgrid is an exact integer subdivision of THIS grid,
+            # sharing its origin/axes). Written directly at THIS RULE'S OWN
+            # GRID resolution (no reprojection at all -- grid.transform/
+            # grid.crs as-is): 13_build_sfincs_skeleton.py's own
+            # sf.grid.data["dep"] is confirmed pixel-identical to this
+            # rule's own calibration grid (same mmax/nmax/dx/dy/x0/y0, both
+            # "auto-UTM"-fit from the same domain_gpkg + grid_resolution.
+            # json), so that script builds its ini DataArray in-memory
+            # directly on this file's own grid and passes it to
+            # sf.initial_conditions.create() with ZERO resampling
+            # (reproject_like on an identical grid is a confirmed true
+            # no-op). There used to be a SEPARATE, native-resolution
+            # sea_mask_corrected.tif just for the flood-diagnostic
+            # consumers -- removed 2026-08-07b as pure duplication of this
+            # same boolean (see this rule's own script for the full
+            # rationale). Same unified filename rule empirical_depth_
+            # estimation writes -- downstream rules never need
+            # depth_method-conditional file selection.
+            zsini_sea_cells               = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
             # Canonical outputs -- copies of the LAST round's own numbered
             # files below (round n_correction_iterations), for downstream
             # consumers/convention that expect these fixed filenames.

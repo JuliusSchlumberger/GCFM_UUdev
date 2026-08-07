@@ -294,6 +294,56 @@ def clip_raster(
         dst.write(out_data)
 
 
+def vectorize_land_from_landuse(
+    landuse_path: str | Path, wgs84_bounds: tuple[float, float, float, float]
+):
+    """
+    Windowed-read the global landuse raster clipped to wgs84_bounds and
+    vectorize landuse != 200 (i.e. not sea) into a "land" GeoDataFrame,
+    native WGS84 (no reprojection -- the source is already EPSG:4326).
+
+    Shared by rule get_land_polygons (03, the main per-basin land_polygons.gpkg
+    product) and rule get_protection_levels (04, which deliberately depends
+    only on the delta polygon -- see that rule's own docstring -- so it
+    vectorizes its own small window directly from the raw landuse catalogue
+    source here rather than depending on rule 03's own per-basin output).
+
+    Args:
+        landuse_path: Path to the global landuse GeoTIFF (data_catalogue.yml's
+                      'land_use' source).
+        wgs84_bounds: (lon_min, lat_min, lon_max, lat_max) -- clip extent.
+
+    Returns:
+        geopandas.GeoDataFrame of land polygons, CRS EPSG:4326 (matching the
+        source raster's own CRS).
+    """
+    import geopandas as gpd
+    from rasterio.features import shapes as rio_shapes
+    from rasterio.windows import from_bounds
+    from shapely.geometry import shape as shapely_shape
+
+    with rasterio.open(landuse_path) as src:
+        window = from_bounds(*wgs84_bounds, transform=src.transform)
+        lu_arr = src.read(1, window=window)
+        win_transform = src.window_transform(window)
+        nodata = src.nodata
+        src_crs = src.crs
+
+    land_bool = lu_arr != 200
+    if nodata is not None:
+        land_bool &= lu_arr != nodata
+    land_bool_u8 = land_bool.astype(np.uint8)
+
+    land_geoms = [
+        shapely_shape(geom)
+        for geom, val in rio_shapes(
+            land_bool_u8, mask=land_bool_u8, transform=win_transform
+        )
+        if val == 1
+    ]
+    return gpd.GeoDataFrame(geometry=land_geoms, crs=src_crs)
+
+
 def reproject_to_reference_grid(
     src_path: str | Path,
     wgs84_bounds: tuple[float, float, float, float],

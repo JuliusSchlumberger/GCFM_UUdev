@@ -1452,8 +1452,8 @@ def plot_grdc_overview(
 
     Args:
         domain_poly: Model domain polygon (WGS84).
-        osm_land_path: Path to the OSM land polygons used as a map background
-            (see ``src.plots.map_background``).
+        osm_land_path: Path to the land polygons geopackage (landuse-derived,
+            not OSM) used as a map background (see ``src.plots.map_background``).
         river_gdf: River network GeoDataFrame (WGS84).
         crossings_gdf: One row per river crossing, with a ``has_glofas`` bool
             column and point geometry (WGS84).

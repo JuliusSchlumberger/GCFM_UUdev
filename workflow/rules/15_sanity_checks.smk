@@ -12,7 +12,14 @@
 rule sanity_checks:
     input:
         sfincs_map_nc       = results_path("{basin_id}/spin_up/sfincs_map.nc"),
+        # Raw landuse -- cosmetic plot background only (plot_inundation_
+        # check's water_bodies_path). Flood-depth masking uses sea_mask
+        # below instead.
         landuse             = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
+        # Corrected sea/land classification (see rule run_spinup's own
+        # comment) -- cells the final weir protects are cleared to "land",
+        # not masked as open sea here.
+        sea_mask            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
         land_polygons       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
         clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
         domain_gpkg         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),

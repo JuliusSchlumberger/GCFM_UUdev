@@ -68,6 +68,7 @@ include_subgrid            = bool(snakemake.params.include_subgrid)
 animation_fps               = int(snakemake.params.animation_fps)
 land_polygons_path         = Path(snakemake.input.land_polygons)
 landuse_path                = Path(snakemake.input.landuse)
+sea_mask_path               = Path(snakemake.input.sea_mask)
 river_network_path          = Path(snakemake.input.clean_river_network)
 domain_gpkg_path            = Path(snakemake.input.domain_gpkg)
 
@@ -99,7 +100,7 @@ log.info(f"Event map output written: {sfincs_map_path} ({sfincs_map_path.stat().
 plot_ratio_path = Path(snakemake.output.plot_inundation_ratio)
 
 da_hmax, da_dep = compute_max_inundation(
-    sfincs_root, skeleton_root, landuse_path, hmin=threshold_m, include_subgrid=include_subgrid,
+    sfincs_root, skeleton_root, sea_mask_path, hmin=threshold_m, include_subgrid=include_subgrid,
 )
 if da_hmax is None or da_dep is None:
     log.warning("Could not compute max inundation depth (missing 'zsmax' or bed level) — skipping")
@@ -136,7 +137,7 @@ animation_out_path = Path(snakemake.output.animation_flood_progress)
 csv_out_path        = Path(snakemake.output.flood_timeseries_csv)
 animation_out_path.parent.mkdir(parents=True, exist_ok=True)
 
-da_h = compute_flood_progression(sfincs_root, landuse_path)
+da_h = compute_flood_progression(sfincs_root, sea_mask_path)
 if da_h is None:
     log.warning(
         "compute_flood_progression returned None (no 'zs' in sfincs_map.nc) — "
@@ -176,7 +177,7 @@ else:
     # occurred), so the max of flood_volume_m3 here is the physically
     # correct peak total flood volume for the event.
     df = compute_flood_timeseries_stats(
-        sfincs_root, skeleton_root, landuse_path, threshold_m,
+        sfincs_root, skeleton_root, sea_mask_path, threshold_m,
         include_subgrid=include_subgrid,
     )
     if df is None:

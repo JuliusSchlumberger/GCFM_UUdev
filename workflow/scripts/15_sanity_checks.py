@@ -7,10 +7,10 @@ Fraction of land-domain pixels with max inundation depth > `min_inundation_depth
 
 Method:
   1. Compute the downscaled max inundation depth (`da_hmax`) and the bed-level
-     reference grid (`da_dep`), both masked to exclude sea via the land-use
-     raster, via `src.postprocessing.compute_max_inundation` — see that
-     function's docstring for the full method (SfincsModel loading,
-     subgrid-aware bed level, `downscale_floodmap`, land-use sea mask).
+     reference grid (`da_dep`), both masked to exclude open sea via the
+     corrected sea mask, via `src.postprocessing.compute_max_inundation` —
+     see that function's docstring for the full method (SfincsModel loading,
+     subgrid-aware bed level, `downscale_floodmap`, sea mask).
   2. Denominator: non-null pixels in `da_dep` = total land-domain pixels.
   3. Numerator:   non-null pixels in `da_hmax` = flooded land pixels above hmin.
 
@@ -34,6 +34,7 @@ log = setup_logging(snakemake.log[0])
 # ── inputs / params ───────────────────────────────────────────────────────────
 sfincs_map_nc_path = Path(snakemake.input.sfincs_map_nc)
 landuse_path       = Path(snakemake.input.landuse)
+sea_mask_path      = Path(snakemake.input.sea_mask)
 land_polygons_path = Path(snakemake.input.land_polygons)
 river_network_path = Path(snakemake.input.clean_river_network)
 domain_gpkg_path   = Path(snakemake.input.domain_gpkg)
@@ -66,7 +67,7 @@ else:
     # actually lives -- spin_up only references it via a relative path in
     # its own sfincs.inp, it isn't physically present under spin_up_root.
     da_hmax, da_dep = compute_max_inundation(
-        spinup_dir, skeleton_root, landuse_path,
+        spinup_dir, skeleton_root, sea_mask_path,
         hmin=threshold_m, include_subgrid=include_subgrid,
     )
 
@@ -115,7 +116,7 @@ if sfincs_map_nc_path.stat().st_size == 0:
     log.warning("sfincs_map.nc is empty — skipping flood animation")
     animation_out_path.touch()
 else:
-    da_h = compute_flood_progression(spinup_dir, landuse_path)
+    da_h = compute_flood_progression(spinup_dir, sea_mask_path)
     if da_h is None:
         log.warning(
             "compute_flood_progression returned None (no 'zs' in sfincs_map.nc) — "

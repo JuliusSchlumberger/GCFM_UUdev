@@ -207,16 +207,16 @@ def map_background(
     margin_frac: float = 0.3,
 ) -> None:
     """
-    Draw OSM land polygons, optional river basin outlines, and domain bbox on ax.
+    Draw land polygons, optional river basin outlines, and domain bbox on ax.
 
-    OSM land and river basins are both loaded with a spatial filter to avoid
+    Land and river basins are both loaded with a spatial filter to avoid
     reading the full global files.  The margin around the domain is proportional
     to the larger of the two bbox dimensions.
 
     Args:
         ax:                 Matplotlib Axes to draw on.
         bbox_poly:          Shapely Polygon of the domain bbox in WGS84.
-        osm_land_path:      Path to the OSM land polygons shapefile.
+        osm_land_path:      Path to the land polygons geopackage (landuse-derived, not OSM).
         river_basins_path:  Optional path to a river basins shapefile.  When
                             provided, basin outlines are drawn over the land layer
                             with a transparent fill and dark-grey edge.
@@ -489,7 +489,7 @@ def plot_protection_levels(
                                for this same delta polygon -- supplies the
                                resolved (post-fallback/cap) RP values and
                                dominant unit's id/ISO for the titles.
-        osm_land_path:        Path to the OSM land polygons (background).
+        osm_land_path:        Path to the land polygons geopackage (landuse-derived, not OSM; background).
         output_path:          Output PNG path.
         margin_frac:          Display margin as a fraction of the polygon's
                                bbox span (same convention as map_background).
@@ -679,7 +679,7 @@ def plot_river_network(
     water_bodies_path: str | None = None,
 ) -> None:
     """
-    Clipped river network overlaid on OSM land background and domain bbox.
+    Clipped river network overlaid on land background and domain bbox.
     """
     rivers = gpd.read_file(river_path)
     if rivers.crs and rivers.crs.to_epsg() != 4326:
@@ -876,37 +876,48 @@ def plot_forcing_timeseries(
     ax1.grid(True, alpha=0.3)
 
     # ── per-station correction table ─────────────────────────────────────────
-    # Shows the correction chain: rp_raw → −MDT → +SLR → peak(GOCO6s) -- the
-    # boundary's actual peak, nothing further is subtracted from it (the
+    # Shows the correction chain: rp_raw → −MDT → peak(GOCO6s), MDT-only -- the
     # FLOPROS coastal protection level is a separate quantity, used only to
-    # floor the weir crest in rule 13, never netted out of this timeseries).
+    # floor the weir crest in rule 13, never netted out of this timeseries.
+    # SLR is deliberately NOT shown as an applied value here: this dataset's
+    # own water_level/rp_level are MDT-only by design (see
+    # src.surge.apply_slr_fingerprint) -- the actual slr_m-scaled SLR
+    # contribution is only computed downstream, at scenario build time, so
+    # this rule-07 diagnostic instead reports the dimensionless fingerprint
+    # (multiply by the configured slr_m target yourself to see the real
+    # per-station SLR contribution the production build will add).
     has_raw = "rp_level_raw" in surge_ds
     has_mdt = "mdt" in surge_ds
     if has_raw and has_mdt:
-        rp_levels = surge_ds["rp_level"].values  # peak in GOCO6s (= rp_raw − MDT + SLR)
+        rp_levels = surge_ds[
+            "rp_level"
+        ].values  # peak in GOCO6s (= rp_raw − MDT, MDT-only)
         rp_levels_raw = surge_ds["rp_level_raw"].values  # raw COAST-RP (local MSL)
         mdts = surge_ds["mdt"].values
-        slr_arr = (
-            surge_ds["slr_m"].values
-            if "slr_m" in surge_ds
-            else np.zeros(len(rp_levels))
+        fingerprint_arr = (
+            surge_ds["slr_fingerprint"].values
+            if "slr_fingerprint" in surge_ds
+            else np.full(len(rp_levels), np.nan)
         )
 
-        header = "Stn  rp_raw    −MDT    +SLR  peak(GOCO6s)"
+        header = "Stn  rp_raw    −MDT  peak(GOCO6s)  SLR fingerprint"
         rows = [header, "─" * len(header)]
-        for i, (rl_raw, mdt_i, slr_i, rl) in enumerate(
-            zip(rp_levels_raw, mdts, slr_arr, rp_levels)
+        for i, (rl_raw, mdt_i, fp_i, rl) in enumerate(
+            zip(rp_levels_raw, mdts, fingerprint_arr, rp_levels)
         ):
             rows.append(
-                f" {i + 1:2d}  {rl_raw:+7.3f}  {-mdt_i:+6.3f}  {slr_i:+6.3f}    {rl:+7.3f}"
+                f" {i + 1:2d}  {rl_raw:+7.3f}  {-mdt_i:+6.3f}    {rl:+7.3f}       {fp_i:5.2f}"
             )
         rows.append("─" * len(header))
         bm = (
             float(surge_ds["baseline_m"].values)
             if "baseline_m" in surge_ds
-            else float(np.mean(-mdts + slr_arr))
+            else float(np.mean(-mdts))
         )
-        rows.append(f"  baseline_m (MWL (=0) − MDT + SLR): {bm:+.4f} m")
+        rows.append(f"  baseline_m (MWL (=0) − MDT, MDT-only): {bm:+.4f} m")
+        rows.append(
+            "  (SLR added downstream: slr_fingerprint × configured slr_m target)"
+        )
 
         ax1.text(
             0.01,
@@ -983,19 +994,27 @@ def plot_surge_corrections(
     output_path: str,
 ) -> None:
     """
-    Diagnostic stacked-bar plot for all vertical corrections applied to COAST-RP
-    storm-tide levels (MDT shift, SLR fingerprint). The FLOPROS coastal
-    protection level is a separate quantity (floors the weir crest in rule
-    13 only) and is never netted out of this boundary timeseries, so it has
-    no bar here -- see src.surge.build_design_surge_matrix's own docstring.
+    Diagnostic stacked-bar plot for the MDT vertical correction applied to
+    COAST-RP storm-tide levels. SLR is deliberately NOT shown as an applied
+    meter value here: surge_forcing.nc's own rp_level/water_level are
+    MDT-only by design (src.surge.apply_slr_fingerprint stores only the
+    dimensionless slr_fingerprint ratio, never a baked-in slr_m value) so
+    that this basin-level rule stays independent of the slr_m config target
+    -- see src.surge.build_design_surge_matrix's own docstring for where the
+    real, target-scaled SLR contribution actually gets applied (per-scenario
+    build time). The FLOPROS coastal protection level is a separate
+    quantity (floors the weir crest in rule 13 only) and is never netted
+    out of this boundary timeseries either, so it has no bar here.
 
-    Left panel — three sub-bars per station, each anchored at 0 m (local MSL):
-      1. rp_level_raw  (+ SLR stacked on top if nonzero) — steelblue/seagreen
+    Left panel — two sub-bars per station, each anchored at 0 m (local MSL):
+      1. rp_level_raw — steelblue
       2. −MDT correction — darkorange; extends below 0 when MDT > 0, above 0 when MDT < 0
-      3. Net final peak = rp_raw − MDT + SLR — navy
+      3. Net peak (MDT-only) = rp_raw − MDT — navy
 
     Each correction has its own x sub-position so even tiny MDT bars are fully
-    visible.
+    visible. The right-hand map's colorbar annotation notes each station's own
+    SLR fingerprint ratio (dimensionless -- multiply by the configured slr_m
+    target to get the real per-station SLR contribution added downstream).
 
     Right panel: station locations coloured by the −MDT correction magnitude.
     """
@@ -1008,10 +1027,10 @@ def plot_surge_corrections(
     mdt = (
         stations["mdt"].fillna(0.0).values if "mdt" in stations.columns else np.zeros(n)
     )
-    slr = (
-        stations["slr_m"].fillna(0.0).values
-        if "slr_m" in stations.columns
-        else np.zeros(n)
+    fingerprint = (
+        stations["slr_fingerprint"].values
+        if "slr_fingerprint" in stations.columns
+        else np.full(n, np.nan)
     )
 
     mdt_corr = -mdt  # negative (below 0) when MDT > 0; positive (above 0) when MDT < 0
@@ -1028,7 +1047,7 @@ def plot_surge_corrections(
     x_mdt = x + centers[1]
     x_net = x + centers[2]
 
-    # ── Bar 1: rp_level_raw + SLR ────────────────────────────────────────────
+    # ── Bar 1: rp_level_raw ──────────────────────────────────────────────────
     ax1.bar(
         x_raw,
         raw,
@@ -1036,22 +1055,21 @@ def plot_surge_corrections(
         color="steelblue",
         label="rp_level_raw  (COAST-RP, local MSL)",
     )
-    ax1.bar(x_raw, slr, width=w, bottom=raw, color="seagreen", label="+SLR fingerprint")
 
     # ── Bar 2: −MDT correction (each station its own column, anchored at 0) ──
     ax1.bar(
         x_mdt, mdt_corr, width=w, color="darkorange", label="−MDT  (local MSL → GOCO6s)"
     )
 
-    # ── Bar 3: net final peak ─────────────────────────────────────────────────
-    net_peak = raw - mdt + slr
+    # ── Bar 3: net peak (MDT-only) ────────────────────────────────────────────
+    net_peak = raw - mdt
     ax1.bar(
         x_net,
         net_peak,
         width=w,
         color="navy",
         alpha=0.75,
-        label="Final peak  (rp_level_raw − MDT + SLR)",
+        label="Net peak  (rp_level_raw − MDT, MDT-only)",
     )
 
     # ── Value annotations (black outside for small bars, white inside large) ──
@@ -1076,8 +1094,6 @@ def plot_surge_corrections(
             )
 
     _annotate_bar(ax1, x_raw, raw, np.zeros(n))
-    if np.any(slr != 0):
-        _annotate_bar(ax1, x_raw, slr, raw)
     _annotate_bar(ax1, x_mdt, mdt_corr, np.zeros(n))
     _annotate_bar(ax1, x_net, net_peak, np.zeros(n))
 
@@ -1089,8 +1105,8 @@ def plot_surge_corrections(
     ax1.set_xlabel("Station")
     ax1.set_ylabel("Water level relative to local MSL (m)")
     ax1.set_title(
-        "Surge correction decomposition per station\n"
-        "(bars left→right: rp_raw | −MDT | net peak)"
+        "Surge correction decomposition per station (MDT-only; SLR applied "
+        "downstream)\n(bars left→right: rp_raw | −MDT | net peak)"
     )
     ax1.legend(fontsize=7, framealpha=0.9)
     ax1.grid(True, alpha=0.3, axis="y")
@@ -1105,9 +1121,22 @@ def plot_surge_corrections(
         edgecolor="k",
     )
     fig.colorbar(sc, ax=ax2, label="−MDT correction (m)")
+    if np.any(~np.isnan(fingerprint)):
+        for xi, yi, fp in zip(stations.geometry.x, stations.geometry.y, fingerprint):
+            if not np.isnan(fp):
+                ax2.annotate(
+                    f"×{fp:.2f}",
+                    (xi, yi),
+                    fontsize=6,
+                    xytext=(3, 3),
+                    textcoords="offset points",
+                )
     ax2.set_xlabel("Longitude (°)")
     ax2.set_ylabel("Latitude (°)")
-    ax2.set_title("MDT correction per station  (−mdt, m)")
+    ax2.set_title(
+        "MDT correction per station (−mdt, m)\n"
+        "(annotations: SLR fingerprint ratio, × configured slr_m target)"
+    )
     ax2.grid(True, alpha=0.3)
 
     fig.tight_layout()
@@ -1754,7 +1783,7 @@ def _overlay_layers(
                             frame as the displayed data.
         bounds:             Raster bounds (left, bottom, right, top) in ``crs``.
         domain_poly:        Domain polygon in WGS84 (from ``load_domain``).
-        land_polygons_path: Path to the OSM land polygons geopackage.
+        land_polygons_path: Path to the land polygons geopackage (landuse-derived, not OSM).
         river_network_path: Path to the clipped river network geopackage.
 
     Returns:
@@ -1828,7 +1857,7 @@ def plot_coastal_protection_weir(
         grid:                A src.protection_weir.GridArrays instance.
         diagnostics:          Output dict from build_coastal_protection_weir.
         domain_poly:         Domain polygon in WGS84 (from ``load_domain``).
-        land_polygons_path:  Path to the OSM land polygons geopackage.
+        land_polygons_path:  Path to the land polygons geopackage (landuse-derived, not OSM).
         river_network_path:  Path to the clipped river network geopackage.
         output_path:         Destination PNG path.
         basin_id:            Basin identifier for the plot title.
@@ -2373,7 +2402,7 @@ def plot_max_inundation_map(
         da_hmax:            Max inundation depth DataArray; NaN = dry / outside
                             the land domain.  Must carry CRS metadata (``rio.crs``).
         domain_poly:        Domain polygon in WGS84 (from ``load_domain``).
-        land_polygons_path: Path to the OSM land polygons geopackage.
+        land_polygons_path: Path to the land polygons geopackage (landuse-derived, not OSM).
         river_network_path: Path to the clipped river network geopackage.
         output_path:        Destination PNG path.
         basin_id:           Basin identifier for the plot title.
@@ -2520,7 +2549,7 @@ def animate_flood_progression(
                             level is unmasked). Must carry CRS metadata
                             (``rio.crs``).
         domain_poly:        Domain polygon in WGS84 (from ``load_domain``).
-        land_polygons_path: Path to the OSM land polygons geopackage.
+        land_polygons_path: Path to the land polygons geopackage (landuse-derived, not OSM).
         river_network_path: Path to the clipped river network geopackage.
         output_path:        Destination MP4 path.
         basin_id:           Basin identifier for the plot title.
@@ -2897,8 +2926,8 @@ def plot_inundation_check(
         threshold_m:        hmin passed to downscale_floodmap (for labelling only).
         n_flooded:          Pre-computed flooded land pixel count (da_hmax not-null).
         n_land:             Pre-computed total land pixel count (dep not-null).
-        land_polygons_path: Path to the OSM land polygons geopackage (WGS84),
-                            drawn as an outline overlay.
+        land_polygons_path: Path to the land polygons geopackage (landuse-derived,
+                            not OSM; WGS84), drawn as an outline overlay.
         river_network_path: Path to the clean river network geopackage (WGS84),
                             drawn as an overlay.
         output_path:        Destination PNG path.

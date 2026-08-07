@@ -56,6 +56,22 @@ rule build_sfincs:
         design_rp_river_yr = lambda wildcards: scenario_params(wildcards.scenario)["river_rp"],
         design_rp_surge_yr = lambda wildcards: scenario_params(wildcards.scenario)["surge_rp"],
         compound_lag_hr    = config["sfincs"]["boundary_setup"]["compound"]["lag_hr"],
+        # Uniform scaling factor on the built river discharge hydrograph
+        # (default 1.0 = no-op), applied HERE against river_forcing.nc's own
+        # built discharge -- deliberately NOT a param of rule
+        # get_boundary_forcings (07) or rule modelled_depth_estimation (10),
+        # so changing it only reruns this (cheap) per-scenario build + its
+        # downstream event run, never rule 07, the weir/depth calibration,
+        # or the skeleton build. See src.river_forcing.build_design_discharge_matrix.
+        discharge_multiplier = config["boundary_forcings"]["river"]["discharge_multiplier"],
+        # Target global-mean SLR (m), applied HERE against surge_forcing.nc's
+        # own dimensionless slr_fingerprint -- deliberately NOT a param of
+        # rule get_boundary_forcings (07), so changing slr_m only reruns this
+        # (cheap) per-scenario build + its downstream event run, never rule
+        # 07 itself, rule 10's weir/depth calibration, or the skeleton build.
+        # See src.surge.build_design_surge_matrix's own slr_m argument.
+        slr_enabled        = config["boundary_forcings"]["surge"]["slr"]["enabled"],
+        slr_m              = config["boundary_forcings"]["surge"]["slr"]["slr_m"],
         flat_boundary_point_spacing_m = config["sfincs"]["boundary_setup"]["flat_boundary_point_spacing_m"],
         waterlevel_buffer_m = config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),

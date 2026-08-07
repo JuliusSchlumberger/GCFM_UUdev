@@ -54,6 +54,16 @@ consistent across modes):
                    contribution being isolated. Initial conditions are also
                    overridden to a uniform dry start (no "inifile" forwarded
                    from the skeleton) for the same reason.
+
+discharge_multiplier (boundary_forcings.river.discharge_multiplier, default
+1.0) uniformly scales the built discharge hydrograph at every active river
+seed/boundary crossing -- applied HERE, at build time
+(src.river_forcing.build_design_discharge_matrix), never baked into
+river_forcing.nc. Mirrors src.surge's deferred SLR fingerprint: rule 07 and
+rule 10's weir/depth calibration (which also reads river_forcing.nc, for its
+own calibration seed discharge) stay completely independent of this factor,
+so changing it only reruns this per-scenario build and its downstream event
+run.
 """
 
 import logging
@@ -114,6 +124,16 @@ design_rp_river_yr = None if design_rp_river_yr is None else float(design_rp_riv
 design_rp_surge_yr = snakemake.params.design_rp_surge_yr
 design_rp_surge_yr = None if design_rp_surge_yr is None else float(design_rp_surge_yr)
 compound_lag_hr   = float(snakemake.params.compound_lag_hr)
+# Uniform scaling factor on the built river discharge hydrograph (default
+# 1.0 = no-op), applied HERE -- not baked into river_forcing.nc, see this
+# script's own module docstring.
+discharge_multiplier = float(snakemake.params.discharge_multiplier)
+# Target global-mean SLR (m), applied HERE (not baked into surge_forcing.nc,
+# see src.surge.apply_slr_fingerprint's own docstring) against each
+# station's own slr_fingerprint ratio -- 0.0 whenever SLR is disabled, so
+# this scenario's own forcing matches surge_forcing.nc's MDT-only fields
+# exactly.
+effective_slr_m = float(snakemake.params.slr_m) if snakemake.params.slr_enabled else 0.0
 flat_boundary_point_spacing_m = snakemake.params.flat_boundary_point_spacing_m
 waterlevel_buffer_m = snakemake.params.waterlevel_buffer_m
 include_rstart    = snakemake.params.include_rstart
@@ -152,18 +172,20 @@ log.info(
     f"({sim_hours:.0f} h from forcing files)"
 )
 
-# sf.water_level.create()/sf.discharge_points.create() below call
-# self.model.get_model_time() (reads sf.config["tstart"]/["tstop"]) to
-# time-slice the forcing dataframe against. The skeleton's own config still
-# carries its placeholder tref/tstart/tstop (today's date) at this point --
-# same failure mode 14_run_spinup.py hit. Set it to this scenario's own full
-# forcing window now so neither create() call truncates the timeseries; the
-# scenario's own tstart/tstop actually written to sfincs.inp below (possibly
-# tstart_event, after spin-up) is written directly from local variables, not
-# from sf.config, so this has no effect on the final on-disk file.
-sf.config.set("tref", tref.strftime("%Y%m%d %H%M%S"))
-sf.config.set("tstart", tref.strftime("%Y%m%d %H%M%S"))
-sf.config.set("tstop", tstop.strftime("%Y%m%d %H%M%S"))
+# sf.water_level.create()/sf.discharge_points.create() below both slice their
+# own timeseries against self.model.get_model_time() (tstart/tstop read
+# straight off the in-memory sf.config) -- the skeleton's own sfincs.inp
+# deliberately never sets tref/tstart/tstop (it's not meant to be runnable
+# on its own), so without this, sf.config still carries hydromt_sfincs's own
+# Pydantic defaults (today's date), which never overlaps this scenario's
+# real forcing timeseries (indexed at `tref`, e.g. 2000-01-01) --
+# NoDataException: "DataFrame has no data after time slicing." This has no
+# effect on the actual sfincs.inp written to disk below (hand-crafted via
+# plain file I/O, never sf.config.write()) -- it only fixes what these
+# in-memory .create() calls see.
+sf.config.set("tref", tref)
+sf.config.set("tstart", tref)
+sf.config.set("tstop", tstop)
 
 # ── initial conditions ────────────────────────────────────────────────────────
 # forcing_mode="river_only": leave every cell (sea AND land) at the uniform
@@ -222,7 +244,9 @@ else:
 
     # water_level dims: (station, time) → transpose to (time, station) for DataFrame
     wl_df = pd.DataFrame(
-        data=build_design_surge_matrix(surge_ds, design_rp_surge_yr).T,
+        data=build_design_surge_matrix(
+            surge_ds, design_rp_surge_yr, slr_m=effective_slr_m
+        ).T,
         index=surge_times,
         columns=range(n_stations),
     )
@@ -232,7 +256,10 @@ else:
         locations=stations_gdf,
         buffer=waterlevel_buffer_m,
     )
-    log.info(f"Water-level forcing: {n_stations} stations, {len(surge_times)} time steps")
+    log.info(
+        f"Water-level forcing: {n_stations} stations, {len(surge_times)} time steps "
+        f"(SLR: {effective_slr_m:+.3f} m target × per-station fingerprint)"
+    )
 sf.water_level.write()
 
 # ── river discharge forcing ───────────────────────────────────────────────────
@@ -269,17 +296,22 @@ else:
         data=build_design_discharge_matrix(
             river_ds, active, design_rp_river_yr,
             apply_protection_floor=(depth_method == "empirical"),
+            discharge_multiplier=discharge_multiplier,
         ).T,
         index=river_times,
         columns=range(n_active),
     )
+    log.info(f"Discharge multiplier applied: x{discharge_multiplier:.3f}")
 
     # ── compound lag: shift river discharge relative to surge ────────────────
     if forcing_mode == "compound" and compound_lag_hr != 0 and len(river_times) > 1:
         dt_hr = float((river_times[1] - river_times[0]).total_seconds() / 3600.0)
         shift_steps = int(round(compound_lag_hr / dt_hr))
         if shift_steps != 0:
-            bankfull_active = river_ds.bankfull_discharge.values[active]
+            # Scaled the same way build_design_discharge_matrix scaled the
+            # rest of dis_df, so the padding value stays consistent with the
+            # (already-multiplied) real data being shifted alongside it.
+            bankfull_active = river_ds.bankfull_discharge.values[active] * discharge_multiplier
             arr = dis_df.to_numpy()
             shifted = np.empty_like(arr)
             n = min(abs(shift_steps), arr.shape[0])
@@ -411,7 +443,12 @@ log.info(f"sfincs.inp written: {sfincs_root / 'sfincs.inp'}")
 
 # ── diagnostic plot: forcing timeseries (the only build_sfincs plot that's
 # actually forcing_mode/design_rp-dependent -- everything else moved to
-# 13_build_sfincs_skeleton.py) ────────────────────────────────────────────
+# 13_build_sfincs_skeleton.py). Rebuilds the surge/discharge matrices at
+# THIS scenario's own design_rp_surge_yr/design_rp_river_yr, exactly like
+# the water-level/discharge forcing sections above -- fixed 2026-08-05:
+# used to plot surge_forcing.nc's own stored 'water_level' directly, which
+# is a basin-level, scenario-independent preview at a fixed diagnostic RP,
+# never what this scenario's own sfincs.bzs actually contains. ──────────
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -428,7 +465,16 @@ def _hours_to_dt(hours_arr):
 
 with xr.open_dataset(surge_forcing_path, decode_times=False) as _sds:
     _surge_times = _hours_to_dt(_sds.time.values)
-    _wl = _sds["water_level"].values        # (station, time)
+    # Rebuild the ACTUAL forcing this scenario just built, not surge_forcing.nc's
+    # own stored 'water_level' -- that field is a basin-level, scenario-
+    # independent preview at a fixed diagnostic RP (see 07_boundary_forcings.smk's
+    # own comment), never what's actually in this scenario's own sfincs.bzs.
+    # Mirrors the water-level boundary section above exactly, RP-for-RP and
+    # mode-for-mode, so this plot always shows what was really built.
+    if forcing_mode == "river_only":
+        _wl = np.full((_sds.sizes["station"], len(_surge_times)), river_only_flat_level_m)
+    else:
+        _wl = build_design_surge_matrix(_sds, design_rp_surge_yr, slr_m=effective_slr_m)
     _n_stn = _wl.shape[0]
 
 with xr.open_dataset(river_forcing_path, decode_times=False) as _rds:
@@ -439,6 +485,7 @@ with xr.open_dataset(river_forcing_path, decode_times=False) as _rds:
         build_design_discharge_matrix(
             _rds, _active_mask, design_rp_river_yr,
             apply_protection_floor=(depth_method == "empirical"),
+            discharge_multiplier=discharge_multiplier,
         )
         if _n_cross > 0 else np.zeros((0, len(_river_times)))
     )
@@ -450,7 +497,13 @@ fig5, (ax5a, ax5b) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
 for _i in range(_n_stn):
     ax5a.plot(_surge_times, _wl[_i, :], linewidth=0.8, alpha=0.7)
 ax5a.set_ylabel("Water level (m+ref)")
-ax5a.set_title("Surge boundary — water level (all stations)")
+if forcing_mode == "river_only":
+    _surge_rp_label = "flat (river_only)"
+elif design_rp_surge_yr:
+    _surge_rp_label = f"RP{design_rp_surge_yr:g}"
+else:
+    _surge_rp_label = "flat (no surge)"
+ax5a.set_title(f"Surge boundary — water level, {_surge_rp_label} (all stations)")
 ax5a.grid(True, alpha=0.3)
 
 for _i in range(_n_cross):

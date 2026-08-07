@@ -57,11 +57,21 @@ rule get_landuse:
     """Reprojected onto elevation_merged.tif's exact UTM grid (rule get_elevation,
     05a) so landuse/roughness share one pixel grid with elevation/zsini instead of
     each being independently reprojected by every downstream consumer.
-    Also builds sea_mask.tif: land polygons rasterised on that same grid give
-    the land/sea classification (1.0 at sea, nodata on land), then any cell
-    with landuse==200 (permanent water body) is overridden to sea. This is a
-    pure classification, not the initial water level itself -- rule
-    build_sfincs (13) turns it into zsini.tif once baseline_m is known."""
+    Also builds sea_mask.tif: landuse==200 (sea) alone, on that same grid
+    (1.0 at sea, nodata elsewhere) -- landuse-only, deliberately NOT sourced
+    from OSM land polygons at all anymore (dropped 2026-08-06: OSM's own
+    coastline data disagreed with landuse at some basins' tidal flats/
+    lagoons, e.g. landuse==80 "inland water" rather than 200, which let
+    sea_mask/zsini start cells wet that src.protection_weir's own
+    ocean_mask -- always landuse==200 only -- never walled off, i.e.
+    already-flooded land at t=0 with no barrier). land_polygons (input) is
+    rule get_land_polygons' (03) own output -- landuse-derived since the
+    same date, see that rule's own docstring -- used here only for this
+    rule's own diagnostic-plot backgrounds, not the sea_mask classification
+    itself (which reads landuse directly, already reprojected above).
+    sea_mask.tif is a pure classification, not the initial water level
+    itself -- rule build_sfincs (13) turns it into zsini.tif once
+    baseline_m is known."""
     input:
         spec_basins_meta = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
         domain_gpkg      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),

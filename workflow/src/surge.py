@@ -84,15 +84,25 @@ def sinusoidal_wave(
     return values
 
 
-def lookup_storm_tide_at_rp(surge_ds: xr.Dataset, rp_yr: float | None) -> np.ndarray:
+def lookup_storm_tide_at_rp(
+    surge_ds: xr.Dataset, rp_yr: float | None, slr_m: float = 0.0
+) -> np.ndarray:
     """
     Per-station storm-tide water level at ``rp_yr`` from surge_forcing.nc's
     stored storm_tide_rp_table (exact match against COAST-RP's tabulated
-    RPs — no interpolation), vertically corrected the same way rule 07
-    applied (station_baseline = −mdt + slr_m).
+    RPs — no interpolation), vertically corrected with rule 07's own
+    station_baseline (MDT-only — see 07_get_boundary_forcings.py) plus an
+    OPTIONAL SLR contribution applied here, not baked into surge_forcing.nc:
+    ``slr_m`` (a target global-mean SLR, m) is scaled by each station's own
+    ``slr_fingerprint`` (src.surge.apply_slr_fingerprint) and added on top.
+    This keeps surge_forcing.nc itself completely independent of the slr_m
+    target -- callers building a real production/spin-up boundary (13_build_
+    sfincs.py, 14_run_spinup.py) pass their own slr_m; callers that only need
+    the MDT-only reference (rule 10's calibration, rule 13's skeleton zsini)
+    simply don't pass it (default 0.0).
 
     rp_yr=None means mean coastal conditions: each station's own baseline
-    (tide-only / calm sea, no storm surge).
+    (tide-only / calm sea, no storm surge), plus the same optional SLR term.
 
     Returns:
         (n_station,) np.ndarray, water level (m).
@@ -103,6 +113,8 @@ def lookup_storm_tide_at_rp(surge_ds: xr.Dataset, rp_yr: float | None) -> np.nda
         if "station_baseline" in surge_ds
         else np.full(n_stations, float(surge_ds["baseline_m"].values))
     )
+    if slr_m != 0.0 and "slr_fingerprint" in surge_ds:
+        baselines = baselines + surge_ds["slr_fingerprint"].values * slr_m
     if rp_yr is None:
         return baselines  # flat: no storm surge
     table_rps = surge_ds["table_rp"].values
@@ -118,6 +130,7 @@ def lookup_storm_tide_at_rp(surge_ds: xr.Dataset, rp_yr: float | None) -> np.nda
 def build_design_surge_matrix(
     surge_ds: xr.Dataset,
     design_rp_yr: int | None,
+    slr_m: float = 0.0,
 ) -> np.ndarray:
     """
     Rebuild the per-station water-level timeseries at ``design_rp_yr`` from
@@ -127,6 +140,13 @@ def build_design_surge_matrix(
 
     design_rp_yr=None means mean coastal conditions: zero surge amplitude, a
     flat timeseries at each station's own baseline (tide-only / calm sea).
+
+    slr_m: target global-mean SLR (m), scaled by each station's own
+        'slr_fingerprint' and added to both the lead-period baseline and the
+        RP-level peak (see lookup_storm_tide_at_rp). Applied HERE, not baked
+        into surge_forcing.nc -- 0.0 (default) reproduces surge_forcing.nc's
+        own MDT-only fields exactly, so calibration/skeleton callers that
+        never pass slr_m are fully insulated from the slr_m config value.
 
     The stored protection_level (if rule 07 wrote one) is deliberately NOT
     subtracted here -- see 07_get_boundary_forcings.py's own design comment
@@ -146,7 +166,9 @@ def build_design_surge_matrix(
         if "station_baseline" in surge_ds
         else np.full(surge_ds.sizes["station"], float(surge_ds["baseline_m"].values))
     )
-    rp_level = lookup_storm_tide_at_rp(surge_ds, design_rp_yr)
+    if slr_m != 0.0 and "slr_fingerprint" in surge_ds:
+        baselines = baselines + surge_ds["slr_fingerprint"].values * slr_m
+    rp_level = lookup_storm_tide_at_rp(surge_ds, design_rp_yr, slr_m=slr_m)
     times = surge_ds["time"].values
     wave = np.stack(
         [
@@ -335,18 +357,28 @@ def apply_slr_fingerprint(
     stations: gpd.GeoDataFrame,
     slr_ds: xr.Dataset,
     global_mean_slr: float,
-    slr_m: float,
     fallback_deg: float = 3.0,
 ) -> gpd.GeoDataFrame:
     """
-    Scale the AR6 SLR fingerprint (local / global-mean SLR) by slr_m and add
-    it to each station's 'rp_level'.
+    Compute each station's AR6 SLR fingerprint (local / global-mean SLR) —
+    a dimensionless ratio, independent of any target global-mean SLR value.
 
-    Adds columns:
+    Deliberately does NOT scale by a target slr_m or touch 'rp_level': the
+    fingerprint depends only on the reference distribution (ssp_scenario,
+    confidence_level, year, quantile), so storing just the ratio here keeps
+    surge_forcing.nc (rule 07, basin-level, feeds the expensive weir/depth
+    calibration and skeleton build) completely independent of the numeric
+    slr_m target. The actual `fingerprint * slr_m` correction is applied
+    downstream, at the point where a scenario's real production boundary
+    forcing is built (see build_design_surge_matrix/lookup_storm_tide_at_rp's
+    own `slr_m` argument, applied in 13_build_sfincs.py/14_run_spinup.py) --
+    so changing slr_m only reruns the cheap per-scenario forcing build and
+    event run, never the basin-level calibration/skeleton.
+
+    Adds column:
         slr_fingerprint: local SLR / global_mean_slr at the nearest AR6
                          location (1.0 — i.e. the uniform global value — if
                          no valid location was found within +/-fallback_deg).
-        slr_m:           slr_fingerprint * slr_m (m), added to 'rp_level'.
     """
     lons = slr_ds["lon"].values
     lats = slr_ds["lat"].values
@@ -360,8 +392,6 @@ def apply_slr_fingerprint(
         )
         fingerprints.append(1.0 if np.isnan(local_slr) else local_slr / global_mean_slr)
     result["slr_fingerprint"] = fingerprints
-    result["slr_m"] = result["slr_fingerprint"] * slr_m
-    result["rp_level"] = result["rp_level"] + result["slr_m"]
     return result
 
 
@@ -580,16 +610,24 @@ def build_surge_dataset(
 
     Each station receives a half-cosine wave rising from its lead-period
     baseline to its MDT-corrected RP water level (``rp_level``) and back.
+    Both ``rp_level``/``baseline_m``/``station_baselines`` are MDT-only here
+    -- SLR is deliberately NOT baked in at this stage (see
+    src.surge.apply_slr_fingerprint's own docstring): only the dimensionless
+    ``slr_fingerprint`` is carried in the dataset (added separately below),
+    and the actual target-scaled SLR correction is applied later, at the
+    point a real production/spin-up boundary is built
+    (lookup_storm_tide_at_rp/build_design_surge_matrix's own ``slr_m``
+    argument).
 
     Datum note: GEBCO is re-referenced to GOCO06s by subtracting MDT in rule
     03a, so local MSL maps to −MDT in model coordinates.  When
     ``station_baselines`` is provided each station uses its own local MSL
-    (−mdt_i + slr_m_i) as the wave baseline, so the surge amplitude equals
+    (−mdt_i) as the wave baseline, so the surge amplitude equals
     exactly ``rp_level_raw`` (the COAST-RP storm-tide above calm water)
     regardless of how MDT varies spatially across the selected stations.
     ``baseline_m`` (the mean of those per-station values) is still stored in
-    the dataset so rule 13 can initialise sea cells at the same vertical
-    reference (zsini.tif).
+    the dataset so rule 10's calibration and rule 13's skeleton can
+    initialise sea cells (zsini.tif) at a stable, SLR-independent reference.
 
     Args:
         stations:          GeoDataFrame with 'rp_level' and 'dist_m' columns and
@@ -599,13 +637,15 @@ def build_surge_dataset(
         period_hr:         Wave period (hours).
         return_period:     Return period label written to the 'rp_level' metadata.
         baseline_m:        Mean vertical correction applied to rp_level (m).
-                           Equals mean(−MDT + SLR) across selected stations.
-                           Stored in the dataset so rule 13 can initialise sea
+                           Equals mean(−MDT) across selected stations (MDT-only,
+                           SLR-independent by design -- see this function's own
+                           docstring). Stored in the dataset so rule 10's
+                           calibration and rule 13's skeleton can initialise sea
                            cells (zsini.tif).  Defaults to 0.0.
         station_baselines: Per-station lead-period flat values (m), length
                            equal to ``len(stations)``.  Each entry is the
                            station's own local MSL in model coordinates
-                           (= rp_level_i − rp_level_raw_i = −mdt_i + slr_m_i).
+                           (= rp_level_i − rp_level_raw_i = −mdt_i, MDT-only).
                            When None, ``baseline_m`` is used for all stations.
 
     Returns:
@@ -639,7 +679,15 @@ def build_surge_dataset(
             "water_level": (
                 ["station", "time"],
                 surge_matrix,
-                {"units": "m", "long_name": "storm tide water level"},
+                {
+                    "units": "m",
+                    "long_name": (
+                        "storm tide water level (MDT-only, diagnostic preview -- "
+                        "does NOT include SLR; the real production boundary "
+                        "adds slr_fingerprint*slr_m at build time, see "
+                        "build_design_surge_matrix)"
+                    ),
+                },
             ),
             "rp_level": (
                 ["station"],
@@ -674,9 +722,12 @@ def build_surge_dataset(
             "units": "m",
             "long_name": (
                 "Mean vertical correction applied as lead-period baseline "
-                "(mean(−MDT + SLR) across selected stations = calm sea level "
-                "in model coordinates). Read by rule 13 to initialise sea cells "
-                "via zsini.tif.  Equals 0.0 when both corrections are off."
+                "(mean(−MDT) across selected stations = calm sea level in "
+                "model coordinates, MDT-only -- SLR deliberately excluded, "
+                "see apply_slr_fingerprint). Read by rule 10's calibration "
+                "and rule 13's skeleton to initialise sea cells (zsini.tif) "
+                "at an slr_m-independent reference. Equals 0.0 when MDT "
+                "correction is off."
             ),
         },
     )
@@ -688,19 +739,26 @@ def build_surge_dataset(
             {
                 "units": "m",
                 "long_name": (
-                    "Per-station lead-period flat value (−mdt_i + slr_m_i). "
+                    "Per-station lead-period flat value (−mdt_i, MDT-only). "
                     "Local MSL for each station in model coordinates. "
-                    "Ensures surge amplitude = rp_level_raw per station."
+                    "Ensures surge amplitude = rp_level_raw per station. "
+                    "SLR is NOT included here -- see slr_fingerprint and "
+                    "build_design_surge_matrix's own slr_m argument."
                 ),
             },
         )
 
     # Optional provenance from the MDT vertical correction and SLR fingerprint
     # (src.surge.apply_mdt_correction / apply_slr_fingerprint), if present.
+    # Note: no 'slr_m' column here anymore -- the fingerprint is dimensionless
+    # and target-independent by design; the actual slr_m-scaled contribution
+    # is computed on demand by lookup_storm_tide_at_rp/build_design_surge_matrix,
+    # never stored in this file (that's the whole point: surge_forcing.nc stays
+    # identical regardless of the slr_m config value).
     extra_station_vars = {
         "rp_level_raw": {
             "units": "m",
-            "long_name": "RP storm tide level before vertical/SLR correction",
+            "long_name": "RP storm tide level before vertical (MDT) correction",
         },
         "mdt": {
             "units": "m",
@@ -708,9 +766,12 @@ def build_surge_dataset(
         },
         "slr_fingerprint": {
             "units": "1",
-            "long_name": "AR6 SLR fingerprint (local / global-mean SLR)",
+            "long_name": (
+                "AR6 SLR fingerprint (local / global-mean SLR) -- dimensionless, "
+                "multiply by a target slr_m (m) at build time to get the actual "
+                "per-station SLR contribution (see build_design_surge_matrix)"
+            ),
         },
-        "slr_m": {"units": "m", "long_name": "SLR contribution applied to rp_level"},
     }
     for col, attrs in extra_station_vars.items():
         if col in stations.columns:

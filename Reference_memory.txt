@@ -124,7 +124,8 @@ Rule files, included by workflow/Snakefile in this exact order:
   05_static_terrain_data.smk → 06_river_network.smk →
   07_boundary_forcings.smk → 08_clean_river_network.smk →
   08b_optimize_grid_resolution.smk → 08c_build_sfincs_grid.smk →
-  09_condition_elevation.smk → 10_depth_estimation_empirical.smk →
+  09_condition_elevation.smk → 09b_grid_align_landuse.smk →
+  10_depth_estimation_empirical.smk →
   10_depth_estimation_modelled.smk → 11_testing.smk →
   13_build_sfincs.smk →
   14_run_spinup.smk → 15_sanity_checks.smk → 16_run_event.smk →
@@ -158,6 +159,39 @@ DAG shape, not a strictly linear chain:
     the identical coarse background elevation instead of each independently
     (and potentially inconsistently) resampling from the native file.
     ALWAYS runs — no longer opt-in.
+  - Rule 09b (grid_align_landuse) resamples native landuse.tif (rule 05b)
+    onto the shared SFINCS grid EXACTLY ONCE (nearest-neighbor — landuse is
+    categorical, never averaged), producing landuse_on_grid.tif, then builds
+    roughness_on_grid.tif directly from that coarse classification (same
+    lookup-table reclassification 05c uses on the native raster). Added
+    2026-08-07 so every downstream consumer of the landuse/sea/roughness
+    classification (rule 10's weir tracing + zsini_sea_cells, rule 13's
+    main-grid "manning" field + weir diagnostics) reads ONE canonical coarse
+    raster with zero further reprojection, instead of each independently
+    resampling native landuse.tif/roughness.tif a second time (previously
+    three separate nearest-neighbor passes: GridArrays.sample_landuse in
+    rule 10, an identical call in rule 13, and HydroMT's own
+    roughness.create() reproject — each capable of disagreeing with the
+    others at the coastline fringe). DEM/subgrid stay native resolution —
+    untouched by this rule; native roughness.tif still feeds the SUBGRID
+    table specifically (genuinely needs sub-cell detail, same exception as
+    elevation), just not the main regular-grid field anymore.
+    Builds its own grid via create_grid_from_region(domain_gpkg, grid_
+    resolution.json) + the SAME y-ascending flipud check SfincsModel.grid.
+    create_from_region() applies internally (hydromt_sfincs's own
+    regulargrid.py) — NOT by reading rule 08c's own sfincs_grid.json
+    transform directly (2026-08-07e fix). sfincs_grid.json is deliberately
+    stored UNFLIPPED (y descending, row 0 = north, GDAL-standard) to avoid
+    instantiating a SfincsModel at all — but every REAL SfincsModel in this
+    pipeline stores its grid y ASCENDING (row 0 = south, required by
+    SFINCS's own m/n indexing), the opposite convention. Reading
+    sfincs_grid.json directly (the first version of this rule) produced a
+    landuse_on_grid.tif that was internally self-consistent and correctly
+    aligned against OTHER sfincs_grid.json-derived rasters (e.g.
+    elevation_conditioned_sfincs_grid.tif) but silently row-flipped relative
+    to every consumer's own sf.grid.data["dep"] — same pixel grid, same
+    shape, opposite row 0 — causing zsini to come out "rotated" and
+    implausibly small when the two were combined with no reprojection.
   - Rule 10 is a pair of SIBLING ALTERNATIVES — depth_estimation_empirical
     and depth_estimation_modelled — selected by
     river_processing.depth_method ("empirical" | "modelled"), NOT a
@@ -260,12 +294,35 @@ RULE SUMMARY (in DAG order):
                         still written (schema compatibility) but is now just
                         a copy of the domain polygon, n_intersecting_basins
                         hardcoded to 0.
-  03  get_land_polygons — clip OSM land polygons to domain. Runs right after
-                        domain (02) because it's a PREREQUISITE of elevation
-                        (05a), landuse (05b), and river network (06). Also
-                        used by build_sfincs (13) to define waterlevel
-                        boundary cells: active-domain edge cells NOT covered
-                        by land polygons become mask=2 (waterlevel boundary).
+  03  get_land_polygons — vectorize landuse != 200 (i.e. not sea) from the
+                        global Copernicus landuse raster, clipped to domain,
+                        native WGS84 (2026-08-06 — previously clipped OSM
+                        land polygons instead; OSM's own coastline data
+                        disagreed with landuse at some basins' tidal flats/
+                        lagoons, letting sea_mask/zsini start cells wet that
+                        the coastal weir never walled off — see CHANGELOG).
+                        Output name/role unchanged, so every downstream
+                        consumer needed no changes. Runs right after domain
+                        (02) because it's a PREREQUISITE of elevation (05a),
+                        landuse (05b), and river network (06) — deliberately
+                        does NOT depend on 05a's elevation_merged.tif (05a
+                        is itself one of this rule's own consumers, for its
+                        own diagnostic plots' background — depending back on
+                        05a would be circular). Also used by build_sfincs
+                        (13)/modelled_depth_estimation (10) to define
+                        waterlevel boundary cells: active-domain edge cells
+                        NOT covered by land polygons become mask=2
+                        (waterlevel boundary) — this exclude_polygon use is
+                        now landuse-sourced too, agreeing with sea_mask.tif
+                        and src.protection_weir's own ocean_mask (all three
+                        trace back to the same landuse==200 criterion).
+                        get_protection_levels (04) has its OWN, separate,
+                        independent landuse vectorization (same shared
+                        helper, src.raster.vectorize_land_from_landuse) —
+                        it deliberately does not depend on this rule's own
+                        output either, for the same reason (avoids the
+                        model-domain dependency chain it otherwise doesn't
+                        need).
   04  get_protection_levels — FLOPROS × WRI geounit dominant protection
                         standard per delta polygon, split by riverine/coastal
                         hazard. Depends ONLY on the delta polygon (01) —
@@ -453,9 +510,6 @@ GRDC-Daily.nc   — Global Runoff Data Centre daily discharge gauges ("truth"
 CoastRP         — Global storm tide return periods at GTSM stations
                   D:/GCFM_UU/raw_data/CoastRP/COAST-RP.nc
 
-OSM land        — Global land polygons (OSM), 864,818 features
-                  D:/GCFM_UU/raw_data/OSM/land_polygons.gpkg
-
 MDT CNES-CLS22  — Mean dynamic topography above GOCO06s geoid, 0.125°
                   D:/GCFM_UU/raw_data/AVISO/mdt_hybrid_cnes_cls22_cmems2020_global.nc
                   Variable: 'mdt'. NaN over land — must extrapolate before use.
@@ -608,9 +662,17 @@ river_processing — rules 06, 08, 09, 10 (both siblings):
 boundary_forcings — rule 07:
   lead_days / dt_hr — shared forcing-timeseries time axis for BOTH surge
     and river forcing.
-  surge.{min_stations, max_stations, dedupe_radius_km, return_period,
-    search_radii_km, period_hr} — CoastRP station selection and
-    EVA-independent RP interpolation.
+  surge.{min_stations, max_stations, dedupe_radius_km, search_radii_km,
+    period_hr} — CoastRP station selection and EVA-independent RP
+    interpolation. (surge.return_period was REMOVED 2026-08-05 — its
+    diagnostic-preview RP (rp_level/rp_level_raw columns, 07_surge_
+    correction.png; never anything production, confirmed baseline_m/
+    coastal_protection_crest_m don't depend on it) now comes from the
+    "default" scenario's own surge_rp in config/scenarios.yml instead of a
+    separate config.yml constant, so there's one source of truth. Still
+    read via scenario_params("default") specifically, never whichever
+    scenario is actually requested — same no-recoupling property rp_fl
+    below already had.)
   surge.slr.{enabled, slr_m, ssp_scenario, confidence_level, year,
     quantile, fallback_search_deg} — IPCC AR6 SLR fingerprint.
   (surge.vertical_correction was REMOVED — MDT vertical correction for
@@ -618,6 +680,18 @@ boundary_forcings — rule 07:
   river.{period_hr, glofas_buffer_deg, glofas_search_radius_km,
     glofas_min_mean_discharge} — GloFAS discharge extraction and gauge
     matching. (glofas_variable was removed — hardcoded "dis24".)
+  river.discharge_multiplier (2026-08-06, default 1.0) — uniform scaling
+    factor on the built discharge hydrograph at every active river seed/
+    boundary crossing, same deferred-application pattern as surge.slr.slr_m
+    (see section 2 above): read ONLY by rule build_sfincs (13) as its own
+    param, applied in src.river_forcing.build_design_discharge_matrix()
+    (multiplies the whole built hydrograph, bankfull lead-in and event peak
+    alike). NOT baked into river_forcing.nc, NOT read by rule 07 or rule
+    modelled_depth_estimation (10, which uses a separate function,
+    build_calibration_seed_discharge, for its own calibration seed
+    discharge) or rule run_spinup (uses interpolate_discharge_at_rp
+    directly) — both naturally unaffected. Changing it only reruns rule 13
+    + its downstream event run.
   river.eva.{rp_fl, rp_bf, ci_alpha, threshold_start_pct, threshold_step_pct,
     threshold_min_pct, threshold_max_pct, threshold_max_iter,
     peaks_per_year_min, peaks_per_year_max, min_years_high_confidence,
@@ -1227,14 +1301,36 @@ SURGE FORCING:
     the surge.vertical_correction.enabled toggle was REMOVED (FathomDEM is
     the only, always-datum-corrected source, so there was never a real case
     for skipping it). IPCC AR6 SLR fingerprint remains config-gated
-    (slr.enabled: true by default; slr_m: 0.0 so currently a no-op
-    numerically).
+    (slr.enabled: true by default; slr_m: 0.5).
       MDT correction: storm_tide_rp levels (stated local-MSL) -> geoid via
         AVISO MDT_CNES-CLS22 (nearest-cell, +/-fallback_search_deg NaN
         fallback). rp_level_raw/mdt always recorded for diagnostics.
-      SLR fingerprint: per-station (local AR6 SLR / global-mean AR6 SLR)
-        ratio, scaled by slr.slr_m (m) and added to rp_level if slr.enabled
-        and slr_m != 0. NOT a Snakemake wildcard/dimension.
+        surge_forcing.nc's own rp_level/water_level/baseline_m/
+        station_baseline are ALL MDT-only -- SLR is never baked into this
+        file (2026-08-06 change, see below).
+      SLR fingerprint (2026-08-06 rework — deferred application): rule 07
+        computes and stores only the dimensionless per-station
+        slr_fingerprint ratio (local AR6 SLR / global-mean AR6 SLR),
+        params.surge_slr excludes slr_m entirely. The actual
+        `slr_fingerprint * slr_m` correction is applied downstream, at
+        scenario-build time, by src.surge.lookup_storm_tide_at_rp /
+        build_design_surge_matrix's own `slr_m` argument (called from
+        13_build_sfincs.py, which reads slr_m as its OWN param). Rationale:
+        Snakemake invalidates a rule's every declared consumer on ANY
+        change to a whole input file's mtime, regardless of which field
+        inside changed — with the old design, changing slr_m rewrote
+        surge_forcing.nc, which forced rule 10's expensive weir/depth
+        calibration and rule 13's skeleton build to rerun even though
+        neither actually depends on the storm-surge magnitude (only on
+        MDT-only baseline_m for zsini). Now surge_forcing.nc is completely
+        independent of the slr_m config value, so changing it only reruns
+        the cheap per-scenario build_sfincs + its downstream event run.
+        14_run_spinup.py deliberately does NOT pass slr_m (defaults to
+        0.0) — its RP=1 background boundary stays MDT-only by design,
+        matching "SLR applies only to the actual named-scenario forcing,
+        not shared basin-level infrastructure"; any transient at the
+        spin-up→event handoff is absorbed by the event's own lead-in.
+        NOT a Snakemake wildcard/dimension.
 
 Key src functions:
   src/protection_levels.py:
@@ -1667,7 +1763,15 @@ src/protection_weir.py   — NEW. Builds a coastal/riverbank protection weir
 src/raster.py             — find_fathomdem_tiles() (the only tile finder),
                             merging, roughness reclassification,
                             resample_to_utm_array(), compute_geoid_offset_arr(),
-                            reproject_to_reference_grid()
+                            reproject_to_reference_grid(),
+                            vectorize_land_from_landuse() -- NEW 2026-08-06.
+                            Windowed-read + vectorize landuse != 200 (not
+                            sea) from the global landuse raster, native
+                            WGS84. Shared by rule get_land_polygons (03, the
+                            main per-basin land_polygons.gpkg) and rule
+                            get_protection_levels (04, which vectorizes its
+                            own small window directly since it deliberately
+                            doesn't depend on rule 03's own output).
 src/river_burn.py         — burn_river_channel() (+ build_channel_mask_
                             regular, build_smoothed_weir_crest_regular):
                             burns a per-reach, in-memory river-bed anchor
@@ -1891,12 +1995,25 @@ D:/GCFM_UU/results/{basin_id}/
 │   │   ├── protection_levels.json                  ← FLOPROS-derived RP per delta (rule 04, no prefix)
 │   │   ├── {basin_id}_elevation_merged.tif         ← FathomDEM where available, GEBCO
 │   │   │                                              elsewhere, UTM (rule 05a's only raster output)
-│   │   ├── {basin_id}_landuse.tif                  ← rule 05b
-│   │   ├── {basin_id}_sea_mask.tif                 ← rule 05b: land/sea classification, feeds
-│   │   │                                              rule 10-modelled's own spatially-varying zsini
+│   │   ├── {basin_id}_landuse.tif                  ← rule 05b, NATIVE resolution. See
+│   │   │                                              {basin_id}_landuse_on_grid.tif (rule 09b) below
+│   │   │                                              for the coarse-grid-aligned version every
+│   │   │                                              downstream sea/weir/roughness consumer actually
+│   │   │                                              uses now (2026-08-07b) -- this raw file itself
+│   │   │                                              is only read directly by rule 09b and by
+│   │   │                                              compute_risk_metrics's urban_code check.
+│   │   ├── {basin_id}_sea_mask.tif                 ← rule 05b: landuse==200 only (no OSM land
+│   │   │                                              polygons, dropped 2026-08-06 -- see
+│   │   │                                              CHANGELOG), feeds rule 10-modelled's own
+│   │   │                                              spatially-varying zsini
 │   │   ├── {basin_id}_zsini.tif                    ← built entirely in rule 05b (land/
 │   │   │                                              sea split + landuse==200 override)
-│   │   ├── {basin_id}_roughness.tif                ← rule 05c
+│   │   ├── {basin_id}_roughness.tif                ← rule 05c, NATIVE resolution. Feeds the SUBGRID
+│   │   │                                              table only now (rule 10-modelled + rule 13,
+│   │   │                                              genuinely needs sub-cell detail) -- the main
+│   │   │                                              regular-grid "manning" field uses
+│   │   │                                              {basin_id}_roughness_on_grid.tif (rule 09b)
+│   │   │                                              instead (2026-08-07b).
 │   │   ├── {basin_id}_river_network.gpkg           ← raw SWORD clip only (rule 06 — no longer
 │   │   │                                              samples elevation, see section 6)
 │   │   ├── {basin_id}_river_network_clean.gpkg     ← BFS-pruned, snapped, width-normalized,
@@ -1931,17 +2048,142 @@ D:/GCFM_UU/results/{basin_id}/
 │   │   │                                              elevation source in rule 13
 │   │   ├── {basin_id}_river_burned_dem_sfincs_grid.tif ← same burn, resampled onto 08c's
 │   │   │                                              shared grid (rule 13's main "dep" input)
-│   │   └── {basin_id}_coastal_protection_weir.gpkg ← rule 10-modelled ONLY: the converged
-│   │                                                  calibration's own weir, imported directly
-│   │                                                  by rule 13 (not re-derived)
+│   │   ├── {basin_id}_coastal_protection_weir.gpkg ← rule 10-modelled ONLY: the converged
+│   │   │                                              calibration's own weir, imported directly
+│   │   │                                              by rule 13 (not re-derived)
+│   │   │   {basin_id}_sea_mask_corrected.tif -- REMOVED 2026-08-07c. Used to be a
+│   │   │   NATIVE-resolution copy of sea_mask.tif with weir-protected fringe cells
+│   │   │   cleared to "land", read by rules run_spinup/sanity_checks/run_event/
+│   │   │   compute_flood_metrics (14/15/16/17) for flood-diagnostic masking. Removed
+│   │   │   once recognized as pure duplication of {basin_id}_zsini_sea_cells_on_grid.tif
+│   │   │   below (same boolean, same weir correction) -- those 4 rules'
+│   │   │   src.postprocessing masking functions reproject whatever sea_mask_path
+│   │   │   they're given onto their own subgrid-/cell-resolution output grid anyway
+│   │   │   (da_sea.raster.reproject_like), and subgrid is an exact integer
+│   │   │   subdivision of the coarse SFINCS grid (same origin/axes) -- native
+│   │   │   resolution was never actually required there. All 4 rules now point
+│   │   │   `sea_mask` directly at zsini_sea_cells_on_grid.tif instead.
+│   │   │   src.raster.correct_sea_mask_from_grid_mask() (built this file) is deleted.
+│   │   ├── {basin_id}_landuse_on_grid.tif          ← rule 09b (grid_align_landuse, added
+│   │   │                                              2026-08-07b): native landuse.tif resampled onto
+│   │   │                                              the shared SFINCS grid EXACTLY ONCE, nearest-
+│   │   │                                              neighbor (categorical, never averaged). The ONLY
+│   │   │                                              sea/land classification any downstream consumer
+│   │   │                                              resamples from from here on -- rule 10's weir
+│   │   │                                              tracing + zsini_sea_cells (both siblings now),
+│   │   │                                              rule 13's weir diagnostics. Zero further
+│   │   │                                              reprojection anywhere downstream -- consumers
+│   │   │                                              read it directly and assign their own SfincsModel's
+│   │   │                                              sf.grid.data["dep"] coords onto it.
+│   │   │                                              IMPORTANT (2026-08-07e): built via
+│   │   │                                              create_grid_from_region(domain_gpkg, grid_
+│   │   │                                              resolution.json) + the SAME y-ascending flipud
+│   │   │                                              check SfincsModel.grid.create_from_region() does
+│   │   │                                              internally -- NOT by reading sfincs_grid.json's
+│   │   │                                              own transform directly. sfincs_grid.json (rule
+│   │   │                                              build_sfincs_grid, 08c) is deliberately stored
+│   │   │                                              UNFLIPPED (y descending, row 0 = north, GDAL-
+│   │   │                                              standard) to avoid instantiating a SfincsModel
+│   │   │                                              (scratch-directory side effect) -- but every real
+│   │   │                                              SfincsModel in this pipeline stores its own grid
+│   │   │                                              y ASCENDING (row 0 = south), required by SFINCS's
+│   │   │                                              own m/n indexing. Building this file from
+│   │   │                                              sfincs_grid.json directly (the first version of
+│   │   │                                              this rule) silently mismatched row order against
+│   │   │                                              every consumer's sf.grid.data["dep"] -- same pixel
+│   │   │                                              grid, same shape, opposite row 0 -- causing zsini
+│   │   │                                              to come out looking "rotated" and implausibly
+│   │   │                                              small. Fixed by matching SfincsModel's own
+│   │   │                                              orientation at the SOURCE; see CHANGELOG's
+│   │   │                                              2026-08-07e entry for the full mechanism and
+│   │   │                                              verification.
+│   │   ├── {basin_id}_roughness_on_grid.tif        ← rule 09b: built directly FROM
+│   │   │                                              landuse_on_grid.tif above via the same
+│   │   │                                              lookup-table reclassification 05c uses on the
+│   │   │                                              native raster -- never a separately-resampled
+│   │   │                                              continuous roughness raster, so "this cell's
+│   │   │                                              roughness" and "this cell's land-use code"
+│   │   │                                              always agree by construction. Feeds rule 13's
+│   │   │                                              main regular-grid "manning" field ONLY --
+│   │   │                                              native roughness.tif (rule 05c) still feeds the
+│   │   │                                              SUBGRID table in both rule 10-modelled and rule
+│   │   │                                              13 (genuinely needs sub-cell detail, same DEM
+│   │   │                                              exception).
+│   │   └── {basin_id}_zsini_sea_cells_on_grid.tif  ← rule 10, BOTH siblings (2026-08-07, unified
+│   │                                                  2026-08-07b) -- THE fix that actually matters
+│   │                                                  for the SIMULATION. modelled: (landuse_on_grid
+│   │                                                  == LANDUSE_SEA) & ~protected_pocket_mask.
+│   │                                                  empirical: landuse_on_grid == LANDUSE_SEA (no
+│   │                                                  weir exists in that mode, nothing to exclude).
+│   │                                                  Both read landuse_on_grid.tif (rule 09b) directly
+│   │                                                  -- zero reprojection, since it's already on this
+│   │                                                  rule's own grid. Root cause of the original
+│   │                                                  zsini bug (2026-08-07): 13_build_sfincs_skeleton.
+│   │                                                  py used to build zsini by reprojecting the
+│   │                                                  NATIVE-resolution sea_mask_corrected.tif onto
+│   │                                                  its own coarse grid via HydroMT's own
+│   │                                                  reproject_like(method="nearest") -- a SECOND
+│   │                                                  independent nearest-neighbor pass on top of
+│   │                                                  correct_sea_mask_from_grid_mask's own
+│   │                                                  reprojection (coarse -> native). Two
+│   │                                                  independent nearest-neighbor implementations
+│   │                                                  do NOT invert each other cleanly, even on a
+│   │                                                  grid confirmed pixel-identical between the two
+│   │                                                  rules (checked directly: mmax=497, nmax=531,
+│   │                                                  dx=dy=69.967, x0=289242.2,
+│   │                                                  y0=4487731.966666667, both rules' own
+│   │                                                  sfincs.inp) -- verified empirically that only
+│   │                                                  679/1450 corrected fringe pixels (47%) ended
+│   │                                                  up dry in the real, built sfincs.ini, i.e.
+│   │                                                  user-reported "flooding behind dikes" from
+│   │                                                  zsini alone, exactly as expected from a ~50%
+│   │                                                  resampling-consistency failure. Fix (2026-08-07b,
+│   │                                                  final form): 13_build_sfincs_skeleton.py's zsini
+│   │                                                  construction is now a SINGLE, unconditional pass
+│   │                                                  -- reads this file directly into an in-memory
+│   │                                                  xr.DataArray built on sf.grid.data["dep"]'s own
+│   │                                                  coords/transform/CRS (connected-component dry-
+│   │                                                  out applied at this resolution using the model's
+│   │                                                  own dep/mask), and calls sf.initial_
+│   │                                                  conditions.create(ini=<DataArray>,
+│   │                                                  reproj_method="nearest") ONCE -- since source and
+│   │                                                  destination grids are IDENTICAL, reproject_like
+│   │                                                  is a confirmed true no-op (verified: 0/263907
+│   │                                                  cells differ from the input array on the real
+│   │                                                  basin's own skeleton). The zsini.tif FILE output
+│   │                                                  (sfincs_skeleton/zsini.tif) is written directly
+│   │                                                  from this same array, at this model's own grid
+│   │                                                  resolution -- always matches sfincs.ini exactly
+│   │                                                  (there used to be an earlier native-resolution
+│   │                                                  pass-then-coarse-override split whose FILE output
+│   │                                                  lagged behind the in-memory override, visible as
+│   │                                                  "thin stripes of no-data near the weir" when
+│   │                                                  inspecting the file even though sfincs.ini was
+│   │                                                  already correct -- collapsed away entirely).
+│   │                                                  Re-verified after rebuild: 1450/1450 targeted
+│   │                                                  fringe pixels now dry in the real sfincs.ini.
+│   │                                                  Built by BOTH rule-10 siblings (2026-08-07b) --
+│   │                                                  empirical mode has no weir/protected_pocket_mask,
+│   │                                                  so its version is just landuse_on_grid ==
+│   │                                                  LANDUSE_SEA, nothing to exclude. ALSO the sole
+│   │                                                  `sea_mask` input for rules run_spinup/
+│   │                                                  sanity_checks/run_event/compute_flood_metrics
+│   │                                                  (14/15/16/17) since 2026-08-07c -- see
+│   │                                                  {basin_id}_sea_mask_corrected.tif's own entry
+│   │                                                  above (REMOVED) for why a separate native-
+│   │                                                  resolution file for those consumers turned out
+│   │                                                  to be unnecessary duplication.
 │   │   # domain_bbox.json and protection_levels.json are NOT prefixed — the
 │   │   # {basin_id}_ prefix only applies to GIS-loadable .gpkg/.tif outputs
 │   │   # (so files with identical names don't collide when opened in QGIS
 │   │   # across basins); JSON metadata files aren't opened as GIS layers.
 │   └── forcing/
-│       ├── surge_forcing.nc          ← + vertical/SLR provenance vars (per
-│       │                                station): rp_level_raw, mdt,
-│       │                                slr_fingerprint, slr_m (see section 7)
+│       ├── surge_forcing.nc          ← + vertical provenance vars (per station):
+│       │                                rp_level_raw, mdt, slr_fingerprint
+│       │                                (dimensionless ratio only, MDT-only
+│       │                                otherwise -- slr_m target applied
+│       │                                downstream at scenario-build time,
+│       │                                not baked in here; see section 7)
 │       ├── river_forcing.nc          ← discharge_rp_table (crossing × return_period,
 │       │                                REDESIGNED — see section 7), bankfull_discharge,
 │       │                                protection_discharge, + GRDC provenance vars
@@ -3010,10 +3252,16 @@ ENVIRONMENT NAME (resolved):
   now that environment.yml is corrected; candidates for removal.
 
 ZSINI BASELINE CONNECTIVITY FIX (fixed — was silently broken on most basins):
-  13_build_sfincs.py shifts zsini's sea cells (0.0 in zsini.tif, rule 05b)
-  to baseline_m (the mean MDT+SLR vertical correction read from
-  surge_forcing.nc) so the model's initial ocean level matches the boundary
-  forcing's own vertical reference. A "connectivity fix" then reverts any
+  [Historical note: zsini construction has since moved to
+  13_build_sfincs_skeleton.py (basin-level skeleton split), and baseline_m
+  is now MDT-only, not MDT+SLR -- SLR is applied only at scenario-build
+  time (2026-08-06, see section 2/7). The mechanism described below is
+  otherwise unchanged.]
+  13_build_sfincs.py (now 13_build_sfincs_skeleton.py) shifts zsini's sea
+  cells (0.0 in zsini.tif, rule 05b) to baseline_m (the mean MDT-only
+  vertical correction read from surge_forcing.nc) so the model's initial
+  ocean level matches the boundary forcing's own vertical reference. A
+  "connectivity fix" then reverts any
   sea cell NOT reachable from "the open ocean" back to its own bed
   elevation (dry start) — meant to stop isolated low-lying ponds/
   depressions from starting artificially wet.
@@ -3120,22 +3368,20 @@ GITHUB COLLABORATION TOOLING:
   manual `pre-commit run` and an actual `git commit`, check
   .git/hooks/pre-commit's INSTALL_PYTHON first.
 
-WATER_LANDUSE_CODES DISCREPANCY (flagged, NOT fixed — needs developer
-decision):
-  src/postprocessing.py's WATER_LANDUSE_CODES = (0, 200)  # (80, 200) — the
-  trailing comment AND the function docstrings right below it ("80 =
-  Inland water") still say 80, but the actual tuple value is 0. Confirmed
-  via `git show HEAD:...` that the last committed value was (80, 200)
-  (comment and value agreed) — the change to 0 happened somewhere in this
-  branch's uncommitted history, with the comment left behind. Code 0 is NOT
-  the documented "inland water" class in the Copernicus LC100 scheme this
-  pipeline otherwise uses (0 is typically "no data/unclassified") — as it
-  stands, flood-area/volume stats (compute_max_inundation,
-  compute_flood_timeseries_stats) would wrongly exclude unclassified
-  pixels as "water" while including real inland-water (80) pixels as land.
-  Deliberately left as-is pending developer investigation (not reverted
-  automatically) — check with the developer before relying on flood-area/
-  volume outputs if this hasn't been resolved yet.
+WATER_LANDUSE_CODES (RESOLVED, historical — this whole entry is stale):
+  This constant no longer exists in src/postprocessing.py. Its long history
+  (originally (80,200)-ish real codes -> 2026-07-20 deliberately changed to
+  (0,2000), a no-op -> 2026-08-06 reversed back to (200,), a real, deliberate
+  value, ocean masked again but inland water/rivers stay visible on purpose)
+  ended on 2026-08-06 when it was removed entirely: compute_max_inundation/
+  compute_flood_progression/compute_flood_timeseries_stats now take a
+  sea_mask_path argument directly (checking sea_mask.tif's own 1.0/nodata
+  encoding) instead of landuse_path + an isin(WATER_LANDUSE_CODES) check --
+  see this file's own tree-output entry for {basin_id}_sea_mask_corrected.tif
+  and CHANGELOG.md's 2026-08-06i entry. If you're reading this because you
+  found a reference to WATER_LANDUSE_CODES somewhere, it's stale -- the
+  underlying masking semantics (exclude open sea, keep inland water/rivers
+  visible) are unchanged, just computed via sea_mask directly now.
 
 REMOVED: QUADTREE GRID SUPPORT (2026-08-04):
   The project no longer builds quadtree grids — sfincs.grid.quadtree was

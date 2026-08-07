@@ -10,8 +10,8 @@
 
 
 default:                  # what plain `snakemake build` runs (no target_scenarios given)
-  surge_rp: 100
-  river_rp: 150
+  surge_rp: 250
+  river_rp: 50
 
 # Attribution runs
 coast_only:
