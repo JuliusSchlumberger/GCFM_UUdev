@@ -42,18 +42,7 @@ Verified: no `os.` or `gpd.` usage anywhere else in either file.
 | `workflow/src/__pycache__/quadtree_refinement.cpython-310.pyc` | No matching `quadtree_refinement.py` exists (removed per commit `2e14535`, "remove quadtree"). Safe to delete — `__pycache__` is regenerated automatically anyway. |
 | `workflow/src/__pycache__/quadtree_refinement.cpython-311.pyc` | Same. |
 
-## 4. Config files with zero references (high confidence)
-
-| File | Note |
-|---|---|
-| `config/adaptation_strategies.yml` | Grepped `adaptation_strategies` and every strategy name (`advance`, `NbS_protect_open`, `grey_protect_open`, `protect_closed`, `accommodate`, `retreat`) — zero matches in `workflow/`. Nothing loads this file. |
-| `config/measures.yml` | Grepped `measures.yml`, `adaptation_measures`, and every individual measure name — zero matches in `workflow/`. |
-
-Directly verified: no occurrence of `adaptation_strategies`, `measures.yml`, or `adaptation_measures` anywhere in `workflow/`.
-
-**Likely explanation, not necessarily "AI slop":** you're on branch `adaptation_modelling`, and these two files plus the currently-modified `13_build_sfincs.py` / `14_run_spinup.py` / `config.yml` / `scenarios.yml` look like in-progress work for a feature that isn't wired into the scripts yet, rather than abandoned dead code. Worth confirming before deleting.
-
-## 5. Archive folder — inconsistent, worth a decision
+## 4. Archive folder — inconsistent, worth a decision
 
 `workflow/archive/datum_correction/` (3 files) is correctly unreferenced/inert — nothing imports it. But its header comment claims the EGM2008→GOCO06s/MDT datum-correction logic was *removed* from the elevation pipeline. In reality, the **live** code still has and actively uses equivalent/successor functions:
 - `workflow/src/raster.py:470` `compute_geoid_offset_arr`
@@ -61,7 +50,7 @@ Directly verified: no occurrence of `adaptation_strategies`, `measures.yml`, or 
 
 ...all called from `workflow/scripts/05a_get_elevation.py`. So either the archive is stale documentation (functionality was reinstated after archiving, notes never updated), or the archive should just be deleted since it's now fully superseded/duplicated by live code. Recommend deleting the archive folder rather than keeping misleading comments around.
 
-## 6. Checked and found clean (no action needed)
+## 5. Checked and found clean (no action needed)
 
 - **Scripts**: all 23 files in `workflow/scripts/*.py` are referenced by a `script:` directive in some `workflow/rules/*.smk` file. None orphaned.
 - **Rule files**: all 20 `workflow/rules/*.smk` files are `include:`-d in `workflow/Snakefile`. None orphaned.
@@ -74,5 +63,4 @@ Directly verified: no occurrence of `adaptation_strategies`, `measures.yml`, or 
 1. Delete the 8 dead functions in §1 (or the 9 if you agree on `plot_grdc_overview`).
 2. Remove the 2 unused imports in §2.
 3. Delete the 2 orphaned `.pyc` files in §3 (cosmetic — `__pycache__` regenerates).
-4. Decide on §4: keep `adaptation_strategies.yml`/`measures.yml` if this branch's work will wire them in soon; otherwise flag for removal.
-5. Delete `workflow/archive/datum_correction/` (§5) or rewrite its stale comment — currently misleading about what's actually live.
+4. Delete `workflow/archive/datum_correction/` (§5) or rewrite its stale comment — currently misleading about what's actually live.

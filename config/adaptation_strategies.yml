@@ -7,45 +7,138 @@
 meta:
   root: D:/GCFM_UU/raw_data
 
-advance:
+# ADVANCE
+# TODO: determine waterlevels first
+advance_04:
   measures:
-    offshore_island: {elevation: 2.0,
+    offshore_barrier: {elevation: 0.456,
                       locations: adaptation/offshore_island.geojson }
-    pumps: {discharge: 1000,
-            locations: adaptation/pumps.geojson }
+    pumps: {discharge: 526,
+            locations: adaptation/advance_pumps.geojson }
 
-
-NbS_protect_open:
+advance_09:
   measures:
-    nbs_land_reclamation: {attenuation_rate: 0.5,
-                           distance: 500,
-                           locations: adaptation/land_reclamation.geojson,
-                           elevation: 2.0,
-                           land_use_code: 60,
-                           dep_subgrid: adaptation/dep_subgrid.tif }
-    water_retention: {storage_fraction: 10000,
-                      locations: adaptation/water_retention.geojson,
-                      dep_subgrid: adaptation/dep_subgrid.tif}
+    offshore_barrier: {elevation: 1.026,
+                      locations: adaptation/offshore_island.geojson }
+    pumps: {discharge: 1184,
+            locations: adaptation/advance_pumps.geojson }
 
-grey_protect_open:
+advance_1:
   measures:
-    coastal_and_river_levee: {elevation: 2.0,
-                              locations: adaptation/levee.geojson }
-    storm_surge_barrier: {elevation: 2.0,
-                          locations: adaptation/storm_surge_barrier.geojson }
+    offshore_barrier: {elevation: 1.14,
+                      locations: adaptation/offshore_island.geojson }
+    pumps: {discharge: 1316,
+            locations: adaptation/advance_pumps.geojson }
 
-protect_closed:
-  measures:
-    coastal_levee: {elevation: 2.0,
-                    locations: adaptation/levee.geojson }
-    pumps:         {discharge: 1000 }
 
-accommodate:
+# NbS PROTECT-OPEN:
+# NbS_protect_open:
+#   measures:
+#     nbs_land_reclamation: {attenuation_rate: 0.5,
+#                            distance: 500,
+#                            locations: adaptation/land_reclamation.geojson,
+#                            elevation: 2.0,
+#                            land_use_code: 60,
+#                            dep_subgrid: adaptation/dep_subgrid.tif }
+#     water_retention: {storage_fraction: 1,
+#                       locations: adaptation/water_retention.geojson,
+#                       baseline_excess_volume: null,
+#                       dep_subgrid: adaptation/dep_subgrid.tif}
+
+
+# GREY PROTECT-OPEN
+# TODO: distinguish between river and coastal levees. Make own polylines? want to raise river by x and coast by y
+grey_protect_open_04:
   measures:
-    dike_ring: {elevation: 2.0,
+    coastal_and_river_levee: {elevation: 5.0,
+                              locations: adaptation/coast_river_protection_weir_JS.geojson, # was adaptation/coastal_river_levee.geojson }
+                              merge: false }
+
+grey_protect_open_09:
+  measures:
+    coastal_and_river_levee: {elevation: 5.0,
+                              locations: adaptation/coast_river_protection_weir_JS.geojson,
+                              merge: false }
+
+grey_protect_open_1:
+  measures:
+    coastal_and_river_levee: {elevation: 5.0,
+                              locations: adaptation/coast_river_protection_weir_JS.geojson,
+                              merge: false }
+
+
+grey_protect_open_old: # hand drawn weirs
+  measures:
+    coastal_and_river_levee: {elevation: 5.0,
+                              locations: adaptation/coastal_river_levee.geojson,
+                              merge: false }
+
+
+
+# PROTECT-CLOSED
+protect_closed_test:
+  measures:
+    coastal_levee: {elevation: 1.14,
+                    locations: adaptation/coast_protection_weir_JS.geojson,
+                    merge: false }
+    pumps:         {discharge: 1316,
+                    locations: adaptation/pump_river_mouth.geojson }
+
+protect_closed_04:
+  measures:
+    coastal_levee: {elevation: 0.456,
+                    locations: adaptation/coast_protection_weir_JS.geojson,
+                    merge: false }
+    pumps:         {discharge: 526,
+                    locations: adaptation/pump_river_mouth.geojson }
+
+protect_closed_09:
+  measures:
+    coastal_levee: {elevation: 1.026,
+                    locations: adaptation/coastal_levee.geojson }
+    pumps:         {discharge: 1184,
+                    locations: adaptation/pump_river_mouth.geojson }
+
+protect_closed_1:
+  measures:
+    coastal_levee: {elevation: 1.14,
+                    locations: adaptation/coastal_levee.geojson }
+    pumps:         {discharge: 1316,
+                    locations: adaptation/pump_river_mouth.geojson }
+
+
+
+# ACCOMMODATE
+# TODO: determine waterlevels first
+accommodate_04:
+  measures:
+    dike_ring: {elevation: 0.456,
                 locations: adaptation/dike_ring.geojson }
 
-retreat:
+accommodate_09:
   measures:
-    retreat: {retreat_fraction: 0.5,
-              depsubgrid: adaptation/dep_subgrid.tif }
+    dike_ring: {elevation: 1.026,
+                locations: adaptation/dike_ring.geojson }
+
+accommodate_1:
+  measures:
+    dike_ring: {elevation: 1.14,
+                locations: adaptation/dike_ring.geojson }
+
+
+# RETREAT
+retreat_04:
+  measures:
+    retreat: {retreat_fraction: 0.4}
+    # dep_subgrid is NOT set here -- it's auto-derived by 18a_adapt_pre.py from
+    # this basin's own already-built {basin_id}/sfincs_skeleton/subgrid/dep_subgrid.tif,
+    # since retreat must reuse the EXACT SAME elevation the skeleton was built
+    # from (only roughness changes) -- never a separately-authored raw-data file.
+
+retreat_09:
+  measures:
+    retreat: {retreat_fraction: 0.9}
+
+retreat_1:
+  measures:
+    retreat: {retreat_fraction: 1.0}

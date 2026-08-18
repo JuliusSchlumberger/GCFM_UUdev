@@ -43,6 +43,10 @@ include: "rules/14_run_spinup.smk"
 include: "rules/15_sanity_checks.smk"
 include: "rules/16_run_event.smk"
 include: "rules/17_flood_metrics.smk"
+include: "rules/18a_adapt_pre.smk"
+include: "rules/18b_adapt_post.smk"
+include: "rules/18c_attribution_mask.smk"
+include: "rules/19_adapt_compare.smk"
 
 # ── Shared output lists (used by named targets and rule all) ─────────────────
 
@@ -142,12 +146,60 @@ _BUILD_OUTPUTS_SCENARIO = [
       + expand(results_path("{basin_id}/runs/{scenario}/visuals/01_inundation_ratio.png"), basin_id=BASINS, scenario=SCENARIOS)
       + expand(results_path("{basin_id}/runs/{scenario}/visuals/02_flood_animation.mp4"), basin_id=BASINS, scenario=SCENARIOS)
       + expand(results_path("{basin_id}/runs/{scenario}/visuals/flood_timeseries.csv"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand (results_path("{basin_id}/runs/{scenario}/metrics/max_flood_depth.tif"), basin_id=BASINS, scenario=SCENARIOS)
+      + expand (results_path("{basin_id}/runs/{scenario}/visuals/max_flood_depth.tif"), basin_id=BASINS, scenario=SCENARIOS)
       + expand (results_path("{basin_id}/runs/{scenario}/metrics/flood_metrics.csv"), basin_id=BASINS, scenario=SCENARIOS)
       if config["sfincs"]["spinup"]["enabled"] else []),
 ]
 
 _BUILD_OUTPUTS = _BUILD_OUTPUTS_BASIN + _BUILD_OUTPUTS_SCENARIO
+
+
+# Explicitly lists every output of adapt_run_event_pre/adapt_flood_metrics_pre/
+# adapt_metrics_post (not just one representative file per rule) -- Snakemake
+# would build all of a rule's declared outputs together regardless, but this
+# matches _BUILD_OUTPUTS_SCENARIO's own convention just above: every result
+# file individually named and directly targetable, not implicitly produced
+# as a side effect of requesting some other file from the same rule.
+_ADAPT_OUTPUTS = []
+if "pre" in METHODS:
+    _ADAPT_OUTPUTS += (
+        expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),
+               basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+        + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/01_inundation_ratio.png"),
+               basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+        + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/02_flood_animation.mp4"),
+               basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+        + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_timeseries.csv"),
+               basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+        + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/max_flood_depth.tif"),
+               basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+        + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_metrics.csv"),
+               basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+    )
+if "post" in METHODS:
+    _ADAPT_OUTPUTS += (
+        expand(results_path("{basin_id}/runs/{scenario}/adaptation/post/{strategy}/max_flood_depth.tif"),
+               basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+        + expand(results_path("{basin_id}/runs/{scenario}/adaptation/post/{strategy}/flood_metrics.csv"),
+               basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+    )
+if {"pre", "post"} <= set(METHODS):
+    _ADAPT_OUTPUTS += expand(
+        results_path("{basin_id}/runs/metrics_comparison.csv"),
+        basin_id=BASINS)
+
+
+rule adapt:
+    """
+    Run adaptation strategies against already-built baseline scenario runs
+    (rule `build` must already have completed for the same basin/scenario).
+    Opt-in: requires --config target_strategies=[...] (no default strategy
+    set). target_methods defaults to both 'pre' and 'post'.
+
+    Usage:  snakemake adapt --cores N --config target_strategies="['advance_1']"
+    """
+    input: _ADAPT_OUTPUTS
+
 
 # ── Named partial-pipeline targets ───────────────────────────────────────────
 

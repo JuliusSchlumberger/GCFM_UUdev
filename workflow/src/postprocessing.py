@@ -144,7 +144,7 @@ def compute_max_inundation(
     run_dir: str | Path,
     sfincs_root: str | Path,
     sea_mask_path: str | Path,
-    hmin: float = 0.0,
+    hmin: float = 0.05,
     include_subgrid: bool = True,
     max_bytes: float = STATS_MAX_BYTES,
 ) -> tuple[xr.DataArray, xr.DataArray] | tuple[None, None]:

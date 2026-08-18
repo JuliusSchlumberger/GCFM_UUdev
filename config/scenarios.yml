@@ -13,7 +13,7 @@ default:                  # what plain `snakemake build` runs (no target_scenari
   surge_rp: 250
   river_rp: 50
 
-# Attribution runs
+# Attribution runs (also uses spinup for the "always flooded" class)
 coast_only:
   surge_rp: 2
   river_rp: Null
@@ -22,15 +22,7 @@ river_only:
   surge_rp: Null
   river_rp: 2
 
-# Coast
-coast_100:
-  surge_rp: 100
-  river_rp: 2
-
-coast_250:
-  surge_rp: 250
-  river_rp: 2
-
+# Coastal flood
 coast_500:
   surge_rp: 500
   river_rp: 2
@@ -39,19 +31,7 @@ coast_only_500:
   surge_rp: 500
   river_rp: Null
 
-coast_1000:
-  surge_rp: 1000
-  river_rp: 2
-
-# River
-river_100:
-  surge_rp: 2
-  river_rp: 100
-
-river_250:
-  surge_rp: 2
-  river_rp: 250
-
+# River flood
 river_500:
   surge_rp: 2
   river_rp: 500
@@ -60,11 +40,7 @@ river_only_500:
   surge_rp: Null
   river_rp: 500
 
-river_1000:
-  surge_rp: 2
-  river_rp: 1000
-
 # Compound
-compound_100:
-  surge_rp: 100
-  river_rp: 100
+compound_500:
+  surge_rp: 500
+  river_rp: 500

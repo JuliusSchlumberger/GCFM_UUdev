@@ -63,7 +63,7 @@ sfincs_root                = Path(snakemake.params.sfincs_root)
 skeleton_root              = Path(snakemake.params.skeleton_root)
 sfincs_exe                 = Path(snakemake.params.sfincs_exe)
 timeout_s                  = int(snakemake.params.timeout_s)
-threshold_m                = float(snakemake.params.min_inundation_depth_m)
+min_inundation_depth_m     = float(snakemake.params.min_inundation_depth_m)
 include_subgrid            = bool(snakemake.params.include_subgrid)
 animation_fps               = int(snakemake.params.animation_fps)
 land_polygons_path         = Path(snakemake.input.land_polygons)
@@ -100,7 +100,7 @@ log.info(f"Event map output written: {sfincs_map_path} ({sfincs_map_path.stat().
 plot_ratio_path = Path(snakemake.output.plot_inundation_ratio)
 
 da_hmax, da_dep = compute_max_inundation(
-    sfincs_root, skeleton_root, sea_mask_path, hmin=threshold_m, include_subgrid=include_subgrid,
+    sfincs_root, skeleton_root, sea_mask_path, hmin=min_inundation_depth_m, include_subgrid=include_subgrid,
 )
 if da_hmax is None or da_dep is None:
     log.warning("Could not compute max inundation depth (missing 'zsmax' or bed level) — skipping")
@@ -118,13 +118,13 @@ else:
     land_km2    = n_land    * res / 1e6
 
     log.info(
-        f"[Check 1] Inundation ratio  hmin={threshold_m} m  "
+        f"[Check 1] Inundation ratio  hmin={min_inundation_depth_m} m  "
         f"flooded={n_flooded:,}/{n_land:,} pixels ({frac:.2%})  "
         f"area={flooded_km2:.1f}/{land_km2:.1f} km²"
     )
 
     plot_inundation_check(
-        da_hmax, threshold_m, n_flooded, n_land,
+        da_hmax, min_inundation_depth_m, n_flooded, n_land,
         str(land_polygons_path), str(river_network_path),
         str(plot_ratio_path), basin_id=basin_id,
         water_bodies_path=str(landuse_path),
@@ -177,7 +177,7 @@ else:
     # occurred), so the max of flood_volume_m3 here is the physically
     # correct peak total flood volume for the event.
     df = compute_flood_timeseries_stats(
-        sfincs_root, skeleton_root, sea_mask_path, threshold_m,
+        sfincs_root, skeleton_root, sea_mask_path, min_inundation_depth_m,
         include_subgrid=include_subgrid,
     )
     if df is None:

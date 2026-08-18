@@ -3,12 +3,12 @@
 
 adaptation_measures:
   # Advance
-  offshore_island:
-    type: offshore_island
-    description: Offshore island to reduce wave height and storm surge
+  offshore_barrier:
+    type: offshore_barrier
+    description: Offshore barrier to reduce wave height and storm surge
     params:
       elevation:
-        min: 0.5
+        min: 0.1
         max: 9.0 # in m
         required_for: [postprocessing, preprocessing]
       locations:
@@ -88,15 +88,15 @@ adaptation_measures:
     description: Combination of coastal levee along coast and river levees along rivers
     params:
       coastal_height:
-        min: 0.5
+        min: 0.1
         max: 9.0 # in m
         required_for: [postprocessing]
       river_height:
-        min: 0.5
+        min: 0.1
         max: 9.0 # in m
         required_for: [postprocessing]
       elevation:
-        min: 0.5
+        min: 0.1
         max: 9.0 # in m
         required_for: [preprocessing]
       locations:
@@ -109,7 +109,7 @@ adaptation_measures:
       description: Closed storm surge barrier at river mouth
       params:
         sill_elevation:
-          min: 0.5
+          min: 0.1
           max: 9.0 # in m
           required_for: [postprocessing, preprocessing]
         zmin:
@@ -132,7 +132,7 @@ adaptation_measures:
     description: Coastal levee along entire coast, drawn from a user-supplied polyline geojson.
     params:
       elevation:
-        min: 0.5
+        min: 0.1
         max: 9.0
         required_for: [postprocessing, preprocessing]
       locations:
@@ -146,7 +146,7 @@ adaptation_measures:
     description: Dike ring around areas (e.g. cities)
     params:
       elevation:
-        min: 0.5
+        min: 0.1
         max: 9.0 # in m
         required_for: [postprocessing, preprocessing]
       locations:
