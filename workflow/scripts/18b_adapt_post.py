@@ -67,6 +67,7 @@ for measure_type, raw_params in strategy_def["measures"].items():
         output_dir=str(output_dir),
         landuse_path=landuse_path,
         method="postprocessing",
+        strategy_measures=strategy_def["measures"],
         **resolved,
     )
     flood_map_path = result["out_raster"]

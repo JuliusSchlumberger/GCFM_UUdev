@@ -30,6 +30,8 @@ import xarray as xr
 from hydromt_sfincs import SfincsModel
 from rasterio.features import rasterize
 
+from src.protection_weir import merge_weir_preserve_unmatched
+
 
 def _infer_nr_subgrid_pixels(mod: SfincsModel, dep: xr.DataArray) -> int:
     """Infer the model's subgrid refinement factor from dep_subgrid and the coarse grid."""
@@ -119,8 +121,8 @@ def apply_offshore_barrier(
     return mod
 
 
-# ── Grey protect-open: coastal_and_river_levee ───────────────────────────────
-def apply_coastal_river_levee(
+# ── Grey protect-open: river_levee ───────────────────────────────
+def apply_river_levee(
     mod: SfincsModel,
     locations: Path,
     elevation: float,
@@ -129,35 +131,73 @@ def apply_coastal_river_levee(
     buffer: Optional[float] = None,
     dz: Optional[float] = None,
     merge: bool = True,
+    max_match_distance_m: float = 2.0,
     **kwargs,
 ) -> SfincsModel:
     """
-    Adds a coastal and river levee as a SFINCS weir line, built from a user-supplied polyline geojson.
+    Adds a river levee as a SFINCS weir line, built from a user-supplied polyline geojson.
     Called before mod.write() and the SFINCS run (pre-processing method).
+
+    Used by protect_open strategies alongside a sibling coastal_levee measure,
+    each independently raising its own portion of the weir to its own
+    elevation. merge=False (the default here matches apply_coastal_levee's
+    own default expectation for this use case, even though it's spelled
+    merge: false explicitly in every strategy that uses it) does the SAME
+    replace-matched/preserve-the-rest merge as apply_coastal_levee -- NOT
+    hydromt_sfincs's own plain mod.weirs.create(merge=False), which would
+    wholesale replace the ENTIRE current weir (including whatever a
+    same-strategy coastal_levee measure already built, if it ran first in
+    this strategy's own measures: order) with just this river trace alone.
 
     Args:
         mod       : (Required) Open SfincsModel object (HydroMT)
-        elevation : (Required from measures.yml) Levee crest elevation [m above datum], assigned to the whole line.
+        elevation : (Required from measures.yml) Levee crest elevation [m above datum], assigned to every line in `locations`.
         locations : (Required from measures.yml) Path, data source name, or GeoDataFrame with the levee polyline(s).
         par1      : (Optional) Weir discharge coefficient, default 0.6.
         dep       : (Optional) Alternative elevation raster to sample crest height from.
         buffer    : (Optional) Distance (m) from centerline used as sampling window for dep.
         dz        : (Optional) Vertical offset added to the elevation sampled from dep.
-        merge     : (Optional) If True, merge with any existing weir lines instead of overwriting.
+        merge     : (Optional) If False (protect_open's own default): keep every
+            already-existing weir segment whose geometry ISN'T also present in
+            `locations`, and replace only the segments that ARE present in
+            `locations` with `locations`'s own new elevation -- see
+            src.protection_weir.merge_weir_preserve_unmatched. If True: fall
+            back to hydromt_sfincs's own plain concatenation (mod.weirs.
+            create(..., merge=True)).
+        max_match_distance_m : (Optional) Nearest-neighbour distance used to
+            match `locations`'s geometry against the existing weir (see
+            merge_weir_preserve_unmatched in protection_weir.py src).
 
     Returns:
         Modified SfincsModel object.
     """
+    if merge:
+        mod.weirs.create(
+            locations=locations,
+            elevation=elevation,
+            par1=par1,
+            dep=dep,
+            buffer=buffer,
+            dz=dz,
+            merge=True,
+        )
+        return mod
 
-    mod.weirs.create(
-        locations=locations,
-        elevation=elevation,
-        par1=par1,
-        dep=dep,
-        buffer=buffer,
-        dz=dz,
-        merge=merge,
+    new_gdf = mod.data_catalog.get_geodataframe(locations, geom=mod.region).to_crs(
+        mod.crs
     )
+    new_gdf = new_gdf.explode(index_parts=True).reset_index(drop=True)
+    if not new_gdf.geometry.type.isin(["LineString"]).all():
+        raise ValueError("Weirs must be of type LineString.")
+    new_gdf = new_gdf[["geometry"]].copy()
+    new_gdf["elevation"] = elevation
+    new_gdf["par1"] = par1
+
+    merged = merge_weir_preserve_unmatched(
+        mod.weirs.data, new_gdf, max_match_distance_m=max_match_distance_m
+    )
+    mod.weirs.set(merged, merge=False)
+    mod.config.set("weirfile", "sfincs.weir")
 
     return mod
 
@@ -197,35 +237,78 @@ def apply_coastal_levee(
     buffer: Optional[float] = None,
     dz: Optional[float] = None,
     merge: bool = True,
+    max_match_distance_m: float = 2.0,
     **kwargs,
 ) -> SfincsModel:
     """
     Adds a coastal levee as a SFINCS weir line, built from a user-supplied polyline geojson.
     Called before mod.write() and the SFINCS run (pre-processing method).
 
+    Used by the protect_closed strategy to seal off the coast/river mouth at
+    `elevation` while leaving the river's own already-built protection weir
+    (further inland, following current protection standards) untouched.
+    `locations` is expected to be built by copying that same baseline weir
+    file, deleting its river rows, and adding a new segment closing off the
+    river mouth -- see src.protection_weir.merge_weir_preserve_unmatched,
+    which this dispatches to when merge=False (below).
+
     Args:
         mod       : (Required) Open SfincsModel object (HydroMT)
-        elevation : (Required from measures.yml) Levee crest elevation [m above datum], assigned to the whole line.
+        elevation : (Required from measures.yml) Levee crest elevation [m above datum], assigned to every line in `locations`.
         locations : (Required from measures.yml) Path, data source name, or GeoDataFrame with the levee polyline(s).
         par1      : (Optional) Weir discharge coefficient, default 0.6.
         dep       : (Optional) Alternative elevation raster to sample crest height from.
         buffer    : (Optional) Distance (m) from centerline used as sampling window for dep.
         dz        : (Optional) Vertical offset added to the elevation sampled from dep.
-        merge     : (Optional) If True, merge with any existing weir lines instead of overwriting.
+        merge     : (Optional) If False (protect_closed's own default): keep every
+            already-existing weir segment whose geometry ISN'T also present in
+            `locations` (the untouched river), and replace only the segments
+            that ARE present in `locations` with `locations`'s own new
+            elevation. If True: fall back to hydromt_sfincs's own plain
+            concatenation (mod.weirs.create(..., merge=True)), appending
+            `locations` behind whatever weirs already exist with no geometry
+            matching at all -- dep/dz-based elevation lookup is also only
+            available in this branch, since the merge=False path always
+            assigns `elevation` directly.
+        max_match_distance_m : (Optional) Nearest-neighbour distance used to
+            match `locations`'s geometry against the existing baseline weir
+            (see merge_weir_preserve_unmatched in protection_weir.py src).
+            Default 2.0 m -- comfortably clears both the baseline weir's own
+            0.1 m ASCII round-trip truncation and ordinary editing/
+            reprojection noise, while staying well under half a grid cell so
+            it can't conflate two genuinely different segments. Too tight
+            silently leaves old segments in place instead of replacing them.
 
     Returns:
         Modified SfincsModel object.
     """
+    if merge:
+        mod.weirs.create(
+            locations=locations,
+            elevation=elevation,  # adds absolute elevation
+            par1=par1,
+            dep=dep,
+            buffer=buffer,
+            dz=dz,  # Adds weir on top of dem
+            merge=True,
+        )
+        return mod
 
-    mod.weirs.create(
-        locations=locations,
-        elevation=elevation,  # adds absolute elevation
-        par1=par1,
-        dep=dep,
-        buffer=buffer,
-        dz=dz,  # Adds weir on top of dem
-        merge=merge,
+    new_gdf = mod.data_catalog.get_geodataframe(locations, geom=mod.region).to_crs(
+        mod.crs
     )
+    new_gdf = new_gdf.explode(index_parts=True).reset_index(drop=True)
+    if not new_gdf.geometry.type.isin(["LineString"]).all():
+        raise ValueError("Weirs must be of type LineString.")
+    new_gdf = new_gdf[["geometry"]].copy()
+    new_gdf["elevation"] = elevation
+    new_gdf["par1"] = par1
+
+    merged = merge_weir_preserve_unmatched(
+        mod.weirs.data, new_gdf, max_match_distance_m=max_match_distance_m
+    )
+    mod.weirs.set(merged, merge=False)
+    mod.config.set("weirfile", "sfincs.weir")
 
     return mod
 
@@ -497,7 +580,7 @@ def apply_retreat(
 
 selected_measures = {
     "offshore_barrier": apply_offshore_barrier,
-    "coastal_and_river_levee": apply_coastal_river_levee,
+    "river_levee": apply_river_levee,
     "coastal_levee": apply_coastal_levee,
     "pumps": apply_pumps,
     "dike_ring": apply_dike_ring,

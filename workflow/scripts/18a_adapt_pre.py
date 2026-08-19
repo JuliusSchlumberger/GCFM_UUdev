@@ -64,9 +64,9 @@ COMPONENT_FILEKEY = {
 }
 
 COMPONENT_OF_MEASURE = {
-    "offshore_barrier": "weirs", 
+    "offshore_barrier": "weirs",
     "pumps": "drainage_structures",
-    "coastal_and_river_levee": "weirs",
+    "river_levee": "weirs",
     "coastal_levee": "weirs",
     "dike_ring" : "weirs",
     "retreat": "subgrid"

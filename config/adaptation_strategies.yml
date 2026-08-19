@@ -50,44 +50,38 @@ advance_1:
 # TODO: distinguish between river and coastal levees. Make own polylines? want to raise river by x and coast by y
 grey_protect_open_04:
   measures:
-    coastal_and_river_levee: {elevation: 5.0,
-                              locations: adaptation/coast_river_protection_weir_JS.geojson, # was adaptation/coastal_river_levee.geojson }
-                              merge: false }
+    coastal_levee: {elevation: 0.456,
+                    locations: adaptation/coast_protection_weir_PO.geojson,
+                    merge: false }
+    river_levee: {elevation: 0.94,
+                    locations: adaptation/river_protection_weir_PO.geojson,
+                    merge: false }
 
 grey_protect_open_09:
   measures:
-    coastal_and_river_levee: {elevation: 5.0,
-                              locations: adaptation/coast_river_protection_weir_JS.geojson,
-                              merge: false }
+    coastal_levee: {elevation: 1.026,
+                    locations: adaptation/coast_protection_weir_PO.geojson,
+                    merge: false }
+    river_levee: {elevation: 2.124,
+                    locations: adaptation/river_protection_weir_PO.geojson,
+                    merge: false }
 
 grey_protect_open_1:
   measures:
-    coastal_and_river_levee: {elevation: 5.0,
-                              locations: adaptation/coast_river_protection_weir_JS.geojson,
-                              merge: false }
-
-
-grey_protect_open_old: # hand drawn weirs
-  measures:
-    coastal_and_river_levee: {elevation: 5.0,
-                              locations: adaptation/coastal_river_levee.geojson,
-                              merge: false }
+    coastal_levee: {elevation: 1.14,
+                    locations: adaptation/coast_protection_weir_PO.geojson,
+                    merge: false }
+    river_levee: {elevation: 2.36,
+                    locations: adaptation/river_protection_weir_PO.geojson,
+                    merge: false }
 
 
 
 # PROTECT-CLOSED
-protect_closed_test:
-  measures:
-    coastal_levee: {elevation: 1.14,
-                    locations: adaptation/coast_protection_weir_JS.geojson,
-                    merge: false }
-    pumps:         {discharge: 1316,
-                    locations: adaptation/pump_river_mouth.geojson }
-
 protect_closed_04:
   measures:
     coastal_levee: {elevation: 0.456,
-                    locations: adaptation/coast_protection_weir_JS.geojson,
+                    locations: adaptation/coast_protection_weir_PC.geojson,
                     merge: false }
     pumps:         {discharge: 526,
                     locations: adaptation/pump_river_mouth.geojson }
@@ -95,14 +89,16 @@ protect_closed_04:
 protect_closed_09:
   measures:
     coastal_levee: {elevation: 1.026,
-                    locations: adaptation/coastal_levee.geojson }
+                    locations: adaptation/coast_protection_weir_PC.geojson,
+                    merge: false }
     pumps:         {discharge: 1184,
                     locations: adaptation/pump_river_mouth.geojson }
 
 protect_closed_1:
   measures:
     coastal_levee: {elevation: 1.14,
-                    locations: adaptation/coastal_levee.geojson }
+                    locations: adaptation/coast_protection_weir_PC.geojson,
+                    merge: false }
     pumps:         {discharge: 1316,
                     locations: adaptation/pump_river_mouth.geojson }
 

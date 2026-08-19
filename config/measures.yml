@@ -83,26 +83,19 @@ adaptation_measures:
 
 
   # Greys protect-open
-  coastal_and_river_levee:
-    type: coastal_and_river_levee
-    description: Combination of coastal levee along coast and river levees along rivers
+  river_levee:
+    type: river_levee
+    description: River levee along rivers
     params:
-      coastal_height:
-        min: 0.1
-        max: 9.0 # in m
-        required_for: [postprocessing]
-      river_height:
-        min: 0.1
-        max: 9.0 # in m
-        required_for: [postprocessing]
       elevation:
         min: 0.1
         max: 9.0 # in m
-        required_for: [preprocessing]
+        required_for: [preprocessing, postprocessing]
       locations:
         min: null
         max: null # path, data source name, or GeoDataFrame with the levee polyline(s)
         required_for: [preprocessing]
+  # coastal_levee = taken from protect-closed
 
   storm_surge_barrier:
       type: storm_surge_barrier

@@ -74,87 +74,87 @@ def apply_offshore_barrier(
 
 
 # Grey protect-open
-def apply_coastal_river_levee(
+def apply_river_levee(
     flood_map_path: str,
     scenario_root: str,
     output_dir: str,
-    coastal_height: float,
-    river_height: float,
+    elevation: float,
+    strategy_measures: dict = None,
     **kwargs,
 ) -> dict:
     """
-    Post-processing coastal + river levee rule.
+    Post-processing river levee rule.
     Logic:
-      - Read max coastal water level (bzs) and max river water level (e.g. obs points / dis forcing) from the scenario model.
-      - If coastal_height > max coastal water level: remove flooding in class 2 (coastal-only).
+      - Read max river water level (e.g. obs points / dis forcing) from the scenario model.
       - If river_height > max river water level: remove flooding in class 1 (river-only).
-      - Class 3 (compound) flooding is only removed if BOTH levees hold, since either source alone could cause it.
+      - Class 3 (compound) flooding is only removed if BOTH levees hold, since
+        either source alone could cause it -- this function owns that joint
+        decision (apply_coastal_levee defers class 3 to here whenever a
+        sibling river_levee measure is present, see its own docstring), by
+        reading the sibling coastal_levee's own elevation and coastal water
+        level directly out of strategy_measures (this strategy's own full
+        measures dict, see dispatch_rules). With no sibling coastal_levee in
+        the strategy, class 3 is left untouched (still at full risk) rather
+        than cleared based on river alone -- compound flooding by definition
+        needs both sources to be individually contained.
     """
     out_path = Path(output_dir) / "max_flood_depth.tif"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     mod = SfincsModel(root=scenario_root, mode="r")
 
-    # Coastal water level (boundary forcing)
-    wl = mod.get_component("water_level")
-    wl.read()
-    max_coastal_wl = float(wl.data["bzs"].max())
-
     # River water level (observation points)
-    out = mod.get_component("output")
-    out.read()
-    max_river_wl = float(out.data["point_zs"].max())
+    riv_wl = mod.get_component("output")
+    riv_wl.read()
+    max_river_wl = float(riv_wl.data["point_zs"].max())
 
-    coastal_safe = coastal_height > max_coastal_wl
-    river_safe = river_height > max_river_wl
+    river_holds = elevation > max_river_wl
+
+    coastal_measure = (strategy_measures or {}).get("coastal_levee")
+    if coastal_measure is not None:
+        coastal_elevation = float(coastal_measure["elevation"])
+        wl = mod.get_component("water_level")
+        wl.read()
+        max_coastal_wl = float(wl.data["bzs"].max())
+        coastal_holds = coastal_elevation > max_coastal_wl
+        compound_holds = river_holds and coastal_holds
+        print(
+            f"  Joint compound check: river {'holds' if river_holds else 'overtopped'} "
+            f"(H={elevation}m vs river WL={max_river_wl:.2f}m), coastal "
+            f"{'holds' if coastal_holds else 'overtopped'} "
+            f"(H={coastal_elevation}m vs surge={max_coastal_wl:.2f}m) "
+            f"-> compound flooding {'removed' if compound_holds else 'kept at risk'}"
+        )
+    else:
+        compound_holds = (
+            False  # no sibling coastal_levee: compound is never cleared here
+        )
+
+    classes_to_clear = [1] + ([3] if compound_holds else [])
 
     # Read flood map raster
     with rasterio.open(flood_map_path) as src:
         flood, prof = src.read(1), src.profile
 
+    # Apply conditional mask
     mask_path = Path(scenario_root).parent / "attribution_mask.tif"
     if not mask_path.exists():
         raise FileNotFoundError(f"Attribution mask not found at {mask_path}")
 
-    with rasterio.open(mask_path) as attr_src:
-        attr = attr_src.read(1)
-
-    classes_to_remove = []
-    if river_safe:
-        classes_to_remove.append(1)  # river-only
-        classes_to_remove.append(4)  # baseline
+    if river_holds:
+        with rasterio.open(
+            mask_path
+        ) as attr_src:  # opens attribution mask which labels each pixel by flood source
+            flood = np.where(
+                np.isin(attr_src.read(1), classes_to_clear), prof["nodata"], flood
+            )
         print(
-            f"  River levee sufficient (H={river_height}m > River WL={max_river_wl:.2f}m) -> river-only flooding removed"
+            f"  Levee sufficient (H={elevation}m > river water level ={max_river_wl:.2f}m) = all river flooding removed"
         )
-    else:
+    else:  # if the levee is overtopped, we keep all flooding
         print(
-            f"  River levee overtopped (H={river_height}m <= River WL={max_river_wl:.2f}m) -> river risk remains"
+            f"  Levee overtopped (H={elevation}m <= river water level={max_river_wl:.2f}m) = full risk"
         )
-
-    if coastal_safe:
-        classes_to_remove.append(2)  # coastal-only
-        classes_to_remove.append(4)  # baseline
-        print(
-            f"  Coastal levee sufficient (H={coastal_height}m > Surge={max_coastal_wl:.2f}m) -> coastal-only flooding removed"
-        )
-    else:
-        print(
-            f"  Coastal levee overtopped (H={coastal_height}m <= Surge={max_coastal_wl:.2f}m) -> coastal risk remains"
-        )
-
-    if coastal_safe and river_safe:
-        classes_to_remove.append(
-            3
-        )  # compound flooding removed only if both levees hold
-        print("  Both levees sufficient -> compound flooding removed")
-
-    if classes_to_remove:
-        removal_mask = np.isin(attr, classes_to_remove)
-        removed_cells = int(removal_mask.sum())
-        nodata_value = prof.get("nodata", np.nan)
-        flood = flood.astype("float32", copy=True)
-        flood[removal_mask] = nodata_value
-        print(f"  Removed {removed_cells} cells from classes {classes_to_remove}")
 
     # Save modified raster with updated metadata
     prof.update(dtype="float32", nodata=prof.get("nodata", np.nan))
@@ -334,15 +334,31 @@ def apply_water_retention(
 
 # Protect-closed
 def apply_coastal_levee(
-    flood_map_path: str, scenario_root: str, output_dir: str, elevation: float, **kwargs
+    flood_map_path: str,
+    scenario_root: str,
+    output_dir: str,
+    elevation: float,
+    strategy_measures: dict = None,
+    **kwargs,
 ) -> str:
     """
     Post-processing coastal levee rule.
     Logic:
       - Read the max coastal water level from the scenario model.
       - If levee height > max water level = all coastal flooding removed.
-        Remove all flooding in attribution classes 2 and 3 (coastal and compound).
+        Remove all flooding in attribution classes 2 and (usually) 3
+        (coastal and compound) -- see strategy_measures note below.
       - If levee height <= max water level = full risk from coastal flooding.
+
+    strategy_measures: this strategy's full measures dict (see dispatch_rules'
+    own docstring). When a sibling "river_levee" measure is ALSO part of the
+    same strategy (protect_open's own concept -- coast and river are two
+    INDEPENDENT open structures), compound flooding requires BOTH to hold, so
+    class 3 is left for apply_river_levee to decide jointly instead of being
+    cleared here unilaterally. With no sibling river_levee (protect_closed's
+    own concept -- the coastal barrier seals the river mouth too, so nothing
+    else can independently cause a compound flood once it holds), class 3 is
+    cleared here exactly as before.
     """
 
     out_path = Path(output_dir) / "max_flood_depth.tif"
@@ -363,15 +379,26 @@ def apply_coastal_levee(
     if not mask_path.exists():
         raise FileNotFoundError(f"Attribution mask not found at {mask_path}")
 
+    has_sibling_river_levee = (
+        bool(strategy_measures) and "river_levee" in strategy_measures
+    )
+    classes_to_clear = [2, 4] if has_sibling_river_levee else [2, 3, 4]
+
     if elevation > max_wl:
         with rasterio.open(
             mask_path
         ) as attr_src:  # opens attribution mask which labels each pixel by flood source
             flood = np.where(
-                np.isin(attr_src.read(1), [2, 3, 4]), prof["nodata"], flood
-            )  # if levee height exceeds surge, the pixels in 2 are replaced with nodata
+                np.isin(attr_src.read(1), classes_to_clear), prof["nodata"], flood
+            )  # if levee height exceeds surge, the pixels in classes_to_clear are replaced with nodata
+        compound_note = (
+            " (class 3/compound left for apply_river_levee's own joint check)"
+            if has_sibling_river_levee
+            else ""
+        )
         print(
             f"  Levee sufficient (H={elevation}m > Surge={max_wl:.2f}m) = all coastal flooding removed"
+            f"{compound_note}"
         )
     else:  # if the levee is overtopped, we keep all flooding
         print(f"  Levee overtopped (H={elevation}m <= Surge={max_wl:.2f}m) = full risk")
@@ -645,7 +672,7 @@ selected_measures = {
     "offshore_barrier": apply_offshore_barrier,
     "nbs_land_reclamation": apply_nbs_land_reclamation,
     "water_retention": apply_water_retention,
-    "coastal_and_river_levee": apply_coastal_river_levee,
+    "river_levee": apply_river_levee,
     "coastal_levee": apply_coastal_levee,
     "pumps": apply_pumps,
     "dike_ring": apply_dike_ring,
@@ -695,6 +722,7 @@ def dispatch_rules(
     output_dir: str,
     landuse_path: str = None,
     method: str = "postprocessing",
+    strategy_measures: dict = None,
     **params,
 ) -> dict:
     """
@@ -709,6 +737,15 @@ def dispatch_rules(
         output_dir     : directory to write the adapted raster
         landuse_path   : path to the current landuse raster -- only apply_retreat
                          reads this; every other measure ignores it via **kwargs
+        strategy_measures : this strategy's own full measures dict (as declared
+                         in config/adaptation_strategies.yml), passed through
+                         unvalidated (never checked against measure_def's own
+                         params -- it describes the STRATEGY, not this one
+                         measure). Lets a measure look up a SIBLING measure's
+                         own params -- currently only apply_coastal_levee/
+                         apply_river_levee, to decide compound (class 3)
+                         flooding jointly when both are part of the same
+                         strategy instead of each acting on it independently.
         **params       : named parameter values from SimulationConfig (e.g. height=2.0)
 
     Returns:
@@ -726,5 +763,6 @@ def dispatch_rules(
         scenario_root=scenario_root,
         output_dir=output_dir,
         landuse_path=landuse_path,
+        strategy_measures=strategy_measures,
         **params,
     )

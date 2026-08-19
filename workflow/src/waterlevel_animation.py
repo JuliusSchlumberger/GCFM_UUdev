@@ -39,11 +39,11 @@ from src.postprocessing import load_sfincs_output  # noqa: E402
 RESULTS_DIR = "D:/GCFM_UU/results"
 BASIN_ID = "2433835"
 SCENARIO = "coast_500"
-STRATEGY = "protect_closed_04"  # any already-run `pre` strategy folder
+STRATEGY = "grey_protect_open_1"  # any already-run `pre` strategy folder
 BZS_IDX = 4  # boundary point index to track (column order in sfincs.bzs)
 T_START = None  # e.g. "2000-01-02 06:00:00", or None for full range
 T_END = None
-HMIN = 0.01  # water level [m] below which a cell is treated as dry
+HMIN = 0.05  # water level [m] below which a cell is treated as dry
 VMIN, VMAX = 0.0, 5.0  # colour scale for the water level map
 FPS = 4
 
