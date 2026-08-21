@@ -16,7 +16,7 @@ from rasterio.features import geometry_mask
 # 1 = river-only
 # 2 = coastal-only
 # 3 = compound
-# 4 = baseline
+# 4 = baseline/ spinup
 
 
 # Advance
@@ -203,7 +203,7 @@ def apply_nbs_land_reclamation(
         attr = attr_src.read(1)
 
     # Filter coastal flooding and compound pixels
-    is_coastal_flood = (np.isin(attr, [2, 3])) & (flood != prof["nodata"])
+    is_coastal_flood = (np.isin(attr, [2, 3, 4])) & (flood != prof["nodata"])
 
     # Apply the physically derived reduction
     reduced_depth = flood - reduction

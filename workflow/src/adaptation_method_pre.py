@@ -570,6 +570,7 @@ def apply_retreat(
             else nr_subgrid_pixels
         ),
         write_man_tif=True,
+        write_dep_tif=True,
     )
     return mod
 

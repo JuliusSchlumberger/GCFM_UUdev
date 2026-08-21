@@ -42,7 +42,6 @@ validation_spinup.png               Water-level timeseries at observation points
 validation_max_inundation.png       Max inundation depth at spin-up end.
 """
 
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast

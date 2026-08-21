@@ -2,17 +2,8 @@
 add description here 
 """
 
-import os
 import shutil
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import cast
-
-import geopandas as gpd
-import numpy as np
-import pandas as pd
-import xarray as xr
-from shapely.geometry import Polygon
 from hydromt_sfincs import SfincsModel
 
 from src.adaptation_method_pre import dispatch_rules
@@ -113,12 +104,29 @@ if "retreat" not in strategy_def["measures"]:
     shutil.copy2(snakemake.input.landuse, retreat_landuse_path)
 
 # 4. Write only touched components - untocuhe ones stay forwarded by reference below, never duplicated
-if "weirs" in touched: 
+if "weirs" in touched:
     sf.weirs.write()
 if "drainage_structures" in touched:
     sf.drainage_structures.write()
 if "subgrid" in touched:
     sf.subgrid.write()
+else:
+    # subgrid untouched: the sfincs.inp sbgfile entry gets forwarded by
+    # relative reference below (SFINCS itself reads it fine from
+    # skeleton_root), but src.postprocessing.get_bed_level looks for
+    # dep_subgrid.tif as a REAL file directly under this run's own
+    # adapted_root/subgrid/ (it never resolves sfincs.inp's forwarded
+    # reference) -- so flood metrics for this strategy would otherwise
+    # silently fall back to the coarse zb grid. Physically copy the
+    # skeleton's own reference rasters through, same pattern as the
+    # sfincs.msk copy above.
+    src_subgrid_dir = skeleton_root / "subgrid"
+    dst_subgrid_dir = adapted_root / "subgrid"
+    for fname in ("dep_subgrid.tif", "manning_subgrid.tif"):
+        src_file = src_subgrid_dir / fname
+        if src_file.exists():
+            dst_subgrid_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dst_subgrid_dir / fname)
 
 # 5. forward every untouched file entry from skeleton by relative path (like 13_build_sfincs.py), excluding the 
 # keys this run just wrote 

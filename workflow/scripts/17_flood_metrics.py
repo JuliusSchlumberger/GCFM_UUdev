@@ -4,7 +4,6 @@
 """
 from pathlib import Path
 import pandas as pd
-import geopandas as gpd
 
 from src.postprocessing import compute_max_inundation, compute_risk_metrics
 

@@ -3,9 +3,8 @@ POST- vs PRE-processing agreement analysis for flood adaptation measures.
 
 Step 1: split `strategy` into measure name + scale suffix
 Step 2: convert absolute metrics to % risk reduction vs the matching event baseline
-Step 3: agreement diagnostics (scatter, signed error, confusion matrix, Spearman)
+Step 3: agreement diagnostics (figures in results section)
 
-Run:  python analysis_kiara.py
 """
 
 from pathlib import Path
@@ -40,12 +39,11 @@ assert d["scale"].notna().all(), (
 # a fully-protected run has flooded_area == 0 and NaN depth; depth is 0 by definition
 d[["mean_depth_m", "max_depth_m"]] = d[["mean_depth_m", "max_depth_m"]].fillna(0)
 
-# ------------------------------------------- 2. % reduction vs event baseline
+# # ------------------------------------------- 2. % reduction vs event baseline
 for m in METRICS:
     b = d.event.map(baselines[m])
     d["red_" + m] = 100 * (b - d[m]) / b
-
-d.to_csv(OUT_DIR / "tidy_scenarios.csv", index=False)
+# d.to_csv(OUT_DIR / "tidy_scenarios.csv", index=False)
 
 wide = d.pivot_table(
     index=["event", "short", "scale"],
@@ -55,7 +53,7 @@ wide = d.pivot_table(
 )
 for m in METRICS:
     wide[("err_" + m, "")] = wide[("red_" + m, "POST")] - wide[("red_" + m, "PRE")]
-wide.to_csv(OUT_DIR / "post_vs_pre_wide.csv")
+# wide.to_csv(OUT_DIR / "post_vs_pre_wide.csv")
 
 # ------------------------------------------------------ 3a. does POST resolve scale?
 print(
