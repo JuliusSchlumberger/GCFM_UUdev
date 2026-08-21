@@ -4,7 +4,18 @@ Newest changes first. See `Reference_memory.txt` for the current, up-to-date
 description of how the pipeline works; this file only describes *what changed
 and why*.
 
-#
+# 2028-08-21 Added adaptation effectiveness assessment (KL)
+
+New pipeline stage for evaluating coastal/river flood adaptation strategies against each scenario, on top of the existing baseline SFINCS workflow. Two config files define the search space: `config/measures.yml` is the menu -- every measure type (`offshore_barrier`, `pumps`, `nbs_land_reclamation`, river levees, retreat, ...) grouped by main strategy (Advance / Grey protect-open / NBS protect-open / Retreat), each with parameter bounds and whether it's supported in `preprocessing` and/or `postprocessing` mode; `config/adaptation_strategies.yml` is the composition -- named strategies, each a set of measures with concrete parameter values, independent of which method runs them (method is chosen at the CLI, validated against `measures.yml`).
+
+**Added**: two ways to apply a strategy. The pre-processing method (`18a_adapt_pre.smk`/`.py`, `src/adaptation_method_pre.py`) mutates a copy of the basin's SFINCS skeleton in place per measure -- weirs, drainage structures, subgrid rebuild, `retreat` land-use edits -- via `dispatch_rules()`, then reuses `13_build_sfincs.py`/`16_run_event.py`/`17_flood_metrics.py` unmodified against the adapted skeleton for a full physical re-simulation (never re-runs spin-up; ported from the author's separate `delta_model` project onto this repo's own `hydromt_sfincs` API). The post-processing method (`18b_adapt_post.smk`/`.py`, `src/adaptation_method_post.py`) applies measures directly to the existing baseline flood-depth raster -- e.g. `apply_offshore_barrier` compares barrier elevation against the scenario's max coastal water level and strips coastal/compound-attributed flooding pixels if the barrier holds -- no re-run needed.
+
+The post-processing method needs to know WHERE flooding came from, so a new flood-source attribution mask (`18c_attribution_mask.smk`/`.py`, `src/attribution_plot.py`) classifies every flooded pixel as river-only / coastal-only / compound / baseline, by comparing each scenario's river-only and coastal-only counterpart runs against spin-up. A new rollup rule (`19_adapt_compare.smk`/`.py`) aggregates baseline/pre/post `flood_metrics.csv` across every scenario x strategy for a basin into one long-format `metrics_comparison.csv`.
+
+Supporting changes: `src/protection_weir.py` gained `merge_weir_preserve_unmatched()` for combining adaptation-added weirs with existing ones; `rules/00_common.smk` extended with strategy/measure lookup helpers (`STRATEGY_DEFS`, `MEASURES_DEFS`, `strategy_measure_input_paths`, `attribution_counterparts`) and target-rule wiring for the new outputs; `tools/build_deltadtm_mask_vrt.py` added as a standalone tool to build a VRT mask from DeltaDTM; `tests/KL_analysis_waterlevel_animation.py` and `tests/KL_figures.py` added for reviewing water-level animations and figures.
+
+`nbs_land_reclamation` and `water_retention` preprocessing measures are deliberately NOT ported yet -- `water_retention`'s `compute_excess_volume()` needs the attribution mask, which didn't exist until this PR; left as follow-up, noted directly in `adaptation_method_pre.py`'s own docstring.
+
 
 # 2026-08-07e: fixed landuse_on_grid.tif/roughness_on_grid.tif row-order mismatch -- SFINCS needs y-ascending, sfincs_grid.json is stored y-descending (- JS)
 
