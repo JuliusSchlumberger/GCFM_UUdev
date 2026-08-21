@@ -1,5 +1,18 @@
 """
-add description here 
+Apply a preprocessing adaptation strategy to a skeleton SFINCS model.
+
+Loads the skeleton SFINCS model built for a basin, applies each measure
+defined in the given adaptation strategy (e.g. offshore barriers, dike
+rings, pumps, retreat) in the order specified in
+adaptation_strategies.yml, and writes out a new "adapted" SFINCS model
+under adapted_root. Only the components actually modified by the applied
+measures (weirs, drainage structures, subgrid) are re-written; all
+untouched geometry files are forwarded from the skeleton by relative
+reference to avoid duplicating unchanged data. Special-cased files that
+hydromt_sfincs always resolves relative to the model root (sfincs.msk,
+subgrid rasters used by postprocessing) are physically copied into
+adapted_root instead of forwarded, since reference-based forwarding is
+not respected when reading them.
 """
 
 import shutil
