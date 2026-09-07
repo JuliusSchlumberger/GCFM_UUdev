@@ -70,6 +70,7 @@ COMPONENT_FILEKEY = {
 COMPONENT_OF_MEASURE = {
     "offshore_barrier": "weirs",
     "pumps": "drainage_structures",
+    "nbs_land_reclamation": "subgrid",
     "river_levee": "weirs",
     "coastal_levee": "weirs",
     "dike_ring" : "weirs",
@@ -86,7 +87,7 @@ for measure_type, raw_params in strategy_def["measures"].items():
     }
     # NOTE: retreat specifically needs the baseline flood map to determine which cells to retreat
     flood_map_path = str(baseline_flood_map_path) if measure_type == "retreat" else None
-    if measure_type == "retreat":
+    if measure_type in ("retreat","nbs_land_reclamation"):
         # dep_subgrid/landuse_path/roughness_native_path/lu_roughness_lookup_path
         # are never strategy-configured (see adaptation_strategies.yml's own
         # comment) -- retreat always reuses this basin's own already-built
@@ -95,6 +96,22 @@ for measure_type, raw_params in strategy_def["measures"].items():
         resolved["landuse_path"] = str(snakemake.input.landuse)
         resolved["roughness_native_path"] = str(snakemake.input.roughness_native)
         resolved["lu_roughness_lookup_path"] = str(snakemake.input.lu_roughness_lookup)
+        # apply_NbS_land_reclamation defaults out_path to "foreshore_landuse.tif",
+        # but adapt_flood_metrics_pre (17_flood_metrics.py) and the rule's own
+        # declared Snakemake output both expect "retreat_landuse.tif" -- override
+        # so the reclassed lulc lands where downstream actually looks for it.
+        # (apply_retreat already defaults to "retreat_landuse.tif" itself.)
+        if measure_type == "nbs_land_reclamation":
+            resolved["out_path"] = "retreat_landuse.tif"
+            # basin's own corrected open-sea mask -- apply_NbS_land_reclamation
+            # writes an updated copy (reclaimed cells cleared to land) to
+            # sea_mask.tif under adapted_root, since compute_max_inundation
+            # (17_flood_metrics.py) and compute_flood_progression
+            # (16_run_event.py) both mask flood depth to NaN wherever this
+            # file reads "sea" -- without an update, they'd keep masking out
+            # the newly reclaimed land, even though SFINCS itself simulates
+            # it correctly.
+            resolved["sea_mask_path"] = str(snakemake.input.sea_mask)
 
     log.info(f"Applying measure {measure_type} with params {resolved}")
     
@@ -112,9 +129,20 @@ for measure_type, raw_params in strategy_def["measures"].items():
 # urban_area_km2 reflect the retreat, not the pre-retreat urban footprint.
 # For strategies without retreat, no such file gets written -- copy the raw
 # landuse through unchanged so the output is always present either way.
+LANDUSE_WRITING_MEASURES = {"retreat", "nbs_land_reclamation"}
 retreat_landuse_path = adapted_root / "retreat_landuse.tif"
-if "retreat" not in strategy_def["measures"]:
+if not (LANDUSE_WRITING_MEASURES & set(strategy_def["measures"])):
     shutil.copy2(snakemake.input.landuse, retreat_landuse_path)
+
+# 3c. same pattern for the sea mask: apply_NbS_land_reclamation writes an
+# updated adapted_root/sea_mask.tif (reclaimed cells cleared to land). For
+# strategies that don't reclaim land, no such file gets written -- copy the
+# basin's own static sea mask through unchanged so the output declared in
+# 18a_adapt_pre.smk is always present either way.
+SEA_MASK_WRITING_MEASURES = {"nbs_land_reclamation"}
+sea_mask_path = adapted_root / "sea_mask.tif"
+if not (SEA_MASK_WRITING_MEASURES & set(strategy_def["measures"])):
+    shutil.copy2(snakemake.input.sea_mask, sea_mask_path)
 
 # 4. Write only touched components - untocuhe ones stay forwarded by reference below, never duplicated
 if "weirs" in touched:

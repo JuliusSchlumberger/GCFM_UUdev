@@ -29,6 +29,9 @@ import pandas as pd
 import xarray as xr
 from hydromt_sfincs import SfincsModel
 from rasterio.features import rasterize
+from scipy import ndimage
+from shapely.geometry.base import BaseMultipartGeometry
+from shapely.ops import unary_union
 
 from src.protection_weir import merge_weir_preserve_unmatched
 
@@ -76,6 +79,82 @@ def _infer_nr_subgrid_pixels(mod: SfincsModel, dep: xr.DataArray) -> int:
             f"({ratio_x:.6g}, {ratio_y:.6g})."
         )
     return nr
+
+
+def _offshore_buffer(
+    locations: gpd.GeoDataFrame,
+    distance: float,
+    water_mask: xr.DataArray,
+    transform,
+    out_shape: tuple,
+):
+    """
+    Buffer a reference coastline `distance` metres seaward ONLY, not landward too.
+
+    Matches the proven reference implementation (delta_model's own
+    apply_nbs_land_reclamation): for each individual line FEATURE/part in
+    `locations`, buffer BOTH sides with shapely's single_sided buffer, and
+    keep whichever side has the higher total water fraction underneath.
+    Resolved ONCE per line part, via a SINGLE buffer call over the whole
+    part -- no chunking, no per-chunk direction estimate.
+
+    Earlier chunked/smoothed variants tried to resolve "which side is
+    offshore" separately for short pieces of the line, estimating each
+    piece's own direction from its start/end chord. That was solving a
+    problem that doesn't need solving: GEOS's buffer offsetting already
+    computes a proper continuous offset curve for the WHOLE line in one
+    call, correctly hugging one consistent side through a smooth bend --
+    confirmed on a real ~50 km coastline curving through roughly a right
+    angle, with no chunking at all. The chunked version's short, independent
+    per-piece tangent estimates were only an approximation of that, and a
+    noisy one: small digitising wiggles flipped individual chunks' resolved
+    side, producing flat-cap seams and, after various smoothing attempts to
+    paper over that noise, occasional wrongly-flipped segments too.
+
+    This single-buffer-per-part approach isn't infallible: a line that
+    doubles back on itself sharply (a genuine hairpin, not just a gradual
+    bend) could still end up with part of it on the wrong side. If that
+    happens, split the offending line into two separate FEATURES in
+    `locations` at the hairpin, one per arm -- each feature gets its own
+    independent decision, since this resolves per-part rather than per
+    merged geometry.
+    """
+
+    def water_frac(poly) -> float:
+        if poly.is_empty:
+            return 0.0
+        mask = rasterize(
+            [(poly, 1)],
+            out_shape=out_shape,
+            transform=transform,
+            fill=0,
+            dtype="uint8",
+        ).astype(bool)
+        return float(water_mask.values[mask].mean()) if mask.any() else 0.0
+
+    # resolve per ORIGINAL feature/part, not the merged whole -- so a
+    # `locations` split into multiple features (or already multi-part) gets
+    # an independent decision per part
+    parts = []
+    for geom in locations.geometry:
+        if geom is None or geom.is_empty:
+            continue
+        if isinstance(geom, BaseMultipartGeometry):
+            parts.extend(g for g in geom.geoms if not g.is_empty)
+        else:
+            parts.append(geom)
+
+    polys = []
+    for line in parts:
+        if line.length == 0:
+            continue
+        side_a = line.buffer(distance, single_sided=True)
+        side_b = line.buffer(-distance, single_sided=True)
+        polys.append(side_a if water_frac(side_a) >= water_frac(side_b) else side_b)
+
+    if not polys:
+        raise ValueError("`locations` contains no usable line geometry to buffer.")
+    return unary_union(polys)
 
 
 # ── Advance: offshore_barrier ─────────────────────────────────────────────────
@@ -225,6 +304,490 @@ def apply_river_levee(
 #         zmin=zmin, zmax=zmax, closing_time=closing_time, merge=merge,
 #     )
 #     return mod
+
+
+# NBS Protect-open
+# ── NbS advance: vegetated_foreshore ──────────────────────────────────────────
+def apply_NbS_land_reclamation(
+    mod: SfincsModel,
+    distance: float,
+    locations: Path,
+    target_code: int = 90,
+    water_code: int = 80,
+    unclassified_code: Optional[int] = 200,
+    dep_subgrid: Optional[str] = None,
+    landuse_path: Optional[str] = None,
+    roughness_native_path: Optional[str] = None,
+    lu_roughness_lookup_path: Optional[str] = None,
+    manning_n: Optional[float] = None,
+    max_depth: Optional[float] = None,
+    nr_subgrid_pixels: Optional[int] = None,
+    elevation: Optional[float] = None,
+    min_elevation: Optional[float] = None,
+    max_elevation: Optional[float] = None,
+    out_path: str = "foreshore_landuse.tif",
+    sea_mask_path: Optional[str] = None,
+    sea_mask_out_path: str = "sea_mask.tif",
+    **kwargs,
+) -> SfincsModel:
+    """
+    Created vegetated foreshore for the apply_adaptation dispatch.
+
+    Extends the coastline seaward: a reference coastline polyline is buffered
+    by `distance`, SEAWARD ONLY (see _offshore_buffer), and every currently-
+    water cell in that buffer is raised to `elevation` and reclassed to
+    `target_code`. Cells that are already land are left alone. Buffering only
+    the offshore side (rather than a plain symmetric buffer) matters because
+    a back-barrier lagoon/tidal channel immediately behind the coastline is
+    `is_water`-true same as the open sea -- a symmetric buffer would reclaim
+    land inside the lagoon too, not just seaward of the barrier.
+
+    BOTH elevation and roughness change here (retreat changes only roughness), so
+    both rasters are patched and the subgrid is rebuilt from the patched pair.
+    Roughness is patched on this basin's own native-resolution roughness raster,
+    same convention as apply_retreat -- NOT via HydroMT's lulc+reclass_table
+    machinery, which this repo's data catalog has no source for.
+
+    Wave run-up is deliberately NOT modified: the measure's effect enters through
+    bed elevation and bottom friction only. This follows World Bank (2024) NBSOS
+    sec. B.2.3.4, which disregards vegetation effects on run-up because they are
+    carried through bottom friction.
+
+    Assumes the offshore area is ALREADY inside the active model domain (true for
+    a coastal SFINCS domain extending seaward of the coastline). Raises if it is
+    not, rather than silently growing the mask and invalidating the boundary
+    points, which would need the water level forcing to be rebuilt too.
+
+    Args:
+        mod                      : (Required) Open SfincsModel object
+        distance                 : (Required from measures.yml) Foreshore width [m], seaward from `locations`
+        elevation                : (Optional) Bed elevation [m above datum] of the new foreshore.
+                                   If omitted, each cell inherits the elevation of its nearest
+                                   land cell, so the foreshore follows the local coastline height.
+        min_elevation            : (Optional) Floor on the inherited elevation. Without it, a
+                                   stretch fronted by low mudflats/tidal flats -- whose "nearest
+                                   land" is itself near or below datum -- produces a reclaimed
+                                   foreshore that is still mostly underwater rather than emergent
+                                   land. Only applies when `elevation` is omitted.
+        max_elevation            : (Optional) Cap on the inherited elevation, e.g. MHW. Without
+                                   it, a stretch fronted by dunes or a dike produces a platform
+                                   at that height -- a barrier rather than an intertidal foreshore.
+        locations                : (Required from measures.yml) Path/gdf with the reference coastline
+                                   polyline(s) to buffer by `distance`
+        target_code              : (Optional) Land use assigned to the new foreshore.
+                                   90 = herbaceous wetland, 95 = mangroves.
+                                   60 is BARE ground -- use it only for the attribution run below.
+        water_code               : (Optional) Land use code treated as "currently water" (80)
+        unclassified_code        : (Optional) Land use code ALSO treated as water when the cell's
+                                   own dep is below datum (200 by default). Some basins' landuse
+                                   rasters fill large stretches of open sea with this sentinel
+                                   instead of water_code, wherever their source data doesn't
+                                   extend that far offshore -- without this, those stretches get
+                                   an empty foreshore footprint despite clearly being open water.
+                                   Pass None to disable and only trust water_code.
+        dep_subgrid              : (Required) Path to the basin's own built dep_subgrid.tif
+        landuse_path             : (Required) Path to this basin's own landuse raster
+        roughness_native_path    : (Required) Path to this basin's own native-resolution
+                                   roughness raster (Manning's n)
+        lu_roughness_lookup_path : (Required) landuse->Manning's n lookup CSV
+                                   (copernicus_worldcover/manning_n columns)
+        manning_n                : (Optional) Explicit Manning's n for the new foreshore,
+                                   overriding the lookup. Use to apply a literature value
+                                   (0.05 wetland, NBSOS Map B.2; 0.04-0.08 saltmarsh IQR,
+                                   Arefin et al. 2026) rather than the catalog default.
+        max_depth                : (Optional) Maximum water depth [m] in which foreshore may be
+                                   created, bounding the footprint to plausible depths
+                                   (cf. NBSOS bounding reef NBS to the 3 m isobath).
+        nr_subgrid_pixels        : (Optional) Subgrid refinement factor; inferred if omitted
+        out_path                 : (Optional) Filename the reclassed lulc raster is written to under mod.root
+        sea_mask_path            : (Optional) Path to the basin's own corrected open-sea mask
+                                   (zsini_sea_cells_on_grid.tif, coarse/computational-grid
+                                   resolution, 1.0=sea). When given, an updated copy is written
+                                   to `sea_mask_out_path` with reclaimed coarse cells cleared to
+                                   land -- without this, 17_flood_metrics.py's
+                                   compute_max_inundation keeps masking flood depth to NaN over
+                                   the new land, since it has no other way to know it's no
+                                   longer open sea. Skipped entirely when None.
+        sea_mask_out_path        : (Optional) Filename the updated sea mask is written to under
+                                   mod.root, only used when `sea_mask_path` is given
+
+    Attribution:
+        Run twice with identical geometry -- once with target_code=60 (bare) and
+        once with target_code=90 -- and difference the results to separate the
+        land-raising effect from the vegetation effect. van Zelst et al. (2021),
+        Tiggeloven et al. (2022) and Moller et al. (2014) all hold the profile
+        fixed and vary only the vegetation for exactly this reason.
+
+    Returns:
+        Modified SfincsModel object.
+    """
+    if dep_subgrid is None:
+        raise ValueError(
+            "apply_NbS_land_reclamation needs dep_subgrid (path to dep_subgrid.tif)"
+        )
+    if landuse_path is None:
+        raise ValueError("apply_NbS_land_reclamation needs landuse_path")
+    if roughness_native_path is None:
+        raise ValueError("apply_NbS_land_reclamation needs roughness_native_path")
+    if lu_roughness_lookup_path is None and manning_n is None:
+        raise ValueError(
+            "apply_NbS_land_reclamation needs lu_roughness_lookup_path or manning_n"
+        )
+
+    # 1. elevation + land use, both on the dep_subgrid grid
+    dep = mod.data_catalog.get_rasterdataset(dep_subgrid)
+    if isinstance(dep, xr.Dataset):
+        dep = dep[list(dep.data_vars)[0]]
+
+    lulc = mod.data_catalog.get_rasterdataset(landuse_path)
+    if isinstance(lulc, xr.Dataset):
+        lulc = lulc[list(lulc.data_vars)[0]]
+    lulc = lulc.raster.reproject_like(dep, method="nearest")
+
+    # "water" = water_code cells, PLUS unclassified_code cells that are also
+    # below datum in dep. This basin's own landuse raster fills large stretches
+    # of open sea with unclassified_code (its source data simply doesn't cover
+    # that far offshore) rather than water_code -- confirmed those cells sit at
+    # a median -7 m in dep (even deeper than confirmed water_code cells), i.e.
+    # they're real sea, just missing a landuse label. Without this, whole
+    # stretches of coastline end up with an empty foreshore footprint even
+    # though there's clearly open water right there.
+    is_water = lulc == water_code
+    if unclassified_code is not None:
+        is_water = is_water | ((lulc == unclassified_code) & (dep < 0))
+
+    # 2. footprint: currently water, inside the SEAWARD-only buffered coastline.
+    # `locations` is a reference coastline, buffered by `distance` on the
+    # offshore side only (see _offshore_buffer) -- so a back-barrier lagoon/
+    # tidal channel immediately behind the coastline isn't reclaimed too, even
+    # though it's `is_water`-true same as the open sea.
+    if isinstance(locations, (str, Path)):
+        locations = gpd.read_file(locations)
+    locations = locations.to_crs(dep.rio.crs)
+    offshore_geom = _offshore_buffer(
+        locations,
+        distance,
+        water_mask=is_water,
+        transform=dep.rio.transform(),
+        out_shape=(dep.rio.height, dep.rio.width),
+    )
+    footprint = rasterize(
+        [(offshore_geom, 1)],
+        out_shape=(dep.rio.height, dep.rio.width),
+        transform=dep.rio.transform(),
+        fill=0,
+        dtype="uint8",
+    ).astype(bool)
+    footprint = xr.DataArray(footprint, dims=dep.dims, coords=dep.coords)
+
+    foreshore_mask = footprint & is_water
+    if max_depth is not None:
+        foreshore_mask = foreshore_mask & (dep >= -abs(max_depth))
+
+    n_cells = int(foreshore_mask.sum())
+    if n_cells == 0:
+        raise ValueError(
+            "Foreshore footprint is empty -- check that `locations` follows the "
+            f"coastline, that water_code={water_code} (or unclassified_code="
+            f"{unclassified_code} with dep<0) matches {landuse_path}, "
+            "and that max_depth is not too restrictive."
+        )
+
+    # the new foreshore must already be inside the active domain, or the boundary
+    # points and water level forcing would need rebuilding too
+    active = (mod.grid.mask == 1) | (mod.grid.mask == 2)
+    active_hr = (
+        active.astype("uint8")
+        .rio.write_nodata(2)
+        .raster.reproject_like(dep, method="nearest")
+        == 1
+    )
+    if bool((foreshore_mask & ~active_hr).any()):
+        raise ValueError(
+            "Foreshore footprint extends outside the active model domain. Extend "
+            "the domain seaward at build time (NBSOS uses >=4 km) and rebuild, "
+            "rather than growing the mask here."
+        )
+
+    # 3. patch elevation and land use
+    if elevation is None:
+        # Nearest-land-cell elevation, so the new foreshore inherits the local
+        # coastline height and varies alongshore. Sampling the nearest *land cell*
+        # rather than the polyline itself keeps this robust to a reference line
+        # that sits slightly seaward or inland of the true coast.
+        dep_nodata = dep.rio.nodata
+        land = ~is_water
+        if dep_nodata is not None and np.isfinite(dep_nodata):
+            land = land & (dep != dep_nodata)
+        if not bool(land.any()):
+            raise ValueError(
+                "No land cells found to inherit an elevation from; "
+                "pass `elevation` explicitly."
+            )
+        _, idx = ndimage.distance_transform_edt(~land.values, return_indices=True)
+        z_new = xr.DataArray(
+            dep.values[idx[0], idx[1]], dims=dep.dims, coords=dep.coords
+        )
+        if min_elevation is not None:
+            z_new = z_new.clip(min=min_elevation)
+        if max_elevation is not None:
+            z_new = z_new.clip(max=max_elevation)
+        z_vals = z_new.values[foreshore_mask.values]
+        z_desc = (
+            f"{np.median(z_vals):.2f} m median, coastline-derived "
+            f"(range {z_vals.min():.2f} to {z_vals.max():.2f})"
+        )
+    else:
+        z_new = elevation
+        z_desc = f"{elevation:.2f} m fixed"
+
+    dep_new = dep.where(~foreshore_mask, z_new).astype(dep.dtype)
+    lulc_new = lulc.where(~foreshore_mask, target_code).astype(lulc.dtype)
+
+    dep_out_path = Path(mod.root.path) / "foreshore_dep_subgrid.tif"
+    dep_new.rio.to_raster(dep_out_path)
+
+    out_path = Path(out_path)
+    if not out_path.is_absolute():
+        out_path = Path(mod.root.path) / out_path
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    lulc_new.rio.to_raster(out_path)
+
+    # 4. patch roughness on the native-resolution raster (same as apply_retreat)
+    if manning_n is None:
+        lookup = pd.read_csv(lu_roughness_lookup_path)
+        rows = lookup.loc[
+            lookup["copernicus_worldcover"].astype(int) == int(target_code), "manning_n"
+        ]
+        if rows.empty:
+            raise ValueError(
+                f"target_code={target_code} not found in {lu_roughness_lookup_path}"
+            )
+        manning_n = float(rows.iloc[0])
+
+    print(
+        f"  Foreshore: {distance:.0f} m wide, {n_cells} cells, "
+        f"z={z_desc}, lulc={target_code}, n={manning_n}"
+    )
+
+    da_roughness = mod.data_catalog.get_rasterdataset(roughness_native_path)
+    if isinstance(da_roughness, xr.Dataset):
+        da_roughness = da_roughness[list(da_roughness.data_vars)[0]]
+    # uint8 + explicit nodata sentinel: a plain bool array fails to reproject
+    # (hydromt writes dep's inherited -9999.0 nodata, which bool can't hold)
+    foreshore_native = (
+        foreshore_mask.astype("uint8")
+        .rio.write_nodata(2)
+        .raster.reproject_like(da_roughness, method="nearest")
+        == 1
+    )
+    roughness_new = da_roughness.where(~foreshore_native, manning_n).astype(
+        da_roughness.dtype
+    )
+
+    roughness_out_path = Path(mod.root.path) / "foreshore_roughness.tif"
+    roughness_new.rio.to_raster(roughness_out_path)
+
+    # 5. rebuild subgrid from the patched elevation + roughness pair
+    mod.subgrid.create(
+        elevation_list=[{"elevation": str(dep_out_path)}],
+        roughness_list=[{"manning": str(roughness_out_path)}],
+        nr_subgrid_pixels=(
+            _infer_nr_subgrid_pixels(mod, dep)
+            if nr_subgrid_pixels is None
+            else nr_subgrid_pixels
+        ),
+        write_man_tif=True,
+        write_dep_tif=True,
+    )
+
+    # 6. update the sea mask so downstream flood-metrics/animation stops
+    # treating reclaimed cells as open sea. compute_max_inundation
+    # (17_flood_metrics.py) masks flood depth to NaN wherever this file
+    # reads 1.0 -- it's built once at basin-preprocessing time from the
+    # ORIGINAL landuse and never touches this measure's own reclaimed
+    # cells, so without this update, flood depth over the new land
+    # silently disappears from both the risk metrics and the flood
+    # animation, even though the SFINCS run itself simulates it correctly.
+    if sea_mask_path is not None:
+        sea = mod.data_catalog.get_rasterdataset(sea_mask_path)
+        if isinstance(sea, xr.Dataset):
+            sea = sea[list(sea.data_vars)[0]]
+        # foreshore_mask is at dep_subgrid resolution, sea is at the coarse
+        # SFINCS grid resolution -- "max" (not "nearest") so ANY reclaimed
+        # subgrid pixel inside a coarse cell marks that whole coarse cell as
+        # no-longer-sea, not just whichever single pixel "nearest" happens
+        # to land on.
+        foreshore_u8 = foreshore_mask.astype("uint8").rio.write_nodata(2)
+        reclaimed_coarse = foreshore_u8.raster.reproject_like(sea, method="max") == 1
+        sea_new = sea.where(~reclaimed_coarse).rio.write_nodata(np.nan)
+
+        sea_mask_out_path = Path(sea_mask_out_path)
+        if not sea_mask_out_path.is_absolute():
+            sea_mask_out_path = Path(mod.root.path) / sea_mask_out_path
+        sea_new.rio.to_raster(sea_mask_out_path)
+        print(
+            f"  Updated sea mask: cleared {int(reclaimed_coarse.sum())} coarse "
+            f"cells to land at {sea_mask_out_path}"
+        )
+
+    return mod
+
+
+def apply_water_retention(
+    mod: SfincsModel,
+    locations: Path,
+    storage_fraction: float,
+    baseline_excess_volume: float,
+    max_lowering: Optional[float] = None,
+    dep_subgrid: Optional[str] = None,
+    lulc_source: str = "esa_worldcover",
+    reclass_table: str = "esa_worldcover_mapping",
+    nr_subgrid_pixels: Optional[int] = None,
+    flat_floor: bool = False,
+    **kwargs,
+) -> SfincsModel:
+    """
+    DEM-lowering retention measure (Room-for-the-River style detention basin).
+
+    Lowers the subgrid elevation within a predefined retention polygon to create
+    storage, then rebuilds the subgrid tables so the solver sees the depression.
+
+    Storage target is derived from a fraction of the UNCONTROLLED baseline
+    flood volume, i.e. target_volume = fraction * baseline_excess_volume.
+    Compute `baseline_excess_volume` once via compute_excess_volume() on the
+    no-retention run, then reuse it across all fraction scenarios so every
+    run is scaled against the same reference number.
+
+    NOTE: because this is a physically-based measure, the *nominal*
+    target_volume is not guaranteed to be fully realized in the resulting
+    flood map -- how much volume the pit actually captures depends on
+    hydraulic connectivity, event duration, and whether it overflows.
+    After running the simulation, re-run compute_excess_volume() on the
+    resulting flood map and compare against the baseline to get the
+    *realized* retained fraction, and check the printed lowering/`max_lowering`
+    values to confirm the pit wasn't depth-capped before it could hold
+    the intended volume.
+
+    Args:
+        mod                    : (Required) Open SfincsModel object (HydroMT)
+        locations              : (Required from measures.yml) Path / data source / GeoDataFrame of the retention polygon
+        storage_fraction       : (Required from measures.yml) Fraction (0-1) of baseline_excess_volume to target as storage
+        baseline_excess_volume : (Required from measures.yml) Excess flood volume [m3] from the uncontrolled
+                                  baseline run (see compute_excess_volume)
+        dep_subgrid            : (Required from measures.yml) Path to built dep_subgrid.tif, or opened xr.DataArray
+        max_lowering           : (Optional) Cap on excavation depth [m] (plausibility guard).
+        lulc_source            : (Optional) Land-use source name in the data catalog
+        reclass_table          : (Optional) Roughness reclassification table name
+        nr_subgrid_pixels      : (Optional) Subgrid refinement factor. If omitted, it is inferred
+                                 from dep_subgrid and the coarse model grid resolution.
+        flat_floor             : (Optional) If True, set the zone to a flat floor at (min_terrain -
+                                 lowering); if False (default), subtract `lowering` from
+                                 existing terrain, preserving micro-relief.
+
+    Returns:
+        Modified SfincsModel object.
+    """
+    if dep_subgrid is None:
+        raise ValueError(
+            "apply_water_retention needs dep_subgrid (path to dep_subgrid.tif, or opened xr.DataArray)"
+        )
+    if not (0.0 <= storage_fraction <= 1.0):
+        raise ValueError(f"storage_fraction must be in [0, 1], got {storage_fraction}")
+    if baseline_excess_volume <= 0:
+        raise ValueError(
+            f"baseline_excess_volume must be > 0, got {baseline_excess_volume}"
+        )
+
+    target_volume = storage_fraction * baseline_excess_volume
+
+    if isinstance(locations, str):
+        locations = gpd.read_file(locations)
+    locations = locations.to_crs(mod.crs)
+    zone_geom = locations.geometry.union_all()
+
+    # high-res elevation (the already-built dep_subgrid). .load() forces this
+    # into memory and closes the underlying file handle — dep_subgrid may be
+    # the same file this call later overwrites (write_dep_tif=True below),
+    # and on Windows a lazily-opened (dask-backed) raster keeps that file
+    # locked, so the overwrite fails with a "Permission denied" /
+    # CPLE_AppDefinedError from rasterio.
+    dep = mod.data_catalog.get_rasterdataset(dep_subgrid)
+    if isinstance(dep, xr.Dataset):
+        dep = dep[list(dep.data_vars)[0]]
+    dep = dep.load()
+
+    # rasterize the retention zone onto the subgrid grid
+    zone_arr = rasterize(
+        [(zone_geom, 1)],
+        out_shape=(dep.rio.height, dep.rio.width),
+        transform=dep.rio.transform(),
+        fill=0,
+        dtype="uint8",
+    ).astype(bool)
+    zone_mask = xr.DataArray(zone_arr, dims=dep.dims, coords=dep.coords)
+
+    res = dep.rio.resolution()  # (xres, yres) at SUBGRID resolution
+    pixel_area = abs(res[0] * res[1])
+    zone_area = float(zone_mask.sum()) * pixel_area
+    if zone_area == 0:
+        raise ValueError(
+            "Retention zone covers no subgrid pixels - check the polygon / CRS."
+        )
+
+    # resolve excavation depth from the fraction-derived target volume
+    lowering = target_volume / zone_area
+    capped = False
+    if max_lowering is not None and lowering > max_lowering:
+        lowering = max_lowering
+        capped = True
+    created_storage = lowering * zone_area
+
+    # apply the lowering
+    if flat_floor:
+        floor = float(dep.where(zone_mask).min()) - lowering
+        dep_new = dep.where(~zone_mask, floor).astype(dep.dtype)
+    else:
+        dep_new = dep.where(~zone_mask, dep - lowering).astype(dep.dtype)
+
+    # roughness is unchanged, but subgrid.create rebuilds tables from scratch,
+    # so we still feed it the (unmodified) land use for the Manning derivation
+    lulc = mod.data_catalog.get_rasterdataset(lulc_source, geom=mod.region, buffer=10)
+    if isinstance(lulc, xr.Dataset):
+        lulc = lulc[list(lulc.data_vars)[0]]
+    lulc = lulc.raster.reproject_like(dep, method="nearest")
+
+    # preserve the river bathymetry burn-in on rebuild (same as coastline ext.)
+    river_gdf = mod.rivers.data
+    river_list = (
+        [{"centerlines": river_gdf}]
+        if river_gdf is not None and not river_gdf.empty
+        else []
+    )
+
+    mod.subgrid.create(
+        elevation_list=[{"elevation": dep_new}],
+        roughness_list=[{"lulc": lulc, "reclass_table": reclass_table}],
+        river_list=river_list,
+        nr_subgrid_pixels=(
+            _infer_nr_subgrid_pixels(mod, dep)
+            if nr_subgrid_pixels is None
+            else nr_subgrid_pixels
+        ),
+        write_dep_tif=True,
+        write_man_tif=True,
+    )
+
+    cap_note = " [CAPPED by max_lowering, target not fully met]" if capped else ""
+    print(
+        f"  Applied DEM retention: storage_fraction={storage_fraction:.2f} -> target_volume={target_volume:.0f} m3, "
+        f"lowered {lowering:.2f} m over {zone_area / 1e6:.2f} km2 -> "
+        f"~{created_storage:.0f} m3 nominal storage{cap_note} "
+        f"({'flat floor' if flat_floor else 'subtracted'}). "
+        f"Realized retained volume must be checked post-hoc against the simulated flood map."
+    )
+
+    return mod
 
 
 # ── Protect-closed: coastal_levee ────────────────────────────────────────────
@@ -582,6 +1145,8 @@ def apply_retreat(
 selected_measures = {
     "offshore_barrier": apply_offshore_barrier,
     "river_levee": apply_river_levee,
+    "nbs_land_reclamation": apply_NbS_land_reclamation,
+    # "water_retention": apply_water_retention,
     "coastal_levee": apply_coastal_levee,
     "pumps": apply_pumps,
     "dike_ring": apply_dike_ring,

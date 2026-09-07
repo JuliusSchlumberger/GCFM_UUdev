@@ -112,24 +112,25 @@ grey_protect_open_1:
                     merge: false }
 
 # -----------------------------------------------------------------------------------------------
-# TODO
-# NbS PROTECT-OPEN (after holiday)
-# NbS_protect_open:
-#   measures:
-#     nbs_land_reclamation: {attenuation_rate: 0.5,
-#                            distance: 500,
-#                            locations: adaptation/land_reclamation.geojson,
-#                            elevation: 2.0,
-#                            land_use_code: 60,
-#                            dep_subgrid: adaptation/dep_subgrid.tif }
-#     water_retention: {storage_fraction: 1,
-#                       locations: adaptation/water_retention.geojson,
-#                       baseline_excess_volume: null,
-#                       dep_subgrid: adaptation/dep_subgrid.tif}
+# NbS PROTECT-OPEN
+
+NbS_protect_open_0p8:
+  measures:
+    nbs_land_reclamation: {attenuation_rate: 0.8, # Wamsley: The relationship indicates that storm surge was reduced by 1 m for every 14.5 km inland
+                           distance: 1000,
+                           locations: adaptation/land_reclamation.geojson,
+                           target_code: 90, # wetlands
+                           min_elevation: 0.2, # floor [m above datum] so foreshore fronted by low mudflats still emerges as land, not just barely-submerged
+                           }
+    # water_retention: {storage_fraction: 1,
+    #                   locations: adaptation/water_retention.geojson,
+    #                   baseline_excess_volume: null,
+    #                   dep_subgrid: adaptation/dep_subgrid.tif}
 
 
 # -----------------------------------------------------------------------------------------------
 # PROTECT-CLOSED
+
 # Coastal flood
 # protect_closed_04:
 #   measures:

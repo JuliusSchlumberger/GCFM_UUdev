@@ -35,51 +35,48 @@ adaptation_measures:
     type: nbs_land_reclamation
     description: Extension of coastline by land reclamation seaward
     params:
-      attenuation_rate: # depending on type of land use of offshore extension (in m/km)
-        min: 0
-        max: 1 # fraction of wave height reduction per km of coastline extension
-        required_for: [postprocessing]
       distance: # in metres
         min: 0
-        max: 1000 # 1km - limited by the model domain
+        max: 2000 # 1km - limited by the model domain
         required_for: [postprocessing, preprocessing]
+      attenuation_rate: # depending on type of land use of offshore extension (in m/km)
+        min: 0
+        max: 1
+        required_for: [postprocessing]
       locations:
         min: null
         max: null # path, data source name, or GeoDataFrame with the reference coastline polyline
         required_for: [preprocessing]
-      elevation:
-        min: 0.5
-        max: 20 # target elevation [m above datum] for the reclaimed land
-        required_for: [preprocessing]
-      land_use_code:
+      target_code:
         min: 0
         max: 200 # target ESA WorldCover class for the reclaimed land (e.g. 60 = bare/sparse vegetation)
         required_for: [preprocessing]
-      dep_subgrid:
-        min: null
-        max: null # path to dep_subgrid.tif, or an already-opened xr.DataArray of it (elevation source)
+      min_elevation: # floor [m above datum] on the inherited coastline elevation; only used when `elevation` is not set
+        min: 0
+        max: 20
         required_for: [preprocessing]
 
-  water_retention:
-    type: water_retention
-    description: Water retention area in floodplain to store excess river discharge during flood events
-    params:
-      storage_fraction: # fraction
-        min: 0
-        max: 1
-        required_for: [postprocessing, preprocessing]
-      locations:
-        min: null
-        max: null # path, data source name, or GeoDataFrame with the retention area polygon(s)
-        required_for: [preprocessing]
-      baseline_excess_volume:
-        min: null
-        max: null # in m3, the excess flood volume from the uncontrolled baseline run
-        required_for: [preprocessing]
-      dep_subgrid:
-        min: null
-        max: null # path to dep_subgrid.tif, or an already-opened xr.DataArray of it (elevation source)
-        required_for: [preprocessing]
+
+  # water_retention:
+  #   type: water_retention
+  #   description: Water retention area in floodplain to store excess river discharge during flood events
+  #   params:
+  #     storage_fraction: # fraction
+  #       min: 0
+  #       max: 1
+  #       required_for: [postprocessing, preprocessing]
+  #     locations:
+  #       min: null
+  #       max: null # path, data source name, or GeoDataFrame with the retention area polygon(s)
+  #       required_for: [preprocessing]
+  #     baseline_excess_volume:
+  #       min: null
+  #       max: null # in m3, the excess flood volume from the uncontrolled baseline run
+  #       required_for: [preprocessing]
+  #     dep_subgrid:
+  #       min: null
+  #       max: null # path to dep_subgrid.tif, or an already-opened xr.DataArray of it (elevation source)
+  #       required_for: [preprocessing]
 
 
   # Greys protect-open

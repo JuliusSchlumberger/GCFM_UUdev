@@ -171,45 +171,76 @@ def apply_nbs_land_reclamation(
     output_dir: str,
     distance: float,
     attenuation_rate: float,
+    attribution_codes: tuple = (2, 3),
     **kwargs,
-) -> str:
+) -> dict:
     """
-    Post-processing coastline extension rule.
-    Logic:
-        - Use distance and attentuation rate (based on land use of new coastline) to determine the extent of flood depth reduction.
-        - Apply to coastal cells only (2)
-    """
+    Post-processing created vegetated foreshore ("managed advance").
 
+    The measure is represented by an empirical reduction coefficient applied to
+    an existing flood map, without re-running the model. A uniform water-level
+    reduction dd = (D / 1000) * r is subtracted from all cells attributed to
+    coastal and compound flooding. Because depth is the difference between water
+    level and bed elevation, this is equivalent to a uniform lowering of the
+    water surface.
+
+    r is a water-level (surge) attenuation rate, NOT a wave attenuation rate:
+    wetland/saltmarsh 0.017-0.25 m/km (Wamsley et al. 2010), mangrove
+    0.05-0.50 m/km (McIvor et al. 2012). NBSOS, van Zelst et al. (2021) and
+    Tiggeloven et al. (2022) publish no per-km water-level attenuation rate.
+
+    Args:
+        distance          : Foreshore / vegetation belt width [m]
+        attenuation_rate  : Water-level attenuation rate r [m per km of belt width]
+        attribution_codes : Attribution-mask codes treated as coastal or compound
+    """
     out_path = Path(output_dir) / "max_flood_depth.tif"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Translate the built distance into a vertical depth reduction
-    # Distance in km * attenuation rate (m/km)
+    # Below ~1200 m, van Zelst et al. (2021) report surge levels comparable to
+    # bare tidal flats -- a linear r*D extrapolation here is unsupported.
+    if distance < 1200:
+        print(
+            f"  WARNING: belt width {distance:.0f} m is below the 1200 m "
+            f"threshold at which surge attenuation is evidenced."
+        )
+
+    # Distance [m] -> [km]; r is m per km
     reduction = (distance / 1000) * attenuation_rate
     print(
-        f"  Calculated Attenuation: Results in a flat depth reduction of {reduction:.3f}m."
+        f"  Uniform water-level reduction of {reduction:.3f} m "
+        f"(D={distance:.0f} m, r={attenuation_rate} m/km)."
     )
 
     # Read flood map raster
     with rasterio.open(flood_map_path) as src:
-        flood, prof = src.read(1), src.profile
+        flood, prof = src.read(1).astype("float32"), src.profile
+        src_nodata = src.nodata
 
     # Read attribution mask
     mask_path = Path(scenario_root).parent / "attribution_mask.tif"
     if not mask_path.exists():
         raise FileNotFoundError(f"Attribution mask not found at {mask_path}")
-
     with rasterio.open(mask_path) as attr_src:
         attr = attr_src.read(1)
 
-    # Filter coastal flooding and compound pixels
-    is_coastal_flood = (np.isin(attr, [2, 3, 4])) & (flood != prof["nodata"])
+    # NaN-safe valid mask: a plain `flood != nodata` comparison is wrong when
+    # nodata is NaN, because NaN != NaN evaluates True -- nodata cells would be
+    # treated as valid depths and reduced.
+    if src_nodata is None or np.isnan(src_nodata):
+        valid = np.isfinite(flood)
+    else:
+        valid = np.isfinite(flood) & (flood != src_nodata)
 
-    # Apply the physically derived reduction
+    is_coastal_flood = np.isin(attr, attribution_codes) & valid
+
+    # Apply the reduction. Cells drained to zero or below take the same "dry"
+    # value the baseline map uses, so the two are directly comparable.
+    dry = src_nodata if src_nodata is not None else np.nan
     reduced_depth = flood - reduction
     flood = np.where(
         is_coastal_flood,
-        np.where(reduced_depth <= 0, prof["nodata"], reduced_depth),
+        np.where(reduced_depth <= 0, dry, reduced_depth),
         flood,
     )
 

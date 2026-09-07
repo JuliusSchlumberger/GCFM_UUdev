@@ -12,10 +12,12 @@ rule adapt_apply_pre:
         landuse            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
         roughness_native   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"),
         lu_roughness_lookup = catalogue_path("lu_to_roughness_lookup"),
+        sea_mask           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
         measure_data       = lambda wildcards: strategy_measure_input_paths(wildcards.strategy),
     output:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sfincs.inp"),
         retreat_landuse = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/retreat_landuse.tif"),
+        sea_mask   = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sea_mask.tif"),
     params:
         strategy_def       = lambda wildcards: STRATEGY_DEFS[wildcards.strategy],
         measures_def       = MEASURES_DEFS,
@@ -79,7 +81,7 @@ rule adapt_run_event_pre:
         rstart              = results_path("{basin_id}/spin_up/" + RST_FNAME),
         land_polygons       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
         landuse             = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
-        sea_mask            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
+        sea_mask            = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sea_mask.tif"),
         domain_gpkg         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
     output:
@@ -109,7 +111,7 @@ rule adapt_flood_metrics_pre:
     input:
         sfincs_map_nc = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),
         landuse       = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/retreat_landuse.tif"),
-        sea_mask      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
+        sea_mask      = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sea_mask.tif"),
         delta_polygon = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
     output:
         flood_map_tif = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/max_flood_depth.tif"),
