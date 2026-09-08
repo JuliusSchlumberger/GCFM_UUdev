@@ -57,26 +57,25 @@ adaptation_measures:
         required_for: [preprocessing]
 
 
-  # water_retention:
-  #   type: water_retention
-  #   description: Water retention area in floodplain to store excess river discharge during flood events
-  #   params:
-  #     storage_fraction: # fraction
-  #       min: 0
-  #       max: 1
-  #       required_for: [postprocessing, preprocessing]
-  #     locations:
-  #       min: null
-  #       max: null # path, data source name, or GeoDataFrame with the retention area polygon(s)
-  #       required_for: [preprocessing]
-  #     baseline_excess_volume:
-  #       min: null
-  #       max: null # in m3, the excess flood volume from the uncontrolled baseline run
-  #       required_for: [preprocessing]
-  #     dep_subgrid:
-  #       min: null
-  #       max: null # path to dep_subgrid.tif, or an already-opened xr.DataArray of it (elevation source)
-  #       required_for: [preprocessing]
+  water_retention:
+    type: water_retention
+    description: Water retention area in floodplain to store excess river discharge during flood events
+    params:
+      storage_fraction: # fraction
+        min: 0
+        max: 1
+        required_for: [postprocessing, preprocessing]
+      locations:
+        min: null
+        max: null # path, data source name, or GeoDataFrame with the retention area polygon(s)
+        required_for: [preprocessing]
+      # dep_subgrid/roughness_native_path/baseline_excess_volume are NOT
+      # declared here -- like retreat and nbs_land_reclamation's own
+      # dep_subgrid/roughness_native_path, they're auto-injected (never
+      # strategy-configured): dep_subgrid/roughness_native_path by
+      # 18a_adapt_pre.py from this basin's own already-built files,
+      # baseline_excess_volume by rule attribution_mask (18c), read by both
+      # 18a_adapt_pre.py and 18b_adapt_post.py.
 
 
   # Greys protect-open

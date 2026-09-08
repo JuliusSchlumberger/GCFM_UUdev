@@ -14,10 +14,11 @@ subgrid, mirroring the other project's apply_adaptation()) lives in
 18_adapt_apply.py, not here, since it's orchestration across measures, not
 any single measure's own logic.
 
-nbs_land_reclamation / water_retention are deliberately NOT ported here yet:
-water_retention's compute_excess_volume() needs attribution_mask.tif (per-pixel
-river/coastal/compound classification), which doesn't exist in this repo --
-same prerequisite the postprocessing method needs. See the project plan.
+water_retention's own baseline_excess_volume is computed once per basin x
+scenario by rule attribution_mask (18c_attribution_mask.py), via
+src.postprocessing.compute_excess_volume, and read here (18a_adapt_pre.py)
+from its baseline_excess_volume.json output -- apply_water_retention below
+never touches attribution_mask.tif itself.
 """
 
 from pathlib import Path
@@ -641,8 +642,7 @@ def apply_water_retention(
     baseline_excess_volume: float,
     max_lowering: Optional[float] = None,
     dep_subgrid: Optional[str] = None,
-    lulc_source: str = "esa_worldcover",
-    reclass_table: str = "esa_worldcover_mapping",
+    roughness_native_path: Optional[str] = None,
     nr_subgrid_pixels: Optional[int] = None,
     flat_floor: bool = False,
     **kwargs,
@@ -655,9 +655,14 @@ def apply_water_retention(
 
     Storage target is derived from a fraction of the UNCONTROLLED baseline
     flood volume, i.e. target_volume = fraction * baseline_excess_volume.
-    Compute `baseline_excess_volume` once via compute_excess_volume() on the
-    no-retention run, then reuse it across all fraction scenarios so every
-    run is scaled against the same reference number.
+    `baseline_excess_volume` is computed once per basin x scenario by rule
+    attribution_mask (18c_attribution_mask.py, via
+    src.postprocessing.compute_excess_volume, classes=(1,3,4) -- river,
+    compound, spin-up baseline, i.e. everything but pure-coastal, since this
+    measure stores RIVER water) and read here from its baseline_excess_volume
+    .json output (see 18a_adapt_pre.py) -- reused across every
+    storage_fraction scenario so each run is scaled against the same
+    reference number.
 
     NOTE: because this is a physically-based measure, the *nominal*
     target_volume is not guaranteed to be fully realized in the resulting
@@ -669,16 +674,28 @@ def apply_water_retention(
     values to confirm the pit wasn't depth-capped before it could hold
     the intended volume.
 
+    Roughness is UNCHANGED by this measure (only elevation is lowered), so it is
+    never reclassified or looked up -- this basin's own already-built native-
+    resolution roughness raster (roughness_native_path, "manning" convention --
+    see 13_build_sfincs_skeleton.py's own subgrid.create() call) is passed
+    straight through to the rebuilt subgrid, same convention as apply_retreat
+    and apply_NbS_land_reclamation, NOT via HydroMT's own on-the-fly
+    lulc+reclass_table machinery -- this repo's data catalog doesn't register
+    any lulc/reclass source that mechanism could use.
+
     Args:
         mod                    : (Required) Open SfincsModel object (HydroMT)
         locations              : (Required from measures.yml) Path / data source / GeoDataFrame of the retention polygon
         storage_fraction       : (Required from measures.yml) Fraction (0-1) of baseline_excess_volume to target as storage
-        baseline_excess_volume : (Required from measures.yml) Excess flood volume [m3] from the uncontrolled
-                                  baseline run (see compute_excess_volume)
-        dep_subgrid            : (Required from measures.yml) Path to built dep_subgrid.tif, or opened xr.DataArray
+        baseline_excess_volume : (Required) Excess flood volume [m3] from the uncontrolled
+                                  baseline run (see src.postprocessing.compute_excess_volume;
+                                  auto-injected by 18a_adapt_pre.py, never strategy-configured)
+        dep_subgrid            : (Required) Path to the basin's own built dep_subgrid.tif
+                                  (elevation source, lowered within the retention zone)
+        roughness_native_path  : (Required) Path to this basin's own already-built
+                                  native-resolution roughness raster (Manning's n),
+                                  reused unchanged since this measure never patches roughness
         max_lowering           : (Optional) Cap on excavation depth [m] (plausibility guard).
-        lulc_source            : (Optional) Land-use source name in the data catalog
-        reclass_table          : (Optional) Roughness reclassification table name
         nr_subgrid_pixels      : (Optional) Subgrid refinement factor. If omitted, it is inferred
                                  from dep_subgrid and the coarse model grid resolution.
         flat_floor             : (Optional) If True, set the zone to a flat floor at (min_terrain -
@@ -692,6 +709,8 @@ def apply_water_retention(
         raise ValueError(
             "apply_water_retention needs dep_subgrid (path to dep_subgrid.tif, or opened xr.DataArray)"
         )
+    if roughness_native_path is None:
+        raise ValueError("apply_water_retention needs roughness_native_path")
     if not (0.0 <= storage_fraction <= 1.0):
         raise ValueError(f"storage_fraction must be in [0, 1], got {storage_fraction}")
     if baseline_excess_volume <= 0:
@@ -750,25 +769,15 @@ def apply_water_retention(
     else:
         dep_new = dep.where(~zone_mask, dep - lowering).astype(dep.dtype)
 
-    # roughness is unchanged, but subgrid.create rebuilds tables from scratch,
-    # so we still feed it the (unmodified) land use for the Manning derivation
-    lulc = mod.data_catalog.get_rasterdataset(lulc_source, geom=mod.region, buffer=10)
-    if isinstance(lulc, xr.Dataset):
-        lulc = lulc[list(lulc.data_vars)[0]]
-    lulc = lulc.raster.reproject_like(dep, method="nearest")
-
-    # preserve the river bathymetry burn-in on rebuild (same as coastline ext.)
-    river_gdf = mod.rivers.data
-    river_list = (
-        [{"centerlines": river_gdf}]
-        if river_gdf is not None and not river_gdf.empty
-        else []
-    )
-
+    # roughness is unchanged by this measure, but subgrid.create rebuilds tables
+    # from scratch -- feed it this basin's own already-built native-resolution
+    # roughness raster straight through, unmodified. dep_new already carries
+    # forward whatever river bathymetry burn-in dep_subgrid was built with, so
+    # no separate river_list re-burn is needed here (same as apply_retreat and
+    # apply_NbS_land_reclamation's own subgrid.create() rebuilds).
     mod.subgrid.create(
         elevation_list=[{"elevation": dep_new}],
-        roughness_list=[{"lulc": lulc, "reclass_table": reclass_table}],
-        river_list=river_list,
+        roughness_list=[{"manning": str(roughness_native_path)}],
         nr_subgrid_pixels=(
             _infer_nr_subgrid_pixels(mod, dep)
             if nr_subgrid_pixels is None
@@ -1146,7 +1155,7 @@ selected_measures = {
     "offshore_barrier": apply_offshore_barrier,
     "river_levee": apply_river_levee,
     "nbs_land_reclamation": apply_NbS_land_reclamation,
-    # "water_retention": apply_water_retention,
+    "water_retention": apply_water_retention,
     "coastal_levee": apply_coastal_levee,
     "pumps": apply_pumps,
     "dike_ring": apply_dike_ring,

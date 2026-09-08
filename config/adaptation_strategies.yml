@@ -114,18 +114,23 @@ grey_protect_open_1:
 # -----------------------------------------------------------------------------------------------
 # NbS PROTECT-OPEN
 
-NbS_protect_open_0p8:
+NbS_protect_open_wat_ret_09:
   measures:
-    nbs_land_reclamation: {attenuation_rate: 0.8, # Wamsley: The relationship indicates that storm surge was reduced by 1 m for every 14.5 km inland
-                           distance: 1000,
-                           locations: adaptation/land_reclamation.geojson,
-                           target_code: 90, # wetlands
-                           min_elevation: 0.2, # floor [m above datum] so foreshore fronted by low mudflats still emerges as land, not just barely-submerged
-                           }
-    # water_retention: {storage_fraction: 1,
-    #                   locations: adaptation/water_retention.geojson,
-    #                   baseline_excess_volume: null,
-    #                   dep_subgrid: adaptation/dep_subgrid.tif}
+    # nbs_land_reclamation: {attenuation_rate: 0.25, # Wamsley: The relationship indicates that storm surge was reduced by 1 m for every 14.5 km inland
+    #                        distance: 1000,
+    #                        locations: adaptation/land_reclamation.geojson,
+    #                        target_code: 90, # wetlands
+    #                        min_elevation: 0.2, # floor [m above datum] so foreshore fronted by low mudflats still emerges as land, not just barely-submerged
+    #                        }
+    water_retention: {storage_fraction: 0.9,
+                      locations: adaptation/water_retention_area.geojson}
+    # dep_subgrid/roughness_native_path are NOT set here -- they're auto-derived
+    # by 18a_adapt_pre.py from this basin's own already-built
+    # {basin_id}/sfincs_skeleton/subgrid/dep_subgrid.tif and native roughness
+    # raster, never a separately-authored raw-data file (same as retreat, see
+    # its own comment below). baseline_excess_volume is likewise NOT set here
+    # -- rule attribution_mask (18c) computes it once per basin x scenario and
+    # 18a_adapt_pre.py reads the result.
 
 
 # -----------------------------------------------------------------------------------------------

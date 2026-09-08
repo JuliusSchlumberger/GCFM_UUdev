@@ -186,6 +186,22 @@ def strategy_measure_input_paths(strategy):
     return paths
 
 
+def water_retention_excess_volume_input(wildcards):
+    """rule adapt_apply_pre's own conditional input for baseline_excess_volume.json
+    (rule attribution_mask's own output) -- ONLY when this strategy actually
+    uses water_retention. Unlike rule adapt_metrics_post (18b), where EVERY
+    postprocessing measure already depends on attribution_mask.tif for its own
+    class-based masking, no other preprocessing measure touches attribution at
+    all, so this must stay strategy-conditional -- an unconditional dependency
+    would force every basin x scenario x strategy combination through rule
+    attribution_mask (and its own river-only/coastal-only counterpart-scenario
+    prerequisite, which not every scenario in scenarios.yml has) even when the
+    strategy never uses water_retention."""
+    if "water_retention" in STRATEGY_DEFS[wildcards.strategy]["measures"]:
+        return results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/baseline_excess_volume.json")
+    return []
+
+
 # Opt-in only -- no default strategy set (unlike scenario's "default"):
 #   snakemake adapt --config target_strategies="['retreat']"
 STRATEGIES = list(config.get("target_strategies", []))

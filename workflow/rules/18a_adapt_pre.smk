@@ -13,6 +13,12 @@ rule adapt_apply_pre:
         roughness_native   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"),
         lu_roughness_lookup = catalogue_path("lu_to_roughness_lookup"),
         sea_mask           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
+        # water_retention's own fixed sizing reference -- computed once by rule
+        # attribution_mask (18c), never recomputed or attribution_mask.tif
+        # itself touched here. Strategy-conditional (see the input function's
+        # own docstring): only strategies that actually use water_retention
+        # pull in rule attribution_mask's own prerequisites.
+        baseline_excess_volume = water_retention_excess_volume_input,
         measure_data       = lambda wildcards: strategy_measure_input_paths(wildcards.strategy),
     output:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sfincs.inp"),

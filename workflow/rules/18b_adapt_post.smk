@@ -5,6 +5,10 @@ rule adapt_metrics_post:
         baseline_sfincs_map_nc = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"),
         baseline_flood_map_tif = results_path("{basin_id}/runs/{scenario}/visuals/max_flood_depth.tif"),
         attribution_mask_tif = results_path("{basin_id}/runs/{scenario}/attribution_mask.tif"),
+        # water_retention's own fixed sizing reference -- computed once by rule
+        # attribution_mask (18c) alongside attribution_mask_tif above, so this
+        # rule already depends on that rule for every strategy regardless.
+        baseline_excess_volume = results_path("{basin_id}/runs/{scenario}/baseline_excess_volume.json"),
         landuse        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
         sea_mask       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
         delta_polygon  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),

@@ -14,6 +14,7 @@ output_dir/max_flood_depth.tif -- which IS output.flood_map_tif -- so the
 final chained path already sits where it needs to be, no separate copy step.
 """
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -40,6 +41,8 @@ include_subgrid      = snakemake.params.include_subgrid
 # are Snakemake-only dependency tracking -- read implicitly by
 # compute_max_inundation(baseline_sfincs_root, ...) and by each measure's own
 # scenario_root/attribution_mask.tif lookup below, never opened directly here.
+# .baseline_excess_volume IS opened directly, but only for water_retention
+# (below).
 
 output_dir = Path(snakemake.output.metrics_csv).parent
 output_dir.mkdir(parents=True, exist_ok=True)
@@ -56,6 +59,13 @@ for measure_type, raw_params in strategy_def["measures"].items():
         k: (str(adaptation_root / v) if k in ("locations", "dep_subgrid") and isinstance(v, str) else v)
         for k, v in raw_params.items()
     }
+    if measure_type == "water_retention":
+        # baseline_excess_volume is never strategy-configured -- rule
+        # attribution_mask (18c) computes it once per basin x scenario (same
+        # fixed reference apply_water_retention's preprocessing sibling reads,
+        # see src.postprocessing.compute_excess_volume's own docstring).
+        with open(snakemake.input.baseline_excess_volume) as fh:
+            resolved["baseline_excess_volume"] = json.load(fh)["baseline_excess_volume"]
     log.info(f"Applying measure {measure_type} with params {resolved}")
 
     result = dispatch_rules(

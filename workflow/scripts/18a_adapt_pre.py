@@ -15,6 +15,7 @@ adapted_root instead of forwarded, since reference-based forwarding is
 not respected when reading them.
 """
 
+import json
 import shutil
 from pathlib import Path
 from hydromt_sfincs import SfincsModel
@@ -71,6 +72,7 @@ COMPONENT_OF_MEASURE = {
     "offshore_barrier": "weirs",
     "pumps": "drainage_structures",
     "nbs_land_reclamation": "subgrid",
+    "water_retention": "subgrid",
     "river_levee": "weirs",
     "coastal_levee": "weirs",
     "dike_ring" : "weirs",
@@ -87,14 +89,25 @@ for measure_type, raw_params in strategy_def["measures"].items():
     }
     # NOTE: retreat specifically needs the baseline flood map to determine which cells to retreat
     flood_map_path = str(baseline_flood_map_path) if measure_type == "retreat" else None
-    if measure_type in ("retreat","nbs_land_reclamation"):
-        # dep_subgrid/landuse_path/roughness_native_path/lu_roughness_lookup_path
-        # are never strategy-configured (see adaptation_strategies.yml's own
-        # comment) -- retreat always reuses this basin's own already-built
-        # elevation/landuse/roughness, never a separately-authored raw-data file.
+    if measure_type in ("retreat", "nbs_land_reclamation", "water_retention"):
+        # dep_subgrid/roughness_native_path are never strategy-configured (see
+        # adaptation_strategies.yml's own comment) -- these measures always
+        # reuse this basin's own already-built elevation/roughness, never a
+        # separately-authored raw-data file.
         resolved["dep_subgrid"] = str(skeleton_root / "subgrid" / "dep_subgrid.tif")
-        resolved["landuse_path"] = str(snakemake.input.landuse)
         resolved["roughness_native_path"] = str(snakemake.input.roughness_native)
+    if measure_type == "water_retention":
+        # baseline_excess_volume is never strategy-configured either -- rule
+        # attribution_mask (18c) computes it once per basin x scenario (see
+        # water_retention_excess_volume_input's own docstring) and this is the
+        # only place that reads the resulting JSON.
+        with open(snakemake.input.baseline_excess_volume) as fh:
+            resolved["baseline_excess_volume"] = json.load(fh)["baseline_excess_volume"]
+    if measure_type in ("retreat", "nbs_land_reclamation"):
+        # landuse_path/lu_roughness_lookup_path are needed only by the measures
+        # that reclassify land use (water_retention never changes roughness, so
+        # it has no lookup to resolve).
+        resolved["landuse_path"] = str(snakemake.input.landuse)
         resolved["lu_roughness_lookup_path"] = str(snakemake.input.lu_roughness_lookup)
         # apply_NbS_land_reclamation defaults out_path to "foreshore_landuse.tif",
         # but adapt_flood_metrics_pre (17_flood_metrics.py) and the rule's own

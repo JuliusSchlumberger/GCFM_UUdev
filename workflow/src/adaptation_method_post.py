@@ -266,18 +266,32 @@ def apply_water_retention(
     Logic:
         - Deducts fraction * baseline_excess_volume from the river+compound
           flood volume (classes 1, 3, 4).
-        - Translates the reduction into a uniform depth reduction [m], analogous to
-          the DEM-lowering computed by the preprocessing equivalent
-          (apply_water_retention in preprocessing_adaptation.py): reduction =
-          target_volume / target_area.
-        - Subtracts that depth uniformly from those cells in the max flood depth
+        - Translates the reduction into a SINGLE uniform depth `tau` [m],
+          SOLVED (not `target_volume / target_area`) so that the volume
+          actually removed -- sum(min(depth_i, tau)) * cell_area, accounting
+          for cells whose own depth is shallower than `tau` and so clip to 0
+          before giving up their "fair share" -- exactly equals target_volume
+          (capped at whatever volume is actually present, if target_volume
+          would otherwise exceed it). A naive `target_volume / target_area`
+          (the mean depth) systematically UNDER-removes volume whenever
+          depths aren't uniform, since shallow cells can't contribute more
+          than their own depth -- solving for `tau` directly is what
+          guarantees exact volume conservation, and as a consequence also
+          guarantees full drainage of every target cell once
+          storage_fraction=1 (target_volume equal to everything present).
+        - Subtracts `tau` uniformly from those cells in the max flood depth
           map, clipped at 0.
 
     `baseline_excess_volume` is deliberately a fixed, externally-supplied
-    reference -- computed ONCE via compute_excess_volume() on the uncontrolled
-    baseline run with classes=(1, 3, 4) (see main.py) -- rather than recomputed
-    from `flood_map_path` here. In a chained post-processing pipeline (see
-    adaptation.py), `flood_map_path` is the OUTPUT of any earlier measure (e.g.
+    reference -- computed ONCE per basin x scenario by rule attribution_mask
+    (18c_attribution_mask.py, via src.postprocessing.compute_excess_volume,
+    classes=(1, 3, 4)) and read here from its baseline_excess_volume.json
+    output (see 18b_adapt_post.py) -- rather than recomputed from
+    `flood_map_path` here. This is the SAME reference number the preprocessing
+    sibling (src.adaptation_method_pre.apply_water_retention) reads, so
+    storage_fraction means the same thing in both methods. In a chained
+    post-processing pipeline (see adaptation.py), `flood_map_path` is the
+    OUTPUT of any earlier measure (e.g.
     nbs_land_reclamation's attenuation), so its own excess volume already
     reflects upstream reduction. Sizing storage_fraction against a moving,
     already-reduced volume would make storage_fraction mean different things
@@ -288,24 +302,31 @@ def apply_water_retention(
     only the volume used to size THIS measure's reduction is pinned.
 
     NOTE: because depth cannot go negative, the *nominal* volume reduction
-    (storage_fraction * baseline_excess_volume) is not guaranteed to be fully
-    realized -- cells where the reduction depth exceeds the local flood depth
-    are simply clipped to 0, removing less than their nominal share. The
-    realized removed volume is reported alongside the nominal target so this
-    can be checked.
+    (storage_fraction * baseline_excess_volume) is only NOT fully realized
+    when target_volume itself exceeds the volume actually present in the
+    target cells (e.g. an upstream chained measure already removed more than
+    baseline_excess_volume would suggest, or floating-point/reprojection
+    drift between this run's own volume and the externally-computed
+    baseline_excess_volume) -- solved `tau` is then capped at draining every
+    target cell to 0 rather than solving past that. The realized removed
+    volume is reported alongside the nominal target so this can be checked.
 
     Args:
         flood_map_path : path to the max flood depth raster to reduce (may
                          already reflect earlier measures in the chain)
         output_dir     : where to write the reduced raster
         storage_fraction : fraction (0-1) of baseline_excess_volume to retain/remove.
-                         1.0 -> nominal full removal in river+compound cells
+                         1.0 -> full removal in river+compound cells (every
+                         target cell drains to 0), guaranteed by construction
                          (actual removal may be less where the reduction depth
                          exceeds a cell's flood depth).
         scenario_root  : the scenario's sfincs/ model root; attribution_mask.tif
                          lives in its parent folder
         baseline_excess_volume : excess flood volume [m3] from the uncontrolled
-                         baseline run, classes (1, 3, 4) (see compute_excess_volume)
+                         baseline run, classes (1, 3, 4) (see
+                         src.postprocessing.compute_excess_volume;
+                         auto-injected by 18b_adapt_post.py, never
+                         strategy-configured)
 
     Returns:
         dict with method and output raster path
@@ -336,14 +357,51 @@ def apply_water_retention(
     )  # river and compound
 
     target_volume = storage_fraction * baseline_excess_volume
-    target_area = np.count_nonzero(target_mask) * cell_area
-    reduction_depth = target_volume / target_area if target_area > 0 else 0.0
+    depths = flood[target_mask].astype(np.float64)
+    target_area = depths.size * cell_area
+    current_volume = float(depths.sum() * cell_area)
 
-    flood_new = np.where(target_mask, np.maximum(flood - reduction_depth, 0.0), flood)
-    current_volume = np.sum(flood[target_mask] * cell_area)
-    realized_volume = current_volume - np.sum(flood_new[target_mask] * cell_area)
+    if depths.size == 0 or target_volume <= 0:
+        reduction_depth = 0.0
+        remaining = depths
+    else:
+        # Solve for the single uniform depth `reduction_depth` such that
+        # sum(min(depth_i, reduction_depth)) * cell_area exactly equals
+        # target_volume (capped at current_volume -- a uniform cut can't
+        # remove more than is actually present). Cells whose own depth is
+        # BELOW reduction_depth clip to 0 and can only give up their own
+        # depth, not their "fair share" -- so this is solved via a sort +
+        # cumulative-sum (the classic monotonic "water-level" construction),
+        # not the naive target_volume/target_area mean, which silently
+        # under-removes volume whenever depths aren't uniform.
+        v = min(target_volume / cell_area, depths.sum())
+        sorted_d = np.sort(depths)
+        n = sorted_d.size
+        prefix = np.concatenate(
+            ([0.0], np.cumsum(sorted_d))
+        )  # prefix[k] = sum of k smallest
+        # breakpoints[k] = volume removed if reduction_depth == sorted_d[k]
+        breakpoints = prefix[:-1] + sorted_d * np.arange(n, 0, -1)
+        k = min(int(np.searchsorted(breakpoints, v, side="left")), n - 1)
+        reduction_depth = (v - prefix[k]) / (n - k)
+        remaining = np.maximum(depths - reduction_depth, 0.0)
+
+    # Fully-drained cells (remaining == 0) must become NODATA, not a literal
+    # 0.0 -- downstream (18b_adapt_post.py's own inundation-ratio plot and
+    # compute_risk_metrics' flooded_area_km2) count "flooded" via
+    # da_hmax.notnull(), not an actual depth threshold, same convention
+    # apply_offshore_barrier/apply_coastal_levee/apply_river_levee already
+    # follow (np.where(..., prof["nodata"], flood)). A literal 0.0 stays
+    # "valid" and gets counted as still-flooded even though the real depth
+    # is zero, silently inflating every area/extent metric back toward the
+    # baseline's own flooded footprint.
+    flood_new = flood.copy()
+    flood_new[target_mask] = np.where(remaining <= 0, prof["nodata"], remaining)
+    realized_volume = (
+        current_volume - float(remaining.sum() * cell_area) if depths.size else 0.0
+    )
     cap_note = (
-        " [reduction depth exceeded local depth in some cells; target not fully met]"
+        " [target_volume exceeds volume present in target cells; capped at full drainage]"
         if realized_volume < target_volume - 1e-6
         else ""
     )

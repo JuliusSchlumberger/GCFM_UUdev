@@ -10,13 +10,21 @@ script derives it here, the same way rule compute_flood_metrics (17) builds
 every scenario's own visuals/max_flood_depth.tif, and caches it in this
 scenario's own attribution output folder (cheap to redo; avoids touching
 rule run_spinup's own outputs for every basin x scenario attribution run).
+
+Also computes baseline_excess_volume (compute_excess_volume, classes=(1,3,4))
+from the freshly-written attribution_mask_tif and this scenario's own
+UNCONTROLLED flood map, and writes it to baseline_excess_volume.json -- the
+single reference number both adapt_apply_pre (18a) and adapt_metrics_post
+(18b) read for water_retention's own sizing, so neither has to touch
+attribution_mask.tif itself.
 """
 
+import json
 from pathlib import Path
 
 from src.attribution_plot import generate_attribution_maps
 from src.log import setup_logging
-from src.postprocessing import compute_max_inundation
+from src.postprocessing import compute_excess_volume, compute_max_inundation
 
 log = setup_logging(snakemake.log[0])
 
@@ -57,3 +65,12 @@ generate_attribution_maps(
     )],
     threshold=threshold,
 )
+
+baseline_excess_volume = compute_excess_volume(
+    flood_map_path=snakemake.input.baseline_flood_map,
+    attribution_mask_path=snakemake.output.attribution_mask_tif,
+    classes=(1, 3, 4),
+)
+with open(snakemake.output.baseline_excess_volume, "w") as fh:
+    json.dump({"baseline_excess_volume": baseline_excess_volume}, fh)
+log.info(f"baseline_excess_volume={baseline_excess_volume:.0f} m3 written: {snakemake.output.baseline_excess_volume}")
