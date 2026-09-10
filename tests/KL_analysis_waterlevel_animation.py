@@ -28,15 +28,15 @@ import numpy as np
 import xarray as xr
 from matplotlib.animation import FFMpegWriter, FuncAnimation
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
 
 from src.postprocessing import load_sfincs_output
 
 # ── CONFIG -- edit these before each run ─────────────────────────────────────
 RESULTS_DIR = "D:/GCFM_UU/results"
 BASIN_ID = "2433835"
-SCENARIO = "coast_500"
-STRATEGY = "accommodate_04"  # any already-run `pre` strategy folder
+SCENARIO = "river_500"
+STRATEGY = "NbS_protect_open_wat_ret_1"  # any already-run `pre` strategy folder
 BZS_IDX = 4  # boundary point index to track (column order in sfincs.bzs)
 T_START = None  # e.g. "2000-01-02 06:00:00", or None for full range
 T_END = None

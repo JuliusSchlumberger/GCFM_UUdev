@@ -343,6 +343,7 @@ def compute_risk_metrics(
     landuse_path: str | Path,
     delta_polygon_path: str | Path,
     urban_code: int = 50,
+    exclude_geom_path: str | Path | None = None,
 ) -> dict:
     """
     Scalar flood-risk metrics from a downscaled flood map.
@@ -351,8 +352,35 @@ def compute_risk_metrics(
     land-masked, so areas are shares of the land domain). Column names match
     the legacy analyse.py risk_metrics.csv so downstream adaptation measures
     (e.g. retreat) can consume them unchanged.
+
+    exclude_geom_path: optional path/data source of polygon(s) to exclude
+        entirely from every metric below -- both da_hmax AND da_dep are
+        masked to NaN there before anything else is computed, so the zone
+        drops out of both numerator and denominator alike (land_area_km2,
+        flooded_area_km2, urban_area_km2/urban_exposed_km2, volume_m3, mean/
+        max_depth_m). Intended for a water_retention/water_retention_greening
+        strategy's own retention zone: water intentionally captured there is
+        the measure doing its job, not flood risk, and left unmasked it gets
+        counted as "flooded"/"urban exposed" identically to real damage
+        elsewhere -- inflating exactly the metrics a working measure should
+        improve. None (default) excludes nothing -- unchanged behaviour for
+        every other measure/strategy.
     """
     import rioxarray as rxr
+
+    if exclude_geom_path is not None:
+        from rasterio.features import rasterize
+
+        excl_gdf = gpd.read_file(str(exclude_geom_path)).to_crs(da_dep.raster.crs)
+        excl_mask = rasterize(
+            [(geom, 1) for geom in excl_gdf.geometry],
+            out_shape=da_dep.shape,
+            transform=da_dep.raster.transform,
+            fill=0,
+            dtype="uint8",
+        ).astype(bool)
+        da_hmax = da_hmax.where(~excl_mask)
+        da_dep = da_dep.where(~excl_mask)
 
     res_x, res_y = da_dep.raster.res
     pixel_area_m2 = abs(res_x * res_y)

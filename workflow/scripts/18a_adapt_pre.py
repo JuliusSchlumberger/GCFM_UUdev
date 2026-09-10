@@ -61,22 +61,39 @@ sf.root.set(str(adapted_root), mode="w+")
 log.info(f"Skeleton loaded from {skeleton_root}, writes redirected to {adapted_root}")
 
 
-# 2. which sfincs.inp key each measure's component owns 
+# 2. which sfincs.inp key each measure's component owns
 COMPONENT_FILEKEY = {
-    "weirs": "weirfile", 
+    "weirs": "weirfile",
     "drainage_structures": "drnfile",
-    "subgrid": "sbgfile"  # TODO: check if this is correct
+    "subgrid": "sbgfile",  # TODO: check if this is correct
+    # storage_volume lives on the coarse regular grid (mod.grid.data["vol"]),
+    # not subgrid -- a genuinely new component this script never wrote
+    # before apply_water_retention_greening.
+    "storage_volume": "volfile",
 }
 
 COMPONENT_OF_MEASURE = {
-    "offshore_barrier": "weirs",
-    "pumps": "drainage_structures",
-    "nbs_land_reclamation": "subgrid",
-    "water_retention": "subgrid",
-    "river_levee": "weirs",
-    "coastal_levee": "weirs",
-    "dike_ring" : "weirs",
-    "retreat": "subgrid"
+    "offshore_barrier": ("weirs",),
+    "pumps": ("drainage_structures",),
+    "nbs_land_reclamation": ("subgrid",),
+    # water_retention touches BOTH: subgrid (the excavated DEM/roughness) and
+    # weirs (the containing ring around the zone boundary, see its own
+    # docstring) -- without "weirs" here, sf.weirs.write() below never runs,
+    # so the newly-created weir stays in-memory only and the untouched
+    # skeleton's own original weirfile gets forwarded by reference instead,
+    # silently discarding it (confirmed: a run showed byte-identical results
+    # to a pre-weir run because of exactly this).
+    "water_retention": ("subgrid", "weirs"),
+    # water_retention_greening (storage_volume) is the SAME class of bug risk
+    # -- without "storage_volume" here, sf.grid.write() below never runs, so
+    # the newly-created volfile stays in-memory only. Never needs dep_subgrid/
+    # roughness_native_path (it doesn't touch subgrid or elevation at all).
+    "water_retention_greening": ("storage_volume",),
+    "river_levee": ("weirs",),
+    "coastal_levee": ("weirs",),
+    "dike_ring" : ("weirs",),  # unused -- see adaptation_method_pre.py, replaced by urban_raising
+    "retreat": ("subgrid",),
+    "urban_raising": ("subgrid",),
 }
 
 # 3. Apply each measure in the strategy in the order given in adaptation_strategies.yml 
@@ -87,27 +104,35 @@ for measure_type, raw_params in strategy_def["measures"].items():
         k: (str(adaptation_root /v) if k in ("locations", "dep_subgrid") and isinstance(v, str) else v)
         for k, v in raw_params.items()
     }
-    # NOTE: retreat specifically needs the baseline flood map to determine which cells to retreat
-    flood_map_path = str(baseline_flood_map_path) if measure_type == "retreat" else None
-    if measure_type in ("retreat", "nbs_land_reclamation", "water_retention"):
+    # NOTE: retreat/urban_raising specifically need the baseline flood map to
+    # determine which cells are eligible (retreated / raised)
+    flood_map_path = str(baseline_flood_map_path) if measure_type in ("retreat", "urban_raising") else None
+    if measure_type in ("retreat", "nbs_land_reclamation", "water_retention", "urban_raising"):
         # dep_subgrid/roughness_native_path are never strategy-configured (see
         # adaptation_strategies.yml's own comment) -- these measures always
         # reuse this basin's own already-built elevation/roughness, never a
         # separately-authored raw-data file.
         resolved["dep_subgrid"] = str(skeleton_root / "subgrid" / "dep_subgrid.tif")
         resolved["roughness_native_path"] = str(snakemake.input.roughness_native)
-    if measure_type == "water_retention":
+    if measure_type in ("water_retention", "water_retention_greening"):
         # baseline_excess_volume is never strategy-configured either -- rule
         # attribution_mask (18c) computes it once per basin x scenario (see
         # water_retention_excess_volume_input's own docstring) and this is the
-        # only place that reads the resulting JSON.
+        # only place that reads the resulting JSON. Both water_retention
+        # variants are sized against this SAME fixed reference.
         with open(snakemake.input.baseline_excess_volume) as fh:
             resolved["baseline_excess_volume"] = json.load(fh)["baseline_excess_volume"]
-    if measure_type in ("retreat", "nbs_land_reclamation"):
-        # landuse_path/lu_roughness_lookup_path are needed only by the measures
-        # that reclassify land use (water_retention never changes roughness, so
-        # it has no lookup to resolve).
+    if measure_type in ("retreat", "nbs_land_reclamation", "urban_raising"):
+        # landuse_path is needed by anything that must identify which cells
+        # are urban (retreat, urban_raising) or reclassifies/samples land use
+        # (nbs_land_reclamation).
         resolved["landuse_path"] = str(snakemake.input.landuse)
+    if measure_type in ("retreat", "nbs_land_reclamation"):
+        # lu_roughness_lookup_path is needed only by the measures that
+        # actually RECLASSIFY land use and must look up the new class's own
+        # Manning's n (water_retention never changes roughness at all;
+        # urban_raising changes elevation only -- the cell is still urban,
+        # so roughness is passed through unchanged, never looked up).
         resolved["lu_roughness_lookup_path"] = str(snakemake.input.lu_roughness_lookup)
         # apply_NbS_land_reclamation defaults out_path to "foreshore_landuse.tif",
         # but adapt_flood_metrics_pre (17_flood_metrics.py) and the rule's own
@@ -134,7 +159,7 @@ for measure_type, raw_params in strategy_def["measures"].items():
                         flood_map_path=flood_map_path, 
                         method = "preprocessing", 
                         **resolved)
-    touched.add(COMPONENT_OF_MEASURE[measure_type])
+    touched.update(COMPONENT_OF_MEASURE[measure_type])
 
 # 3b. apply_retreat writes a reclassified adapted_root/retreat_landuse.tif
 # (urban cells it retreats relabeled to target_code) -- adapt_flood_metrics_pre
@@ -162,6 +187,17 @@ if "weirs" in touched:
     sf.weirs.write()
 if "drainage_structures" in touched:
     sf.drainage_structures.write()
+if "storage_volume" in touched:
+    # storage_volume lives on the coarse regular grid (mod.grid.data["vol"]),
+    # a component this script never wrote before -- restrict to data_vars=
+    # ["vol"] so this doesn't ALSO rewrite dep/mask/manning/ini (confirmed:
+    # an unrestricted sf.grid.write() call writes every grid map present,
+    # duplicating unchanged geometry this measure never touched). Also
+    # writes a local sfincs.ind (RegularGrid.write()'s own write_ind() call
+    # is unconditional) -- harmless, since mask is unchanged and the
+    # forwarded mskfile reference below still resolves to the identical mask
+    # this index was computed from.
+    sf.grid.write(data_vars=["vol"])
 if "subgrid" in touched:
     sf.subgrid.write()
 else:

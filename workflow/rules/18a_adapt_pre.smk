@@ -65,7 +65,7 @@ rule adapt_build_forcing_pre:
         design_rp_river_yr = lambda wildcards: scenario_params(wildcards.scenario)["river_rp"],
         design_rp_surge_yr = lambda wildcards: scenario_params(wildcards.scenario)["surge_rp"],
         compound_lag_hr = config["sfincs"]["boundary_setup"]["compound"]["lag_hr"],
-        discharge_multiplier = config["boundary_forcings"]["river"]["discharge_multiplier"],
+        discharge_multiplier = lambda wildcards: scenario_params(wildcards.scenario)["discharge_multiplier"],
         slr_enabled = config["boundary_forcings"]["surge"]["slr"]["enabled"],
         slr_m = config["boundary_forcings"]["surge"]["slr"]["slr_m"],
         flat_boundary_point_spacing_m = config["sfincs"]["boundary_setup"]["flat_boundary_point_spacing_m"],
@@ -129,5 +129,11 @@ rule adapt_flood_metrics_pre:
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
         hmin = config["metrics"]["hmin"], urban_code = config["metrics"]["urban_landuse_code"],
         include_subgrid = config["sfincs"]["subgrid"]["enabled"],
+        # only THIS rule (not the plain baseline compute_flood_metrics) passes
+        # these -- lets 17_flood_metrics.py optionally exclude a
+        # water_retention/water_retention_greening measure's own retention
+        # zone from its risk metrics (see that script's own comment).
+        strategy_def    = lambda wildcards: STRATEGY_DEFS[wildcards.strategy],
+        adaptation_root = ADAPT_CATALOGUE_ROOT,
     log: "logs/{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/17_flood_metrics.log"
-    script: "../scripts/17_flood_metrics.py"         # REUSED, UNMODIFIED
+    script: "../scripts/17_flood_metrics.py"         # reused, with two extra optional params

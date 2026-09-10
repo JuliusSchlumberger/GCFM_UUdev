@@ -616,65 +616,156 @@ def _ring_interior_mask(locations, out_shape, transform, raster_crs):
     return geometry_mask(polys, out_shape=out_shape, transform=transform, invert=True)
 
 
-# Accommodate
-def apply_dike_ring(
+# # Accommodate
+# def apply_dike_ring(
+#     flood_map_path: str,
+#     scenario_root: str,
+#     output_dir: str,
+#     elevation: float,
+#     locations: Path,  # was: urban_mask
+#     **kwargs,
+# ) -> dict:
+#     """
+#     Post-processing dike ring rule.
+
+#     - Max coastal water level is read from the forcing timeseries (bzs) and
+#       compared against the dike crest `elevation` in a binary check.
+#     - Cells that are BOTH inside the dike ring (`locations`) AND flooded form the
+#       protected set. `locations` now plays the role `urban_mask` used to: the old
+#       rule assumed a ring around every urban area; this uses the actual ring.
+#     - WL < crest  -> flooding removed in the protected set.
+#     - WL >= crest -> full flood risk (no change).
+#     """
+#     out_path = Path(output_dir) / "max_flood_depth.tif"
+#     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+#     # Max coastal water level from the forcing timeseries
+#     mod = SfincsModel(root=scenario_root, mode="r")
+#     wl = mod.get_component("water_level")
+#     wl.read()
+#     max_wl = float(wl.data["bzs"].max())
+
+#     with rasterio.open(flood_map_path) as src:
+#         flood = src.read(1).astype("float32")
+#         prof = src.profile
+#         nodata = src.nodata
+#         inside_ring = _ring_interior_mask(
+#             locations, (src.height, src.width), src.transform, src.crs
+#         )
+
+#     # "at risk of flooding" = cells that actually hold a flood depth
+#     if nodata is not None:
+#         flooded = flood != nodata
+#     else:
+#         flooded = np.isfinite(flood) & (flood > 0)
+
+#     protected = inside_ring & flooded
+#     fill = nodata if nodata is not None else 0.0
+
+#     if elevation > max_wl:
+#         flood[protected] = fill
+#         print(
+#             f"  Dike sufficient (H={elevation}m > WL={max_wl:.2f}m) = flooding removed inside ring"
+#         )
+#     else:
+#         print(
+#             f"  Dike overtopped (H={elevation}m <= WL={max_wl:.2f}m) = full risk inside ring"
+#         )
+
+#     prof.update(dtype="float32")
+#     with rasterio.open(out_path, "w", **prof) as dst:
+#         dst.write(flood.astype("float32"), 1)
+
+#     return {"method": "flood_map", "out_raster": str(out_path)}
+
+
+def apply_urban_raising(
     flood_map_path: str,
     scenario_root: str,
     output_dir: str,
     elevation: float,
-    locations: Path,  # was: urban_mask
+    landuse_path: str = None,
+    urban_code: int = 50,
+    flood_threshold: float = 0.05,
+    locations: Path = None,
     **kwargs,
 ) -> dict:
     """
-    Post-processing dike ring rule.
+    Post-processing urban raising rule.
 
-    - Max coastal water level is read from the forcing timeseries (bzs) and
-      compared against the dike crest `elevation` in a binary check.
-    - Cells that are BOTH inside the dike ring (`locations`) AND flooded form the
-      protected set. `locations` now plays the role `urban_mask` used to: the old
-      rule assumed a ring around every urban area; this uses the actual ring.
-    - WL < crest  -> flooding removed in the protected set.
-    - WL >= crest -> full flood risk (no change).
+    Fast, no-rerun approximation of adaptation_method_pre.py's own
+    apply_urban_raising (which physically raises the DEM and reruns SFINCS):
+    at eligible cells (urban AND flooded, optionally restricted to
+    `locations`), `elevation` is subtracted directly from the flood DEPTH
+    raster. This method never reads the DEM, so here `elevation` means a
+    depth REDUCTION [m] -- unlike the preprocessing sibling, where it's the
+    absolute elevation eligible cells are raised UP TO.
+
+    Cells whose reduced depth drops to <=0 are set to nodata (not 0.0) --
+    matches apply_dike_ring's own convention above -- since
+    compute_risk_metrics (src.postprocessing) tells flooded from dry purely
+    via da_hmax.notnull(), not a depth threshold; a plain 0.0 would still
+    read as "flooded".
+
+    Args:
+        flood_map_path  : (Required) baseline max_flood_depth.tif
+        scenario_root   : (Required) scenario model root -- unused here,
+                          accepted only for dispatch_rules' uniform call signature
+        output_dir      : (Required) directory the adapted raster is written to
+        elevation       : (Required from measures.yml) depth [m] subtracted from
+                          eligible cells' flood depth
+        landuse_path    : (Required) path to the current landuse raster,
+                          used only to determine which cells are urban
+        urban_code      : (Optional) land use code marking urban cells (default 50)
+        flood_threshold : (Optional) depth [m] above which a cell counts as flooded
+        locations       : (Optional) polygon path/gdf; if None (the usual,
+                          delta-wide case), all flooded urban cells are eligible
+
+    Returns:
+        {"method": "flood_map", "out_raster": path to the adapted max_flood_depth.tif}
     """
-    out_path = Path(output_dir) / "max_flood_depth.tif"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if landuse_path is None:
+        raise ValueError("apply_urban_raising needs landuse_path")
 
-    # Max coastal water level from the forcing timeseries
-    mod = SfincsModel(root=scenario_root, mode="r")
-    wl = mod.get_component("water_level")
-    wl.read()
-    max_wl = float(wl.data["bzs"].max())
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "max_flood_depth.tif"
 
     with rasterio.open(flood_map_path) as src:
         flood = src.read(1).astype("float32")
         prof = src.profile
         nodata = src.nodata
-        inside_ring = _ring_interior_mask(
-            locations, (src.height, src.width), src.transform, src.crs
-        )
+        raster_crs = src.crs
+        transform = src.transform
+        out_shape = (src.height, src.width)
 
-    # "at risk of flooding" = cells that actually hold a flood depth
+    da_lulc = rxr.open_rasterio(landuse_path).squeeze(drop=True)
+    da_flood = rxr.open_rasterio(flood_map_path, masked=True).squeeze(drop=True)
+    da_lulc = da_lulc.raster.reproject_like(da_flood, method="nearest")
+
     if nodata is not None:
-        flooded = flood != nodata
+        flooded = (flood != nodata) & (flood > flood_threshold)
     else:
-        flooded = np.isfinite(flood) & (flood > 0)
+        flooded = np.isfinite(flood) & (flood > flood_threshold)
 
-    protected = inside_ring & flooded
+    eligible = (da_lulc.values == urban_code) & flooded
+    if locations is not None:
+        eligible &= _ring_interior_mask(locations, out_shape, transform, raster_crs)
+
     fill = nodata if nodata is not None else 0.0
+    new_flood = flood.copy()
+    reduced = flood[eligible] - elevation
+    now_dry = reduced <= 0
+    new_flood[eligible] = np.where(now_dry, fill, reduced)
 
-    if elevation > max_wl:
-        flood[protected] = fill
-        print(
-            f"  Dike sufficient (H={elevation}m > WL={max_wl:.2f}m) = flooding removed inside ring"
-        )
-    else:
-        print(
-            f"  Dike overtopped (H={elevation}m <= WL={max_wl:.2f}m) = full risk inside ring"
-        )
+    print(
+        f"  Urban raising (postprocessing): {int(eligible.sum())} eligible cell(s), "
+        f"depth reduced by {elevation:.2f} m ({int(now_dry.sum())} now dry)."
+    )
 
     prof.update(dtype="float32")
     with rasterio.open(out_path, "w", **prof) as dst:
-        dst.write(flood.astype("float32"), 1)
+        dst.write(new_flood.astype("float32"), 1)
 
     return {"method": "flood_map", "out_raster": str(out_path)}
 
@@ -764,7 +855,8 @@ selected_measures = {
     "river_levee": apply_river_levee,
     "coastal_levee": apply_coastal_levee,
     "pumps": apply_pumps,
-    "dike_ring": apply_dike_ring,
+    "urban_raising": apply_urban_raising,
+    # "dike_ring": apply_dike_ring,
     "retreat": apply_retreat,
 }
 

@@ -91,16 +91,28 @@ for _name, _s in SCENARIO_DEFS.items():
         raise ValueError(f"{_name}: surge_rp must be a COAST-RP tabulated value {_SURGE_RPS}")
     if _rrp is not None and not _RIVER_RP_MIN <= _rrp <= _RIVER_RP_MAX:
         raise ValueError(f"{_name}: river_rp must be in [{_RIVER_RP_MIN}, {_RIVER_RP_MAX}] yr")
+    _dm = _s.get("discharge_multiplier", 1.0)
+    if not _dm > 0:
+        raise ValueError(f"{_name}: discharge_multiplier must be > 0")
 
 def scenario_params(name):
-    """-> dict(mode, surge_rp, river_rp); mode via derive_forcing_mode."""
+    """-> dict(mode, surge_rp, river_rp, discharge_multiplier); mode via
+    derive_forcing_mode. discharge_multiplier is per-scenario (default 1.0)
+    -- e.g. river_500/river_only_500/compound_500 can be scaled up to reach
+    a genuinely flood-inducing river discharge without also inflating
+    coast_500's own small RP=2 river component."""
     s = SCENARIO_DEFS[name]
     river_rp, surge_rp = s.get("river_rp"), s.get("surge_rp")
     try:
         mode = derive_forcing_mode(river_rp, surge_rp)
     except ValueError as e:
         raise ValueError(f"scenario {name!r}: {e}") from e
-    return {"mode": mode, "surge_rp": surge_rp, "river_rp": river_rp}
+    return {
+        "mode": mode,
+        "surge_rp": surge_rp,
+        "river_rp": river_rp,
+        "discharge_multiplier": s.get("discharge_multiplier", 1.0),
+    }
 
 def attribution_counterparts(scenario):
     """-> (river_only_scenario, coastal_only_scenario): the two sibling
@@ -189,15 +201,16 @@ def strategy_measure_input_paths(strategy):
 def water_retention_excess_volume_input(wildcards):
     """rule adapt_apply_pre's own conditional input for baseline_excess_volume.json
     (rule attribution_mask's own output) -- ONLY when this strategy actually
-    uses water_retention. Unlike rule adapt_metrics_post (18b), where EVERY
-    postprocessing measure already depends on attribution_mask.tif for its own
-    class-based masking, no other preprocessing measure touches attribution at
-    all, so this must stay strategy-conditional -- an unconditional dependency
-    would force every basin x scenario x strategy combination through rule
-    attribution_mask (and its own river-only/coastal-only counterpart-scenario
-    prerequisite, which not every scenario in scenarios.yml has) even when the
-    strategy never uses water_retention."""
-    if "water_retention" in STRATEGY_DEFS[wildcards.strategy]["measures"]:
+    uses water_retention or its storage-volume sibling water_retention_greening
+    (both sized against the same fixed reference). Unlike rule adapt_metrics_post
+    (18b), where EVERY postprocessing measure already depends on
+    attribution_mask.tif for its own class-based masking, no other preprocessing
+    measure touches attribution at all, so this must stay strategy-conditional --
+    an unconditional dependency would force every basin x scenario x strategy
+    combination through rule attribution_mask (and its own river-only/
+    coastal-only counterpart-scenario prerequisite, which not every scenario in
+    scenarios.yml has) even when the strategy never uses either measure."""
+    if {"water_retention", "water_retention_greening"} & set(STRATEGY_DEFS[wildcards.strategy]["measures"]):
         return results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/baseline_excess_volume.json")
     return []
 
@@ -210,11 +223,11 @@ if _unknown:
     raise ValueError(f"target_strategies {_unknown} not defined in {config['adaptation']['strategies_file']}")
 
 # Both methods run by default, unless a strategy is selected:
-#   snakemake adapt --config target_strategies="['retreat']" target_methods="['pre']"
-METHODS = list(config.get("target_methods", ["pre", "post"]))
+#   snakemake adapt --config target_strategies="['retreat']" target_method="['pre']"
+METHODS = list(config.get("target_method", ["pre", "post"]))
 _unknown_methods = sorted(set(METHODS) - {"pre", "post"})
 if _unknown_methods:
-    raise ValueError(f"target_methods {_unknown_methods} invalid -- only 'pre'/'post' supported")
+    raise ValueError(f"target_method {_unknown_methods} invalid -- only 'pre'/'post' supported")
 
 
 wildcard_constraints:

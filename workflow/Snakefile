@@ -194,7 +194,7 @@ rule adapt:
     Run adaptation strategies against already-built baseline scenario runs
     (rule `build` must already have completed for the same basin/scenario).
     Opt-in: requires --config target_strategies=[...] (no default strategy
-    set). target_methods defaults to both 'pre' and 'post'.
+    set). target_method defaults to both 'pre' and 'post'.
 
     Usage:  snakemake adapt --cores N --config target_strategies="['advance_1']"
     """

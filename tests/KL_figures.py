@@ -10,6 +10,8 @@ Step 3: agreement diagnostics (figures in results section)
 from pathlib import Path
 import numpy as np
 import xarray as xr
+import pandas as pd
+from scipy.stats import spearmanr
 from hydromt_sfincs import SfincsModel
 import matplotlib
 import matplotlib.dates as mdates
@@ -22,159 +24,169 @@ CSV = OUT_DIR / "metrics_comparison.csv"
 METRICS = ["flooded_area_km2", "urban_exposed_km2", "mean_depth_m", "volume_m3"]
 SCALES = ["04", "09", "1"]  # raw strategy-name suffix, low -> high implementation scale
 
-# # ----------------------------------------------------------------- 1. parse
-# raw = pd.read_csv(CSV)
-# baselines = raw[raw.method == "baseline"].set_index("scenario")
+# ----------------------------------------------------------------- 1. parse
+raw = pd.read_csv(CSV)
+baselines = raw[raw.method == "baseline"].set_index("scenario")
 
-# d = raw[raw.method != "baseline"].copy()
-# d["event"] = d["scenario"]
-# d["approach"] = d["method"].str.upper()  # PRE | POST
+d = raw[raw.method != "baseline"].copy()
+d["event"] = d["scenario"]
+d["approach"] = d["method"].str.upper()  # PRE | POST
 
-# d["scale"] = d.strategy.str.extract(r"_(04|09|1)$")[0]
-# d["measure"] = d.strategy.str.replace(r"_(04|09|1)$", "", regex=True)
-# d["short"] = d["measure"]
-# d["scale"] = pd.Categorical(d.scale, SCALES, ordered=True)
-# assert d["scale"].notna().all(), (
-#     "found a strategy name without a recognised _04/_09/_1 suffix"
-# )
+d["scale"] = d.strategy.str.extract(r"_(04|09|1)$")[0]
+d["measure"] = d.strategy.str.replace(r"_(04|09|1)$", "", regex=True)
+d["short"] = d["measure"]
+d["scale"] = pd.Categorical(d.scale, SCALES, ordered=True)
+assert d["scale"].notna().all(), (
+    "found a strategy name without a recognised _04/_09/_1 suffix"
+)
 
-# # a fully-protected run has flooded_area == 0 and NaN depth; depth is 0 by definition
-# d[["mean_depth_m", "max_depth_m"]] = d[["mean_depth_m", "max_depth_m"]].fillna(0)
+# a fully-protected run has flooded_area == 0 and NaN depth; depth is 0 by definition
+d[["mean_depth_m", "max_depth_m"]] = d[["mean_depth_m", "max_depth_m"]].fillna(0)
 
-# # # ------------------------------------------- 2. % reduction vs event baseline
-# for m in METRICS:
-#     b = d.event.map(baselines[m])
-#     d["red_" + m] = 100 * (b - d[m]) / b
-# # d.to_csv(OUT_DIR / "tidy_scenarios.csv", index=False)
+# # ------------------------------------------- 2. % reduction vs event baseline
+for m in METRICS:
+    b = d.event.map(baselines[m])
+    d["red_" + m] = 100 * (b - d[m]) / b
+# d.to_csv(OUT_DIR / "tidy_scenarios.csv", index=False)
 
-# wide = d.pivot_table(
-#     index=["event", "short", "scale"],
-#     columns="approach",
-#     values=["red_" + m for m in METRICS],
-#     observed=True,
-# )
-# for m in METRICS:
-#     wide[("err_" + m, "")] = wide[("red_" + m, "POST")] - wide[("red_" + m, "PRE")]
-# # wide.to_csv(OUT_DIR / "post_vs_pre_wide.csv")
+wide = d.pivot_table(
+    index=["event", "short", "scale"],
+    columns="approach",
+    values=["red_" + m for m in METRICS],
+    observed=True,
+)
+for m in METRICS:
+    wide[("err_" + m, "")] = wide[("red_" + m, "POST")] - wide[("red_" + m, "PRE")]
+# wide.to_csv(OUT_DIR / "post_vs_pre_wide.csv")
 
-# # ------------------------------------------------------ 3a. does POST resolve scale?
-# print(
-#     "\n# Rows sharing an identical metric vector (i.e. the approach cannot "
-#     "distinguish two designs):"
-# )
-# cols = ["flooded_area_km2", "urban_exposed_km2", "mean_depth_m", "volume_m3"]
-# for (e, a), g in d.groupby(["event", "approach"]):
-#     print(f"  {e:14s} {a:5s}: {g.duplicated(cols, keep=False).sum():2d} / {len(g)}")
+# ------------------------------------------------------ 3a. does POST resolve scale?
+print(
+    "\n# Rows sharing an identical metric vector (i.e. the approach cannot "
+    "distinguish two designs):"
+)
+cols = ["flooded_area_km2", "urban_exposed_km2", "mean_depth_m", "volume_m3"]
+for (e, a), g in d.groupby(["event", "approach"]):
+    print(f"  {e:14s} {a:5s}: {g.duplicated(cols, keep=False).sum():2d} / {len(g)}")
 
-# # ------------------------------------------------------ 3b. Spearman per event
-# print("\n# Spearman rho, POST vs PRE ranking of all measure-scale combinations")
-# rows = []
-# for e, g in d.groupby("event"):
-#     p = g.pivot_table(
-#         index=["measure", "scale"],
-#         columns="approach",
-#         values=["red_" + m for m in METRICS],
-#         observed=True,
-#     )
-#     for m in METRICS:
-#         r, pv = spearmanr(p[("red_" + m, "POST")], p[("red_" + m, "PRE")])
-#         rows.append(dict(event=e, metric=m, rho=round(r, 2), p=round(pv, 4)))
-# sp = pd.DataFrame(rows)
-# print(sp.pivot(index="metric", columns="event", values="rho").to_string())
-# sp.to_csv(OUT_DIR / "spearman_by_event_metric.csv", index=False)
+# ------------------------------------------------------ 3b. Spearman per event
+print("\n# Spearman rho, POST vs PRE ranking of all measure-scale combinations")
+rows = []
+for e, g in d.groupby("event"):
+    p = g.pivot_table(
+        index=["measure", "scale"],
+        columns="approach",
+        values=["red_" + m for m in METRICS],
+        observed=True,
+    )
+    for m in METRICS:
+        r, pv = spearmanr(p[("red_" + m, "POST")], p[("red_" + m, "PRE")])
+        rows.append(dict(event=e, metric=m, rho=round(r, 2), p=round(pv, 4)))
+sp = pd.DataFrame(rows)
+print(sp.pivot(index="metric", columns="event", values="rho").to_string())
+sp.to_csv(OUT_DIR / "spearman_by_event_metric.csv", index=False)
 
-# # ------------------------------------------- 3c. binary agreement (tune threshold)
-# THRESH = 25.0  # % reduction in urban exposure counted as "effective"
-# u = wide["red_urban_exposed_km2"].reset_index()
-# u["POST_eff"], u["PRE_eff"] = u.POST > THRESH, u.PRE > THRESH
-# print(f"\n# Confusion matrix, 'effective' = >{THRESH:.0f}% reduction in urban exposure")
-# print(
-#     pd.crosstab(u.PRE_eff, u.POST_eff, rownames=["PRE (benchmark)"], colnames=["POST"])
-# )
-# u["error"] = u.POST - u.PRE
-# print("\n# Disagreements, sorted by magnitude")
-# print(
-#     u[u.POST_eff != u.PRE_eff]
-#     .reindex(u.error.abs().sort_values(ascending=False).index)
-#     .dropna(subset=["error"])[["event", "short", "scale", "PRE", "POST", "error"]]
-#     .round(1)
-#     .to_string(index=False)
-# )
+# ------------------------------------------- 3c. binary agreement (tune threshold)
+THRESH = 25.0  # % reduction in urban exposure counted as "effective"
+u = wide["red_urban_exposed_km2"].reset_index()
+u["POST_eff"], u["PRE_eff"] = u.POST > THRESH, u.PRE > THRESH
+print(f"\n# Confusion matrix, 'effective' = >{THRESH:.0f}% reduction in urban exposure")
+print(
+    pd.crosstab(u.PRE_eff, u.POST_eff, rownames=["PRE (benchmark)"], colnames=["POST"])
+)
+u["error"] = u.POST - u.PRE
+print("\n# Disagreements, sorted by magnitude")
+print(
+    u[u.POST_eff != u.PRE_eff]
+    .reindex(u.error.abs().sort_values(ascending=False).index)
+    .dropna(subset=["error"])[["event", "short", "scale", "PRE", "POST", "error"]]
+    .round(1)
+    .to_string(index=False)
+)
 
-# # ------------------------------------------------------------------ 4. figures
-# events = sorted(d.event.unique())
-# measures = sorted(d.short.unique())
+# ------------------------------------------------------------------ 4. figures
+events = sorted(d.event.unique())
+# case-insensitive: plain sorted() puts "NbS_..." before "grey_..." (uppercase
+# N sorts before lowercase g in ASCII), not the intended alphabetical order
+measures = sorted(d.short.unique(), key=str.lower)
 
-# STYLE = {
-#     "PRE": dict(fmt="-o", color="#1b4965", label="PRE (re-run)"),
-#     "POST": dict(fmt="--s", color="#e07a5f", label="POST (post-processed)"),
-# }
-
-
-# def label(s):
-#     return s.replace("_", " ").title()
+STYLE = {
+    "PRE": dict(fmt="-o", color="#1b4965", label="Modelled (re-run)"),
+    "POST": dict(fmt="--s", color="#e07a5f", label="Postprocessed (not re-run)"),
+}
 
 
-# METRIC_INFO = [
-#     ("flooded_area_km2", "residual flood extent", (0, 2), [0, 0.25, 0.5, 1, 1.5, 2]),
-#     (
-#         "urban_exposed_km2",
-#         "residual urban exposure",
-#         (0, 8),
-#         [0, 0.25, 0.5, 1, 2, 4, 8],
-#     ),
-#     ("volume_m3", "residual flood volume", (0, 2), [0, 0.25, 0.5, 1, 1.5, 2]),
-#     ("mean_depth_m", "residual mean flood depth", (0, 2), [0, 0.25, 0.5, 1, 1.5, 2]),
-# ]
+def label(s):
+    return s.replace("_", " ").title()
 
-# for METRIC, LABEL, YLIM, YTICKS in METRIC_INFO:
-#     BL = baselines[METRIC].to_dict()
-#     d["ratio"] = d[METRIC] / d.event.map(BL)
 
-#     fig, axes = plt.subplots(
-#         len(events),
-#         len(measures),
-#         figsize=(3 * len(measures), 2.7 * len(events)),
-#         sharex=True,
-#         sharey=True,
-#         squeeze=False,
-#     )
+METRIC_INFO = [
+    ("flooded_area_km2", "residual flood extent", (0, 2), [0, 0.25, 0.5, 1, 1.5, 2]),
+    (
+        "urban_exposed_km2",
+        "residual urban exposure",
+        (0, 3),
+        [0, 0.25, 0.5, 1, 2, 3],
+    ),
+    ("volume_m3", "residual flood volume", (0, 3), [0, 0.25, 0.5, 1, 1.5, 2, 2.5, 3]),
+    ("mean_depth_m", "residual mean flood depth", (0, 2), [0, 0.25, 0.5, 1, 1.5, 2]),
+]
 
-#     for i, e in enumerate(events):
-#         for j, ms in enumerate(measures):
-#             A = axes[i, j]
-#             g = d[(d.event == e) & (d.short == ms)]
+PLOT_SCALES = ["0"] + SCALES  # prepend the no-adaptation baseline (ratio == 1)
+SCALE_LABELS = {
+    "0": "No adaptation",
+    "04": "Highly ineffective",
+    "09": "Marginally ineffective",
+    "1": "Theoretically effective",
+}
+X_LABELS = [SCALE_LABELS[s] for s in PLOT_SCALES]
 
-#             for ap, s in STYLE.items():
-#                 gg = g[g.approach == ap].set_index("scale").reindex(SCALES)
-#                 A.plot(
-#                     SCALES, gg["ratio"], s["fmt"], color=s["color"], label=s["label"]
-#                 )
+for METRIC, LABEL, YLIM, YTICKS in METRIC_INFO:
+    BL = baselines[METRIC].to_dict()
+    d["ratio"] = d[METRIC] / d.event.map(BL)
 
-#             A.set_yscale("symlog", linthresh=0.05)
-#             A.set_ylim(*YLIM)
-#             A.axhline(1, c="crimson", lw=0.8)
-#             A.axhspan(1, YLIM[1], color="crimson", alpha=0.06)
-#             A.set_yticks(YTICKS)
-#             A.set_yticklabels([f"{t:g}" for t in YTICKS], fontsize=7)
-#             A.tick_params(labelsize=7, labelrotation=45)
-#             if i == 0:
-#                 A.set_title(label(ms), fontsize=9)
-#             if j == 0:
-#                 A.set_ylabel(f"{label(e)}\n{LABEL}", fontsize=8)
+    fig, axes = plt.subplots(
+        len(events),
+        len(measures),
+        figsize=(3 * len(measures), 2.7 * len(events)),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
 
-#     axes[0, 0].legend(fontsize=8)
-#     fig.suptitle(
-#         f"{LABEL.capitalize()} relative to the no-adaptation baseline "
-#         "(1 = no change, 0 = eliminated, >1 = worse)"
-#     )
-#     plt.tight_layout()
-#     fig.savefig(OUT_DIR / f"fig_scale_response_{METRIC}.png", dpi=150)
+    for i, e in enumerate(events):
+        for j, ms in enumerate(measures):
+            A = axes[i, j]
+            g = d[(d.event == e) & (d.short == ms)]
 
-# print(
-#     f"\nWrote outputs to {OUT_DIR}: tidy_scenarios.csv, post_vs_pre_wide.csv, "
-#     "spearman_by_event_metric.csv, fig_scale_response_<metric>.png"
-# )
+            for ap, s in STYLE.items():
+                gg = g[g.approach == ap].set_index("scale").reindex(SCALES)
+                ratios = [1.0] + gg["ratio"].tolist()  # scale 0 = no adaptation
+                A.plot(X_LABELS, ratios, s["fmt"], color=s["color"], label=s["label"])
+
+            A.set_yscale("symlog", linthresh=0.05)
+            A.set_ylim(*YLIM)
+            A.axhline(1, c="crimson", lw=0.8)
+            A.axhspan(1, YLIM[1], color="crimson", alpha=0.06)
+            A.set_yticks(YTICKS)
+            A.set_yticklabels([f"{t:g}" for t in YTICKS], fontsize=7)
+            A.tick_params(labelsize=7, labelrotation=45)
+            if i == 0:
+                A.set_title(label(ms), fontsize=9)
+            if j == 0:
+                A.set_ylabel(f"{label(e)}\n{LABEL}", fontsize=8)
+
+    axes[0, 0].legend(fontsize=8)
+    fig.suptitle(
+        f"{LABEL.capitalize()} relative to the no-adaptation baseline "
+        "(1 = no change, 0 = eliminated, >1 = worse)"
+    )
+    plt.tight_layout()
+    fig.savefig(OUT_DIR / f"fig_scale_response_{METRIC}.png", dpi=150)
+
+print(
+    f"\nWrote outputs to {OUT_DIR}: tidy_scenarios.csv, post_vs_pre_wide.csv, "
+    "spearman_by_event_metric.csv, fig_scale_response_<metric>.png"
+)
 
 # Time series plots
 BASIN_ROOT = OUT_DIR.parent  # .../results/<basin_id>
@@ -240,7 +252,7 @@ plt.close(fig)
 # comparable across scenarios (coast_500's surge peak vs. compound_500's,
 # river_500's discharge peak vs. compound_500's, etc.)
 SCENARIOS = ["coast_500", "river_500", "compound_500"]
-SCENARIO_COLOR = "#1b4965"
+SCENARIO_COLOR = "#14b5dd"
 # current config (config.yml boundary_forcings.surge.slr.slr_m) is 0.0, so
 # the plotted water level IS the actual built forcing, with no SLR -- shown
 # as a flat reference line AT y=SLR_M (an illustrative SLR magnitude, not a
@@ -283,7 +295,7 @@ for j, scen in enumerate(SCENARIOS):
     dis_comp.read()
     dis = dis_comp.data  # dims (time, index), var 'dis'
     axes[1, j].plot(
-        dis.time.values, dis["dis"].mean(dim="index").values, color="#e07a5f", lw=1.8
+        dis.time.values, dis["dis"].mean(dim="index").values, color="#2411ce", lw=1.8
     )
 
     for i in (0, 1):
@@ -319,3 +331,61 @@ plt.close(fig)
 river_ds.close()
 surge_ds.close()
 print(f"Wrote fig_return_period_curves.png, fig_forced_hydrograph.png to {OUT_DIR}")
+
+
+# # plot 3: flood arrival-time map -- where/when the river first overtops onto
+# # the floodplain, from the UNMODIFIED baseline run (not an adapted one, so
+# # this shows the natural overtopping pattern, uncontaminated by any
+# # measure's own DEM/weir changes). Cells already wet at hour 0 (spin-up
+# # baseline) are excluded, so the colour only shows genuinely NEW flooding
+# # during the event itself.
+# SCENARIO_FOR_ARRIVAL = "river_500"
+# baseline_sfincs_root = BASIN_ROOT / "runs" / SCENARIO_FOR_ARRIVAL / "sfincs"
+# ds = xr.open_dataset(baseline_sfincs_root / "sfincs_map.nc")
+
+# zb = ds["zb"].values
+# zs = ds["zs"].values
+# depth = zs - zb[None, :, :]
+# HMIN = 0.05
+# wet = depth > HMIN
+# already_wet = wet[0]
+
+# arrival_idx = np.full(zb.shape, -1, dtype=int)
+# for t in range(1, wet.shape[0]):
+#     newly = wet[t] & ~already_wet & (arrival_idx == -1)
+#     arrival_idx[newly] = t
+# arrival_hours = np.where(arrival_idx >= 0, arrival_idx.astype(float), np.nan)
+
+# x, y = ds["x"].values, ds["y"].values
+# zone = gpd.read_file(r"D:\GCFM_UU\raw_data\adaptation\water_retention_area.geojson").to_crs("EPSG:32631")
+# river = gpd.read_file(
+#     BASIN_ROOT / "preprocessing_inputs" / "domain" / "2433835_river_network_clean.gpkg"
+# ).to_crs("EPSG:32631")
+
+# minx, miny, maxx, maxy = zone.total_bounds
+# margin = 3000
+# in_view = (x >= minx - margin) & (x <= maxx + margin) & (y >= miny - margin) & (y <= maxy + margin)
+
+# fig, ax = plt.subplots(figsize=(9, 8), facecolor="white")
+# sc = ax.scatter(x[in_view], y[in_view], c=arrival_hours[in_view], cmap="turbo_r", s=8, marker="s")
+# cb = fig.colorbar(sc, ax=ax, shrink=0.7)
+# cb.set_label("Hours after event start when cell first floods")
+# gpd.GeoSeries([zone.geometry.union_all()], crs="EPSG:32631").boundary.plot(
+#     ax=ax, color="red", linewidth=2, linestyle="--", label="retention zone"
+# )
+# river.clip([minx - margin, miny - margin, maxx + margin, maxy + margin]).plot(
+#     ax=ax, color="black", linewidth=1, label="river network"
+# )
+# ax.set_xlim(minx - margin, maxx + margin)
+# ax.set_ylim(miny - margin, maxy + margin)
+# ax.set_title(f"Flood arrival time -- baseline {SCENARIO_FOR_ARRIVAL} (no adaptation)")
+# ax.set_xlabel("x (m)")
+# ax.set_ylabel("y (m)")
+# ax.legend(loc="upper right", fontsize=8, frameon=False)
+# ax.set_aspect("equal")
+# ax.spines[["top", "right"]].set_visible(False)
+# fig.tight_layout()
+# fig.savefig(OUT_DIR / "fig_flood_arrival_time.png", dpi=200, facecolor="white")
+# plt.close(fig)
+# ds.close()
+# print(f"Wrote fig_flood_arrival_time.png to {OUT_DIR}")

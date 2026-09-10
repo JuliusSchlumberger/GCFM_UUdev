@@ -645,6 +645,8 @@ def apply_water_retention(
     roughness_native_path: Optional[str] = None,
     nr_subgrid_pixels: Optional[int] = None,
     flat_floor: bool = False,
+    weir_par1: float = 0.6,
+    weir_buffer: Optional[float] = None,
     **kwargs,
 ) -> SfincsModel:
     """
@@ -652,6 +654,27 @@ def apply_water_retention(
 
     Lowers the subgrid elevation within a predefined retention polygon to create
     storage, then rebuilds the subgrid tables so the solver sees the depression.
+    ALSO adds a weir tracing the zone's own outer boundary -- without it, the
+    boundary between "inside the pit" and its surroundings is just ordinary 2D
+    subgrid connectivity at the newly (much lower) excavated elevation, so
+    water crosses it exactly as freely as any other cell-to-cell flow and
+    drains straight back out during recession, no matter how deep the
+    excavation goes -- confirmed on a real run where doubling the excavation
+    depth had no effect on this.
+
+    The weir's own crest comes from the basin's own EXISTING protection weir
+    (segments within 500m of the zone, averaged) -- its "current" adaptation
+    protection standard -- NOT raw terrain: raw terrain can dip to
+    near-channel-bed level at a genuine natural low point (confirmed on this
+    basin: -8 to -10 m at a channel crossing, vs ~7.6 m mean for the existing
+    weir's own crest in that same area), which is essentially no barrier at
+    all there. Falls back to terrain-sampling (dep_subgrid) only when no
+    existing weir segment is found nearby (e.g. a zone with no existing
+    protection infrastructure at all) -- in that fallback case, the zone
+    fills by genuinely overtopping whatever natural rim IS there, and any
+    genuinely low points on that rim (e.g. a channel crossing the polygon
+    boundary) stay realistically open rather than either fully sealed or
+    wide open.
 
     Storage target is derived from a fraction of the UNCONTROLLED baseline
     flood volume, i.e. target_volume = fraction * baseline_excess_volume.
@@ -701,6 +724,11 @@ def apply_water_retention(
         flat_floor             : (Optional) If True, set the zone to a flat floor at (min_terrain -
                                  lowering); if False (default), subtract `lowering` from
                                  existing terrain, preserving micro-relief.
+        weir_par1              : (Optional) Weir discharge coefficient for the containing
+                                 ring, default 0.6 (same default as apply_dike_ring).
+        weir_buffer             : (Optional) Sampling window [m] used to read the crest
+                                 elevation from the original terrain along the boundary.
+                                 None uses hydromt_sfincs' own default.
 
     Returns:
         Modified SfincsModel object.
@@ -769,6 +797,62 @@ def apply_water_retention(
     else:
         dep_new = dep.where(~zone_mask, dep - lowering).astype(dep.dtype)
 
+    # contain the pit with a weir along its own outer boundary. Crest comes
+    # from the basin's own EXISTING protection weir (its "current" adaptation
+    # protection standard) near this zone, NOT raw terrain -- raw terrain can
+    # dip to near-channel-bed level at a genuine natural low point (confirmed
+    # on this basin: -8 to -10 m at a channel crossing, vs ~7.6 m mean for
+    # the existing weir's own crest in that same area), which gives
+    # essentially no containment there. Without a real barrier here, the pit
+    # is only ever separated from its surroundings by ordinary subgrid
+    # connectivity at the excavated elevation, so water crosses it as freely
+    # as any other cell-to-cell flow and drains straight back out on
+    # recession (see this function's own docstring). merge=True keeps
+    # whatever weirs already exist in the model (this same existing
+    # protection weir, other chained measures).
+    #
+    # mod.weirs.data is read BEFORE this call adds the new ring, so it's
+    # still exactly the basin's own already-built weir. Only segments within
+    # weir_search_buffer of the zone are used, so a distant coastal crest
+    # doesn't get averaged into a river floodplain zone's own crest (or vice
+    # versa). Falls back to terrain-sampling (dep=dep_subgrid) only if no
+    # existing weir segment is found nearby -- e.g. a zone with no existing
+    # protection infrastructure at all.
+    existing_weir = mod.weirs.data
+    weir_search_buffer = zone_geom.buffer(500.0)  # m
+    nearby_weir = (
+        existing_weir[existing_weir.intersects(weir_search_buffer)]
+        if existing_weir is not None and not existing_weir.empty
+        else existing_weir
+    )
+
+    if nearby_weir is not None and not nearby_weir.empty:
+        nearby_zs = [pt[2] for geom in nearby_weir.geometry for pt in geom.coords]
+        weir_elevation = float(np.mean(nearby_zs))
+        weir_source_kwargs = dict(elevation=weir_elevation, dep=None)
+        weir_source_note = f"existing protection standard (~{weir_elevation:.2f} m, {len(nearby_weir)} nearby segment(s))"
+    else:
+        # dep=dep_subgrid (the ORIGINAL file PATH, not the in-memory `dep`
+        # DataArray) -- hydromt_sfincs's own determine_weir_elevation does
+        # `dep is None or dep == "dep"` internally, which raises "truth
+        # value of an array... is ambiguous" when dep is a DataArray
+        # (numpy elementwise comparison instead of a scalar check). A path
+        # string sidesteps that entirely and points at the exact same,
+        # still-untouched source raster (this run's own mod.root is
+        # redirected to the adaptation strategy's own folder, never the
+        # skeleton dep_subgrid.tif this path points to).
+        weir_source_kwargs = dict(dep=dep_subgrid)
+        weir_source_note = "original terrain (no existing protection weir found nearby)"
+
+    zone_boundary = gpd.GeoDataFrame(geometry=[zone_geom.boundary], crs=mod.crs)
+    mod.weirs.create(
+        locations=zone_boundary,
+        buffer=weir_buffer,
+        par1=weir_par1,
+        merge=True,
+        **weir_source_kwargs,
+    )
+
     # roughness is unchanged by this measure, but subgrid.create rebuilds tables
     # from scratch -- feed it this basin's own already-built native-resolution
     # roughness raster straight through, unmodified. dep_new already carries
@@ -792,11 +876,123 @@ def apply_water_retention(
         f"  Applied DEM retention: storage_fraction={storage_fraction:.2f} -> target_volume={target_volume:.0f} m3, "
         f"lowered {lowering:.2f} m over {zone_area / 1e6:.2f} km2 -> "
         f"~{created_storage:.0f} m3 nominal storage{cap_note} "
-        f"({'flat floor' if flat_floor else 'subtracted'}). "
+        f"({'flat floor' if flat_floor else 'subtracted'}), "
+        f"contained by a weir along the zone boundary (crest: {weir_source_note}). "
         f"Realized retained volume must be checked post-hoc against the simulated flood map."
     )
 
     return mod
+
+
+# ── Water retention (storage-volume / FloodAdapt-style green infrastructure) ──
+# def apply_water_retention_greening(
+#     mod: SfincsModel,
+#     locations: Path,
+#     storage_fraction: float,
+#     baseline_excess_volume: float,
+#     **kwargs,
+# ) -> SfincsModel:
+#     """
+#     Storage-volume retention measure -- FloodAdapt's own mechanism for green
+#     infrastructure (water square / greening / total storage are all just UIs
+#     over this one thing): a total volume is distributed across the cells
+#     covered by the retention polygon(s), and SFINCS's own solver removes
+#     water entering those cells until each cell's own share of that capacity
+#     is used up.
+
+#     This is a deliberate alternative to apply_water_retention's DEM-lowering
+#     + containing-weir approach, not a replacement for it -- confirmed on a
+#     real run that this repo's basin data supports both. storage_volume is
+#     simpler (no DEM excavation, no weir, no "does the polygon cross the
+#     channel" question, no dep_subgrid/roughness passthrough or subgrid
+#     rebuild at all -- storage_volume lives on the coarse regular grid, not
+#     subgrid, and doesn't touch elevation/roughness), but behaves differently:
+#     it's a ONE-WAY SINK. SFINCS's own storage_volume output only ever
+#     decreases over a run (confirmed empirically) -- water captured here is
+#     never released back, unlike a real basin (or apply_water_retention's own
+#     DEM pit), which can also drain as levels recede. Use this when that
+#     "absorbs and holds" behaviour is the right representation (e.g. a rain
+#     garden / infiltration-style measure); use apply_water_retention when the
+#     physical basin-with-outflow behaviour matters.
+
+#     Storage target is derived the same way as apply_water_retention:
+#     target_volume = storage_fraction * baseline_excess_volume, sized against
+#     the SAME fixed reference (see apply_water_retention's own docstring for
+#     where baseline_excess_volume comes from) -- so storage_fraction means the
+#     same thing across both pre-processing variants and the post-processing
+#     method.
+
+#     Realized fill is reported directly by SFINCS itself (config
+#     storestoragevolume=1, set below), as a per-cell-per-timestep
+#     'storage_volume' output variable (remaining capacity) -- read that back
+#     post-hoc to see exactly how much of target_volume actually got used,
+#     instead of re-deriving it from a before/after flood-map comparison.
+
+#     hydromt_sfincs's own storage_volume.create() -> workflows.add_storage_volume()
+#     only handles geometry.type == "Polygon" (or "Point") -- a MultiPolygon
+#     silently adds ZERO volume anywhere, no error or warning at all (confirmed
+#     empirically). So `locations` is exploded into individual Polygon rows
+#     first, each carrying its own "volume" attribute (target_volume split
+#     proportionally by that piece's own area share) before being handed to
+#     storage_volume.create() -- this is what lets a single measure span
+#     several disconnected zones (e.g. one compartment per riverbank) correctly.
+
+#     Args:
+#         mod                     : (Required) Open SfincsModel object (HydroMT)
+#         locations               : (Required from measures.yml) Path / data source /
+#                                   GeoDataFrame of the retention polygon(s) -- may be
+#                                   a MultiPolygon or several disjoint features
+#         storage_fraction        : (Required from measures.yml) Fraction (0-1) of
+#                                   baseline_excess_volume to target as storage
+#         baseline_excess_volume  : (Required) Excess flood volume [m3] from the
+#                                   uncontrolled baseline run (see
+#                                   src.postprocessing.compute_excess_volume;
+#                                   auto-injected by 18a_adapt_pre.py, never
+#                                   strategy-configured)
+
+#     Returns:
+#         Modified SfincsModel object.
+#     """
+#     if not (0.0 <= storage_fraction <= 1.0):
+#         raise ValueError(f"storage_fraction must be in [0, 1], got {storage_fraction}")
+#     if baseline_excess_volume <= 0:
+#         raise ValueError(
+#             f"baseline_excess_volume must be > 0, got {baseline_excess_volume}"
+#         )
+
+#     target_volume = storage_fraction * baseline_excess_volume
+
+#     if isinstance(locations, str):
+#         locations = gpd.read_file(locations)
+#     locations = locations.to_crs(mod.crs)
+
+#     # explode MultiPolygon/multi-feature input into individual Polygon rows --
+#     # see this function's own docstring for why (hydromt_sfincs's own
+#     # add_storage_volume() silently drops anything that isn't exactly
+#     # geometry.type == "Polygon") -- and split target_volume across them
+#     # proportional to each piece's own area share.
+#     locations = locations.explode(index_parts=False).reset_index(drop=True)
+#     areas = locations.geometry.area
+#     total_area = float(areas.sum())
+#     if total_area == 0:
+#         raise ValueError(
+#             "Retention zone covers no area - check the polygon / CRS."
+#         )
+#     locations["volume"] = target_volume * (areas / total_area)
+
+#     mod.storage_volume.create(storage_locs=locations, merge=True)
+#     # direct realized-fill output -- see this function's own docstring
+#     mod.config.set("storestoragevolume", 1)
+
+#     print(
+#         f"  Applied storage-volume retention: storage_fraction={storage_fraction:.2f} -> "
+#         f"target_volume={target_volume:.0f} m3 distributed across {len(locations)} zone "
+#         f"piece(s) ({total_area / 1e6:.2f} km2 total). Realized fill is reported directly "
+#         f"by SFINCS's own 'storage_volume' output (storestoragevolume=1) -- read that back "
+#         f"post-hoc rather than re-deriving it from a flood-map comparison."
+#     )
+
+#     return mod
 
 
 # ── Protect-closed: coastal_levee ────────────────────────────────────────────
@@ -936,44 +1132,193 @@ def apply_pumps(
     return mod
 
 
-# ── Accommodate: dike_ring ────────────────────────────────────────────────────
-def apply_dike_ring(
+# # ── Accommodate: dike_ring aroun location ─────────────────────────────────────────────────────
+# def apply_dike_ring(
+#     mod: SfincsModel,
+#     locations: Path,
+#     elevation: Optional[float] = None,
+#     par1: float = 0.6,
+#     dep: Optional[str] = None,
+#     buffer: Optional[float] = None,
+#     dz: Optional[float] = None,
+#     merge: bool = True,
+#     **kwargs,
+# ) -> SfincsModel:
+#     """
+#     Adds a dike ring as a SFINCS weir line, built from a user-supplied polyline geojson.
+#     Called before mod.write() and the SFINCS run (pre-processing method).
+
+#     Args:
+#         mod       : (Required) Open SfincsModel object (HydroMT)
+#         elevation : (Required from measures.yml) Dike crest elevation [m above datum], assigned to the whole line.
+#         locations : (Required from measures.yml) Path, data source name, or GeoDataFrame with the dike ring polyline(s).
+#         par1      : (Optional) Weir discharge coefficient, default 0.6.
+#         dep       : (Optional) Alternative elevation raster to sample crest height from.
+#         buffer    : (Optional) Distance (m) from centerline used as sampling window for dep.
+#         dz        : (Optional) Vertical offset added to the elevation sampled from dep.
+#         merge     : (Optional) If True, merge with any existing weir lines instead of overwriting.
+
+#     Returns:
+#         Modified SfincsModel object.
+#     """
+
+#     mod.weirs.create(
+#         locations=locations,
+#         elevation=elevation,
+#         par1=par1,
+#         dep=dep,
+#         buffer=buffer,
+#         dz=dz,
+#         merge=merge,
+#     )
+
+#     return mod
+
+
+# ── Accommodate: urban_raising ────────────────────────────────────────────────
+def apply_urban_raising(
     mod: SfincsModel,
-    locations: Path,
-    elevation: Optional[float] = None,
-    par1: float = 0.6,
-    dep: Optional[str] = None,
-    buffer: Optional[float] = None,
-    dz: Optional[float] = None,
-    merge: bool = True,
+    elevation: float,
+    urban_code: int = 50,
+    dep_subgrid: Optional[str] = None,
+    landuse_path: Optional[str] = None,
+    roughness_native_path: Optional[str] = None,
+    locations: Optional[Path] = None,
+    flood_map_path: Optional[str] = None,
+    flood_threshold: float = 0.05,
+    nr_subgrid_pixels: Optional[int] = None,
+    out_path: str = "urban_raising_dep_subgrid.tif",
     **kwargs,
 ) -> SfincsModel:
     """
-    Adds a dike ring as a SFINCS weir line, built from a user-supplied polyline geojson.
-    Called before mod.write() and the SFINCS run (pre-processing method).
+    Accommodate measure: raise the ground elevation at EVERY flooded urban
+    cell by a fixed amount, added on top of that cell's own current
+    elevation. Replaces the earlier dike_ring (weir-ring around a hand-drawn
+    polygon, commented out above) approach for the "accommodate" archetype
+    -- a delta-wide, per-cell DEM raise is directly comparable to the other
+    delta-wide strategies (advance/protect/retreat), whereas dike_ring's
+    protection footprint was scoped to one hand-drawn ring and not
+    comparable to those.
+
+    Reuses apply_retreat's own urban+flooded eligibility detection (same
+    landuse_path/flood_map_path/flood_threshold/locations semantics) but
+    raises elevation at eligible cells instead of reclassifying land use.
+    `elevation` is an ADDITIVE raise amount, not an absolute target -- every
+    eligible cell goes up by exactly `elevation`, regardless of its own
+    current ground level, matching adaptation_method_post.py's own
+    apply_urban_raising sibling (which subtracts `elevation` from flood
+    DEPTH the same way) so the two methods are directly comparable: for the
+    same forcing, raising the bed by `elevation` here produces the same
+    residual depth as subtracting `elevation` from depth there.
+
+    Land use/roughness are UNCHANGED (the cell is still urban, only its
+    elevation changes), so roughness_native_path is passed straight through
+    to the rebuilt subgrid unmodified, same convention as
+    apply_water_retention.
 
     Args:
-        mod       : (Required) Open SfincsModel object (HydroMT)
-        elevation : (Required from measures.yml) Dike crest elevation [m above datum], assigned to the whole line.
-        locations : (Required from measures.yml) Path, data source name, or GeoDataFrame with the dike ring polyline(s).
-        par1      : (Optional) Weir discharge coefficient, default 0.6.
-        dep       : (Optional) Alternative elevation raster to sample crest height from.
-        buffer    : (Optional) Distance (m) from centerline used as sampling window for dep.
-        dz        : (Optional) Vertical offset added to the elevation sampled from dep.
-        merge     : (Optional) If True, merge with any existing weir lines instead of overwriting.
+        mod                    : (Required) Open SfincsModel object
+        elevation              : (Required from measures.yml) Amount [m] added to eligible
+                                 cells' own current ground elevation (additive raise, not an
+                                 absolute target -- mirrors the postprocessing sibling's own
+                                 depth subtraction).
+        urban_code             : (Optional) Land use code marking urban cells (default 50, built-up)
+        dep_subgrid            : (Required) Path to the basin's own built dep_subgrid.tif
+        landuse_path           : (Required) Path to this basin's own landuse raster,
+                                 used only to determine which cells are urban
+        roughness_native_path  : (Required) Path to this basin's own already-built
+                                 native-resolution roughness raster (Manning's n),
+                                 reused unchanged since this measure never patches roughness
+        locations               : (Optional) Polygon path/gdf; if None (the default, and the
+                                 usual case for this measure), all flooded urban cells
+                                 basin-wide are eligible -- delta-wide, not scoped to a
+                                 hand-drawn zone.
+        flood_map_path          : (Required) Path to the BASELINE max flood depth raster
+                                 (no-adaptation run); defines which urban cells count as
+                                 flooded/eligible
+        flood_threshold          : (Optional) Depth [m] above which a cell counts as flooded (default 0.05)
+        nr_subgrid_pixels       : (Optional) Subgrid refinement factor; inferred if omitted
+        out_path                : (Optional) Filename the raised dep_subgrid is written to under mod.root
 
     Returns:
         Modified SfincsModel object.
     """
+    if dep_subgrid is None:
+        raise ValueError(
+            "apply_urban_raising needs dep_subgrid (path to dep_subgrid.tif)"
+        )
+    if flood_map_path is None:
+        raise ValueError(
+            "apply_urban_raising needs flood_map_path (baseline max flood depth raster)"
+        )
+    if landuse_path is None:
+        raise ValueError("apply_urban_raising needs landuse_path")
+    if roughness_native_path is None:
+        raise ValueError("apply_urban_raising needs roughness_native_path")
 
-    mod.weirs.create(
-        locations=locations,
-        elevation=elevation,
-        par1=par1,
-        dep=dep,
-        buffer=buffer,
-        dz=dz,
-        merge=merge,
+    # 1. elevation + land use + baseline flood depth, all on the dep_subgrid grid
+    dep = mod.data_catalog.get_rasterdataset(dep_subgrid)
+    if isinstance(dep, xr.Dataset):
+        dep = dep[list(dep.data_vars)[0]]
+    dep = dep.load()
+
+    lulc = mod.data_catalog.get_rasterdataset(landuse_path)
+    if isinstance(lulc, xr.Dataset):
+        lulc = lulc[list(lulc.data_vars)[0]]
+    lulc = lulc.raster.reproject_like(dep, method="nearest")
+
+    flood = mod.data_catalog.get_rasterdataset(flood_map_path)
+    if isinstance(flood, xr.Dataset):
+        flood = flood[list(flood.data_vars)[0]]
+    flood = flood.raster.reproject_like(dep, method="nearest")
+
+    # eligible cells: urban AND flooded (optionally constrained to locations)
+    eligible = (lulc == urban_code) & (flood > flood_threshold)
+    if locations is not None:
+        if isinstance(locations, str):
+            locations = gpd.read_file(locations)
+        locations = locations.to_crs(dep.rio.crs)
+        mask = rasterize(
+            [(g, 1) for g in locations.geometry],
+            out_shape=(dep.rio.height, dep.rio.width),
+            transform=dep.rio.transform(),
+            fill=0,
+            dtype="uint8",
+        ).astype(bool)
+        mask = xr.DataArray(mask, dims=dep.dims, coords=dep.coords)
+        eligible = eligible & mask
+
+    # every eligible cell is raised by the SAME additive amount -- no
+    # comparison against current elevation, unlike a "raise up to a target"
+    # rule (see this function's own docstring for why: this must mirror the
+    # postprocessing sibling's flat depth subtraction).
+    n_eligible = int(eligible.sum())
+
+    dep_new = dep.where(~eligible, dep + elevation).astype(dep.dtype)
+
+    out_path = Path(out_path)
+    if not out_path.is_absolute():
+        out_path = Path(mod.root.path) / out_path
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    dep_new.rio.to_raster(out_path)
+
+    print(
+        f"  Applied urban raising: +{elevation:.2f} m to {n_eligible} flooded urban cell(s)."
+    )
+
+    # 2. rebuild subgrid: elevation raised at eligible cells, roughness
+    # unchanged (this basin's own already-built native-resolution roughness
+    # raster passed straight through, same convention as apply_water_retention)
+    mod.subgrid.create(
+        elevation_list=[{"elevation": dep_new}],
+        roughness_list=[{"manning": str(roughness_native_path)}],
+        nr_subgrid_pixels=(
+            _infer_nr_subgrid_pixels(mod, dep)
+            if nr_subgrid_pixels is None
+            else nr_subgrid_pixels
+        ),
+        write_man_tif=True,
+        write_dep_tif=True,
     )
 
     return mod
@@ -1156,9 +1501,11 @@ selected_measures = {
     "river_levee": apply_river_levee,
     "nbs_land_reclamation": apply_NbS_land_reclamation,
     "water_retention": apply_water_retention,
+    # "water_retention_greening": apply_water_retention_greening,
     "coastal_levee": apply_coastal_levee,
     "pumps": apply_pumps,
-    "dike_ring": apply_dike_ring,
+    # "dike_ring": apply_dike_ring,  # apply_dike_ring is commented out above; replaced by urban_raising
+    "urban_raising": apply_urban_raising,
     "retreat": apply_retreat,
 }
 

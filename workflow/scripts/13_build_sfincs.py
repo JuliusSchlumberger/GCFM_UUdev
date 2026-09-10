@@ -55,15 +55,17 @@ consistent across modes):
                    overridden to a uniform dry start (no "inifile" forwarded
                    from the skeleton) for the same reason.
 
-discharge_multiplier (boundary_forcings.river.discharge_multiplier, default
-1.0) uniformly scales the built discharge hydrograph at every active river
-seed/boundary crossing -- applied HERE, at build time
-(src.river_forcing.build_design_discharge_matrix), never baked into
-river_forcing.nc. Mirrors src.surge's deferred SLR fingerprint: rule 07 and
-rule 10's weir/depth calibration (which also reads river_forcing.nc, for its
-own calibration seed discharge) stay completely independent of this factor,
-so changing it only reruns this per-scenario build and its downstream event
-run.
+discharge_multiplier (per-scenario, config/scenarios.yml, default 1.0 --
+see scenario_params in 00_common.smk) uniformly scales the built discharge
+hydrograph at every active river seed/boundary crossing -- applied HERE, at
+build time (src.river_forcing.build_design_discharge_matrix), never baked
+into river_forcing.nc. Mirrors src.surge's deferred SLR fingerprint: rule 07
+and rule 10's weir/depth calibration (which also reads river_forcing.nc, for
+its own calibration seed discharge) stay completely independent of this
+factor, so changing it only reruns this per-scenario build and its
+downstream event run. Being per-scenario (not global) lets e.g.
+river_500/river_only_500/compound_500 be amplified past their raw RP lookup
+without affecting coast_500's own small RP=2 river_rp.
 """
 
 import logging
