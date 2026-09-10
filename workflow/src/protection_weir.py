@@ -51,11 +51,13 @@ import logging
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 from affine import Affine
 from scipy.ndimage import binary_dilation, generate_binary_structure
 from scipy.ndimage import label as ndimage_label
 from shapely.geometry import LineString, Polygon
 from shapely.ops import linemerge, unary_union
+from shapely.strtree import STRtree
 
 log = logging.getLogger(__name__)
 
@@ -397,6 +399,144 @@ def build_weir_geodataframe(
         {"elevation": elevations, "par1": [par1] * len(weir_lines)},
         geometry=weir_lines,
         crs=crs,
+    )
+
+
+def _flatten_elevation_from_z(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Give every row a populated, flat "elevation" column and plain 2D
+    geometry, regardless of which of the two representations hydromt_sfincs
+    happened to hand it in.
+
+    SfincsWeirs.read() (utils.linestring2gdf) embeds a per-vertex elevation
+    list INTO the geometry's own Z-coordinate instead of keeping a separate
+    "elevation" column, whenever the list's length matches the vertex count
+    -- true of every weir segment this repo ever writes (2 vertices, 2
+    elevation values) -- so mod.weirs.data read back from a real sfincs.weir
+    file has NO "elevation" column at all, only Z-embedded geometry. The
+    ASCII sfincs.weir writer (utils.gdf2linestring) still reconstructs
+    elevation correctly from Z on write, so the MODEL is unaffected by this
+    either way -- but gis/weir.geojson is written straight from this same
+    GeoDataFrame (utils.write_vector, no such reconstruction), so any row
+    still relying on Z alone shows a blank/Null "elevation" attribute in
+    QGIS despite carrying a perfectly real crest -- confirmed via basin
+    2433835/protect_closed_1, where every preserved river segment (kept
+    as-is from mod.weirs.data by merge_weir_preserve_unmatched, its own only
+    caller) showed Null there.
+    """
+    if gdf.empty:
+        return gdf
+    gdf = gdf.copy()
+    if "elevation" not in gdf.columns:
+        gdf["elevation"] = np.nan
+    for idx, geom in gdf.geometry.items():
+        if geom.has_z and pd.isna(gdf.at[idx, "elevation"]):
+            z = [c[2] for c in geom.coords]
+            gdf.at[idx, "elevation"] = z[0] if len(set(z)) == 1 else z
+            gdf.at[idx, "geometry"] = LineString([(c[0], c[1]) for c in geom.coords])
+    return gdf
+
+
+def merge_weir_preserve_unmatched(
+    baseline_gdf: gpd.GeoDataFrame,
+    new_gdf: gpd.GeoDataFrame,
+    max_match_distance_m: float = 2.0,
+) -> gpd.GeoDataFrame:
+    """
+    Used by the protect_closed adaptation strategy (apply_coastal_levee,
+    src/adaptation_method_pre.py) to seal off the coast/river-mouth at a new
+    elevation while leaving the river's own already-built protection weir
+    (further inland, following current protection standards) untouched --
+    without this, calling mod.weirs.set(new_gdf, merge=False) directly would
+    wholesale replace the ENTIRE baseline weir with just the new coastal
+    lines, silently deleting the river's protection.
+
+    new_gdf's coastal rows are expected to sit at essentially the same
+    location as the baseline rows they're meant to replace, since the
+    intended workflow is copying the basin's own baseline weir file (e.g.
+    {basin_id}_coastal_protection_weir.gpkg), deleting its river rows, and
+    adding one new segment that closes off the river mouth. Matching is
+    nearest-neighbour DISTANCE, not exact/rounded-coordinate equality: a
+    "copy" in practice still picks up a few cm of drift (re-saved/
+    reprojected through QGIS, or round-tripped through the ASCII
+    sfincs.weir file's own 1-decimal precision on the baseline side -- see
+    below), and that drift lands randomly on either side of any fixed
+    rounding boundary, so two coordinates 8 cm apart can round to values
+    0.1 m apart and never compare equal no matter how many digits are
+    chosen -- confirmed via basin 2433835/protect_closed_1: baseline
+    (300087.1, 4492070.0) vs new (300087.085, 4492069.920666667), 8 cm
+    apart, whose y rounds to 4492070.0 and 4492069.9 respectively. Distance
+    to the nearest new_gdf segment is unambiguous regardless of which side
+    of a boundary either coordinate happens to fall on.
+
+    max_match_distance_m defaults to 2.0 m, well under half a grid cell (this
+    repo's basins run ~70 m resolution) so it can never conflate two
+    genuinely different grid-edge segments, but comfortably clears both the
+    baseline's own 0.1 m ASCII round-trip truncation (hydromt_sfincs.utils.
+    write_geoms's "%11.1f" format) and the sub-metre editing/reprojection
+    drift observed above -- confirmed via the same basin/strategy: every
+    baseline segment's distance to its nearest new_gdf segment fell into two
+    clean, non-overlapping bands with nothing in between -- under 1 m (the
+    same physical location, reformatting noise only) or over 5 m, up to
+    8.5 km (a genuinely distinct, inland river segment) -- so any threshold
+    in that gap works equally well for this data; 2.0 m leaves margin for
+    noisier input on a basin not yet seen.
+
+    Every baseline segment within max_match_distance_m of some new_gdf
+    segment is dropped (new_gdf's own row -- carrying its own new elevation
+    -- takes its place); every baseline segment with no near match (the
+    river) is kept unchanged; every new_gdf row is added regardless (so the
+    new river-mouth closure segment, with no baseline counterpart at all,
+    is included too).
+    """
+    if baseline_gdf is None or baseline_gdf.empty:
+        return new_gdf
+    if new_gdf.empty:
+        return baseline_gdf
+
+    baseline_gdf = _flatten_elevation_from_z(baseline_gdf)
+
+    new_geoms = list(new_gdf.geometry.values)
+    tree = STRtree(new_geoms)
+
+    def _is_replaced(geom):
+        # Midpoint, NOT geom.distance(...) against the whole segment -- two
+        # segments that merely CONNECT (share one endpoint, e.g. where a
+        # coastal_levee trace hands off to a sibling river_levee trace at
+        # their shared junction vertex) register as distance 0 under a
+        # whole-geometry distance check despite running in entirely
+        # different directions and covering no common ground otherwise,
+        # wrongly marking the coastal segment "replaced" with nothing in
+        # river_gdf actually covering its own stretch -- confirmed via basin
+        # 2433835/grey_protect_open_1: coastal segment (319397.977,
+        # 4510261.34)-(319467.944, 4510261.34) shares its second endpoint
+        # exactly with a river segment ending at the same point but running
+        # north-south, got dropped as "replaced", and nothing else covered
+        # that ~70 m stretch -- a real gap in the final weir. A genuine
+        # duplicate/near-duplicate segment (the actual replace-in-place case
+        # this function exists for) has its WHOLE length close to the new
+        # trace, so its midpoint is close too; a segment only touching the
+        # new trace at one endpoint has its midpoint far from it, since nothing
+        # else about the two segments coincides.
+        midpoint = geom.interpolate(0.5, normalized=True)
+        nearest_idx = tree.nearest(midpoint)
+        return midpoint.distance(new_geoms[nearest_idx]) <= max_match_distance_m
+
+    is_replaced = baseline_gdf.geometry.apply(_is_replaced)
+    unmatched = baseline_gdf[~is_replaced]
+
+    cols = ["geometry", "elevation", "par1"]
+    unmatched = unmatched[[c for c in cols if c in unmatched.columns]]
+    new_part = new_gdf[[c for c in cols if c in new_gdf.columns]]
+
+    log.info(
+        f"Weir merge: replacing {int(is_replaced.sum())} baseline segment(s) matched by "
+        f"the new coastal trace, keeping {len(unmatched)} unmatched baseline segment(s) "
+        f"(the river) unchanged, {len(new_part) - int(is_replaced.sum())} new segment(s) "
+        "in the new trace have no baseline match and are simply added"
+    )
+
+    return gpd.GeoDataFrame(
+        pd.concat([unmatched, new_part], ignore_index=True), crs=new_gdf.crs
     )
 
 

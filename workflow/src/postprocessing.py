@@ -144,7 +144,7 @@ def compute_max_inundation(
     run_dir: str | Path,
     sfincs_root: str | Path,
     sea_mask_path: str | Path,
-    hmin: float = 0.0,
+    hmin: float = 0.05,
     include_subgrid: bool = True,
     max_bytes: float = STATS_MAX_BYTES,
 ) -> tuple[xr.DataArray, xr.DataArray] | tuple[None, None]:
@@ -383,3 +383,54 @@ def compute_risk_metrics(
         "volume_m3": round(volume_m3, 0),
         "volume_km3": round(volume_m3 / 1e9, 4),
     }
+
+
+def compute_excess_volume(
+    flood_map_path: str | Path,
+    attribution_mask_path: str | Path,
+    classes: tuple = (1, 3, 4),
+) -> float:
+    """
+    Total flood volume [m3] in the given attribution classes (default: river,
+    compound, and spin-up baseline -- i.e. everything except pure-coastal)
+    from an UNCONTROLLED (no adaptation applied) max-flood-depth raster.
+
+    Ported from the author's separate delta_model project
+    (preprocessing_adaptation.py's own compute_excess_volume). There it was
+    called ONCE per scenario by an external orchestration script, and the
+    resulting float threaded into apply_water_retention() (both
+    src.adaptation_method_pre and src.adaptation_method_post, as
+    `baseline_excess_volume`) so every storage_fraction run is sized against
+    the same fixed reference number, rather than each measure call
+    recomputing (or filtering by attribution) itself. In this repo, rule
+    attribution_mask (18c_attribution_mask.py) is the equivalent single call
+    site -- it already builds attribution_mask_path for this exact basin x
+    scenario -- and writes the result to its own baseline_excess_volume.json
+    output, which src.adaptation_method_pre/post's own dispatch scripts
+    (18a_adapt_pre.py / 18b_adapt_post.py) read as a plain input, never
+    touching attribution_mask.tif directly.
+
+    `classes` is the knob for later extending water_retention to a
+    coastal-fed variant (e.g. classes=(2, 3, 4) with a separate coastal
+    retention-zone geojson) -- not used for that yet.
+
+    Args:
+        flood_map_path        : path to max_flood_depth.tif from the
+                                 UNCONTROLLED (no adaptation) baseline run
+        attribution_mask_path : path to that same scenario's attribution_mask.tif
+        classes                : attribution mask classes to include
+                                 (1=river, 2=coastal, 3=compound, 4=spin-up baseline)
+
+    Returns:
+        excess_volume [m3]
+    """
+    import rioxarray as rxr
+
+    da = rxr.open_rasterio(str(flood_map_path), masked=True).squeeze(drop=True)
+    da_attr = rxr.open_rasterio(str(attribution_mask_path)).squeeze(drop=True)
+
+    res_x, res_y = da.raster.res
+    pixel_area_m2 = abs(res_x * res_y)
+
+    target_mask = da.notnull().values & np.isin(da_attr.values, list(classes))
+    return float(da.values[target_mask].sum() * pixel_area_m2)

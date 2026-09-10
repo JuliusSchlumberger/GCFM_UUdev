@@ -319,6 +319,7 @@ datasets:
     provider: gdal
     file_format: GeoTIFF
     file_path: Copernicus/Copernicus_LandUse.tif
+    # file_path: ESA_Worldcover/esa_worldcover_clipped_2433835.tif
     compression: DEFLATE
     producer:
       institution: VITO NV

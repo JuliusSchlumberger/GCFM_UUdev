@@ -42,7 +42,6 @@ validation_spinup.png               Water-level timeseries at observation points
 validation_max_inundation.png       Max inundation depth at spin-up end.
 """
 
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -319,3 +318,4 @@ else:
         str(plot_inundation_path), basin_id=spin_up_root.parent.name, run_label="spinup",
     )
     log.info(f"Max inundation plot written: {plot_inundation_path}")
+

@@ -1,0 +1,163 @@
+# The menu: What measures exist and what are their parameters?
+# static definition of what measures exist and their allowed scales (never changes per run)
+
+adaptation_measures:
+  # Advance
+  offshore_barrier:
+    type: offshore_barrier
+    description: Offshore barrier to reduce wave height and storm surge
+    params:
+      elevation:
+        min: 0.1
+        max: 20 # in m
+        required_for: [postprocessing, preprocessing]
+      locations:
+        min: null
+        max: null # path, data source name, or GeoDataFrame with the island polygon(s)
+        required_for: [preprocessing]
+
+  pumps:
+    type: pumps
+    description: Pumps to remove river discharge
+    params:
+      discharge:
+        min: 0
+        max: 100000 # in m3/s
+        required_for: [postprocessing, preprocessing]
+      locations:
+        min: null
+        max: null # path, data source name, or GeoDataFrame with the pump locations
+        required_for: [preprocessing]
+
+
+  # NBS Protect-open
+  nbs_land_reclamation:
+    type: nbs_land_reclamation
+    description: Extension of coastline by land reclamation seaward
+    params:
+      distance: # in metres
+        min: 0
+        max: 2000 # 1km - limited by the model domain
+        required_for: [postprocessing, preprocessing]
+      attenuation_rate: # depending on type of land use of offshore extension (in m/km)
+        min: 0
+        max: 1
+        required_for: [postprocessing]
+      locations:
+        min: null
+        max: null # path, data source name, or GeoDataFrame with the reference coastline polyline
+        required_for: [preprocessing]
+      target_code:
+        min: 0
+        max: 200 # target ESA WorldCover class for the reclaimed land (e.g. 60 = bare/sparse vegetation)
+        required_for: [preprocessing]
+      min_elevation: # floor [m above datum] on the inherited coastline elevation; only used when `elevation` is not set
+        min: 0
+        max: 20
+        required_for: [preprocessing]
+
+
+  water_retention:
+    type: water_retention
+    description: Water retention area in floodplain to store excess river discharge during flood events
+    params:
+      storage_fraction: # fraction
+        min: 0
+        max: 1
+        required_for: [postprocessing, preprocessing]
+      locations:
+        min: null
+        max: null # path, data source name, or GeoDataFrame with the retention area polygon(s)
+        required_for: [preprocessing]
+      # dep_subgrid/roughness_native_path/baseline_excess_volume are NOT
+      # declared here -- like retreat and nbs_land_reclamation's own
+      # dep_subgrid/roughness_native_path, they're auto-injected (never
+      # strategy-configured): dep_subgrid/roughness_native_path by
+      # 18a_adapt_pre.py from this basin's own already-built files,
+      # baseline_excess_volume by rule attribution_mask (18c), read by both
+      # 18a_adapt_pre.py and 18b_adapt_post.py.
+
+
+  # Greys protect-open
+  river_levee:
+    type: river_levee
+    description: River levee along rivers
+    params:
+      elevation:
+        min: 0.1
+        max: 20 # in m
+        required_for: [preprocessing, postprocessing]
+      locations:
+        min: null
+        max: null # path, data source name, or GeoDataFrame with the levee polyline(s)
+        required_for: [preprocessing]
+  # coastal_levee = taken from protect-closed
+
+  storm_surge_barrier:
+      type: storm_surge_barrier
+      description: Closed storm surge barrier at river mouth
+      params:
+        sill_elevation:
+          min: 0.1
+          max: 20 # in m
+          required_for: [postprocessing, preprocessing]
+        zmin:
+          min: null
+          max: null # path, data source name, or GeoDataFrame with the barrier polyline(s)
+          required_for: [preprocessing]
+        zmax:
+          min: null
+          max: null # path, data source name, or GeoDataFrame with the barrier polyline(s)
+          required_for: [preprocessing]
+        locations:
+          min: null
+          max: null # path, data source name, or GeoDataFrame with the barrier polyline(s)
+          required_for: [preprocessing]
+
+
+  # Protect-closed
+  coastal_levee:
+    type : levee
+    description: Coastal levee along entire coast, drawn from a user-supplied polyline geojson.
+    params:
+      elevation:
+        min: 0.1
+        max: 20 # in m
+        required_for: [postprocessing, preprocessing]
+      locations:
+        min: null
+        max: null # path, data source name, or GeoDataFrame with the levee polyline(s)
+        required_for: [preprocessing]
+
+  # Accommodate
+  dike_ring:
+    type: dike_ring
+    description: Dike ring around areas (e.g. cities)
+    params:
+      elevation:
+        min: 0.1
+        max: 20 # in m
+        required_for: [postprocessing, preprocessing]
+      locations:
+        min: null
+        max: null # path, data source name, or GeoDataFrame of the urban dike ring
+        required_for: [preprocessing, postprocessing]
+
+
+  # Retreat
+  retreat:
+    type: planned relocation outside flooded areas
+    description: Retreat from flooded areas
+    params:
+      retreat_fraction:
+        min: 0
+        max: 1 # fraction of population retreated from flooded areas
+        required_for: [postprocessing, preprocessing]
+      # target_code:
+      #   min: 0
+      #   max: 200
+      #   required_for: [preprocessing]
+      dep_subgrid:
+        min: null
+        max: null # path, data source name, or GeoDataFrame with the subgrid raster
+        required_for: [preprocessing]

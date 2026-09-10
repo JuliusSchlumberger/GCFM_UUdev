@@ -1,5 +1,8 @@
 data_catalogue: ./config/data_catalogue.yml
 scenarios_file: ./config/scenarios.yml
+adaptation:
+  strategies_file: ./config/adaptation_strategies.yml
+  measures_file: ./config/measures.yml
 
 profiling:
   enabled: false   # set to true to write line-level timing reports next to each log file
@@ -71,7 +74,7 @@ boundary_forcings:
     period_hr: 12
     slr: # IPCC AR6 sea-level-rise fingerprint, scaled to a single global-mean target (slr_m) and added to each station's storm-tide level. slr_m is deliberately applied at scenario-build time (rule build_sfincs), not baked into surge_forcing.nc (rule get_boundary_forcings) -- so changing slr_m only reruns the per-scenario build + event run, never the basin-level weir/depth calibration or skeleton build (which only ever see the MDT-only baseline). See src.surge.apply_slr_fingerprint / build_design_surge_matrix.
       enabled: true
-      slr_m: 0.3                 # target global-mean SLR (m); 0 = no SLR added; applied downstream, not by rule get_boundary_forcings itself
+      slr_m: 0.0                # target global-mean SLR (m); 0 = no SLR added; applied downstream, not by rule get_boundary_forcings itself
       ssp_scenario: ssp245
       confidence_level: medium   # "medium" or "low"
       year: 2100
@@ -79,7 +82,7 @@ boundary_forcings:
       fallback_search_deg: 3.0   # +/- deg to search for a valid AR6 location if the nearest is NaN
   river:
     period_hr: 24 # Choice of discharge variable from GLOFAS used.
-    discharge_multiplier: 1.0 # Uniform scaling factor on the built discharge hydrograph at every active river seed/boundary crossing; 1.0 = no-op. Applied at scenario-build time (rule build_sfincs, src.river_forcing.build_design_discharge_matrix), NOT baked into river_forcing.nc -- so changing it only reruns the per-scenario build + event run, never rule get_boundary_forcings or the weir/depth calibration (rule 10, which also reads river_forcing.nc but for its own separate calibration seed discharge, unaffected by this factor by design -- mirrors surge.slr.slr_m's deferred application).
+    discharge_multiplier: 2.0 # was 1 # Uniform scaling factor on the built discharge hydrograph at every active river seed/boundary crossing; 1.0 = no-op. Applied at scenario-build time (rule build_sfincs, src.river_forcing.build_design_discharge_matrix), NOT baked into river_forcing.nc -- so changing it only reruns the per-scenario build + event run, never rule get_boundary_forcings or the weir/depth calibration (rule 10, which also reads river_forcing.nc but for its own separate calibration seed discharge, unaffected by this factor by design -- mirrors surge.slr.slr_m's deferred application).
     glofas_buffer_deg: 1.0
     glofas_search_radius_km: 5.0    # radius around inside-domain reach centroid to search for GloFAS cells
     glofas_min_mean_discharge: 10.0  # minimum mean discharge (m³/s) for a GloFAS cell to be considered
@@ -169,7 +172,7 @@ sfincs:
     dthisout:      600           # time-series output at observation points (s) -- MAIN EVENT run only
     storevelmax:     0           # write maximum flow velocity (0=off, 1=on)
     storetwet:       0           # write inundation duration / time-wet (0=off, 1=on)
-    sfincs_exe: C:/Users/Schlu005\GCFM_UU\delta_model\software\SFINCS_v2.3.0_mt_Faber_release_exe\sfincs.exe
+    sfincs_exe: "C:\\Users\\2899043\\PhD\\SFINCS_software\\SFINCS_v2.3.0_mt_Faber_release_exe\\sfincs.exe"
     timeout_s: 68400             # max wall-clock time for a SFINCS subprocess (s, 19 h) --
                                   # shared by both the spin-up and main event runs
   spinup: # Spin-up simulation with constant forcings

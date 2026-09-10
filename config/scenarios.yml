@@ -8,22 +8,39 @@
 
 # Surge RPs must be COAST-RP tabulated values: 1,2,5,10,25,50,100,250,500,1000.
 
+
 default:                  # what plain `snakemake build` runs (no target_scenarios given)
   surge_rp: 250
   river_rp: 50
 
-coast_100:
-  surge_rp: 100
-  river_rp: null
+# Attribution runs (also uses spinup for the "always flooded" class)
+coast_only:
+  surge_rp: 2
+  river_rp: Null
 
-river_100:
-  surge_rp: null
-  river_rp: 100
+river_only:
+  surge_rp: Null
+  river_rp: 2
 
-compound_100:
-  surge_rp: 100
-  river_rp: 100
+# Coastal flood
+coast_500:
+  surge_rp: 500
+  river_rp: 2
 
-coast_250:                  # what plain `snakemake build` runs (no target_scenarios given)
-  surge_rp: 250
-  river_rp: 30
+coast_only_500:
+  surge_rp: 500
+  river_rp: Null
+
+# River flood
+river_500:
+  surge_rp: 2
+  river_rp: 500
+
+river_only_500:
+  surge_rp: Null
+  river_rp: 500
+
+# Compound
+compound_500:
+  surge_rp: 500
+  river_rp: 500

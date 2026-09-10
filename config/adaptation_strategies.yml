@@ -1,0 +1,242 @@
+# this is the combination of measure.yml that form strategies with measures of specific scales
+
+# config/adaptation_strategies.yml  — THE COMPOSITION (your old strategies_to_run)
+# name = {strategy} wildcard.  scale = the concrete param values, specified HERE.
+# method (pre/post) is chosen at the CLI and validated against measures.yml.
+
+meta:
+  root: D:/GCFM_UU/raw_data
+
+# -----------------------------------------------------------------------------------------------
+# ADVANCE
+# # Coastal flood
+# advance_04:
+#   measures:
+#     offshore_barrier: {elevation: 0.456,
+#                       locations: adaptation/offshore_island.geojson }
+#     pumps: {discharge: 526,
+#             locations: adaptation/advance_pumps.geojson }
+
+# advance_09:
+#   measures:
+#     offshore_barrier: {elevation: 1.026,
+#                       locations: adaptation/offshore_island.geojson }
+#     pumps: {discharge: 1184,
+#             locations: adaptation/advance_pumps.geojson }
+
+# advance_1:
+#   measures:
+#     offshore_barrier: {elevation: 1.14,
+#                       locations: adaptation/offshore_island.geojson }
+#     pumps: {discharge: 1316,
+#             locations: adaptation/advance_pumps.geojson }
+
+# River flood
+advance_04:
+  measures:
+    offshore_barrier: {elevation: 0.164,
+                      locations: adaptation/offshore_island.geojson }
+    pumps: {discharge: 4083.2,
+            locations: adaptation/advance_pumps.geojson }
+
+advance_09:
+  measures:
+    offshore_barrier: {elevation: 0.36,
+                      locations: adaptation/offshore_island.geojson }
+    pumps: {discharge: 9187.2,
+            locations: adaptation/advance_pumps.geojson }
+
+advance_1:
+  measures:
+    offshore_barrier: {elevation: 0.41,
+                      locations: adaptation/offshore_island.geojson }
+    pumps: {discharge: 10208,
+            locations: adaptation/advance_pumps.geojson }
+
+# -----------------------------------------------------------------------------------------------
+# GREY PROTECT-OPEN
+# Coastal flood
+# grey_protect_open_04:
+#   measures:
+#     coastal_levee: {elevation: 0.456,
+#                     locations: adaptation/coast_protection_weir_PO.geojson,
+#                     merge: false }
+#     river_levee: {elevation: 0.94,
+#                     locations: adaptation/river_protection_weir_PO.geojson,
+#                     merge: false }
+
+# grey_protect_open_09:
+#   measures:
+#     coastal_levee: {elevation: 1.026,
+#                     locations: adaptation/coast_protection_weir_PO.geojson,
+#                     merge: false }
+#     river_levee: {elevation: 2.124,
+#                     locations: adaptation/river_protection_weir_PO.geojson,
+#                     merge: false }
+
+# grey_protect_open_1:
+#   measures:
+#     coastal_levee: {elevation: 1.14,
+#                     locations: adaptation/coast_protection_weir_PO.geojson,
+#                     merge: false }
+#     river_levee: {elevation: 2.36,
+#                     locations: adaptation/river_protection_weir_PO.geojson,
+#                     merge: false }
+
+# River flood
+grey_protect_open_04:
+  measures:
+    coastal_levee: {elevation: 0.164,
+                    locations: adaptation/coast_protection_weir_PO.geojson,
+                    merge: false }
+    river_levee: {elevation: 3.824,
+                    locations: adaptation/river_protection_weir_PO.geojson,
+                    merge: false }
+
+grey_protect_open_09:
+  measures:
+    coastal_levee: {elevation: 0.36,
+                    locations: adaptation/coast_protection_weir_PO.geojson,
+                    merge: false }
+    river_levee: {elevation: 8.604,
+                    locations: adaptation/river_protection_weir_PO.geojson,
+                    merge: false }
+
+grey_protect_open_1:
+  measures:
+    coastal_levee: {elevation: 0.41,
+                    locations: adaptation/coast_protection_weir_PO.geojson,
+                    merge: false }
+    river_levee: {elevation: 9.56,
+                    locations: adaptation/river_protection_weir_PO.geojson,
+                    merge: false }
+
+# -----------------------------------------------------------------------------------------------
+# NbS PROTECT-OPEN
+
+NbS_protect_open_wat_ret_09:
+  measures:
+    # nbs_land_reclamation: {attenuation_rate: 0.25, # Wamsley: The relationship indicates that storm surge was reduced by 1 m for every 14.5 km inland
+    #                        distance: 1000,
+    #                        locations: adaptation/land_reclamation.geojson,
+    #                        target_code: 90, # wetlands
+    #                        min_elevation: 0.2, # floor [m above datum] so foreshore fronted by low mudflats still emerges as land, not just barely-submerged
+    #                        }
+    water_retention: {storage_fraction: 0.9,
+                      locations: adaptation/water_retention_area.geojson}
+    # dep_subgrid/roughness_native_path are NOT set here -- they're auto-derived
+    # by 18a_adapt_pre.py from this basin's own already-built
+    # {basin_id}/sfincs_skeleton/subgrid/dep_subgrid.tif and native roughness
+    # raster, never a separately-authored raw-data file (same as retreat, see
+    # its own comment below). baseline_excess_volume is likewise NOT set here
+    # -- rule attribution_mask (18c) computes it once per basin x scenario and
+    # 18a_adapt_pre.py reads the result.
+
+
+# -----------------------------------------------------------------------------------------------
+# PROTECT-CLOSED
+
+# Coastal flood
+# protect_closed_04:
+#   measures:
+#     coastal_levee: {elevation: 0.456,
+#                     locations: adaptation/coast_protection_weir_PC.geojson,
+#                     merge: false }
+#     pumps:         {discharge: 526,
+#                     locations: adaptation/pump_river_mouth.geojson }
+
+# protect_closed_09:
+#   measures:
+#     coastal_levee: {elevation: 1.026,
+#                     locations: adaptation/coast_protection_weir_PC.geojson,
+#                     merge: false }
+#     pumps:         {discharge: 1184,
+#                     locations: adaptation/pump_river_mouth.geojson }
+
+# protect_closed_1:
+#   measures:
+#     coastal_levee: {elevation: 1.14,
+#                     locations: adaptation/coast_protection_weir_PC.geojson,
+#                     merge: false }
+#     pumps:         {discharge: 1316,
+#                     locations: adaptation/pump_river_mouth.geojson }
+
+# River flood
+protect_closed_04:
+  measures:
+    coastal_levee: {elevation: 0.164,
+                    locations: adaptation/coast_protection_weir_PC.geojson,
+                    merge: false }
+    pumps:         {discharge: 4083.2,
+                    locations: adaptation/pump_river_mouth.geojson }
+
+protect_closed_09:
+  measures:
+    coastal_levee: {elevation: 0.36,
+                    locations: adaptation/coast_protection_weir_PC.geojson,
+                    merge: false }
+    pumps:         {discharge: 9187.2,
+                    locations: adaptation/pump_river_mouth.geojson }
+
+protect_closed_1:
+  measures:
+    coastal_levee: {elevation: 0.41,
+                    locations: adaptation/coast_protection_weir_PC.geojson,
+                    merge: false }
+    pumps:         {discharge: 10208,
+                    locations: adaptation/pump_river_mouth.geojson }
+
+
+# -----------------------------------------------------------------------------------------------
+# ACCOMMODATE
+
+# Coast
+# accommodate_04:
+#   measures:
+#     dike_ring: {elevation: 0.456,
+#                 locations: adaptation/dike_ring.geojson }
+
+# accommodate_09:
+#   measures:
+#     dike_ring: {elevation: 1.026,
+#                 locations: adaptation/dike_ring.geojson }
+
+# accommodate_1: # based on coast water level
+#   measures:
+#     dike_ring: {elevation: 1.14,
+#                 locations: adaptation/dike_ring.geojson }
+
+# River
+accommodate_04:
+  measures:
+    dike_ring: {elevation: 3.824,
+                locations: adaptation/dike_ring.geojson }
+
+accommodate_09:
+  measures:
+    dike_ring: {elevation: 8.604,
+                locations: adaptation/dike_ring.geojson }
+
+accommodate_1: # based on river WL
+  measures:
+    dike_ring: {elevation: 9.56,
+                locations: adaptation/dike_ring.geojson }
+
+
+# -----------------------------------------------------------------------------------------------
+# RETREAT (same for river and coastal flood)
+retreat_04:
+  measures:
+    retreat: {retreat_fraction: 0.4}
+    # dep_subgrid is NOT set here -- it's auto-derived by 18a_adapt_pre.py from
+    # this basin's own already-built {basin_id}/sfincs_skeleton/subgrid/dep_subgrid.tif,
+    # since retreat must reuse the EXACT SAME elevation the skeleton was built
+    # from (only roughness changes) -- never a separately-authored raw-data file.
+
+retreat_09:
+  measures:
+    retreat: {retreat_fraction: 0.9}
+
+retreat_1:
+  measures:
+    retreat: {retreat_fraction: 1.0}

@@ -102,6 +102,35 @@ def scenario_params(name):
         raise ValueError(f"scenario {name!r}: {e}") from e
     return {"mode": mode, "surge_rp": surge_rp, "river_rp": river_rp}
 
+def attribution_counterparts(scenario):
+    """-> (river_only_scenario, coastal_only_scenario): the two sibling
+    single-driver scenario names whose own RP matches `scenario`'s own
+    river_rp/surge_rp exactly (river_rp=X & surge_rp=None / surge_rp=Y &
+    river_rp=None) -- e.g. coast_500 (surge=500, river=2) pairs with
+    river_only (river=2) and coast_only_500 (surge=500); river_500
+    (surge=2, river=500) pairs with river_only_500 and coast_only (surge=2).
+    Raises if scenarios.yml has no such sibling defined yet (e.g. coast_100
+    has no coast_only_100 counterpart) -- confirmed with the user rather
+    than silently guessing a mismatched RP."""
+
+    river_rp = SCENARIO_DEFS[scenario]["river_rp"]
+    surge_rp = SCENARIO_DEFS[scenario]["surge_rp"]
+
+    def _find(rp_key, other_key, rp_val):
+        matches = [n for n, s in SCENARIO_DEFS.items()
+                   if s.get(rp_key) == rp_val and s.get(other_key) is None]
+        if not matches:
+            raise ValueError(
+                f"No {rp_key}={rp_val}-matched, {other_key}=None sibling scenario "
+                f"for {scenario!r} -- add one to config/scenarios.yml"
+            )
+        return matches[0]
+
+    river_only = _find("river_rp", "surge_rp", river_rp)
+    coastal_only = _find("surge_rp", "river_rp", surge_rp)
+    return river_only, coastal_only
+
+
 # What to run: CLI override, else just the "default" scenario.
 #   snakemake build --config target_scenarios="['baseline','coast_100']"
 SCENARIOS = list(config.get("target_scenarios", ["default"]))
@@ -124,6 +153,71 @@ _spinup_end = _tref + _timedelta(days=config["sfincs"]["spinup"]["spinup_days"])
 RST_FNAME   = f"sfincs.{_spinup_end.strftime('%Y%m%d.%H%M%S')}.rst"
 
 
+
+# ---- Adding adaptation wildcard ----------------------------------------------- (KGL)
+with open(config["adaptation"]["strategies_file"]) as _f:
+    STRATEGY_DEFS_RAW = _yaml.safe_load(_f) or {}
+
+ADAPT_CATALOGUE_ROOT = STRATEGY_DEFS_RAW.get("meta", {}).get("root", ".")
+STRATEGY_DEFS = {k: v for k, v in STRATEGY_DEFS_RAW.items() if k != "meta"}
+if not STRATEGY_DEFS:
+    raise ValueError(f"{config['adaptation']['strategies_file']} defines no strategies (besides 'meta')")
+
+for _name in STRATEGY_DEFS:
+    if not _re.fullmatch(r"[A-Za-z0-9_-]+", _name):
+        raise ValueError(f"strategy name {_name!r} invalid (use letters/digits/_/- only)")
+
+with open(config["adaptation"]["measures_file"]) as _f:
+    MEASURES_DEFS = (_yaml.safe_load(_f) or {}).get("adaptation_measures", {})
+
+def adaptation_input_path(rel):
+    """Resolve a strategy measure's locations/dep_subgrid string param
+    against adaptation_strategies.yml's own meta.root."""
+    return str(Path(ADAPT_CATALOGUE_ROOT) / rel)
+
+def strategy_measure_input_paths(strategy):
+    """Raw-data files a strategy's measures reference, as extra `input:`
+    so editing e.g. adaptation/levee.geojson triggers a rerun."""
+    paths = []
+    for _measure_params in STRATEGY_DEFS[strategy]["measures"].values():
+        for _k, _v in _measure_params.items():
+            if _k in ("locations", "dep_subgrid") and isinstance(_v, str):
+                paths.append(adaptation_input_path(_v))
+    return paths
+
+
+def water_retention_excess_volume_input(wildcards):
+    """rule adapt_apply_pre's own conditional input for baseline_excess_volume.json
+    (rule attribution_mask's own output) -- ONLY when this strategy actually
+    uses water_retention. Unlike rule adapt_metrics_post (18b), where EVERY
+    postprocessing measure already depends on attribution_mask.tif for its own
+    class-based masking, no other preprocessing measure touches attribution at
+    all, so this must stay strategy-conditional -- an unconditional dependency
+    would force every basin x scenario x strategy combination through rule
+    attribution_mask (and its own river-only/coastal-only counterpart-scenario
+    prerequisite, which not every scenario in scenarios.yml has) even when the
+    strategy never uses water_retention."""
+    if "water_retention" in STRATEGY_DEFS[wildcards.strategy]["measures"]:
+        return results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/baseline_excess_volume.json")
+    return []
+
+
+# Opt-in only -- no default strategy set (unlike scenario's "default"):
+#   snakemake adapt --config target_strategies="['retreat']"
+STRATEGIES = list(config.get("target_strategies", []))
+_unknown = sorted(set(STRATEGIES) - set(STRATEGY_DEFS))
+if _unknown:
+    raise ValueError(f"target_strategies {_unknown} not defined in {config['adaptation']['strategies_file']}")
+
+# Both methods run by default, unless a strategy is selected:
+#   snakemake adapt --config target_strategies="['retreat']" target_methods="['pre']"
+METHODS = list(config.get("target_methods", ["pre", "post"]))
+_unknown_methods = sorted(set(METHODS) - {"pre", "post"})
+if _unknown_methods:
+    raise ValueError(f"target_methods {_unknown_methods} invalid -- only 'pre'/'post' supported")
+
+
 wildcard_constraints:
     basin_id = r"\d+",
-    scenario = r"|".join(sorted(SCENARIO_DEFS))
+    scenario = r"|".join(sorted(SCENARIO_DEFS)),
+    strategy = r"|".join(sorted(STRATEGY_DEFS)) if STRATEGY_DEFS else r"(?!)",
