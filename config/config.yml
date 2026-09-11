@@ -74,7 +74,7 @@ boundary_forcings:
     period_hr: 12
     slr: # IPCC AR6 sea-level-rise fingerprint, scaled to a single global-mean target (slr_m) and added to each station's storm-tide level. slr_m is deliberately applied at scenario-build time (rule build_sfincs), not baked into surge_forcing.nc (rule get_boundary_forcings) -- so changing slr_m only reruns the per-scenario build + event run, never the basin-level weir/depth calibration or skeleton build (which only ever see the MDT-only baseline). See src.surge.apply_slr_fingerprint / build_design_surge_matrix.
       enabled: true
-      slr_m: 0.5                # target global-mean SLR (m); 0 = no SLR added; applied downstream, not by rule get_boundary_forcings itself
+      slr_m: 0                # target global-mean SLR (m); 0 = no SLR added; applied downstream, not by rule get_boundary_forcings itself
       ssp_scenario: ssp245
       confidence_level: medium   # "medium" or "low"
       year: 2100

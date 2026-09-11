@@ -20,10 +20,18 @@ rule adapt_apply_pre:
         # pull in rule attribution_mask's own prerequisites.
         baseline_excess_volume = water_retention_excess_volume_input,
         measure_data       = lambda wildcards: strategy_measure_input_paths(wildcards.strategy),
+        # basin-level spin-up restart, reused (patched, when the strategy
+        # uses water_retention, since its own zs was computed on the
+        # ORIGINAL terrain -- see apply_water_retention's own docstring;
+        # otherwise just copied through unchanged) into this strategy's own
+        # adapted_root -- so adapt_build_forcing_pre/adapt_run_event_pre
+        # always read a strategy-local restart instead of the shared one.
+        rstart = results_path("{basin_id}/spin_up/" + RST_FNAME),
     output:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sfincs.inp"),
         retreat_landuse = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/retreat_landuse.tif"),
         sea_mask   = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sea_mask.tif"),
+        rstart     = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/" + RST_FNAME),
     params:
         strategy_def       = lambda wildcards: STRATEGY_DEFS[wildcards.strategy],
         measures_def       = MEASURES_DEFS,
@@ -44,7 +52,11 @@ rule adapt_build_forcing_pre:
         surge_forcing   = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         river_forcing   = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
         grid_resolution = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_grid_resolution.json"),
-        rstart          = results_path("{basin_id}/spin_up/" + RST_FNAME),   # baseline restart, reused
+        # THIS strategy's own restart (patched or copied-through by
+        # adapt_apply_pre above, see its own comment) -- NOT the shared
+        # basin-level spin_up/ one directly, so a water_retention strategy's
+        # own excavation-adjusted initial water level is actually used.
+        rstart          = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/" + RST_FNAME),
     output:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs.inp"),
     params:
@@ -75,7 +87,12 @@ rule adapt_build_forcing_pre:
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
         sfincs_root   = lambda wildcards: results_path(
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs"),
-        spin_up_root  = lambda wildcards: results_path(f"{wildcards.basin_id}/spin_up"),
+        # THIS strategy's own sfincs_skeleton folder (same as skeleton_root
+        # above) -- adapt_apply_pre already wrote this strategy's own
+        # restart (patched or copied-through) there, see its own comment --
+        # NOT the shared basin-level spin_up/ folder.
+        spin_up_root  = lambda wildcards: results_path(
+            f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
     log: "logs/{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/13_build_sfincs.log"
     script: "../scripts/13_build_sfincs.py"          # REUSED, UNMODIFIED
 
@@ -84,7 +101,12 @@ rule adapt_run_event_pre:
     # Reuses scripts/16_run_event.py UNMODIFIED.
     input:
         sfincs_inp          = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs.inp"),
-        rstart              = results_path("{basin_id}/spin_up/" + RST_FNAME),
+        # THIS strategy's own restart (patched or copied-through by
+        # adapt_apply_pre), not the shared basin-level spin_up/ one -- see
+        # adapt_apply_pre's own comment. Dependency-tracking only: the
+        # actual rstfile path SFINCS reads was already written into
+        # sfincs.inp by adapt_build_forcing_pre above.
+        rstart              = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/" + RST_FNAME),
         land_polygons       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
         landuse             = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
         sea_mask            = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sea_mask.tif"),

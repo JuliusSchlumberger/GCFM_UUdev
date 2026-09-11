@@ -104,7 +104,8 @@ print(
 )
 
 # ------------------------------------------------------------------ 4. figures
-events = sorted(d.event.unique())
+EVENT_ORDER = ["coast_500", "river_500", "compound_500"]
+events = sorted(d.event.unique(), key=EVENT_ORDER.index)
 # case-insensitive: plain sorted() puts "NbS_..." before "grey_..." (uppercase
 # N sorts before lowercase g in ASCII), not the intended alphabetical order
 measures = sorted(d.short.unique(), key=str.lower)

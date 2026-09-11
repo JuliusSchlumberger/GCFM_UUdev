@@ -122,6 +122,16 @@ for measure_type, raw_params in strategy_def["measures"].items():
         # variants are sized against this SAME fixed reference.
         with open(snakemake.input.baseline_excess_volume) as fh:
             resolved["baseline_excess_volume"] = json.load(fh)["baseline_excess_volume"]
+    if measure_type == "water_retention":
+        # rst_path/ind_path are never strategy-configured -- apply_water_retention
+        # patches a COPY of the basin's own spin-up restart so the excavated
+        # zone's initial water level matches the new (lower) bed instead of
+        # inheriting the original terrain's own absolute water level (see its
+        # own docstring). ind_path is basin-level (skeleton_root, not
+        # adapted_root) -- the active-cell layout/order is unaffected by any
+        # strategy's own elevation changes.
+        resolved["rst_path"] = str(snakemake.input.rstart)
+        resolved["ind_path"] = str(skeleton_root / "sfincs.ind")
     if measure_type in ("retreat", "nbs_land_reclamation", "urban_raising"):
         # landuse_path is needed by anything that must identify which cells
         # are urban (retreat, urban_raising) or reclassifies/samples land use
@@ -181,6 +191,17 @@ SEA_MASK_WRITING_MEASURES = {"nbs_land_reclamation"}
 sea_mask_path = adapted_root / "sea_mask.tif"
 if not (SEA_MASK_WRITING_MEASURES & set(strategy_def["measures"])):
     shutil.copy2(snakemake.input.sea_mask, sea_mask_path)
+
+# 3d. same pattern for the restart: apply_water_retention writes a patched
+# adapted_root/<rst filename> (zs shifted to match the excavated bed, see
+# its own docstring). For strategies that don't touch the DEM this way, no
+# such file gets written -- copy the basin's own spin-up restart through
+# unchanged so the output declared in 18a_adapt_pre.smk (and read by
+# adapt_build_forcing_pre/adapt_run_event_pre below) is always present.
+RESTART_WRITING_MEASURES = {"water_retention"}
+rst_path_local = adapted_root / Path(snakemake.input.rstart).name
+if not (RESTART_WRITING_MEASURES & set(strategy_def["measures"])):
+    shutil.copy2(snakemake.input.rstart, rst_path_local)
 
 # 4. Write only touched components - untocuhe ones stay forwarded by reference below, never duplicated
 if "weirs" in touched:

@@ -35,6 +35,7 @@ from shapely.geometry.base import BaseMultipartGeometry
 from shapely.ops import unary_union
 
 from src.protection_weir import merge_weir_preserve_unmatched
+from src.sfincs_restart import patch_restart_zs
 
 
 def _infer_nr_subgrid_pixels(mod: SfincsModel, dep: xr.DataArray) -> int:
@@ -647,6 +648,9 @@ def apply_water_retention(
     flat_floor: bool = False,
     weir_par1: float = 0.6,
     weir_buffer: Optional[float] = None,
+    rst_path: Optional[str] = None,
+    ind_path: Optional[str] = None,
+    out_rst_path: Optional[str] = None,
     **kwargs,
 ) -> SfincsModel:
     """
@@ -729,6 +733,28 @@ def apply_water_retention(
         weir_buffer             : (Optional) Sampling window [m] used to read the crest
                                  elevation from the original terrain along the boundary.
                                  None uses hydromt_sfincs' own default.
+        rst_path                : (Optional, auto-injected by 18a_adapt_pre.py when spin-up
+                                 is enabled) Path to the basin's own spin-up restart file
+                                 (rule run_spinup, 14). Its zs (water surface elevation) was
+                                 computed on the ORIGINAL, un-excavated terrain -- if left
+                                 unpatched, that SAME absolute water level lands on this
+                                 measure's newly (much lower) excavated bed, so the zone reads
+                                 as pre-filled at t=0 instead of filling only as flood water
+                                 genuinely arrives (see src.sfincs_restart's own module
+                                 docstring for the reverse-engineered file format). When given,
+                                 a copy is written with zs shifted down by exactly the same
+                                 amount the bed was lowered at each cell (dry stays dry,
+                                 already-wet stays at the same relative depth). None skips
+                                 this entirely (e.g. spin-up disabled -- see adapt_spin_up_root
+                                 in 00_common.smk).
+        ind_path                : (Required when rst_path is given) Path to this basin's own
+                                 sfincs.ind -- defines the restart's own active-cell order/
+                                 position, needed to map the zone polygon onto specific zs
+                                 entries.
+        out_rst_path            : (Optional) Where the patched restart is written. Defaults to
+                                 mod.root.path / <rst_path's own filename> -- i.e. this
+                                 strategy's own adapted_root, same convention as the raised
+                                 dep_subgrid/landuse outputs of sibling measures.
 
     Returns:
         Modified SfincsModel object.
@@ -796,6 +822,65 @@ def apply_water_retention(
         dep_new = dep.where(~zone_mask, floor).astype(dep.dtype)
     else:
         dep_new = dep.where(~zone_mask, dep - lowering).astype(dep.dtype)
+
+    # restart initial condition: shift zs down by exactly the change in each
+    # coarse cell's own bed reference -- i.e. whatever RELATIVE depth existed
+    # before excavation (dry stays dry, already-wet stays at the same
+    # relative depth) -- so the pit doesn't inherit the basin-level spin-up's
+    # own absolute water level, computed on the original (higher) terrain, as
+    # an immediate pre-fill at t=0. See this function's own docstring /
+    # src.sfincs_restart's module docstring.
+    #
+    # The per-coarse-cell shift MUST be computed the same way hydromt_sfincs's
+    # own subgrid table builder derives each cell's bed reference -- the
+    # MINIMUM fine-resolution pixel elevation within it (confirmed via
+    # workflows/subgrid.py's subgrid_v_table: `return z, V, elevation.min(),
+    # z.max()`), NOT a plain mean/"average" reprojection of dep_subgrid. A
+    # boundary cell only partially inside the zone still has its bed
+    # reference collapse almost fully to the excavated depth as soon as ONE
+    # pixel in it is lowered (since that pixel becomes its new minimum) --
+    # "average" originally under-shifted these boundary cells, leaving
+    # residual (spurious) depth at t=0 that scaled with excavation depth
+    # (confirmed: negligible for a shallow 6 m dig, large for a 16 m one).
+    # Also computed as zmin(dep_new) - zmin(dep) PER CELL (two separate "min"
+    # reprojections, then subtracted) rather than min-reprojecting the
+    # difference field directly -- these differ whenever a boundary cell's
+    # ORIGINAL lowest pixel was outside the zone (still real terrain, not a
+    # zone pixel), which reprojecting the plain difference would miss.
+    if rst_path is not None:
+        if ind_path is None:
+            raise ValueError(
+                "apply_water_retention needs ind_path (this basin's own sfincs.ind) "
+                "to patch the restart file's initial water level"
+            )
+        coarse = mod.grid.mask
+        zmin_before = dep.raster.reproject_like(coarse, method="min").values
+        zmin_after = dep_new.raster.reproject_like(coarse, method="min").values
+        dz_coarse = zmin_after - zmin_before
+        dz_coarse = np.where(np.isfinite(dz_coarse), dz_coarse, 0.0)
+
+        zone_touch_fine = zone_mask.astype("uint8").rio.write_nodata(2)
+        zone_touch_coarse = (
+            zone_touch_fine.raster.reproject_like(coarse, method="max").values == 1
+        )
+
+        out_rst_path_resolved = (
+            Path(out_rst_path)
+            if out_rst_path is not None
+            else Path(mod.root.path) / Path(rst_path).name
+        )
+        n_patched = patch_restart_zs(
+            src_rst_path=Path(rst_path),
+            dst_rst_path=out_rst_path_resolved,
+            ind_path=Path(ind_path),
+            grid_shape=coarse.shape,
+            active_cell_mask=zone_touch_coarse,
+            dz=dz_coarse,
+        )
+        print(
+            f"  Patched restart initial water level: {n_patched} active coarse "
+            f"cell(s) shifted to match the excavated bed -> {out_rst_path_resolved}"
+        )
 
     # contain the pit with a weir along its own outer boundary. Crest comes
     # from the basin's own EXISTING protection weir (its "current" adaptation
