@@ -181,14 +181,13 @@ plot_cleaned_network(
     rivers_orig=rivers_orig_wgs,
     rivers_clean=rivers_wgs,
     bbox_poly=domain_poly,
-    osm_land_path=snakemake.input.land_polygons,
-    river_basins=snakemake.input.specific_basins,
+    land_polygons_path=snakemake.input.land_polygons,
     output_path=snakemake.output.plot_clean_network,
 )
 plot_clean_network_discharge(
     rivers_wgs=rivers_wgs,
     bbox_poly=domain_poly,
-    osm_land_path=snakemake.input.land_polygons,
+    land_polygons_path=snakemake.input.land_polygons,
     output_path=snakemake.output.plot_discharge_network,
 )
 

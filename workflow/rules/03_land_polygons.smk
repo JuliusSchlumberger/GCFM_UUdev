@@ -1,27 +1,26 @@
 rule get_land_polygons:
-    """Vectorize the global landuse raster (landuse != 200, i.e. not sea),
-    clipped to the basin model domain, native WGS84.
+    """Vectorize the basin's own land-use raster (landuse != 200, i.e. not
+    sea; rule prepare_landuse, 02b), native WGS84.
 
-    Runs right after the domain is determined (rule 02) — every later static-
-    data step (elevation, landuse, river network) takes this file as an
+    Runs right after the land-use source is prepared (rule 02b) — every later
+    static-data step (elevation, landuse, river network) takes this file as an
     input, so it has to exist before any of them, not alongside/after them.
-    Only needs the domain + the raw global landuse catalogue source, NOT
-    elevation_merged.tif -- rule get_elevation (05a) itself is one of this
-    rule's own consumers (for its own diagnostic plots' background), so
-    depending on 05a's own output here would be circular.
+    Does NOT need elevation_merged.tif -- rule get_elevation (05a) itself is
+    one of this rule's own consumers (for its own diagnostic plots'
+    background), so depending on 05a's own output here would be circular.
+
+    Figure background only, and only for figures made before the SFINCS
+    grid exists (rules 04-09, 11b) -- everything from rule
+    grid_align_landuse (09b) on uses the grid-aligned land mask traced from
+    landuse_on_grid.tif instead (2026-09-11; see 03_get_land_polygons.py).
 
     2026-08-06: previously clipped OSM land polygons instead -- see this
-    rule's own script docstring (03_get_land_polygons.py) and CHANGELOG for
-    why that was dropped. The output file's own name/shape/role is
-    unchanged, so every downstream consumer (every diagnostic plot's
-    background, plus the two real, functional exclude_polygon uses in
-    10_depth_estimation_modelled.py/13_build_sfincs_skeleton.py's own
-    waterlevel boundary mask) needed no changes at all.
+    rule's own script docstring and CHANGELOG for why that was dropped.
     """
     input:
         spec_basins_meta = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
         domain_gpkg      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
-        global_landuse   = catalogue_path("land_use"),
+        landuse_source   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"),
     output:
         land_polygons = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
     log:

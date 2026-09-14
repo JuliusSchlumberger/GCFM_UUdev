@@ -230,13 +230,13 @@ rivers_wgs = (
 plot_river_depth(
     rivers_wgs=rivers_wgs,
     bbox_poly=domain_poly,
-    osm_land_path=snakemake.input.land_polygons,
+    land_polygons_path=snakemake.input.land_mask_on_grid,
     output_path=snakemake.output.plot_river_depth,
 )
 plot_river_network_width_discharge(
     rivers_wgs=rivers_wgs,
     bbox_poly=domain_poly,
-    osm_land_path=snakemake.input.land_polygons,
+    land_polygons_path=snakemake.input.land_mask_on_grid,
     seed_reach_ids=seed_reach_ids,
     output_path=snakemake.output.plot_river_network_width_discharge,
 )

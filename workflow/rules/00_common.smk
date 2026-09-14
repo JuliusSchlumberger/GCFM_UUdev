@@ -151,7 +151,7 @@ if _unknown:
     raise ValueError(f"target_scenarios {_unknown} not defined in {config['scenarios_file']}")
 
 # Basin-level (not scenario-level) restart filename: run_spinup (14) always
-# runs at a fixed RP=1/spinup_days, entirely independent of any scenario's
+# runs at a fixed RP=1 river + calm sea for spinup_days, entirely independent of any scenario's
 # own RP, so its restart file -- and this filename -- is the SAME for every
 # scenario of a basin. Computed here (00_common.smk, included first) rather
 # than in 14_run_spinup.smk itself since rules build_sfincs (13, sets

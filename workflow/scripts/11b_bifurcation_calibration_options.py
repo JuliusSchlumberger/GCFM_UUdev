@@ -62,7 +62,6 @@ import math
 from pathlib import Path
 
 import cartopy.crs as ccrs
-import cartopy.io.img_tiles as cimgt
 import geopandas as gpd
 import matplotlib
 
@@ -70,7 +69,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from shapely.geometry import Point, box as shapely_box
+from shapely.geometry import box as shapely_box
 
 from src.domain import load_domain
 from src.geometry import pick_utm_crs
@@ -195,24 +194,15 @@ def discharge_to_linewidth(q: float, q_max: float, min_lw: float = 1.0, max_lw: 
 
 def utm_epsg_to_cartopy_crs(utm_epsg: str) -> ccrs.CRS:
     """Convert an 'EPSG:326xx'/'EPSG:327xx' UTM code (as returned by
-    src.geometry.pick_utm_crs) to the equivalent cartopy CRS, so plotted data
-    (already reprojected to the same UTM CRS via pyproj) lines up exactly
-    with an OSM tile background fetched in that projection."""
+    src.geometry.pick_utm_crs) to the equivalent cartopy CRS, so the GeoAxes
+    projection matches the data (already reprojected to the same UTM CRS via
+    pyproj) and the land-mask background."""
     epsg = int(utm_epsg.split(":")[1])
     if 32601 <= epsg <= 32660:
         return ccrs.UTM(epsg - 32600, southern_hemisphere=False)
     if 32701 <= epsg <= 32760:
         return ccrs.UTM(epsg - 32700, southern_hemisphere=True)
     raise ValueError(f"Unexpected UTM EPSG code: {utm_epsg}")
-
-
-def auto_zoomlevel(extent: tuple[float, float, float, float], lat_deg: float) -> int:
-    """Same core formula hydromt_sfincs's own plot_basemap(bmap=...) uses to
-    pick an OSM tile zoom level from a projected-CRS extent and latitude."""
-    earth_circumference_m = 2 * np.pi * 6378137
-    tile_size_m = max(extent[1] - extent[0], extent[3] - extent[2]) / 4
-    zoom = int(np.log2(earth_circumference_m * abs(np.cos(np.radians(lat_deg))) / tile_size_m))
-    return min(17, max(10, zoom))
 
 
 def annotation_label(
@@ -267,6 +257,7 @@ else:
     # can differ. ──
     utm_crs = pick_utm_crs(rivers_orig)
     cartopy_crs = utm_epsg_to_cartopy_crs(utm_crs)
+    land_utm = gpd.read_file(snakemake.input.land_polygons).to_crs(utm_crs)
 
     def _prep(rivers: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         rivers_utm = rivers.to_crs(utm_crs)
@@ -318,7 +309,7 @@ else:
         if not np.isfinite(q_max) or q_max <= 0:
             q_max = 1.0
 
-        # ── extent + OSM tile zoom level for this bifurcation's neighborhood ──
+        # ── extent of this bifurcation's neighborhood ──
         neighborhood_geoms = [rivers_orig_utm.loc[rid].geometry for rid in neighborhood_ids]
         minx = min(g.bounds[0] for g in neighborhood_geoms)
         miny = min(g.bounds[1] for g in neighborhood_geoms)
@@ -328,21 +319,19 @@ else:
         extent = (minx - margin, maxx + margin, miny - margin, maxy + margin)
         neighborhood_cx = (minx + maxx) / 2
         neighborhood_cy = (miny + maxy) / 2
-        centroid_wgs = (
-            gpd.GeoSeries([Point((minx + maxx) / 2, (miny + maxy) / 2)], crs=utm_crs)
-            .to_crs("EPSG:4326")
-            .iloc[0]
-        )
-        zoomlevel = auto_zoomlevel(extent, centroid_wgs.y)
 
         fig = plt.figure(figsize=(8 * n_panels, 8))
         for i, (label, q_series) in enumerate(panels.items()):
             ax = fig.add_subplot(1, n_panels, i + 1, projection=cartopy_crs)
             ax.set_extent(extent, crs=cartopy_crs)
-            try:
-                ax.add_image(cimgt.OSM(), zoomlevel)
-            except Exception as e:
-                log.warning(f"Basin {basin_id}, bifurcation {root_rid}: OSM basemap fetch failed ({e}) -- continuing without it")
+            # Land background: rule get_land_polygons' land mask (land use !=
+            # 200, native raster -- this rule runs before the SFINCS grid
+            # exists; see src.plots' module docstring), not web map tiles.
+            if not land_utm.empty:
+                ax.add_geometries(
+                    land_utm.geometry, crs=cartopy_crs,
+                    facecolor="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=0,
+                )
 
             for rid in neighborhood_ids:
                 line = _as_linestring(rivers_orig_utm.loc[rid].geometry)

@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 import math
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Sequence
 
 import geopandas as gpd
 import numpy as np
@@ -44,7 +44,6 @@ from rasterio.features import rasterize as rio_rasterize
 from rasterio.transform import from_origin
 from rasterio.windows import Window, transform as window_transform
 from scipy.interpolate import interp1d
-from scipy.spatial import cKDTree
 
 from src.raster import reproject_nan_aware
 from src.river_network import (
@@ -346,8 +345,7 @@ def burn_river_channel(
         # Corner-based window (not rasterio.windows.from_bounds, which
         # assumes a north-up/negative-e transform and raises "Bounds and
         # transform are inconsistent" against a positive-y-scale transform,
-        # e.g. a live SFINCS model's own grid) -- same approach as
-        # build_smoothed_weir_crest_regular.
+        # e.g. a live SFINCS model's own grid).
         bminx, bminy, bmaxx, bmaxy = buf_poly.bounds
         corners = [(bminx, bminy), (bmaxx, bminy), (bminx, bmaxy), (bmaxx, bmaxy)]
         cols_corners, rows_corners = zip(*(inv_out_transform * c for c in corners))
@@ -377,9 +375,9 @@ def burn_river_channel(
                 window.col_off : window.col_off + win_shape[1],
             ]
         else:
-            # all_touched=True: matches build_channel_mask_regular/
-            # build_smoothed_weir_crest_regular's convention for this SAME
-            # buf_poly elsewhere in this file -- geometry_mask defaults to
+            # all_touched=True: matches build_channel_mask_regular's
+            # convention for this SAME buf_poly elsewhere in this file --
+            # geometry_mask defaults to
             # False (a pixel only counts if its centre falls inside the
             # polygon), which would narrow the excavated footprint relative
             # to the channel_mask/weir corridor built from the identical
@@ -493,352 +491,6 @@ def _channel_buffer_polygons(rivers: gpd.GeoDataFrame, width_column: str) -> lis
     return polys
 
 
-def _smoothed_weir_crest_profiles(
-    rivers: gpd.GeoDataFrame,
-    crest_column: str,
-    blend_distance_m: float,
-    crest_anchors: gpd.GeoDataFrame | None = None,
-) -> dict[str, tuple[object, float, Callable]]:
-    """
-    Per-reach (line, length, profile) for a calibrated weir crest smoothed
-    across reach junctions, so two adjacent reaches with different
-    calibrated crests no longer meet at a hard step.
-
-    Only the LOWER-crest reach at a junction is modified: within
-    blend_distance_m of that junction -- truncated to the reach's own
-    length, so a short reach ramps over its whole length rather than
-    reaching past its own extent -- its crest rises linearly from its own
-    calibrated value up to the higher neighbour's crest, reaching that
-    value exactly at the junction. The higher-crest reach is never
-    modified -- it keeps its own crest all the way to the junction (the
-    same "never protect less" principle build_coastal_protection_weir
-    already applies between coastal and riverine crests, applied here
-    across reach junctions instead). At a confluence/bifurcation with
-    multiple neighbours at one junction, ramps toward the MAXIMUM crest
-    among all of them.
-
-    This blend only ever matters in the flat-per-reach-scalar mode
-    (crest_anchors=None -- see build_coastal_protection_weir's own module
-    docstring) -- two reaches sharing a junction can genuinely disagree there, since each
-    carries a single reach-wide value. With crest_anchors given (every
-    caller on the regular grid, including rule modelled_depth_estimation's
-    own calibration round loop), two reaches sharing a junction cell are computed from
-    the SAME physical location's own simulated data and are therefore
-    already identical at that point BY CONSTRUCTION. The blend's own
-    trigger condition (neighbour's boundary value > this reach's own) can
-    never fire there, so it's skipped entirely in that mode rather than
-    computed for nothing.
-
-    Args:
-        crest_anchors: Optional per-cell/multi-point crest values (columns
-            'reach_id', 'crest', 'along_m' -- one row per calibration point
-            along each reach's own centerline, e.g. from
-            build_centerline_cells_regular). When given, each reach's OWN
-            crest is linearly interpolated between its own anchors
-            (clamped beyond the first/last, matching burn_river_channel's
-            own along-reach convention) instead of being one flat value
-            from `crest_column` -- junction blending then compares each
-            reach's own boundary value (its interpolated crest at
-            along=0/along=length) against its neighbours' own boundary
-            values, rather than a single reach-wide scalar for both ends.
-            When None (default), behaves EXACTLY as before: one flat crest
-            per reach from `crest_column`, backward compatible with
-            production's own per-reach-scalar callers (rule 13).
-
-    Returns {reach_id: (line, length, profile)}, where
-    profile(along_m) -> crest elevation(s) at along-channel distance(s)
-    from the reach's own start, vectorized over a numpy array.
-    """
-    reach_line: dict[str, object] = {}
-    reach_length: dict[str, float] = {}
-    for row in rivers.itertuples(index=False):
-        rid = normalize_reach_id(row.reach_id)
-        if rid is None:
-            continue
-        line = _as_linestring(row.geometry)
-        if line is None or line.length == 0:
-            continue
-        reach_line[rid] = line
-        reach_length[rid] = line.length
-
-    # own_interp[rid](along_m array) -> crest value(s); boundary_val[rid] =
-    # (value at along=0, value at along=length) -- identical for the flat
-    # scalar case, genuinely different endpoints for the anchors case.
-    own_interp: dict[str, Callable] = {}
-    boundary_val: dict[str, tuple[float, float]] = {}
-
-    if crest_anchors is not None and len(crest_anchors) > 0:
-        grouped = crest_anchors.assign(
-            _reach_id=crest_anchors["reach_id"].apply(normalize_reach_id)
-        ).groupby("_reach_id")
-        for rid, group in grouped:
-            if rid is None or rid not in reach_line:
-                continue
-            along = group["along_m"].to_numpy(dtype=float)
-            crest = group["crest"].to_numpy(dtype=float)
-            valid = np.isfinite(along) & np.isfinite(crest)
-            if not valid.any():
-                continue
-            along, crest = along[valid], crest[valid]
-            order = np.argsort(along)
-            along, crest = along[order], crest[order]
-            interp = interp1d(
-                along,
-                crest,
-                kind="linear",
-                bounds_error=False,
-                fill_value=(crest[0], crest[-1]),
-            )
-            own_interp[rid] = interp
-            length = reach_length[rid]
-            boundary_val[rid] = (float(interp(0.0)), float(interp(length)))
-    else:
-        for row in rivers.itertuples(index=False):
-            rid = normalize_reach_id(row.reach_id)
-            if rid is None or rid not in reach_line:
-                continue
-            crest = getattr(row, crest_column, np.nan)
-            if crest is None or not np.isfinite(crest):
-                continue
-            crest = float(crest)
-            own_interp[rid] = lambda s, _v=crest: np.full(
-                np.asarray(s, dtype=float).shape, _v
-            )
-            boundary_val[rid] = (crest, crest)
-
-    anchors_mode = crest_anchors is not None and len(crest_anchors) > 0
-    if anchors_mode:
-        # Per-cell anchors already agree exactly at real junctions (see
-        # this function's own docstring) -- no blend needed, each reach's
-        # own interpolation is the final profile.
-        return {
-            rid: (reach_line[rid], reach_length[rid], interp)
-            for rid, interp in own_interp.items()
-        }
-
-    downstream_adj = build_downstream_adjacency(rivers)
-    upstream_adj: dict[str, list[str]] = {rid: [] for rid in downstream_adj}
-    for rid, dns in downstream_adj.items():
-        for dn in dns:
-            upstream_adj.setdefault(dn, []).append(rid)
-
-    def _neighbor_max(neighbor_ids: list[str], end: str) -> float | None:
-        # end="end": each neighbour's OWN downstream/end boundary value
-        # (they feed INTO this reach's start). end="start": each
-        # neighbour's OWN upstream/start boundary value (this reach feeds
-        # INTO their start).
-        vals = [
-            (boundary_val[n][1] if end == "end" else boundary_val[n][0])
-            for n in neighbor_ids
-            if n in boundary_val
-        ]
-        return max(vals) if vals else None
-
-    profiles: dict[str, tuple[object, float, Callable]] = {}
-    for rid, interp in own_interp.items():
-        line = reach_line[rid]
-        length = reach_length[rid]
-        own_start, own_end = boundary_val[rid]
-        start_max = _neighbor_max(upstream_adj.get(rid, []), end="end")
-        end_max = _neighbor_max(downstream_adj.get(rid, []), end="start")
-        blend = min(blend_distance_m, length) if length > 0 else 0.0
-
-        def profile(
-            s,
-            _interp=interp,
-            _length=length,
-            _blend=blend,
-            _own_start=own_start,
-            _own_end=own_end,
-            _start_max=start_max,
-            _end_max=end_max,
-        ):
-            s = np.asarray(s, dtype=float)
-            val = _interp(s)
-            if _start_max is not None and _start_max > _own_start and _blend > 0:
-                frac = np.clip(s / _blend, 0.0, 1.0)
-                val = np.maximum(val, _start_max + frac * (_own_start - _start_max))
-            if _end_max is not None and _end_max > _own_end and _blend > 0:
-                frac = np.clip((_length - s) / _blend, 0.0, 1.0)
-                val = np.maximum(val, _end_max + frac * (_own_end - _end_max))
-            return val
-
-        profiles[rid] = (line, length, profile)
-    return profiles
-
-
-def build_smoothed_weir_crest_regular(
-    rivers: gpd.GeoDataFrame,
-    width_column: str,
-    crest_column: str,
-    out_shape: tuple[int, int],
-    out_transform,
-    blend_distance_m: float = 1000.0,
-    crest_anchors: gpd.GeoDataFrame | None = None,
-) -> np.ndarray:
-    """
-    Per-cell calibrated weir crest, smoothed across reach junctions -- see
-    _smoothed_weir_crest_profiles for the blending rule (including what
-    `crest_anchors` does). Where two reaches' buffers legitimately overlap
-    the same cell (e.g. parallel channels, not a junction), the HIGHER
-    value wins rather than a plain last-reach-wins overwrite, consistent
-    with never silently lowering an already-painted cell's protection.
-    """
-    profiles = _smoothed_weir_crest_profiles(
-        rivers, crest_column, blend_distance_m, crest_anchors=crest_anchors
-    )
-    output = np.full(out_shape, np.nan, dtype=np.float32)
-    if not profiles:
-        return output
-    # Inverse-transform the buffer's own bounding-box corners directly,
-    # rather than rasterio.windows.from_bounds (used by burn_river_channel,
-    # which always builds its own fresh, conventional north-up transform via
-    # from_origin) -- an arbitrary caller-supplied transform, e.g. a live
-    # SFINCS model's own sf.grid.data["dep"].raster.transform, can have a
-    # POSITIVE y-scale (row increases northward, not the north-up/negative-
-    # y-scale convention from_bounds assumes), which from_bounds rejects
-    # outright. Using all 4 corners (not just the two bounds corners) keeps
-    # this correct for a rotated transform too.
-    inv_transform = ~out_transform
-
-    for row in rivers.itertuples(index=False):
-        rid = normalize_reach_id(row.reach_id)
-        width = getattr(row, width_column, np.nan)
-        if rid is None or rid not in profiles or pd.isna(width) or width <= 0:
-            continue
-        line, _length, profile = profiles[rid]
-
-        buf_poly = _flush_capped_buffer(
-            line, float(width), clip_start=bool(getattr(row, "is_seed", False))
-        )
-        bminx, bminy, bmaxx, bmaxy = buf_poly.bounds
-        corners = [(bminx, bminy), (bmaxx, bminy), (bminx, bmaxy), (bmaxx, bmaxy)]
-        cols_corners, rows_corners = zip(*(inv_transform * c for c in corners))
-        col_off = max(0, int(np.floor(min(cols_corners))))
-        row_off = max(0, int(np.floor(min(rows_corners))))
-        col_stop = min(out_shape[1], int(np.ceil(max(cols_corners))))
-        row_stop = min(out_shape[0], int(np.ceil(max(rows_corners))))
-        if col_stop <= col_off or row_stop <= row_off:
-            continue
-        window = Window(col_off, row_off, col_stop - col_off, row_stop - row_off)
-
-        win_transform = window_transform(window, out_transform)
-        win_shape = (int(window.height), int(window.width))
-        # all_touched=True: geometry_mask defaults to False (a cell only
-        # counts if its centre falls inside the polygon), which would
-        # narrow channel coverage at cell edges. Every gap here falls back
-        # to the flat coastal crest instead of the real calibrated one in
-        # build_coastal_protection_weir, so under-coverage would silently
-        # weaken part of the dike rather than just leaving a visually
-        # thinner line.
-        inside = geometry_mask(
-            [buf_poly],
-            out_shape=win_shape,
-            transform=win_transform,
-            invert=True,
-            all_touched=True,
-        )
-        if not inside.any():
-            continue
-
-        rows_idx, cols_idx = np.where(inside)
-        xs, ys = rasterio.transform.xy(win_transform, rows_idx, cols_idx)
-        pts = shapely.points(np.asarray(xs), np.asarray(ys))
-        pts_along = shapely.line_locate_point(line, pts)
-        vals = profile(pts_along)
-
-        row_off, col_off = int(window.row_off), int(window.col_off)
-        output_win = output[
-            row_off : row_off + win_shape[0], col_off : col_off + win_shape[1]
-        ]
-        current = output_win[rows_idx, cols_idx]
-        output_win[rows_idx, cols_idx] = np.where(
-            np.isnan(current), vals, np.maximum(current, vals)
-        )
-
-    return output
-
-
-def build_nearest_weir_crest_regular(
-    rivers: gpd.GeoDataFrame,
-    width_column: str,
-    out_shape: tuple[int, int],
-    out_transform,
-    cell_gdf: gpd.GeoDataFrame,
-    crest_values: np.ndarray,
-) -> np.ndarray:
-    """
-    Per-cell calibrated weir crest, painted with NO along-reach
-    interpolation and NO cross-reach junction blending -- every raster
-    cell within a reach's own buffer is assigned its NEAREST centerline
-    anchor's own crest value directly (nearest (x, y) match against every
-    cell_gdf row, any reach), not a value interpolated between anchors
-    along a smoothed profile. Kept as a SEPARATE function from
-    build_smoothed_weir_crest_regular rather than a mode switch on it.
-
-    Searching the FULL cell_gdf anchor set (not just the current reach's
-    own anchors) rather than reusing per-reach along-line profiles also
-    means junctions are handled automatically -- a cell near a confluence
-    simply takes whichever nearby reach's anchor is physically closest, no
-    separate blend_distance_m parameter needed.
-    """
-    output = np.full(out_shape, np.nan, dtype=np.float32)
-    if cell_gdf.empty or len(crest_values) == 0:
-        return output
-    anchor_xy = cell_gdf[["x", "y"]].to_numpy()
-    anchor_tree = cKDTree(anchor_xy)
-
-    inv_transform = ~out_transform
-    for row in rivers.itertuples(index=False):
-        rid = normalize_reach_id(row.reach_id)
-        width = getattr(row, width_column, np.nan)
-        line = row.geometry
-        if rid is None or line is None or line.is_empty or pd.isna(width) or width <= 0:
-            continue
-
-        buf_poly = _flush_capped_buffer(
-            line, float(width), clip_start=bool(getattr(row, "is_seed", False))
-        )
-        bminx, bminy, bmaxx, bmaxy = buf_poly.bounds
-        corners = [(bminx, bminy), (bmaxx, bminy), (bminx, bmaxy), (bmaxx, bmaxy)]
-        cols_corners, rows_corners = zip(*(inv_transform * c for c in corners))
-        col_off = max(0, int(np.floor(min(cols_corners))))
-        row_off = max(0, int(np.floor(min(rows_corners))))
-        col_stop = min(out_shape[1], int(np.ceil(max(cols_corners))))
-        row_stop = min(out_shape[0], int(np.ceil(max(rows_corners))))
-        if col_stop <= col_off or row_stop <= row_off:
-            continue
-        window = Window(col_off, row_off, col_stop - col_off, row_stop - row_off)
-
-        win_transform = window_transform(window, out_transform)
-        win_shape = (int(window.height), int(window.width))
-        inside = geometry_mask(
-            [buf_poly],
-            out_shape=win_shape,
-            transform=win_transform,
-            invert=True,
-            all_touched=True,
-        )
-        if not inside.any():
-            continue
-
-        rows_idx, cols_idx = np.where(inside)
-        xs, ys = rasterio.transform.xy(win_transform, rows_idx, cols_idx)
-        _dist, nearest_idx = anchor_tree.query(np.column_stack([xs, ys]))
-        vals = crest_values[nearest_idx]
-
-        row_off, col_off = int(window.row_off), int(window.col_off)
-        output_win = output[
-            row_off : row_off + win_shape[0], col_off : col_off + win_shape[1]
-        ]
-        current = output_win[rows_idx, cols_idx]
-        output_win[rows_idx, cols_idx] = np.where(
-            np.isnan(current), vals, np.maximum(current, vals)
-        )
-
-    return output
-
-
 def build_channel_mask_regular(
     rivers: gpd.GeoDataFrame,
     width_column: str,
@@ -885,7 +537,7 @@ def build_centerline_cells_regular(
 
     Reuses the same per-reach window + geometry_mask + rasterio.transform.xy
     + line_locate_point pattern already used identically in
-    burn_river_channel and build_smoothed_weir_crest_regular, but
+    burn_river_channel, but
     rasterizes the bare LineString itself (all_touched=True) rather than a
     buffered polygon -- "every cell the line touches", not "every cell
     within half the channel width".

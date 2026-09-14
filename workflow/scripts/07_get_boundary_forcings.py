@@ -135,8 +135,10 @@ log.info(f"Most distant selected station: {stations['dist_m'].max() / 1000:.1f} 
 # Mandatory, not optional: the coastal DEM (FathomDEM) is always referenced
 # to GOCO06s via the mandatory datum correction in 05a_get_elevation.py, so
 # leaving the surge boundary in local MSL would put the DEM and the water-
-# level forcing in inconsistent vertical references. Mirrors the sign
-# convention used in 05a to re-reference GEBCO to GOCO06s (gebco -= mdt).
+# level forcing in inconsistent vertical references. MDT is the mean sea
+# surface's height ABOVE the geoid, so MSL-referenced COAST-RP levels get
+# +MDT (H_GOCO06s = H_MSL + MDT) -- the same correction 05a applies to
+# GEBCO (gebco += mdt). See src.surge.apply_mdt_correction.
 mdt_fallback_search_deg = float(snakemake.params.mdt_fallback_search_deg)
 mdt_da = load_mdt(snakemake.input.mdt_data)
 stations = apply_mdt_correction(stations, mdt_da, mdt_fallback_search_deg)
@@ -147,10 +149,10 @@ if n_nan_mdt:
         f"+/-{mdt_fallback_search_deg} deg; mdt set to 0 for these"
     )
     stations["mdt"] = stations["mdt"].fillna(0.0)
-stations["rp_level"] = stations["rp_level_raw"] - stations["mdt"]
+stations["rp_level"] = stations["rp_level_raw"] + stations["mdt"]
 log.info(
-    f"MDT vertical correction applied (local MSL -> GOCO06s): "
-    f"delta = [{(-stations['mdt']).min():.3f}, {(-stations['mdt']).max():.3f}] m"
+    f"MDT vertical correction applied (local MSL -> GOCO06s, +MDT): "
+    f"delta = [{stations['mdt'].min():.3f}, {stations['mdt'].max():.3f}] m"
 )
 # ── SLR fingerprint (dimensionless, target-independent) ─────────────────────
 # Deliberately does NOT scale by slr_cfg["slr_m"] or touch rp_level here --
@@ -207,11 +209,11 @@ t_surge = build_time_axis(surge_lead, surge_period, surge_dt, total_hr=forcing_t
 baseline_m = float((stations["rp_level"] - stations["rp_level_raw"]).mean())
 log.info(
     f"Surge boundary baseline (MDT-only, SLR applied downstream): {baseline_m:+.4f} m "
-    f"(= mean(−MDT) across {len(stations)} stations — local MSL in model coords)"
+    f"(= mean(+MDT) across {len(stations)} stations — local MSL in model coords)"
 )
 
 # Per-station lead-period baselines: each station's own local MSL in model
-# coordinates (= rp_level_i - rp_level_raw_i = -mdt_i, MDT-only).
+# coordinates (= rp_level_i - rp_level_raw_i = +mdt_i, MDT-only).
 # Using these (not the scalar mean) ensures each station's sinusoidal wave
 # amplitude = rp_level_raw_i exactly, regardless of how MDT varies across
 # the selected stations.  The scalar baseline_m is still stored for zsini.
@@ -243,10 +245,10 @@ protection_level = np.full(len(stations), mean_prot_raw)   # uniform across stat
 # GOCO06s-referenced crest: protection_level_raw/mean_prot_raw above is
 # LOCAL-MSL-referenced (COAST-RP's native datum), but the coastal DEM
 # (FathomDEM) is always GOCO06s-referenced (mandatory correction in
-# 05a_get_elevation.py) -- apply the SAME per-station MDT subtraction
-# rp_level itself gets (rp_level = rp_level_raw - mdt) so the crest is
-# directly comparable to the DEM the weir will be built against.
-coastal_protection_crest_m = mean_prot_raw - float(stations["mdt"].mean())
+# 05a_get_elevation.py) -- apply the SAME MDT correction rp_level itself
+# gets (rp_level = rp_level_raw + mdt) so the crest is directly comparable to
+# the DEM the weir will be built against.
+coastal_protection_crest_m = mean_prot_raw + float(stations["mdt"].mean())
 
 surge_ds["protection_level"] = (
     ["station"],
@@ -659,7 +661,7 @@ plot_domain_map(
     stations=stations,
     crossings=crossings,
     has_glofas=has_glofas,
-    osm_land_path=snakemake.input.land_polygons,
+    land_polygons_path=snakemake.input.land_polygons,
     output_path=snakemake.output.plot_map,
 )
 plot_forcing_timeseries(

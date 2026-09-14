@@ -8,30 +8,29 @@ just near named reaches), so no flooding should occur below the crest
 elevation anywhere in the domain until it's overtopped. It hugs the
 coast/riverbank directly -- no inland offset.
 
-Also used, unmodified, by rule modelled_depth_estimation (10,
-10_depth_estimation_modelled.py) to build its own disposable calibration
-model's weir -- coast and river channel merged into the same water_like
-boundary there too, so calibration and production build conceptually the
-same single weir set. That rule calls it with BOTH crest_elevation_m and
-river_crest_on_grid set to the same artificially high confinement value
-(e.g. 1000 m) -- not the real coastal crest: even though calibration's own
-boundary is flat and guaranteed dry, the confined river's water level can
-still exceed a low real coastal crest right at the coast/river transition
-near the mouth and leak onto the floodplain through the coastal side of the
-same merged boundary, so calibration confines EVERYTHING, not just the
-river. Rule 13 passes the real per-reach weir_crest_calibrated
-(river_crest_on_grid) once calibration has finished, maxed against the
-real, datum-corrected crest_elevation_m -- production always uses real
-crests on both sides; the uniform-confinement simplification is
-calibration-only.
+Built by rule modelled_depth_estimation (10, 10_depth_estimation_modelled.py)
+only -- coast and river channel merged into one water_like boundary, so
+calibration and production share the same single weir set (rule 13 imports
+the final gpkg as-is). That rule calls this twice: its confinement rounds
+with crest_elevation_m set to an artificially high value (e.g. 1000 m) and
+an all-NaN water_side_crest_on_grid, so EVERY edge -- coast and riverbank
+alike -- sits at that confinement height (the confined river's water level
+can exceed a low real coastal crest right at the coast/river transition
+near the mouth, so calibration confines everything, not just the river);
+and once more for the production weir, with water_side_crest_on_grid = the
+confined, excavated round's own period-max water level and the real,
+datum-corrected coastal crest as crest_elevation_m -- every edge's crest is
+then the water level on its own water side, floored at the coastal
+standard.
 
 Design summary
 --------------
 1. Classify ocean (landuse==200) and river-channel cells/faces on the model
    grid into one combined ``water_like`` set; everything else valid is
-   ``land``. landuse==80 (inland water/tidal flat) is not specially
-   classified -- it's just land unless it happens to coincide with the
-   channel mask.
+   ``land``. landuse==80 (inland water/tidal flat) / 90 (wetland) is just
+   land unless it coincides with the channel mask -- or, with
+   unprotected_ocean_wetlands=True, its patch is edge-connected to the open
+   sea (ocean_linked_wetland_mask), which puts it on the seaward side too.
 2. Drop small connected components on *both* sides (``discard_small_
    components``, ``min_component_cells``): small isolated land islands get
    no protective ring around them (they flood normally), and small isolated
@@ -59,9 +58,21 @@ from shapely.geometry import LineString, Polygon
 from shapely.ops import linemerge, unary_union
 from shapely.strtree import STRtree
 
+from src.landuse import OCEAN_WETLAND_CLASSES, SEA_CODE
+from src.surge import ceil_water_level
+
 log = logging.getLogger(__name__)
 
-LANDUSE_SEA = 200
+# Re-exported under this module's own long-standing name (scripts import it
+# from here). Both are defined in src.landuse, next to the land-use codes
+# they belong to: LANDUSE_SEA is the pipeline's own open-sea code (LC100's
+# own 200, DERIVED for ESA WorldCover, which has no sea class), and
+# OCEAN_WETLAND_CLASSES are the classes that may sit OUTSIDE the coastal
+# dike when their patch is linked to the open sea
+# (build_coastal_protection_weir's unprotected_ocean_wetlands): 80 =
+# permanent water bodies (lagoons, tidal flats), 90 = herbaceous wetland,
+# 95 = mangroves (WorldCover only; intertidal by definition).
+LANDUSE_SEA = SEA_CODE
 
 
 class GridArrays:
@@ -105,34 +116,9 @@ class GridArrays:
     def close_gaps(self, mask: np.ndarray, iterations: int = 1) -> np.ndarray:
         """Small, FIXED hop dilation of a boolean mask -- a safety net for
         any remaining sub-cell gaps in a mask (e.g. a channel narrower than
-        one destination cell in only a handful of spots). See dilate_values
-        for the equivalent operation on a real-valued array.
+        one destination cell in only a handful of spots).
         """
         return binary_dilation(mask, structure=self._struct4, iterations=iterations)
-
-    def dilate_values(self, value_grid: np.ndarray, iterations: int = 1) -> np.ndarray:
-        """Propagate each finite cell's own value outward to nearby NaN
-        cells via nearest-value fill, up to `iterations` cells away (same
-        distance semantics as close_gaps, generalized from a boolean mask to
-        a real-valued array).
-
-        Needed because a per-reach value rasterized only onto a channel's
-        own buffered footprint (e.g. river_crest_on_grid) otherwise has no
-        overlap with the LAND cells the weir-crest lookup actually reads
-        from once the channel mask itself has been widened by close_gaps --
-        the value array must be widened by the same margin (plus one, to
-        also cover the land ring just outside the now-wider water_like
-        region) or every lookup misses and silently falls back to a
-        default.
-        """
-        valid = np.isfinite(value_grid)
-        if not valid.any():
-            return value_grid.copy()
-        from scipy.ndimage import distance_transform_edt
-
-        dist, (idx_r, idx_c) = distance_transform_edt(~valid, return_indices=True)
-        nearest_value = value_grid[idx_r, idx_c]
-        return np.where(dist <= iterations, nearest_value, value_grid)
 
     def connected_components(self, mask: np.ndarray) -> tuple:
         """Connected components WITHIN mask (cells outside mask are never
@@ -193,14 +179,16 @@ class GridArrays:
         value_grid: np.ndarray,
         valid_mask: np.ndarray | None = None,
         ocean_exempt: np.ndarray | None = None,
-    ) -> tuple[list, list]:
-        """Like seaward_edges, but returns (segments, values) UNMERGED --
-        one LineString per grid edge/mesh edge, paired with the mask_a-side
-        cell/face's own value_grid entry. Deliberately not linemerge'd:
-        adjacent cells can carry different values (e.g. different
-        calibrated river reaches), so segments must stay separable to keep
-        a single crest value per output weir feature. Segments whose
-        mask_a-side value is NaN are dropped entirely.
+    ) -> tuple[list, list, np.ndarray]:
+        """Like seaward_edges, but returns (segments, values,
+        water_side_mask) UNMERGED -- one LineString per grid edge, paired
+        with the WATER_LIKE-side cell's own value_grid entry (the water the
+        edge holds back, e.g. its own simulated water level). Deliberately
+        not linemerge'd: adjacent edges can carry different values, so
+        segments must stay separable to keep a single crest value per
+        output weir feature. Segments whose water-side value is NaN are
+        dropped entirely. water_side_mask (grid shape) marks every
+        water_like cell that supplied at least one edge's value.
 
         valid_mask, ocean_exempt: see seaward_edges's own docstring -- same
         override semantics.
@@ -250,9 +238,7 @@ def _pad_for_edge_tracing(
     the interior case folds in ~valid_mask & ~ocean_exempt only; the
     array's own exterior ring has no ocean_exempt value of its own (no data
     at all out there) and instead inherits its nearest real neighbour's
-    ocean_exempt via edge-padding -- exactly the reasoning dilate_values/
-    value_grid padding already use elsewhere in this module, now applied to
-    "is the edge genuinely open water" instead of a crest value. A channel
+    ocean_exempt via edge-padding. A channel
     reach whose own head sits right at the array's edge (not ocean there)
     still gets force-closed exactly as before.
 
@@ -322,42 +308,45 @@ def _seaward_edges_regular_with_values(
     valid_mask: np.ndarray,
     ocean_exempt: np.ndarray,
     transform,
-) -> tuple[list, list]:
+) -> tuple[list, list, np.ndarray]:
     mask_a, water_like, transform = _pad_for_edge_tracing(
         mask_a, water_like, valid_mask, ocean_exempt, transform
     )
-    # value_grid padded with mode="edge" -- each padding cell inherits its
-    # nearest real neighbour's own value, so a newly-closed edge segment
-    # gets a sensible crest with no extra lookup logic (matches how
-    # dilate_values already propagates real values outward elsewhere in
-    # this module).
+    # The water side of a traced edge is always a real interior cell (the
+    # padding ring's own water_like is always False, see
+    # _pad_for_edge_tracing), so value_grid only needs padding to keep
+    # indices aligned with the padded masks -- the ring's own values are
+    # never read.
     value_grid = np.pad(value_grid, 1, mode="edge")
+    water_side = np.zeros(mask_a.shape, dtype=bool)
     segments, values = [], []
     h_break = (mask_a[:-1, :] & water_like[1:, :]) | (
         water_like[:-1, :] & mask_a[1:, :]
     )
     for r, c in zip(*np.where(h_break)):
-        land_r = r if mask_a[r, c] else r + 1
-        v = value_grid[land_r, c]
+        water_r = r + 1 if mask_a[r, c] else r
+        v = value_grid[water_r, c]
         if np.isnan(v):
             continue
         x0, y0 = transform * (c, r + 1)
         x1, y1 = transform * (c + 1, r + 1)
         segments.append(LineString([(x0, y0), (x1, y1)]))
         values.append(float(v))
+        water_side[water_r, c] = True
     v_break = (mask_a[:, :-1] & water_like[:, 1:]) | (
         water_like[:, :-1] & mask_a[:, 1:]
     )
     for r, c in zip(*np.where(v_break)):
-        land_c = c if mask_a[r, c] else c + 1
-        v = value_grid[r, land_c]
+        water_c = c + 1 if mask_a[r, c] else c
+        v = value_grid[r, water_c]
         if np.isnan(v):
             continue
         x0, y0 = transform * (c + 1, r)
         x1, y1 = transform * (c + 1, r + 1)
         segments.append(LineString([(x0, y0), (x1, y1)]))
         values.append(float(v))
-    return segments, values
+        water_side[r, water_c] = True
+    return segments, values, water_side[1:-1, 1:-1]
 
 
 def discard_small_components(
@@ -663,6 +652,31 @@ def _remove_small_dikerings(
     return weir_gdf.drop(index=list(to_drop)).reset_index(drop=True)
 
 
+def ocean_linked_wetland_mask(
+    landuse_on_grid: np.ndarray, ocean_mask: np.ndarray, grid: GridArrays
+) -> np.ndarray:
+    """
+    Wetland/lagoon cells (OCEAN_WETLAND_CLASSES) in a patch that shares a
+    cell EDGE with the open sea (landuse==200) -- the patches
+    build_coastal_protection_weir(unprotected_ocean_wetlands=True) leaves on
+    the seaward side of the coastal dike.
+
+    4-connectivity on purpose, both for the patch itself and for its link to
+    the sea -- unlike connected_components' own 8-connectivity (a raster-
+    topology safeguard for the weir trace): SFINCS only exchanges water
+    across shared cell edges, so a patch touching the sea (or its own
+    remainder) only at a corner could never fill from it -- it would end up
+    walled in on the "unprotected" side without ever getting sea water.
+    """
+    wetland = np.isin(landuse_on_grid, OCEAN_WETLAND_CLASSES) & grid.valid_mask
+    labels, n_labels = ndimage_label(wetland, structure=grid._struct4)
+    if n_labels == 0:
+        return np.zeros_like(wetland)
+    touching_sea = binary_dilation(ocean_mask, structure=grid._struct4) & wetland
+    linked = np.unique(labels[touching_sea])
+    return np.isin(labels, linked[linked > 0])
+
+
 def build_coastal_protection_weir(
     grid: GridArrays,
     landuse_on_grid: np.ndarray,
@@ -670,11 +684,10 @@ def build_coastal_protection_weir(
     crest_elevation_m: float,
     min_component_cells: int,
     weir_par1: float,
-    river_crest_on_grid: np.ndarray | None = None,
+    water_side_crest_on_grid: np.ndarray | None = None,
     freeboard_m: float = 0.0,
     channel_mask_gap_free: bool = False,
-    river_crest_dilation_cells: int = 1,
-    coastal_crest_on_grid: np.ndarray | None = None,
+    unprotected_ocean_wetlands: bool = False,
 ) -> tuple[gpd.GeoDataFrame, dict]:
     """
     Top-level orchestrator: classify ocean(+river, if modelled) as
@@ -684,6 +697,13 @@ def build_coastal_protection_weir(
     everything needed for logging and the diagnostic plot.
 
     Args:
+        unprotected_ocean_wetlands: True puts every wetland/lagoon patch
+            linked to the open sea (ocean_linked_wetland_mask) on the
+            seaward side too: it joins water_like, so the coastal dike runs
+            along the patch's LANDWARD edge and the patch itself stays
+            unprotected. The cells stay land otherwise (not sea in
+            zsini_sea_cells, counted in flood metrics). False (default):
+            the dike follows the open-sea boundary itself.
         channel_mask_gap_free: True when `river_channel_mask` was derived
             directly from the same burned-DEM raster that was actually fed
             to hydromt_sfincs as elevation (regular-grid production builds,
@@ -695,66 +715,35 @@ def build_coastal_protection_weir(
             the whole channel perimeter. False (default) preserves the
             dilation for an independently-rasterized mask, which can still
             have genuine sub-cell gaps this safety net exists to catch.
-        river_crest_on_grid: Optional per-cell calibrated riverbank weir
-            crest (NaN where not covered by a modelled reach), from
-            river_processing.depth_method == "modelled" (rule
-            modelled_depth_estimation's weir_crest_calibrated column,
-            rasterized -- with smoothing
-            across reach junctions so two adjacent reaches' calibrated
-            crests don't meet at a hard step -- via
-            src.river_burn.build_smoothed_weir_crest_regular).
+        water_side_crest_on_grid: Optional per-cell crest (same shape as
+            landuse_on_grid) looked up on the WATER side of every traced
+            edge -- rule modelled_depth_estimation passes its confined,
+            excavated round's own period-max water level here, so each edge
+            holds back exactly the water level simulated right next to it
+            (riverbank, mouth, and the coast near the river plume alike).
             When provided: the river channel participates in water_like,
-            and each resulting weir segment gets its own crest --
-            river-covered land cells use max(crest_elevation_m,
-            river_crest_on_grid) (never protect less than the uniform
-            coastal standard implies, e.g. at a river-mouth spit adjacent
-            to both), other land cells use the uniform crest_elevation_m.
-            When None (depth_method == "empirical" -- there is no modelled
+            and each edge's crest is max(water_side_crest_on_grid,
+            crest_elevation_m) -- never below the uniform coastal standard;
+            a NaN (never-wetted) water-side cell falls back to
+            crest_elevation_m, so no edge is ever dropped for a missing
+            value. An all-NaN array therefore gives a uniform
+            crest_elevation_m weir that still includes the riverbanks (the
+            calibration's own confinement rounds). When None (no modelled
             water level to derive a riverbank dike from): the river channel
             does NOT participate in water_like at all, so no riverbank weir
             is built and rivers interact with their floodplain naturally;
             only the coastal levee is built, with the uniform-crest
             behavior.
-        freeboard_m: Added uniformly on top of the final crest (both the
-            uniform-coastal and the max(coastal, river) case), after any
-            combination logic above -- a safety margin absorbing sources of
+        freeboard_m: Added uniformly on top of the final crest, after the
+            max() above -- a safety margin absorbing sources of
             under-protection the crest computation itself doesn't capture
             (subgrid/discretization roundoff, the calibration's steady-
-            state assumption, etc.), so a design event landing almost
-            exactly at the calibrated/coastal crest doesn't overtop it.
-            0.0 (the default) applies no freeboard.
-        river_crest_dilation_cells: How far (in cells) river_crest_on_grid's
-            per-reach calibrated values are propagated onto surrounding land
-            before the crest lookup, on top of whatever the mask's own
-            dilation already covers -- see the dilate_values call below for
-            why any propagation at all is needed. A radius of 1 leaves a
-            salt-and-pepper gap right at reach junctions/transitions (e.g.
-            near a river mouth): individual land cells at the edge of a
-            reach's own 1-cell-wide margin fall inside or outside it
-            depending on small geometric noise, so some silently drop to
-            the flat crest_elevation_m floor instead of inheriting that
-            reach's real, usually higher, calibrated crest. A wider radius
-            (e.g. 5) closes most of that gap; it only changes which value
-            nearby land cells inherit, not the weir's own traced position
-            (channel_mask_gap_free already controls that independently), so
-            it cannot reintroduce a weir-to-DEM offset.
-        coastal_crest_on_grid: Optional per-cell "elsewhere" crest (same
-            shape as landuse_on_grid), replacing the flat crest_elevation_m
-            scalar wherever finite -- from rule modelled_depth_estimation's
-            own correction rounds,
-            where ocean cells near the coast can show a period-max water
-            level above baseline_m (backwater from the river reaching the
-            coast) that the flat coastal standard alone doesn't cover, even
-            just beyond river_crest_on_grid's own dilation radius. Combined
-            via the SAME np.maximum as river_crest_on_grid -- never LOWERS
-            protection versus the flat scalar, only raises it locally where
-            the data says so. None (default) uses the flat crest_elevation_m
-            scalar everywhere; wherever this array itself is NaN (a land
-            cell beyond its own probe/dilation coverage), also falls back
-            to crest_elevation_m rather than leaving a gap -- crest_surface
-            is guaranteed finite at every land cell so the traced weir
-            never drops a segment for a missing value (see the fallback
-            just below).
+            state assumption, etc.). 0.0 (the default) applies no freeboard.
+
+    Every crest is finally rounded UP to the next 0.1 m (src.surge.
+    ceil_water_level) -- sfincs.weir stores crests at 0.1 m precision with
+    round-to-nearest, which would otherwise put up to half the edges up to
+    5 cm below their computed crest.
     """
     ocean_mask = landuse_on_grid == LANDUSE_SEA
 
@@ -767,36 +756,23 @@ def build_coastal_protection_weir(
         empty_gdf = build_weir_geodataframe([], crest_elevation_m, weir_par1, grid.crs)
         return empty_gdf, {"applicable": False}
 
-    if river_crest_on_grid is None:
-        water_like_raw = ocean_mask
-    else:
-        _channel_gap_iterations = 0 if channel_mask_gap_free else 1
-        if _channel_gap_iterations > 0:
-            river_channel_mask = grid.close_gaps(
-                river_channel_mask, iterations=_channel_gap_iterations
-            )
-        water_like_raw = ocean_mask | river_channel_mask
-        # river_crest_on_grid was rasterized onto the SAME (undilated) buffered
-        # channel footprint river_channel_mask had before the close_gaps() call
-        # above -- but the crest lookup in seaward_edges_with_values() reads
-        # the LAND-side cell of the land/water_like boundary, which sits
-        # _channel_gap_iterations + river_crest_dilation_cells cells away from
-        # that original footprint (river_crest_dilation_cells more than the
-        # mask's own dilation -- or, when channel_mask_gap_free and
-        # _channel_gap_iterations is 0, just river_crest_dilation_cells alone
-        # -- since land is one further ring beyond water_like regardless of
-        # whether the mask itself was additionally dilated). Without also
-        # propagating the value array outward by at least this margin, every
-        # land-side lookup misses (always NaN) and crest_surface below
-        # silently falls back to the flat coastal crest_elevation_m
-        # everywhere, never any calibrated per-reach value.
-        # river_crest_dilation_cells=1 (still leaves a salt-and-pepper gap
-        # at reach junctions -- see this function's own docstring) is only
-        # the FLOOR; callers pass a wider radius.
-        river_crest_on_grid = grid.dilate_values(
-            river_crest_on_grid,
-            iterations=_channel_gap_iterations + river_crest_dilation_cells,
+    seaward_mask = ocean_mask
+    ocean_wetland = np.zeros_like(ocean_mask)
+    if unprotected_ocean_wetlands:
+        ocean_wetland = ocean_linked_wetland_mask(landuse_on_grid, ocean_mask, grid)
+        seaward_mask = ocean_mask | ocean_wetland
+        log.info(
+            f"Unprotected ocean-linked wetlands: {int(ocean_wetland.sum()):,} cell(s) (landuse "
+            f"{list(OCEAN_WETLAND_CLASSES)}, edge-connected to the open sea) left on the seaward "
+            f"side of the coastal dike"
         )
+
+    if water_side_crest_on_grid is None:
+        water_like_raw = seaward_mask
+    else:
+        if not channel_mask_gap_free:
+            river_channel_mask = grid.close_gaps(river_channel_mask, iterations=1)
+        water_like_raw = seaward_mask | river_channel_mask
 
     land_mask_raw = ~water_like_raw & grid.valid_mask
 
@@ -930,60 +906,49 @@ def build_coastal_protection_weir(
     # breaking continuity against its forced-land neighbour.
     ocean_exempt = water_like & ocean_mask
 
-    if river_crest_on_grid is None:
+    crest_surface = None
+    edge_water_side_mask = None
+    if water_side_crest_on_grid is None:
         weir_lines = grid.seaward_edges(
             land_mask, water_like, valid_mask=grid.valid_mask, ocean_exempt=ocean_exempt
         )
-        weir_crests: list | float = crest_elevation_m + freeboard_m
+        weir_crests: list | float = float(
+            ceil_water_level(crest_elevation_m + freeboard_m)
+        )
         log.info(
             f"Weir line: {len(weir_lines)} segment(s) extracted directly at the coast "
-            f"({n_final:,} land cells), crest={crest_elevation_m:+.2f} m "
-            f"(+{freeboard_m:.2f} m freeboard) -- empirical mode, no riverbank weir"
+            f"({n_final:,} land cells), crest={weir_crests:+.2f} m (floor "
+            f"{crest_elevation_m:+.3f} m +{freeboard_m:.2f} m freeboard, rounded up to 0.1 m) "
+            f"-- empirical mode, no riverbank weir"
         )
     else:
-        # coastal_crest_on_grid can have NaN gaps beyond its own probe/
-        # dilation coverage (e.g. a land cell adjacent to a small isolated
-        # water patch that's neither a modelled river reach nor near a
-        # coastal probe). Falling back to the flat crest_elevation_m there
-        # -- exactly what "no per-cell override available" already means
-        # everywhere else this array doesn't cover -- guarantees
-        # elsewhere_crest, and therefore crest_surface below, is finite at
-        # every land cell. That matters beyond just picking a sensible
-        # crest value: seaward_edges_with_values DROPS a weir segment
-        # entirely wherever its land-side crest_surface value is NaN, which
-        # otherwise breaks an intended requirement of the traced weir --
-        # every land/water_like boundary cell gets a segment, so the result
-        # is either continuous chains running boundary-to-boundary or fully
-        # closed loops, never a dangling gap in the middle of an otherwise
+        # np.fmax (not np.maximum): a NaN water-side cell (never wetted)
+        # falls back to crest_elevation_m, so crest_surface is finite
+        # everywhere. That matters beyond just picking a sensible crest:
+        # seaward_edges_with_values DROPS a segment wherever its value is
+        # NaN, which would otherwise leave a dangling gap in an otherwise
         # continuous coastline/riverbank (confirmed via basin 2433835: 38
         # dangling endpoints traced back to exactly this NaN-drop path).
-        if coastal_crest_on_grid is not None:
-            elsewhere_crest = np.where(
-                np.isfinite(coastal_crest_on_grid),
-                coastal_crest_on_grid,
-                np.float32(crest_elevation_m),
-            )
-        else:
-            elsewhere_crest = np.float32(crest_elevation_m)
-        crest_surface = np.where(
-            np.isfinite(river_crest_on_grid),
-            np.maximum(elsewhere_crest, river_crest_on_grid),
-            elsewhere_crest,
-        ) + np.float32(freeboard_m)
-        weir_lines, weir_crests = grid.seaward_edges_with_values(
+        # float64 so the rounded-up 0.1 m values stay exact in the gpkg.
+        crest_surface = ceil_water_level(
+            np.fmax(water_side_crest_on_grid.astype(float), float(crest_elevation_m))
+            + freeboard_m
+        )
+        weir_lines, weir_crests, edge_water_side_mask = grid.seaward_edges_with_values(
             land_mask,
             water_like,
             crest_surface,
             valid_mask=grid.valid_mask,
             ocean_exempt=ocean_exempt,
         )
-        n_river_crest = (
-            int(np.isfinite(river_crest_on_grid[land_mask]).sum()) if n_final else 0
-        )
+        _edge_water_level = water_side_crest_on_grid[edge_water_side_mask]
+        n_above_floor = int((_edge_water_level > crest_elevation_m).sum())
         log.info(
             f"Weir line: {len(weir_lines)} segment(s) extracted directly at the coast/riverbank "
-            f"({n_final:,} land cells, {n_river_crest:,} with a modelled riverbank crest), "
-            f"coastal crest={crest_elevation_m:+.2f} m (+{freeboard_m:.2f} m freeboard)"
+            f"({n_final:,} land cells); {n_above_floor:,} of {int(edge_water_side_mask.sum()):,} "
+            f"water-side cell(s) set their edges' crest from their own water level, the rest use "
+            f"the floor crest={crest_elevation_m:+.3f} m (+{freeboard_m:.2f} m freeboard on all, "
+            f"every crest rounded up to 0.1 m)"
         )
 
     weir_gdf = build_weir_geodataframe(weir_lines, weir_crests, weir_par1, grid.crs)
@@ -1014,5 +979,13 @@ def build_coastal_protection_weir(
         "n_water_discarded": n_water_discarded,
         "crest_elevation_m": crest_elevation_m,
         "protected_pocket_mask": protected_pocket_mask,
+        "ocean_wetland_mask": ocean_wetland,
+        # Per-edge crest bookkeeping (None in the ocean-only branch):
+        # crest_surface is the crest every edge looked up on its water side,
+        # edge_water_side_mask marks which water_like cells were those
+        # water sides -- lets a caller compare a later run's water level
+        # against exactly the crest each edge was given.
+        "crest_surface": crest_surface,
+        "edge_water_side_mask": edge_water_side_mask,
     }
     return weir_gdf, diagnostics

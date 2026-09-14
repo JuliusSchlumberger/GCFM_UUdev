@@ -409,8 +409,7 @@ log.info(
 
 # ── plot ──────────────────────────────────────────────────────────────────────
 fig, ax = plt.subplots(figsize=(10, 8))
-map_background(ax, shapely_box(*wgs84_bounds), snakemake.input.land_polygons,
-               water_bodies_path=snakemake.input.spec_landuse)
+map_background(ax, shapely_box(*wgs84_bounds), snakemake.input.land_mask_on_grid)
 
 # River network background
 rivers.plot(ax=ax, color="steelblue", linewidth=0.5, alpha=0.55, zorder=2,

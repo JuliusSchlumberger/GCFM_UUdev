@@ -660,7 +660,7 @@ def build_river_dataset(
                     "long_name": "GPD scale parameter -- with pot_threshold, "
                     "gpd_shape, and pot_peaks_per_year, fully determines the "
                     "fitted return-value curve (see "
-                    "src.extreme_values.gpd_return_value)"
+                    "src.extreme_values.gpd_return_value_table)"
                 },
             ),
             "gev_shape": (

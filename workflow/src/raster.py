@@ -1,4 +1,8 @@
-"""Raster clipping, merging, tile lookup, and roughness reclassification."""
+"""Raster clipping, merging, tile lookup, and grid alignment.
+
+Land-use specifics (per-basin source preparation, the sea class, and
+Manning's n aggregation) live in src.landuse instead.
+"""
 
 from __future__ import annotations
 
@@ -7,39 +11,12 @@ import math
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import rasterio
 from rasterio.mask import mask as rio_mask
 from rasterio.merge import merge as rio_merge
 from shapely.geometry import box
 
 log = logging.getLogger(__name__)
-
-
-def resample_to_utm_array(
-    src_arr: np.ndarray,
-    src_transform,
-    src_crs: str,
-    dst_meta: dict,
-) -> np.ndarray:
-    """
-    Bilinear-resample *src_arr* onto the UTM grid described by *dst_meta*
-    (keys: height, width, transform, crs).  Thin wrapper around rasterio.warp.reproject
-    that keeps heavy scripts DRY.  Returns float32, same shape as target grid.
-    """
-    from rasterio.warp import reproject as _rp, Resampling as _RS
-
-    dest = np.empty((dst_meta["height"], dst_meta["width"]), dtype=np.float32)
-    _rp(
-        source=src_arr,
-        destination=dest,
-        src_transform=src_transform,
-        src_crs=src_crs,
-        dst_transform=dst_meta["transform"],
-        dst_crs=dst_meta["crs"],
-        resampling=_RS.bilinear,
-    )
-    return dest
 
 
 def reproject_nan_aware(
@@ -105,67 +82,6 @@ def reproject_nan_aware(
         dst = dst_value / dst_weight
     dst[dst_weight <= 1e-6] = np.nan
     return dst.astype(np.float32)
-
-
-def load_raster_to_utm_array(
-    src_path: str | Path,
-    wgs84_bounds: tuple[float, float, float, float],
-    dst_meta: dict,
-) -> np.ndarray:
-    """
-    Load a raster (single GeoTIFF or directory of tiles) and reproject to the
-    UTM working grid described by *dst_meta*.  Handles the tile-directory case by
-    merging overlapping tiles first.  Returns float32 with nodata → NaN.
-    """
-    import rasterio
-    from rasterio.merge import merge as _merge
-    from rasterio.warp import reproject as _rp, Resampling as _RS
-    from shapely.geometry import box as _box
-
-    src_path = Path(src_path)
-    dest = np.full((dst_meta["height"], dst_meta["width"]), np.nan, dtype=np.float32)
-
-    if src_path.is_dir():
-        bbox_geom = _box(*wgs84_bounds)
-        candidates = [
-            str(fp)
-            for fp in sorted(src_path.glob("*.tif"))
-            if _tile_intersects(fp, bbox_geom)
-        ]
-        if not candidates:
-            log.warning(f"No raster tiles found overlapping domain in {src_path}")
-            return dest
-        open_ds = [rasterio.open(p) for p in candidates]
-        try:
-            merged_arr, merged_transform = _merge(open_ds, bounds=wgs84_bounds)
-            src_nodata = open_ds[0].nodata
-            src_crs = open_ds[0].crs
-        finally:
-            for ds in open_ds:
-                ds.close()
-        src_arr = merged_arr[0].astype(np.float32)
-        if src_nodata is not None:
-            src_arr[src_arr == src_nodata] = np.nan
-    else:
-        with rasterio.open(src_path) as src:
-            src_arr = src.read(1).astype(np.float32)
-            merged_transform = src.transform
-            src_crs = src.crs
-            if src.nodata is not None:
-                src_arr[src_arr == src.nodata] = np.nan
-
-    _rp(
-        source=src_arr,
-        destination=dest,
-        src_transform=merged_transform,
-        src_crs=src_crs,
-        dst_transform=dst_meta["transform"],
-        dst_crs=dst_meta["crs"],
-        resampling=_RS.bilinear,
-        src_nodata=np.nan,
-        dst_nodata=np.nan,
-    )
-    return dest
 
 
 def find_fathomdem_tiles(
@@ -250,84 +166,61 @@ def merge_tiled_raster(
         dst.write(merged)
 
 
-def clip_raster(
-    src_path: str | Path,
-    bounds: tuple[float, float, float, float],
-    out_path: str | Path,
-) -> None:
-    """
-    Clip a single raster to WGS84 bounds and write to out_path.
-
-    Handles both single-file rasters and directory sources by checking whether
-    src_path points to a directory and delegating to merge_tiled_raster in that
-    case (scanning all *.tif files that overlap bounds).
-
-    Args:
-        src_path: Path to a raster file or a directory of .tif tiles.
-        bounds:   (lon_min, lat_min, lon_max, lat_max) in WGS84.
-        out_path: Destination GeoTIFF path.
-    """
-    src_path = Path(src_path)
-    if src_path.is_dir():
-        bbox = box(*bounds)
-        candidates = [
-            str(fp) for fp in src_path.glob("*.tif") if _tile_intersects(fp, bbox)
-        ]
-        if not candidates:
-            raise FileNotFoundError(f"No .tif tiles overlap domain bbox in {src_path}")
-        merge_tiled_raster(candidates, bounds, out_path)
-        return
-
-    geom = [box(*bounds).__geo_interface__]
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    with rasterio.open(src_path) as src:
-        out_data, out_transform = rio_mask(src, geom, crop=True, all_touched=True)
-        out_meta = src.meta.copy()
-        out_meta.update(
-            {
-                "height": out_data.shape[1],
-                "width": out_data.shape[2],
-                "transform": out_transform,
-            }
-        )
-    with rasterio.open(out_path, "w", **out_meta) as dst:
-        dst.write(out_data)
-
-
 def vectorize_land_from_landuse(
-    landuse_path: str | Path, wgs84_bounds: tuple[float, float, float, float]
+    landuse_path: str | Path,
+    wgs84_bounds: tuple[float, float, float, float],
+    max_pixels: int | None = 4_000_000,
 ):
     """
-    Windowed-read the global landuse raster clipped to wgs84_bounds and
-    vectorize landuse != 200 (i.e. not sea) into a "land" GeoDataFrame,
-    native WGS84 (no reprojection -- the source is already EPSG:4326).
+    Windowed-read a landuse raster clipped to wgs84_bounds and vectorize
+    landuse != 200 (i.e. not sea) into a "land" GeoDataFrame, native WGS84
+    (no reprojection -- both sources are already EPSG:4326).
 
-    Shared by rule get_land_polygons (03, the main per-basin land_polygons.gpkg
-    product) and rule get_protection_levels (04, which deliberately depends
-    only on the delta polygon -- see that rule's own docstring -- so it
-    vectorizes its own small window directly from the raw landuse catalogue
-    source here rather than depending on rule 03's own per-basin output).
+    Used by rule get_land_polygons (03, the per-basin land_polygons.gpkg
+    product, from this basin's own landuse_source.tif) and by rule
+    get_protection_levels (04, which deliberately depends only on the delta
+    polygon -- see that rule's own docstring -- so it vectorizes its own
+    wider window straight from the raw LC100 catalogue source instead).
 
     Args:
-        landuse_path: Path to the global landuse GeoTIFF (data_catalogue.yml's
-                      'land_use' source).
+        landuse_path: Path to a landuse GeoTIFF in pipeline codes.
         wgs84_bounds: (lon_min, lat_min, lon_max, lat_max) -- clip extent.
+        max_pixels:   Decimate (by MODE, so no class is invented) to at most
+                      this many pixels before tracing. These polygons are a
+                      figure background only, and a 10 m source (ESA
+                      WorldCover) puts 26M pixels in a delta-sized window --
+                      tracing that raw produces enormous speckle for no
+                      visible gain. None disables decimation.
 
     Returns:
         geopandas.GeoDataFrame of land polygons, CRS EPSG:4326 (matching the
         source raster's own CRS).
     """
     import geopandas as gpd
+    from affine import Affine
+    from rasterio.enums import Resampling as _RS
     from rasterio.features import shapes as rio_shapes
     from rasterio.windows import from_bounds
     from shapely.geometry import shape as shapely_shape
 
     with rasterio.open(landuse_path) as src:
         window = from_bounds(*wgs84_bounds, transform=src.transform)
-        lu_arr = src.read(1, window=window)
-        win_transform = src.window_transform(window)
+        win_h, win_w = int(round(window.height)), int(round(window.width))
+        factor = 1
+        if max_pixels is not None and win_h * win_w > max_pixels:
+            factor = int(math.ceil(math.sqrt(win_h * win_w / max_pixels)))
+        out_shape = (max(win_h // factor, 1), max(win_w // factor, 1))
+        lu_arr = src.read(1, window=window, out_shape=out_shape, resampling=_RS.mode)
+        win_transform = src.window_transform(window) * Affine.scale(
+            win_w / out_shape[1], win_h / out_shape[0]
+        )
         nodata = src.nodata
         src_crs = src.crs
+    if factor > 1:
+        log.info(
+            f"vectorize_land_from_landuse: {win_w}x{win_h} px window decimated by "
+            f"{factor} (mode) to {out_shape[1]}x{out_shape[0]} px before tracing"
+        )
 
     land_bool = lu_arr != 200
     if nodata is not None:
@@ -342,6 +235,66 @@ def vectorize_land_from_landuse(
         if val == 1
     ]
     return gpd.GeoDataFrame(geometry=land_geoms, crs=src_crs)
+
+
+def vectorize_land_mask_on_grid(landuse_on_grid_path: str | Path):
+    """
+    Land mask (land use != 200 and != nodata) traced from the land use
+    resampled onto the SFINCS grid (landuse_on_grid.tif, rule
+    grid_align_landuse) -- polygon edges run exactly along model cell edges,
+    in the grid's own CRS, then reprojected to WGS84 for the plots. The land
+    background of every figure of model output, so it can't disagree with
+    the model's own land/sea classification (unlike a mask from the native
+    land-use raster, vectorize_land_from_landuse). Works for either row
+    order of the grid transform.
+
+    Returns:
+        geopandas.GeoDataFrame of land polygons, CRS EPSG:4326.
+    """
+    import geopandas as gpd
+    from rasterio.features import shapes as rio_shapes
+    from shapely.geometry import shape as shapely_shape
+
+    with rasterio.open(landuse_on_grid_path) as src:
+        lu_arr = src.read(1)
+        transform, crs, nodata = src.transform, src.crs, src.nodata
+    land = lu_arr != 200
+    if nodata is not None:
+        land &= lu_arr != nodata
+    land_u8 = land.astype(np.uint8)
+    geoms = [
+        shapely_shape(geom)
+        for geom, val in rio_shapes(land_u8, mask=land_u8, transform=transform)
+        if val == 1
+    ]
+    return gpd.GeoDataFrame(geometry=geoms, crs=crs).to_crs("EPSG:4326")
+
+
+def restrict_waterlevel_boundary_to_sea(
+    mask: np.ndarray, landuse_on_grid: np.ndarray
+) -> tuple[np.ndarray, int]:
+    """
+    Water-level boundary cells (SFINCS mask == 2) only on open sea: every
+    boundary cell whose land use ON THE MODEL GRID (landuse_on_grid.tif,
+    rule grid_align_landuse) isn't 200 goes back to a normal active cell
+    (1). Used right after hydromt's create_boundary(btype="waterlevel") by
+    rules modelled_depth_estimation (10) and build_sfincs_skeleton (13), in
+    place of its exclude_polygon=<land polygons> -- those polygons were
+    traced from the NATIVE land-use raster, a different geometry from the
+    model grid's own land/sea classification, so the two could disagree at
+    the domain edge.
+
+    Returns:
+        (new_mask, n_cells_moved_off_the_boundary)
+    """
+    if mask.shape != landuse_on_grid.shape:
+        raise ValueError(
+            f"mask {mask.shape} and landuse_on_grid {landuse_on_grid.shape} are not the same grid"
+        )
+    on_land = (mask == 2) & (landuse_on_grid != 200)
+    out = mask.copy()
+    out[on_land] = 1
+    return out, int(on_land.sum())
 
 
 def reproject_to_reference_grid(
@@ -360,13 +313,11 @@ def reproject_to_reference_grid(
     independent native-resolution WGS84 grid. Left unaligned, every downstream
     consumer (hydromt's model build, compute_max_inundation's water-body mask)
     would have to reproject landuse independently, risking a land/sea split
-    that disagrees with the one already baked into elevation_merged.tif/sea_mask.tif
-    from OSM land polygons.
+    that disagrees with the one sea_mask.tif (landuse == 200) is built from.
 
     Args:
         src_path:     Path to the global source raster (single GeoTIFF).
-        wgs84_bounds: (lon_min, lat_min, lon_max, lat_max) -- clip extent,
-                      same convention as clip_raster.
+        wgs84_bounds: (lon_min, lat_min, lon_max, lat_max) -- clip extent.
         ref_meta:     Reference grid spec (e.g. an opened elevation_merged.tif's
                       .meta) -- must contain 'height', 'width', 'transform', 'crs'.
         resampling:   rasterio.warp.Resampling enum; defaults to nearest
@@ -468,55 +419,6 @@ def _tile_intersects(fp: Path, bbox) -> bool:
         return box(b.left, b.bottom, b.right, b.top).intersects(bbox)
 
 
-def build_roughness_raster(
-    landuse_path: str | Path,
-    lookup_path: str | Path,
-    out_path: str | Path,
-) -> set[int]:
-    """
-    Reclassify a Copernicus LC100 land-use raster to Manning's n roughness values.
-
-    Each land-use code is mapped to a Manning's n value via a CSV lookup table.
-    Pixels without a matching lookup entry are set to the raster nodata value
-    (-9999).
-
-    Args:
-        landuse_path: Path to the clipped land-use GeoTIFF (Copernicus LC100 codes).
-        lookup_path:  CSV with columns 'copernicus_worldcover' (int) and
-                      'manning_n' (float).
-        out_path:     Destination roughness GeoTIFF path.
-
-    Returns:
-        Set of integer land-use codes that were present in the raster but absent
-        from the lookup table (useful for logging warnings in the calling script).
-    """
-    lookup = pd.read_csv(lookup_path)
-    lu_to_n = dict(
-        zip(
-            lookup["copernicus_worldcover"].astype(int),
-            lookup["manning_n"].astype(float),
-        )
-    )
-
-    with rasterio.open(landuse_path) as src:
-        lu_data = src.read(1)
-        meta = src.meta.copy()
-        nodata_lu = int(src.nodata) if src.nodata is not None else 255
-
-    meta.update({"dtype": "float32", "nodata": -9999.0})
-    roughness = np.full(lu_data.shape, -9999.0, dtype=np.float32)
-    for code, n_val in lu_to_n.items():
-        roughness[lu_data == code] = n_val
-
-    unmapped = set(np.unique(lu_data).tolist()) - set(lu_to_n.keys()) - {nodata_lu}
-
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    with rasterio.open(out_path, "w", **meta) as dst:
-        dst.write(roughness, 1)
-
-    return unmapped
-
-
 def compute_geoid_offset_arr(
     goco_path,
     egm_path,
@@ -527,7 +429,8 @@ def compute_geoid_offset_arr(
     EGM2008 is truncated to GOCO06s's maximum degree (≈ 300) before synthesis so
     both grids share the same spectral bandwidth.  Adding this offset to a DEM that
     carries EGM2008 heights converts it to GOCO06s-referenced heights, aligning it
-    with the MDT_CNES-CLS22 product before MDT subtraction.
+    with the MDT_CNES-CLS22 product (whose MDT is the mean sea surface height
+    above the GOCO06s geoid).
 
     Requires: conda install -c conda-forge pyshtools boule
 

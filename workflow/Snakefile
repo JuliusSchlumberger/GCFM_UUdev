@@ -24,10 +24,16 @@ include: "rules/00_common.smk"
 # hydromt's own gdf_zb/burn_river_rect).
 include: "rules/01_separate_deltas.smk"
 include: "rules/02_modeldomain.smk"
+# 06 (the river-network CLIP) before 02b/03: the clipped network is the
+# barrier rule prepare_landuse uses to stop its sea fill at the river
+# mouths, while that rule's own plot (rule plot_river_network, same file)
+# needs rule 03's land mask and therefore runs after it -- see
+# 06_river_network.smk's own module comment.
+include: "rules/06_river_network.smk"
+include: "rules/02b_prepare_landuse.smk"
 include: "rules/03_land_polygons.smk"
 include: "rules/04_protection_levels.smk"
 include: "rules/05_static_terrain_data.smk"
-include: "rules/06_river_network.smk"
 include: "rules/07_boundary_forcings.smk"
 include: "rules/08_clean_river_network.smk"
 include: "rules/08b_optimize_grid_resolution.smk"
@@ -54,6 +60,7 @@ _PREPROCESS_OUTPUTS = [
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/visuals/04_protection_levels.png"), basin_id=BASINS),
@@ -112,7 +119,7 @@ _PREPROCESS_OUTPUTS = [
 # Basin-level (no {scenario} wildcard): the SFINCS skeleton (grid/
 # elevation/mask/weir/roughness/subgrid/observation points -- rule
 # build_sfincs_skeleton) and the spin-up built on top of it (rule
-# run_spinup, fixed RP=1, plus its own sanity_checks) are both genuinely
+# run_spinup, fixed RP=1 river + calm sea, plus its own sanity_checks) are both genuinely
 # scenario-independent now -- changing a scenario's own RP never
 # invalidates either of these, so they're expanded over basin_id only,
 # never once per scenario. See 13_build_sfincs_skeleton.smk/14_run_spinup.smk's

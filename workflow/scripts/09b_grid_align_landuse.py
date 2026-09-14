@@ -69,9 +69,10 @@ from hydromt.model.processes.grid import create_grid_from_region
 from rasterio.warp import Resampling, reproject
 
 from src.domain import load_domain
+from src.landuse import write_roughness_raster
 from src.log import setup_logging
 from src.plots import plot_landuse, plot_roughness
-from src.raster import build_roughness_raster
+from src.raster import vectorize_land_mask_on_grid
 
 log = setup_logging(snakemake.log[0])
 
@@ -104,6 +105,10 @@ with rasterio.open(snakemake.input.landuse) as src:
     src_transform, src_crs, src_nodata = src.transform, src.crs, src.nodata
 
 lu_on_grid = np.full(grid_shape, src_nodata, dtype=lu_arr.dtype)
+# Resampling.mode: landuse.tif (~30 m) is finer than this grid (~70 m), so
+# nearest would keep one arbitrary source pixel per model cell. Classes are
+# categorical, so mode is the only meaningful upscaling; Manning's n, being
+# continuous, is area-averaged from the source instead (below).
 reproject(
     source=lu_arr,
     destination=lu_on_grid,
@@ -113,7 +118,7 @@ reproject(
     dst_crs=src_crs,
     src_nodata=src_nodata,
     dst_nodata=src_nodata,
-    resampling=Resampling.nearest,
+    resampling=Resampling.mode,
 )
 
 landuse_on_grid_meta = {
@@ -130,23 +135,49 @@ log.info(
     f"{grid_shape[0]}x{grid_shape[1]} cells. Written: {snakemake.output.landuse_on_grid}"
 )
 
-unmapped = build_roughness_raster(
-    snakemake.output.landuse_on_grid,
+# Manning's n area-averaged from the land-use SOURCE at its own resolution
+# onto this grid -- NOT reclassified from landuse_on_grid, whose dominant
+# class would hand a cell that is 60% water and 40% built-up water's own
+# 0.02 (see src.landuse.aggregate_manning / rule get_roughness).
+_method = str(snakemake.params.roughness_aggregation)
+unmapped, _info = write_roughness_raster(
+    snakemake.input.landuse_source,
     snakemake.input.matching_lu_roughness,
+    {
+        "height": grid_shape[0],
+        "width": grid_shape[1],
+        "transform": grid_transform,
+        "crs": src_crs,
+    },
     snakemake.output.roughness_on_grid,
+    method=_method,
+    # This raster IS the model's own "manning" field, so it stays exactly on
+    # the model grid -- unlike rule 05c's, which is subdivided for the subgrid.
+    refine_to_source=False,
 )
 if unmapped:
-    log.warning(f"Land-use codes without roughness mapping: {unmapped}")
-log.info(f"Roughness built directly from landuse_on_grid.tif: {snakemake.output.roughness_on_grid}")
+    log.warning(
+        f"Land-use codes without roughness mapping (NaN, excluded from the average): "
+        f"{sorted(unmapped)}"
+    )
+log.info(
+    f"Roughness ({_method}) area-averaged from the land-use source onto the model grid: "
+    f"{snakemake.output.roughness_on_grid}"
+)
+
+# Land mask traced from landuse_on_grid (land use != 200), cell-aligned with
+# the model -- THE land background of every figure of model output from here
+# on (see src.plots' module docstring).
+land_mask = vectorize_land_mask_on_grid(snakemake.output.landuse_on_grid)
+land_mask.to_file(snakemake.output.land_mask_on_grid, driver="GPKG")
+log.info(f"Land mask on the SFINCS grid: {len(land_mask)} polygon(s). Written: {snakemake.output.land_mask_on_grid}")
 
 plot_landuse(
     snakemake.output.landuse_on_grid, domain_poly,
-    snakemake.input.land_polygons, snakemake.output.plot_landuse_on_grid,
-    water_bodies_path=snakemake.output.landuse_on_grid,
+    snakemake.output.land_mask_on_grid, snakemake.output.plot_landuse_on_grid,
 )
 plot_roughness(
     snakemake.output.roughness_on_grid, domain_poly,
-    snakemake.input.land_polygons, snakemake.output.plot_roughness_on_grid,
-    water_bodies_path=snakemake.output.landuse_on_grid,
+    snakemake.output.land_mask_on_grid, snakemake.output.plot_roughness_on_grid,
 )
 log.info("Done")

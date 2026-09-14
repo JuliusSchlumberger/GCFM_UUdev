@@ -107,8 +107,10 @@ rule adapt_run_event_pre:
         # actual rstfile path SFINCS reads was already written into
         # sfincs.inp by adapt_build_forcing_pre above.
         rstart              = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/" + RST_FNAME),
-        land_polygons       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
-        landuse             = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
+        # Grid-aligned land mask (rule grid_align_landuse, 09b) -- the plot
+        # background 16_run_event.py reads; it no longer takes land_polygons
+        # or the landuse raster (the water-body overlay was dropped 2026-09-11c).
+        land_mask_on_grid   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
         sea_mask            = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sea_mask.tif"),
         domain_gpkg         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),

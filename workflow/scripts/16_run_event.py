@@ -66,8 +66,7 @@ timeout_s                  = int(snakemake.params.timeout_s)
 min_inundation_depth_m     = float(snakemake.params.min_inundation_depth_m)
 include_subgrid            = bool(snakemake.params.include_subgrid)
 animation_fps               = int(snakemake.params.animation_fps)
-land_polygons_path         = Path(snakemake.input.land_polygons)
-landuse_path                = Path(snakemake.input.landuse)
+land_polygons_path         = Path(snakemake.input.land_mask_on_grid)  # grid-aligned land mask, plot background
 sea_mask_path               = Path(snakemake.input.sea_mask)
 river_network_path          = Path(snakemake.input.clean_river_network)
 domain_gpkg_path            = Path(snakemake.input.domain_gpkg)
@@ -127,7 +126,6 @@ else:
         da_hmax, min_inundation_depth_m, n_flooded, n_land,
         str(land_polygons_path), str(river_network_path),
         str(plot_ratio_path), basin_id=basin_id,
-        water_bodies_path=str(landuse_path),
         run_label="event",
     )
     log.info(f"Inundation ratio plot written: {plot_ratio_path}")

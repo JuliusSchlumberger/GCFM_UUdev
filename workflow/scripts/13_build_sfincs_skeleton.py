@@ -66,6 +66,10 @@ from scipy.ndimage import label as _ndimage_label
 from shapely.geometry import Polygon
 from hydromt_sfincs import SfincsModel
 
+from src.plots import add_land_background_to_geoaxes
+from src.raster import restrict_waterlevel_boundary_to_sea
+from src.surge import read_baseline_m
+
 plt.ioff()
 
 # ── logging ───────────────────────────────────────────────────────────────────
@@ -95,7 +99,8 @@ elevation_conditioned_path = Path(snakemake.input.elevation_conditioned)
 roughness_path        = Path(snakemake.input.roughness)
 roughness_on_grid_path = Path(snakemake.input.roughness_on_grid)
 landuse_on_grid_path  = Path(snakemake.input.landuse_on_grid)
-land_polygons_path    = Path(snakemake.input.land_polygons)
+# Grid-aligned land mask (rule grid_align_landuse) -- plot background only.
+land_mask_path        = Path(snakemake.input.land_mask_on_grid)
 river_network_path    = Path(snakemake.input.river_network)
 delta_outflow_points_path = Path(snakemake.input.delta_outflow_points)
 # The ONLY sea/land classification zsini is built from -- already
@@ -133,14 +138,16 @@ skeleton_root.mkdir(parents=True, exist_ok=True)
 # ── baseline water level from surge forcing ───────────────────────────────────
 # baseline_m/coastal_protection_crest_m are basin-level fixed fields (mean
 # vertical correction, FLOPROS coastal standard) -- NOT derived from any
-# scenario's own design RP. See 07_get_boundary_forcings.py.
+# scenario's own design RP. See 07_get_boundary_forcings.py. baseline_m is
+# rounded UP to the next 0.1 m (read_baseline_m), like every coastal water
+# level the model sees.
 with xr.open_dataset(surge_forcing_path, decode_times=False) as _ds:
-    baseline_m = float(_ds["baseline_m"].values) if "baseline_m" in _ds else 0.0
+    baseline_m = read_baseline_m(_ds)
     coastal_protection_crest_m = (
         float(_ds["coastal_protection_crest_m"].values)
         if "coastal_protection_crest_m" in _ds else 0.0
     )
-log.info(f"Surge boundary baseline read from surge_forcing.nc: {baseline_m:+.4f} m")
+log.info(f"Surge boundary baseline read from surge_forcing.nc: {baseline_m:+.4f} m (rounded up to 0.1 m)")
 
 # zsini.tif (sea cells = baseline_m, land = nodata) is built once, directly
 # on this model's own grid, from zsini_sea_cells_on_grid.tif -- see the
@@ -192,11 +199,6 @@ local_catalog = {
         "data_type": "RasterDataset",
         "uri": str(roughness_path),
         "driver": "rasterio",
-    },
-    "local_land_polygons": {
-        "data_type": "GeoDataFrame",
-        "uri": str(land_polygons_path),
-        "driver": "pyogrio",
     },
     **({
         "local_delta_outflow_points": {
@@ -286,16 +288,27 @@ log.info(
 )
 
 # ── 4. Mask: waterlevel boundary ──────────────────────────────────────────────
-land_polygons_empty = gpd.read_file(land_polygons_path).empty
-boundary_kwargs = {} if land_polygons_empty else {"exclude_polygon": "local_land_polygons"}
-if land_polygons_empty:
-    log.info("No land polygons in domain — boundary covers the full active-domain edge")
-mask_component.create_boundary(
-    btype="waterlevel",
-    reset_bounds=True,
-    **boundary_kwargs,
+# Open sea only, by the model grid's OWN land use (landuse_on_grid != 200 ->
+# back to a normal active cell) -- same as rule 10's calibration model; see
+# src.raster.restrict_waterlevel_boundary_to_sea.
+# reset_bounds=False: create_active just built a fresh 0/1 mask, and hydromt's
+# create_boundary with reset_bounds=True and no polygon/elevation filter only
+# resets and returns -- it would set no boundary cells at all.
+mask_component.create_boundary(btype="waterlevel", reset_bounds=False)
+with rasterio.open(landuse_on_grid_path) as _lu_src_bnd:
+    _bnd_mask, _n_bnd_on_land = restrict_waterlevel_boundary_to_sea(
+        sf.grid.data["mask"].values, _lu_src_bnd.read(1)
+    )
+if not (_bnd_mask == 2).any():
+    raise ValueError(
+        "No water-level boundary cell on open sea (landuse_on_grid == 200) at the "
+        "active-domain edge -- check the active mask and landuse_on_grid.tif."
+    )
+sf.grid.data["mask"].values[:] = _bnd_mask
+log.info(
+    f"Waterlevel boundary set: {int((_bnd_mask == 2).sum())} edge cell(s) on open sea → mask=2 "
+    f"({_n_bnd_on_land} edge cell(s) on land use != 200 left as normal active cells)"
 )
-log.info("Waterlevel boundary set: edge cells not on land → mask=2")
 
 # ── 4b. Mask: delta-outline outflow boundary ─────────────────────────────────
 if delta_outflow_enabled:
@@ -362,7 +375,7 @@ if weir_grid is not None:
     from src.plots import plot_coastal_protection_weir
     plot_coastal_protection_weir(
         weir_grid, weir_diagnostics, _domain_poly_4326,
-        str(land_polygons_path), str(river_network_path),
+        str(land_mask_path), str(river_network_path),
         str(snakemake.output.plot_coastal_protection_weir),
         basin_id=skeleton_root.parent.name, weir_gdf=weir_gdf,
     )
@@ -656,23 +669,26 @@ def _save_with_buffer(fig, ax, fname, buffer_frac=0.15):
     log.info(f"Plot written: {fname}")
 
 
+# Background: the grid-aligned land mask (rule grid_align_landuse), not web
+# map tiles -- see src.plots' module docstring.
 # 1. Grid extent
-fig, ax = sf.plot_basemap(variable="grid", plot_region=True, bmap="sat",
-                          plot_geoms=False)
+fig, ax = sf.plot_basemap(variable="grid", plot_region=True, plot_geoms=False)
+add_land_background_to_geoaxes(ax, str(land_mask_path), sf.crs)
 _save_with_buffer(fig, ax, "01_grid.png")
 
 # 2. Elevation — obs points shown here only (plot_geoms=True is default)
-fig, ax = sf.plot_basemap(variable="dep", bmap="sat", vmin=-80, vmax=80)
+fig, ax = sf.plot_basemap(variable="dep", vmin=-80, vmax=80)
+add_land_background_to_geoaxes(ax, str(land_mask_path), sf.crs)
 _save_with_buffer(fig, ax, "02_elevation.png")
 
 # 3. Mask
-fig, ax = sf.plot_basemap(variable="mask", plot_bounds=False, bmap="sat",
-                          plot_geoms=False)
+fig, ax = sf.plot_basemap(variable="mask", plot_bounds=False, plot_geoms=False)
+add_land_background_to_geoaxes(ax, str(land_mask_path), sf.crs)
 _save_with_buffer(fig, ax, "03_mask.png")
 
 # 4. Roughness
-fig, ax = sf.plot_basemap(variable="manning", plot_bounds=False, bmap="sat",
-                          plot_geoms=False)
+fig, ax = sf.plot_basemap(variable="manning", plot_bounds=False, plot_geoms=False)
+add_land_background_to_geoaxes(ax, str(land_mask_path), sf.crs)
 _save_with_buffer(fig, ax, "04_roughness.png")
 
 # 5. Initial conditions (zsini) -- untracked side-effect plot (not in this

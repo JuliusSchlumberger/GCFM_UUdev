@@ -19,7 +19,8 @@ if config["river_processing"]["depth_method"] == "empirical":
             spec_basins_meta    = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
             domain_gpkg         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
             clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
-            land_polygons       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
+            # Grid-aligned land mask (rule grid_align_landuse) -- plot background.
+            land_mask_on_grid   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
             delta_polygon       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
             nienhuis            = catalogue_path("nienhuis_delta_characteristics"),
             # Every basin gets a conditioned elevation and its own burned DEM

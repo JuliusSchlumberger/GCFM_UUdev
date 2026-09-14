@@ -18,14 +18,17 @@ Processing chain
     N_EGM2008 − N_GOCO06s (pyshtools synthesis) to every valid FathomDEM pixel.
     Mandatory — FathomDEM's native EGM2008 datum must not be blended with
     GEBCO/COAST-RP/MDT, which all share the GOCO06s frame. No further
-    correction (e.g. MDT subtraction) is applied to the DEM itself: MDT is
-    only meaningful at sea, and the merge below only ever needs land-side DEM
+    correction (e.g. MDT) is applied to the DEM itself: MDT is only
+    meaningful at sea, and the merge below only ever needs land-side DEM
     values corrected to the same geoid GEBCO is re-referenced to.
 3.  Clip GEBCO to the domain, resample to the working UTM grid, and
-    re-reference it to GOCO06s by subtracting the MDT (HYBRID-CNES-CLS2022) —
-    extrapolated over land via inverse-distance weighting before resampling,
-    so the subtraction doesn't NaN-poison nearshore GEBCO pixels whose
-    receptive field straddles a land-side nodata cell.
+    re-reference it from local MSL to GOCO06s by ADDING the MDT
+    (HYBRID-CNES-CLS2022; MDT = mean sea surface height above the geoid, so
+    H_GOCO06s = H_MSL + MDT) — extrapolated over land via inverse-distance
+    weighting before resampling, so the correction doesn't NaN-poison
+    nearshore GEBCO pixels whose receptive field straddles a land-side
+    nodata cell. (Subtracted before 2026-09-10 -- the wrong direction, see
+    src.surge.apply_mdt_correction.)
 3b. Clamp GEBCO depths to terrain.gebco_max_depth_m below sea level.
     SFINCS's CFL-driven internal time step is set by the domain's single
     deepest active cell, so genuinely deep offshore water (which SFINCS
@@ -246,7 +249,7 @@ plot_geoid_offset(
     offset_arr       = offset_arr,
     offset_transform = offset_transform,
     wgs84_bounds     = wgs84_bounds,
-    osm_land_path    = str(land_polygons_path),
+    land_polygons_path    = str(land_polygons_path),
     output_path      = _out_geoid,
 )
 log.info(f"Plot written: {_out_geoid}")
@@ -312,10 +315,12 @@ else:
 
 log.info(f"GEBCO valid: {(~np.isnan(gebco_utm)).sum():,} px")
 
-# ── 3b. Vertical datum correction for GEBCO (subtract MDT → GOCO06s) ─────────
-# Re-references GEBCO to the same GOCO06s geoid as FathomDEM (step 2) by
-# subtracting the MDT (HYBRID-CNES-CLS22) -- extrapolated over land via
-# inverse-distance weighting before resampling, so the subtraction doesn't
+# ── 3b. Vertical datum correction for GEBCO (add MDT: MSL → GOCO06s) ─────────
+# Re-references GEBCO (local-MSL-referenced) to the same GOCO06s geoid as
+# FathomDEM (step 2) by ADDING the MDT (HYBRID-CNES-CLS22, the mean sea
+# surface's height above the geoid: H_GOCO06s = H_MSL + MDT) -- the same
+# correction rule 07 applies to COAST-RP. Extrapolated over land via
+# inverse-distance weighting before resampling, so the correction doesn't
 # NaN-poison nearshore GEBCO pixels whose receptive field straddles a
 # land-side nodata cell. Applied to every valid GEBCO pixel (not just at
 # sea) since the hard merge below may also fall back to GEBCO on land where
@@ -367,7 +372,7 @@ plot_mdt_ocean(
     mdt_np        = mdt_np,
     mdt_transform = mdt_transform_wgs,
     wgs84_bounds  = wgs84_bounds,
-    osm_land_path = str(land_polygons_path),
+    land_polygons_path = str(land_polygons_path),
     output_path   = _out_mdt,
 )
 log.info(f"Plot written: {_out_mdt}")
@@ -391,7 +396,7 @@ if n_ocean > 0:
         smoothing_iterations=1,   # mild Laplacian smoothing ≈ ArcGIS smooth factor 0.5
     )
 else:
-    log.warning("MDT has no valid ocean pixels in the extended domain — skipping subtraction")
+    log.warning("MDT has no valid ocean pixels in the extended domain — skipping the MDT correction")
 
 mdt_on_gebco = reproject_nan_aware(
     mdt_filled, mdt_transform_wgs, "EPSG:4326",
@@ -402,7 +407,7 @@ log.info(
     f"mean={float(np.nanmean(mdt_on_gebco)):.4f} m, "
     f"range=[{float(np.nanmin(mdt_on_gebco)):.4f}, {float(np.nanmax(mdt_on_gebco)):.4f}] m"
 )
-gebco_utm[valid_gebco] -= mdt_on_gebco[valid_gebco]
+gebco_utm[valid_gebco] += mdt_on_gebco[valid_gebco]
 del mdt_np, mdt_filled, mdt_on_gebco
 
 gebco_delta_correction = np.where(
@@ -485,7 +490,7 @@ log.info(f"Written: {out_elev_path}")
 plot_elevation_merged(
     merged_path=str(out_elev_path),
     bbox_poly=_box(*wgs84_bounds),
-    osm_land_path=str(land_polygons_path),
+    land_polygons_path=str(land_polygons_path),
     output_path=str(out_plot_path),
     title_str="Merged elevation (FathomDEM where available, GEBCO elsewhere/ocean)",
 )
@@ -498,10 +503,14 @@ plot_datum_correction_delta(
     delta          = delta_correction,
     utm_crs_str    = domain_crs_str,
     wgs84_bounds   = wgs84_bounds,
-    osm_land_path  = str(land_polygons_path),
+    land_polygons_path  = str(land_polygons_path),
     output_path    = out_plot_datum_path,
     title          = "Vertical datum correction — FathomDEM\n(EGM2008 → GOCO06s geoid)",
     colorbar_label = "Δ elevation (m)  [GOCO06s − EGM2008]",
+    note           = (
+        "Note: FathomDEM and the underlying land-use map (grey background) are not fully aligned.\n"
+        "In areas without FathomDEM coverage, GEBCO data are used (see 05a_elevation_gebco_correction.png)."
+    ),
 )
 log.info(f"Plot written: {out_plot_datum_path}")
 
@@ -510,9 +519,9 @@ plot_datum_correction_delta(
     delta          = gebco_delta_correction,
     utm_crs_str    = domain_crs_str,
     wgs84_bounds   = wgs84_bounds,
-    osm_land_path  = str(land_polygons_path),
+    land_polygons_path  = str(land_polygons_path),
     output_path    = out_plot_gebco_datum_path,
-    title          = "Vertical datum correction — GEBCO\n(raw → GOCO06s via MDT_CNES-CLS22 subtraction)",
+    title          = "Vertical datum correction — GEBCO\n(local MSL → GOCO06s: + MDT_CNES-CLS22)",
     colorbar_label = "Δ elevation (m)  [GOCO06s − raw GEBCO]",
 )
 log.info(f"Plot written: {out_plot_gebco_datum_path}")

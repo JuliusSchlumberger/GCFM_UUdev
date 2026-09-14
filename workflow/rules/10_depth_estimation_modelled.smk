@@ -40,7 +40,10 @@ if config["river_processing"]["depth_method"] == "modelled":
             # docstring for why every consumer of the landuse/roughness
             # classification now shares one canonical coarse-grid resample.
             roughness                = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"),
-            land_polygons            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
+            # Grid-aligned land mask (rule grid_align_landuse) -- plot
+            # background only; the water-level boundary uses landuse_on_grid
+            # itself (see src.raster.restrict_waterlevel_boundary_to_sea).
+            land_mask_on_grid        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
             domain_gpkg              = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
             spec_basins_meta         = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
             # Already rasterized directly onto this rule's own grid (rule
@@ -66,17 +69,16 @@ if config["river_processing"]["depth_method"] == "modelled":
             # Same filenames rule empirical_depth_estimation writes -- see this
             # rule's own module docstring: rule 13 imports whichever sibling ran,
             # never re-derives its own burn from the flattened rivdph/
-            # weir_crest_calibrated columns. Written from the converged
-            # round's own already-computed burn (both resolutions already
-            # exist internally every round; this just persists the
-            # converged round's own copies under the canonical name).
+            # weir_crest_calibrated columns. Burned from round 0's own
+            # per-cell excavation depth (the same excavation rounds 1 and 2
+            # simulated with).
             river_burned_dem              = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem.tif"),
             river_burned_dem_sfincs_grid  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"),
-            # Modelled-mode-only production input -- the converged round's
-            # own actual traced weir (seed-head/domain-edge closure,
-            # coastal-probe correction, per-cell smoothing all baked in),
-            # not re-derivable from any per-reach scalar. See rule 13's own
-            # import of this file.
+            # Modelled-mode-only production input -- the traced weir with
+            # every edge's own crest from round 1's water level on its own
+            # water side (the same weir round 2 verified), not re-derivable
+            # from any per-reach scalar. See rule 13's own import of this
+            # file.
             coastal_protection_weir       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"),
             # THE single sea/land classification every downstream consumer
             # reads directly, zero further reprojection: this rule's own
@@ -104,27 +106,24 @@ if config["river_processing"]["depth_method"] == "modelled":
             # estimation writes -- downstream rules never need
             # depth_method-conditional file selection.
             zsini_sea_cells               = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
-            # Canonical outputs -- copies of the LAST round's own numbered
-            # files below (round n_correction_iterations), for downstream
-            # consumers/convention that expect these fixed filenames.
+            # Canonical outputs -- copies of round 2's (verification) own
+            # numbered files below, for downstream consumers/convention that
+            # expect these fixed filenames.
             plot_calibration             = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/river_depth.png"),
             plot_water_level_timeseries  = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/water_level_timeseries.png"),
             plot_max_inundation          = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/max_inundation.png"),
             animation_flood_progress     = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/flood_animation.mp4"),
             plot_crest_gap_map           = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/crest_gap_map.png"),
-            # Per-round diagnostics (round 0 = isolated calibration, rounds
-            # 1..n_correction_iterations = coupled-system corrections) are
-            # DELIBERATELY NOT declared here (same convention as
+            # Coastal dike position with unprotected_ocean_wetlands off vs
+            # on, overlaid (whichever the config sets is the one simulated).
+            plot_dike_positions          = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/dike_positions_wetland_switch.png"),
+            # Per-round diagnostics (round 0 = confined/un-excavated, round
+            # 1 = confined/excavated, round 2 = verification with the real
+            # crests) are not declared here (same convention as
             # calibration_state.csv, written directly under calib_root) --
-            # early-stopping means not every round index actually runs, and
-            # a round that never simulated should have NO file at all, not
-            # an empty placeholder. Snakemake requires every DECLARED output
-            # to exist after the rule finishes, which would force an empty
-            # touch() for every skipped round if these were declared;
-            # writing them directly (10_depth_estimation_modelled.py's own
-            # round_visuals_dir) lets a skipped round have nothing, and the
-            # final round's own real files are what the canonical outputs
-            # above are copied from.
+            # 10_depth_estimation_modelled.py writes them to its own
+            # round_visuals_dir; round 2's files are what the canonical
+            # outputs above are copied from.
         params:
             calib_root  = lambda wildcards: results_path(f"{wildcards.basin_id}/preprocessing_inputs/depth_crest_calibration"),
             sfincs_exe  = config["sfincs"]["simulation"]["sfincs_exe"],
@@ -132,6 +131,10 @@ if config["river_processing"]["depth_method"] == "modelled":
             active_mask_enabled = config["sfincs"]["grid"]["active_mask"]["enabled"],
             active_mask_elevation_buffer_m = config["sfincs"]["grid"]["active_mask"]["elevation_buffer_m"],
             outflow_buffer_m = config["sfincs"]["boundary_setup"]["outflow_buffer_m"],
+            # Same surge-station matching radius production uses (rule 13/14)
+            # -- rounds 1-2 force the coastal protection storm tide at those
+            # stations.
+            waterlevel_buffer_m = config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
             flow_accumulation_iterations = config["river_processing"]["flow_accumulation"]["iterations"],
             # Power-law comparison column (rivdph_powerlaw) -- computed inline,
             # not read from rule empirical_depth_estimation's output.
@@ -141,11 +144,9 @@ if config["river_processing"]["depth_method"] == "modelled":
             discharge_ramp_hours          = config["river_processing"]["river_depth_modelling"]["discharge_ramp_hours"],
             weir_crest_m                  = config["river_processing"]["river_depth_modelling"]["weir_crest_m"],
             weir_par1                     = config["river_processing"]["river_depth_modelling"]["weir_par1"],
-            weir_crest_fraction           = config["river_processing"]["river_depth_modelling"]["weir_crest_fraction"],
-            n_correction_iterations       = config["river_processing"]["river_depth_modelling"]["n_correction_iterations"],
-            min_crest_increment_per_round_m = config["river_processing"]["river_depth_modelling"]["min_crest_increment_per_round_m"],
+            excavation_fraction           = config["river_processing"]["river_depth_modelling"]["excavation_fraction"],
             weir_freeboard_m              = config["river_processing"]["river_depth_modelling"]["freeboard_m"],
-            river_crest_dilation_cells    = config["river_processing"]["river_depth_modelling"]["river_crest_dilation_cells"],
+            unprotected_ocean_wetlands    = config["river_processing"]["river_depth_modelling"]["unprotected_ocean_wetlands"],
             min_component_cells           = config["river_processing"]["river_depth_modelling"]["min_component_cells"],
             animation_fps                 = config["sfincs"]["sanity_checks"]["animation_fps"],
             # Same subgrid setup as the production model (rule 13/14), so
