@@ -77,6 +77,19 @@ adaptation_measures:
       # baseline_excess_volume by rule attribution_mask (18c), read by both
       # 18a_adapt_pre.py and 18b_adapt_post.py.
 
+  # water_retention_greening:
+  #   type: water_retention_greening
+  #   description: Water retention area in floodplain to store excess river discharge during flood events
+  #   params:
+  #     storage_fraction: # fraction
+  #       min: 0
+  #       max: 1
+  #       required_for: [postprocessing, preprocessing]
+  #     locations:
+  #       min: null
+  #       max: null # path, data source name, or GeoDataFrame with the retention area polygon(s)
+  #       required_for: [preprocessing]
+
 
   # Greys protect-open
   river_levee:
@@ -93,26 +106,26 @@ adaptation_measures:
         required_for: [preprocessing]
   # coastal_levee = taken from protect-closed
 
-  storm_surge_barrier:
-      type: storm_surge_barrier
-      description: Closed storm surge barrier at river mouth
-      params:
-        sill_elevation:
-          min: 0.1
-          max: 20 # in m
-          required_for: [postprocessing, preprocessing]
-        zmin:
-          min: null
-          max: null # path, data source name, or GeoDataFrame with the barrier polyline(s)
-          required_for: [preprocessing]
-        zmax:
-          min: null
-          max: null # path, data source name, or GeoDataFrame with the barrier polyline(s)
-          required_for: [preprocessing]
-        locations:
-          min: null
-          max: null # path, data source name, or GeoDataFrame with the barrier polyline(s)
-          required_for: [preprocessing]
+  # storm_surge_barrier:
+  #     type: storm_surge_barrier
+  #     description: Closed storm surge barrier at river mouth
+  #     params:
+  #       sill_elevation:
+  #         min: 0.1
+  #         max: 20 # in m
+  #         required_for: [postprocessing, preprocessing]
+  #       zmin:
+  #         min: null
+  #         max: null # path, data source name, or GeoDataFrame with the barrier polyline(s)
+  #         required_for: [preprocessing]
+  #       zmax:
+  #         min: null
+  #         max: null # path, data source name, or GeoDataFrame with the barrier polyline(s)
+  #         required_for: [preprocessing]
+  #       locations:
+  #         min: null
+  #         max: null # path, data source name, or GeoDataFrame with the barrier polyline(s)
+  #         required_for: [preprocessing]
 
 
   # Protect-closed
@@ -130,18 +143,27 @@ adaptation_measures:
         required_for: [preprocessing]
 
   # Accommodate
-  dike_ring:
-    type: dike_ring
-    description: Dike ring around areas (e.g. cities)
+  # dike_ring:
+  #   type: dike_ring
+  #   description: Dike ring around areas (e.g. cities)
+  #   params:
+  #     elevation:
+  #       min: 0.1
+  #       max: 20 # in m
+  #       required_for: [postprocessing, preprocessing]
+  #     locations:
+  #       min: null
+  #       max: null # path, data source name, or GeoDataFrame of the urban dike ring
+  #       required_for: [preprocessing, postprocessing]
+
+  urban_raising:
+    type: urban_raising
+    description: Raise the DEM at flooded urban cells (delta-wide) by a fixed amount
     params:
       elevation:
         min: 0.1
-        max: 20 # in m
+        max: 20 # amount [m] added to eligible cells' own current ground elevation (additive, not an absolute target)
         required_for: [postprocessing, preprocessing]
-      locations:
-        min: null
-        max: null # path, data source name, or GeoDataFrame of the urban dike ring
-        required_for: [preprocessing, postprocessing]
 
 
   # Retreat

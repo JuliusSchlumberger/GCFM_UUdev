@@ -56,14 +56,19 @@ rule build_sfincs:
         design_rp_river_yr = lambda wildcards: scenario_params(wildcards.scenario)["river_rp"],
         design_rp_surge_yr = lambda wildcards: scenario_params(wildcards.scenario)["surge_rp"],
         compound_lag_hr    = config["sfincs"]["boundary_setup"]["compound"]["lag_hr"],
-        # Uniform scaling factor on the built river discharge hydrograph
-        # (default 1.0 = no-op), applied HERE against river_forcing.nc's own
+        # Per-scenario scaling factor on the built river discharge hydrograph
+        # (config/scenarios.yml, see scenario_params in 00_common.smk;
+        # default 1.0 = no-op), applied HERE against river_forcing.nc's own
         # built discharge -- deliberately NOT a param of rule
         # get_boundary_forcings (07) or rule modelled_depth_estimation (10),
         # so changing it only reruns this (cheap) per-scenario build + its
         # downstream event run, never rule 07, the weir/depth calibration,
-        # or the skeleton build. See src.river_forcing.build_design_discharge_matrix.
-        discharge_multiplier = config["boundary_forcings"]["river"]["discharge_multiplier"],
+        # or the skeleton build. Per-scenario (rather than global) so e.g.
+        # river_500/river_only_500/compound_500 can be amplified to reach a
+        # genuinely flood-inducing river discharge without also scaling
+        # coast_500's own small RP=2 river component. See
+        # src.river_forcing.build_design_discharge_matrix.
+        discharge_multiplier = lambda wildcards: scenario_params(wildcards.scenario)["discharge_multiplier"],
         # Target global-mean SLR (m), applied HERE against surge_forcing.nc's
         # own dimensionless slr_fingerprint -- deliberately NOT a param of
         # rule get_boundary_forcings (07), so changing slr_m only reruns this

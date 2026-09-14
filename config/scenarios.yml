@@ -8,6 +8,15 @@
 
 # Surge RPs must be COAST-RP tabulated values: 1,2,5,10,25,50,100,250,500,1000.
 
+# discharge_multiplier (optional, default 1.0): per-scenario uniform scaling
+# factor on the built river discharge hydrograph (see scenario_params in
+# 00_common.smk / src.river_forcing.build_design_discharge_matrix). Lets a
+# scenario's river driver be amplified past its raw RP lookup (e.g. when the
+# raw RP500 discharge alone doesn't produce flooding) WITHOUT affecting any
+# other scenario -- in particular coast_500's own small RP=2 river_rp stays
+# at its raw value even though river_500/river_only_500/compound_500 below
+# are amplified.
+
 
 default:                  # what plain `snakemake build` runs (no target_scenarios given)
   surge_rp: 250
@@ -35,12 +44,15 @@ coast_only_500:
 river_500:
   surge_rp: 2
   river_rp: 500
+  discharge_multiplier: 2.0
 
 river_only_500:
   surge_rp: Null
   river_rp: 500
+  discharge_multiplier: 2.0
 
 # Compound
 compound_500:
   surge_rp: 500
   river_rp: 500
+  discharge_multiplier: 2.0
