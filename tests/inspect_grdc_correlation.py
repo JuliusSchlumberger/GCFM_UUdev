@@ -154,7 +154,7 @@ for basin_id in basin_ids:
 
         plot_grdc_overview(
             domain_poly=domain_poly,
-            osm_land_path=domain_dir / f"{basin_id}_land_polygons.gpkg",
+            land_polygons_path=domain_dir / f"{basin_id}_land_polygons.gpkg",
             river_gdf=river_gdf,
             crossings_gdf=crossings_gdf,
             grdc_stations=grdc_stations,

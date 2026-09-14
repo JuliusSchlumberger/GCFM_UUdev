@@ -63,6 +63,7 @@ generate_attribution_maps(
         spinup_tif,
         out_folder,
     )],
+    land_mask_path=snakemake.input.land_mask_on_grid,
     threshold=threshold,
 )
 

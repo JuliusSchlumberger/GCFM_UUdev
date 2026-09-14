@@ -1,3 +1,15 @@
+"""
+06_get_river_network.py -- clip the global SWORD network to the domain.
+
+Clip only: the network's own diagnostic map is rule plot_river_network
+(06b). The split exists because this output is an INPUT of rule
+prepare_landuse (02b) -- which derives open sea by flood-filling
+WorldCover's water class from the domain border with the river network as a
+barrier -- while the plot needs rule get_land_polygons' (03) own mask for
+its background, and 03 in turn reads 02b's output. Keeping the clip free of
+that dependency is what breaks the cycle.
+"""
+
 from pathlib import Path
 
 import geopandas as gpd
@@ -5,7 +17,6 @@ from shapely.geometry import box as shapely_box
 
 from src.domain import load_domain
 from src.log import setup_logging
-from src.plots import plot_river_network
 from src.profiling import ScriptProfiler
 
 log = setup_logging(snakemake.log[0])
@@ -14,7 +25,7 @@ profiler = ScriptProfiler(snakemake)
 gpd_read_file = profiler.wrap(gpd.read_file)
 gpd_clip      = profiler.wrap(gpd.clip)
 
-wgs84_bounds, domain_crs, domain_poly = load_domain(
+wgs84_bounds, domain_crs, _domain_poly = load_domain(
     snakemake.input.spec_basins_meta, snakemake.input.domain_gpkg
 )
 log.info(f"Domain WGS84 bounds: {wgs84_bounds}")
@@ -42,11 +53,5 @@ log.info(f"Clipped to {len(clipped_rivers)} reach(es)")
 Path(snakemake.output.spec_river_network).parent.mkdir(parents=True, exist_ok=True)
 clipped_rivers.to_file(snakemake.output.spec_river_network, driver="GPKG")
 log.info(f"Written: {snakemake.output.spec_river_network} ({len(clipped_rivers)} reaches)")
-
-plot_river_network(
-    snakemake.output.spec_river_network, domain_poly,
-    snakemake.input.land_polygons, snakemake.output.plot_river_network,
-    water_bodies_path=snakemake.input.spec_landuse,
-)
 profiler.stop()
 log.info("Done")

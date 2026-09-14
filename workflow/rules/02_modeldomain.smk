@@ -2,7 +2,6 @@ rule determine_model_domain:
     input:
         specific_delta = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
     output:
-        specific_basins = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_intersecting_basins.gpkg"),
         domain_gpkg     = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         spec_basins_meta = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
     params:

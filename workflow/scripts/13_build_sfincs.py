@@ -28,7 +28,7 @@ for borrowing this rule's own output, before this split).
 Splitting the build this way means changing a scenario's own RP
 (surge_rp/river_rp in config/scenarios.yml) only re-runs THIS (cheap)
 script, not the expensive HydroMT skeleton build -- and, more importantly,
-does not force rule run_spinup (now basin-level, RP=1 fixed, entirely
+does not force rule run_spinup (now basin-level, RP=1 river + calm sea, entirely
 independent of any scenario's own RP) to re-run either.
 
 Forcing mode (derived per-scenario by scenario_params in 00_common.smk,
@@ -397,7 +397,7 @@ scalar_lines = [
 
 lines = list(scalar_lines) + list(geometry_lines)
 
-# rstfile: points at run_spinup's own (basin-level, shared, RP=1) restart
+# rstfile: points at run_spinup's own (basin-level, shared, RP=1 river + calm sea) restart
 # file -- a SIBLING of this scenario's own sfincs_root (both live under
 # results/{basin_id}/, sfincs_root under runs/{scenario}/sfincs/, spin_up
 # directly under spin_up/), so the relative path depth depends on the

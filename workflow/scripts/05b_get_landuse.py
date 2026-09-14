@@ -1,18 +1,16 @@
-from pathlib import Path
-
 import numpy as np
 import rasterio
 
 from src.domain import load_domain
+from src.landuse import warp_landuse_to_grid
 from src.log import setup_logging
 from src.plots import plot_landuse, plot_sea_mask
 from src.profiling import ScriptProfiler
-from src.raster import reproject_to_reference_grid
 
 log = setup_logging(snakemake.log[0])
 
 profiler = ScriptProfiler(snakemake)
-reproject_to_reference_grid = profiler.wrap(reproject_to_reference_grid)
+warp_landuse_to_grid = profiler.wrap(warp_landuse_to_grid)
 
 wgs84_bounds, domain_crs, domain_poly = load_domain(
     snakemake.input.spec_basins_meta, snakemake.input.domain_gpkg
@@ -28,14 +26,26 @@ with rasterio.open(snakemake.input.elevation_merged) as ref:
     elevation_arr = ref.read(1).astype(np.float32)
     elevation_nodata = ref.nodata
 
-data, out_meta = reproject_to_reference_grid(
-    snakemake.input.global_landuse, wgs84_bounds, ref_meta
+# Mode (most frequent class in each target cell), not nearest: the ESA
+# WorldCover source is finer (10 m) than this grid (~30 m), so nearest would
+# keep one arbitrary source pixel per cell and throw away the rest. With the
+# 100 m LC100 source this is pure upsampling, where mode and nearest agree
+# by construction. Classes stay categorical either way -- the CONTINUOUS
+# quantity derived from them, Manning's n, is area-averaged instead (rule
+# get_roughness, src.landuse.aggregate_manning). Streamed in row blocks: a
+# 10 m source window reaches 2.0 Gpx on the largest delta.
+histogram = warp_landuse_to_grid(
+    snakemake.input.landuse_source, ref_meta, snakemake.output.spec_landuse
 )
-
-Path(snakemake.output.spec_landuse).parent.mkdir(parents=True, exist_ok=True)
-with rasterio.open(snakemake.output.spec_landuse, "w", **out_meta) as dst:
-    dst.write(data, 1)
+_total = sum(histogram.values())
+log.info(
+    "landuse.tif class histogram (% of grid): "
+    + ", ".join(f"{c}={100 * n / _total:.2f}" for c, n in sorted(histogram.items()))
+)
 log.info(f"Written: {snakemake.output.spec_landuse}")
+
+with rasterio.open(snakemake.output.spec_landuse) as lu_src:
+    data = lu_src.read(1)
 
 # ── sea mask: landuse-only classification ─────────────────────────────────────
 # landuse==200 (sea) alone, on elevation_merged.tif's exact grid (the same
@@ -77,21 +87,19 @@ with rasterio.open(snakemake.output.sea_mask, "w", **sea_mask_meta) as zdst:
 log.info(f"Written: {snakemake.output.sea_mask}")
 
 # ── plots ──────────────────────────────────────────────────────────────────────
-# land_polygons here is rule get_land_polygons' (03) own output -- landuse-
-# derived since 2026-08-06 (see that rule's own module docstring), NOT OSM
-# -- used only for these plots' own background overlay, same as every other
-# consumer project-wide.
+# land_polygons: rule get_land_polygons' (03) land mask from the native
+# land-use raster (land use != 200) -- this plot's background only (the
+# SFINCS grid, and its own grid-aligned mask, don't exist yet; see
+# src.plots' module docstring).
 plot_landuse(
     snakemake.output.spec_landuse, domain_poly,
     snakemake.input.land_polygons, snakemake.output.plot_landuse,
-    water_bodies_path=snakemake.output.spec_landuse,
 )
 plot_sea_mask(
     sea_mask_path=snakemake.output.sea_mask,
     bbox_poly=domain_poly,
-    osm_land_path=snakemake.input.land_polygons,
+    land_polygons_path=snakemake.input.land_polygons,
     output_path=snakemake.output.plot_sea_mask,
-    water_bodies_path=snakemake.output.spec_landuse,
 )
 profiler.stop()
 log.info("Done")

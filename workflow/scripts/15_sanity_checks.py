@@ -33,9 +33,8 @@ log = setup_logging(snakemake.log[0])
 
 # ── inputs / params ───────────────────────────────────────────────────────────
 sfincs_map_nc_path = Path(snakemake.input.sfincs_map_nc)
-landuse_path       = Path(snakemake.input.landuse)
 sea_mask_path      = Path(snakemake.input.sea_mask)
-land_polygons_path = Path(snakemake.input.land_polygons)
+land_polygons_path = Path(snakemake.input.land_mask_on_grid)  # grid-aligned land mask, plot background
 river_network_path = Path(snakemake.input.clean_river_network)
 domain_gpkg_path   = Path(snakemake.input.domain_gpkg)
 plot_out_path      = Path(snakemake.output.plot_inundation_ratio)
@@ -103,7 +102,6 @@ else:
             da_hmax, threshold_m, n_flooded, n_land,
             str(land_polygons_path), str(river_network_path),
             str(plot_out_path), basin_id=basin_id,
-            water_bodies_path=str(landuse_path),
         )
         log.info(f"Inundation ratio plot written: {plot_out_path}")
 

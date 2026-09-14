@@ -120,10 +120,9 @@ n_land    = int(da_dep.notnull().sum().item())
 n_flooded = int(da_hmax.notnull().sum().item())
 plot_inundation_check(
     da_hmax, hmin, n_flooded, n_land,
-    str(snakemake.input.land_polygons), str(snakemake.input.river_network),
+    str(snakemake.input.land_mask_on_grid), str(snakemake.input.river_network),
     str(snakemake.output.plot_inundation_ratio),
     basin_id=snakemake.wildcards.basin_id,
-    water_bodies_path=str(snakemake.input.landuse),
     run_label="post-adaptation",
 )
 log.info(f"Inundation ratio plot written: {snakemake.output.plot_inundation_ratio}")

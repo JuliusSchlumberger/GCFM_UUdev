@@ -14,8 +14,8 @@ rule get_elevation:
           reports spurious shallow "elevation" over open water instead of
           nodata; this lets step 4's merge fall back to GEBCO there.
       2. DEM EGM2008 → GOCO06s (mandatory).
-      3. Clip GEBCO to domain UTM grid; re-reference to GOCO06s by
-         subtracting the MDT (mandatory).
+      3. Clip GEBCO to domain UTM grid; re-reference MSL -> GOCO06s by
+         adding the MDT (mandatory; H_GOCO06s = H_MSL + MDT).
       3b. Clamp GEBCO depths to terrain.gebco_max_depth_m below sea level --
           mitigates SFINCS's CFL-driven time step shrinking in genuinely
           deep offshore water it isn't modelling open-ocean dynamics for.
@@ -54,9 +54,15 @@ rule get_elevation:
 
 
 rule get_landuse:
-    """Reprojected onto elevation_merged.tif's exact UTM grid (rule get_elevation,
+    """This basin's own land-use raster (rule prepare_landuse, 02b) resampled
+    onto elevation_merged.tif's exact UTM grid (rule get_elevation,
     05a) so landuse/roughness share one pixel grid with elevation/zsini instead of
     each being independently reprojected by every downstream consumer.
+    Resampled by MODE (most frequent class), not nearest-neighbour: the ESA
+    WorldCover source is finer (10 m) than this grid (~30 m), where
+    nearest-neighbour would keep one arbitrary source pixel per cell and
+    discard the other ~8. For the 100 m LC100 source this is pure upsampling,
+    where mode and nearest agree by construction.
     Also builds sea_mask.tif: landuse==200 (sea) alone, on that same grid
     (1.0 at sea, nodata elsewhere) -- landuse-only, deliberately NOT sourced
     from OSM land polygons at all anymore (dropped 2026-08-06: OSM's own
@@ -75,7 +81,7 @@ rule get_landuse:
     input:
         spec_basins_meta = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
         domain_gpkg      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
-        global_landuse   = catalogue_path("land_use"),
+        landuse_source   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"),
         land_polygons    = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
         elevation_merged = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"),
     output:
@@ -90,15 +96,30 @@ rule get_landuse:
 
 
 rule get_roughness:
+    """Manning's n on elevation_merged.tif's grid, AREA-AVERAGED from the
+    land-use source at its own resolution (rule prepare_landuse, 02b) --
+    never reclassified from the already-upscaled landuse.tif, which would
+    give a cell that is 60% water and 40% built-up the dominant class'
+    0.02 (basin 2433835, 70 m cells: 30% hold more than one class, and in
+    43% of those the two differ by more than 0.01 in n). This is also the
+    raster hydromt samples per SUBGRID pixel (7 m at nr_subgrid_pixels=10),
+    where it does its own conveyance averaging on top. Aggregation rule:
+    config landuse.roughness_aggregation. See src.landuse.aggregate_manning.
+    """
     input:
         spec_basins_meta      = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
         domain_gpkg           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
-        spec_landuse          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
+        # The SOURCE (native resolution), not landuse.tif -- see above.
+        landuse_source        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"),
+        # Grid reference only: roughness lands on exactly this grid.
+        elevation_merged      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"),
         matching_lu_roughness = catalogue_path("lu_to_roughness_lookup"),
         land_polygons              = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
     output:
         spec_roughness = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"),
         plot_roughness = results_path("{basin_id}/preprocessing_inputs/visuals/05c_roughness.png"),
+    params:
+        roughness_aggregation = config["landuse"]["roughness_aggregation"],
     log:
         "logs/{basin_id}/05c_roughness.log"
     script:

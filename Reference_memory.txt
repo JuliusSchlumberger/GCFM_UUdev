@@ -290,13 +290,68 @@ RULE SUMMARY (in DAG order):
                         the delta polygon itself (reprojected to
                         auto-detected UTM) — the old "basins" mode (bbox
                         around intersecting HydroBASINS) was removed
-                        entirely. {basin_id}_intersecting_basins.gpkg is
-                        still written (schema compatibility) but is now just
-                        a copy of the domain polygon, n_intersecting_basins
-                        hardcoded to 0.
-  03  get_land_polygons — vectorize landuse != 200 (i.e. not sea) from the
-                        global Copernicus landuse raster, clipped to domain,
-                        native WGS84 (2026-08-06 — previously clipped OSM
+                        entirely (its vestigial copy
+                        {basin_id}_intersecting_basins.gpkg and
+                        domain_bbox.json's n_intersecting_basins field were
+                        dropped 2026-09-11d).
+  02b prepare_landuse  — NEW 2026-09-14. THE per-basin land-use raster
+                        ({basin_id}_landuse_source.tif, WGS84, source's own
+                        resolution, clipped to the domain bbox) every later
+                        land-use consumer reads: rules 03 (vectorize), 05b
+                        (mode-resample to the elevation grid + sea_mask),
+                        05c and 09b (area-average Manning's n from it).
+                        Written in PIPELINE CODES: the source's own classes
+                        plus 200 = open sea, 255 = nodata.
+                        config landuse.source picks the source:
+                          copernicus_lc100 (default, 100 m, catalogue
+                            'land_use') — already has 200, only windowed;
+                          esa_worldcover (10 m, catalogue
+                            'land_use_esa_worldcover', a VRT mosaic built by
+                            tools/build_esa_worldcover_vrt.py) — has NO sea
+                            class (sea, lagoons, rivers and lakes are all
+                            class 80), so 200 is DERIVED: the sea is the
+                            water you reach swimming in from outside the
+                            domain, and the rivers are where that stops.
+                            (1) barrier = THIS basin's own clipped river
+                            network (rule 06) buffered to each reach's own
+                            SWORD width (landuse.river_barrier_width_factor
+                            / _min_width_m), minus anything LC100 calls sea
+                            (SWORD lines run past the shoreline at the
+                            mouths); (2) sea = water components MINUS that
+                            barrier which touch the domain window's border
+                            AND hold an LC100 open-sea pixel — the guard
+                            against inland lakes/upstream rivers reaching
+                            the border (Mississippi: 44 bodies touch it, 3
+                            qualify); (3) plus WorldCover nodata where
+                            LC100 says sea — the open ocean beyond
+                            WorldCover's tile footprint (11,177 km2 in the
+                            Mississippi's own domain). LC100 is therefore
+                            an input in BOTH modes. Large sea-connected
+                            bays/lakes ARE sea (Lake Pontchartrain).
+                            A first version capped the sea at a distance
+                            (sea_fringe_m) from LC100's own sea cells
+                            instead; that cut through physically continuous
+                            water, leaving 47 km2 (Ebro) and 5,781 km2
+                            (Mississippi) of nearshore sea as class 80.
+                            REMOVED 2026-09-14. See src/landuse.py.
+                        MEMORY: a 10 m delta window is 2.0 Gpx for the
+                        Mississippi (25M for the Ebro), whose int32
+                        connected-component labels alone would need 8.2 GB
+                        -- more than this machine has. So the sea
+                        morphology runs on a coarsened working grid
+                        (MAX_WORKING_PIXELS = 60M) and is applied back by
+                        intersecting with the FINE water mask (the 10 m
+                        coastline survives; only connectivity/fringe
+                        geometry is coarse), and the raster is streamed in
+                        row blocks (MAX_BLOCK_PIXELS = 20M). Same for every
+                        other raster built from the source (05b, 05c, 09b).
+  03  get_land_polygons — vectorize landuse != 200 (i.e. not sea) from THIS
+                        BASIN's own landuse_source.tif (rule 02b; was the
+                        global Copernicus raster until 2026-09-14), native
+                        WGS84, decimated by mode to <= 4M px first (a 10 m
+                        source puts 26M px in a delta-sized window and this
+                        is a figure background only) (2026-08-06 —
+                        previously clipped OSM
                         land polygons instead; OSM's own coastline data
                         disagreed with landuse at some basins' tidal flats/
                         lagoons, letting sea_mask/zsini start cells wet that
@@ -334,12 +389,37 @@ RULE SUMMARY (in DAG order):
                         section 4). Genuinely sequential with 05b/05c.
   05b get_landuse      — landuse.tif + sea_mask.tif; also builds the full
                         zsini.tif (needs 05a's elevation_merged.tif + land
-                        polygons).
-  05c get_roughness    — roughness.tif (needs 05b's landuse.tif).
+                        polygons). Resamples 02b's landuse_source.tif by
+                        MODE (2026-09-14; was nearest, which keeps one
+                        arbitrary source pixel per cell once the source is
+                        finer than the grid, as ESA WorldCover's 10 m is).
+  05c get_roughness    — roughness.tif, AREA-AVERAGED from 02b's
+                        landuse_source.tif at its own resolution
+                        (2026-09-14; was a lookup-table reclassification of
+                        05b's already-upscaled landuse.tif, which hands a
+                        cell that is 60% water/40% built-up water's own
+                        n=0.02). config landuse.roughness_aggregation picks
+                        area_mean (default) or conveyance (harmonic mean).
+                        Written on the elevation grid SUBDIVIDED to about
+                        the source's own pixel size (~10 m under
+                        WorldCover; unchanged ~31 m under LC100, whose
+                        100 m pixels hold no finer detail) -- hydromt
+                        samples THIS raster per SUBGRID pixel (7 m at
+                        nr_subgrid_pixels=10) and conveyance-averages it
+                        itself, so its 100 samples per model cell see ~49
+                        distinct values instead of ~5. An exact
+                        subdivision, so CRS/alignment with elevation and
+                        subgrid are unchanged. roughness_on_grid.tif (09b)
+                        stays exactly ON the model grid -- it IS the
+                        model's own manning field.
   06  get_river_network — river_network.gpkg; clips SWORD to the domain and
-                        writes it straight out. Needs land polygons (03) +
-                        landuse (05b, for the plot's water-body overlay only)
-                        — does NOT read elevation (05a) or perform any
+                        writes it straight out. SPLIT 2026-09-14: the clip
+                        runs BEFORE 02b/03 (it is 02b's own sea-fill
+                        barrier) and no longer takes the land mask; its map
+                        moved to rule plot_river_network (06b), which does
+                        need rule 03's mask and so runs after it. Order:
+                        02 -> 06 clip -> 02b -> 03 -> 06b plot. The clip
+                        does NOT read elevation (05a) or perform any
                         elevation sampling/monotonicity enforcement anymore
                         (that logic, and the max_elevation attribute it used
                         to produce, were removed — see section 6).
@@ -591,7 +671,7 @@ domain — rule 02 (determine_model_domain):
   itself, reprojected to an auto-detected UTM CRS (see section 2, rule 02).
 
 datum_correction — TOP-LEVEL (not nested under `terrain`) because it is
-  shared by rule 05a (elevation: DEM geoid offset + GEBCO MDT subtraction)
+  shared by rule 05a (elevation: DEM geoid offset + GEBCO +MDT correction)
   AND rule 07 (surge: COAST-RP MDT vertical correction). Requires pyshtools
   and boule (conda install -c conda-forge pyshtools boule).
   mdt_load_margin_deg: margin beyond domain bbox when loading MDT
@@ -637,16 +717,20 @@ river_processing — rules 06, 08, 09, 10 (both siblings):
     removed — see section 6).
   river_depth_modelling — rule modelled_depth_estimation (10-modelled)
     ONLY; ignored entirely under depth_method == "empirical". Governs the
-    SFINCS-based iterative weir-crest/channel-depth calibration:
-    calibration_days (fixed run duration per round), weir_crest_m /
-    weir_crest_fraction (round-0-only initial isolated-confinement crest/
-    excavation split), n_correction_iterations / freeboard_m /
-    min_crest_increment_per_round_m / river_crest_dilation_cells
-    (correction-round convergence), min_component_cells / weir_par1
-    (weir-building). This is the single most involved subsystem in the
-    current pipeline (round 0 isolated calibration → N correction rounds →
-    a final crest-tightening snap, with per-round convergence checked
-    against the model's own simulated water surface) — see
+    SFINCS-based channel-depth/weir-crest calibration (three fixed runs,
+    2026-09-10 redesign): calibration_days / discharge_ramp_hours (run
+    duration and discharge ramp per round), weir_crest_m (1000 m
+    confinement crest for rounds 0-1), excavation_fraction (share of round
+    0's confined rise above the DEM excavated as channel depth), freeboard_m
+    (the only margin on top of round 1's water level in the production
+    crest), min_component_cells / weir_par1 (weir-building),
+    unprotected_ocean_wetlands (default false; true leaves wetland/lagoon
+    patches, LC100 80/90, edge-connected to the open sea on the seaward side
+    of the coastal dike). Round 0:
+    confined, un-excavated → excavation depth. Round 1: confined, excavated
+    → every weir edge's crest = max(zsmax on its own water side, coastal
+    protection crest) + freeboard_m. Round 2: verification with the real
+    weir (reports overtopping, changes nothing). See
     10_depth_estimation_modelled.py's own module docstring for the actual
     algorithm; don't trust a short summary here as complete.
   empirical_estimation — rule empirical_depth_estimation (10-empirical)
@@ -850,12 +934,14 @@ Pipeline in 05a_get_elevation.py:
       open water — this clip lets step 4's merge fall back to GEBCO there.
   2.  Vertical datum correction, EGM2008 → GOCO06s (MANDATORY): add the geoid
       offset N_EGM2008 − N_GOCO06s (pyshtools synthesis) to every valid
-      FathomDEM pixel. No MDT subtraction is applied to the DEM itself — only
+      FathomDEM pixel. No MDT correction is applied to the DEM itself — only
       the geoid offset.
   3.  Clip GEBCO to the domain, resample to the working UTM grid, and
-      re-reference it to GOCO06s by subtracting the MDT (HYBRID-CNES-CLS2022)
+      re-reference it from local MSL to GOCO06s by ADDING the MDT
+      (HYBRID-CNES-CLS2022, mean sea surface height above the geoid:
+      H_GOCO06s = H_MSL + MDT; subtracted before 2026-09-10, wrong direction)
       — extrapolated over land via inverse-distance weighting before
-      resampling (needed so the subtraction doesn't NaN-poison nearshore
+      resampling (needed so the correction doesn't NaN-poison nearshore
       GEBCO pixels whose receptive field straddles a land-side nodata cell).
       Applied to EVERY valid GEBCO pixel (not just at sea), since GEBCO may
       also fill land-side gaps in step 4.
@@ -950,25 +1036,23 @@ longer a separate preburn rule or burn-DEM rule):
   existing DEM for everywhere else: ocean, floodplain), and never re-derives
   its own burn or calls hydromt's own burn_river_rect.
   The MODELLED sibling's burn is not a one-shot calculation like the
-  empirical sibling's: it is the end product of an iterative SFINCS-based
-  calibration (river_processing.river_depth_modelling in config.yml — see
-  section 4) that builds and re-runs a disposable, confined calibration
-  model across a "round 0" isolated-confinement pass plus up to
-  n_correction_iterations further correction rounds, using the model's OWN
-  simulated water surface each round to raise the riverbank weir crest
-  wherever it's overtopped (with a minimum-step floor so the correction
-  can't stall on a vanishingly small residual), converging once the crest
-  contains the flow everywhere AND the realized flooded-cell count has
-  stabilized, then spending one further round tightening the crest down to
-  a fixed freeboard margin above the converged water level (reverting that
-  last tightening, round-by-round-verified, if it turns out not to hold).
-  This produces BOTH the final rivdph/river_burned_dem AND
-  coastal_protection_weir.gpkg (rule 13 imports the weir directly rather
-  than re-deriving one). Treat this summary as an orientation map only —
-  the actual round-by-round mechanics (including the coastal- and
-  river-boundary-land probe mechanisms used to verify containment beyond
-  the centerline) live in 10_depth_estimation_modelled.py itself and are
-  too detailed to keep faithfully mirrored in this document long-term.
+  empirical sibling's: it comes from a SFINCS-based calibration
+  (river_processing.river_depth_modelling in config.yml — see section 4)
+  that runs one disposable calibration model three times (2026-09-10
+  redesign, replacing an up-to-10-round iterative scheme): round 0 behind
+  1000 m walls on the un-excavated channel (excavation = excavation_fraction
+  × the confined rise above the DEM, plus the mouth rules); round 1 behind
+  the same walls on the excavated channel, with a storm tide at the coastal
+  protection RP on the sea boundary (2026-09-11) — with no overbank relief
+  its water level is the highest the calibration discharge and that storm
+  tide reach, including the coast's own amplification, so every
+  weir edge's crest is set directly from zsmax on its own water side
+  (floored at the coastal protection crest, + freeboard_m); round 2 re-runs
+  with that real weir and only reports overtopping. This produces BOTH the
+  final rivdph/river_burned_dem AND coastal_protection_weir.gpkg (rule 13
+  imports the weir directly rather than re-deriving one). Treat this
+  summary as an orientation map only — the mechanics live in
+  10_depth_estimation_modelled.py itself.
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1088,9 +1172,6 @@ Key functions in src/river_network.py:
                                          (not .split(",")) — robust to
                                          whitespace-separated tokens too
   - collect_downstream_main_paths()    — BFS downstream reach IDs from seeds
-  - trace_seed_mainstem_paths()        — per-seed downstream mainstem run
-                                         (follows main_path_id/is_mainstem_edge);
-                                         used by tests/test_subgrid_river_depth_profile.py
   - accumulate_discharge()             — iterative BFS flow accumulation,
                                          PURE WIDTH-PROPORTIONAL bifurcation
                                          split (angle-weighting removed);
@@ -1105,16 +1186,17 @@ Key functions in src/river_network.py:
     (clip_anomalous_max_width() was REMOVED entirely)
   - _sample_line_cells()               — samples a LineString at step_m
                                          intervals, snaps to raster cells;
-                                         used by sample_dem_near_river(),
-                                         river_conditioning.py, river_preburn.py,
-                                         river_burn.py
-  - sample_dem_near_river()            — samples DEM within width/2 buffer;
-                                         used by test_subgrid_river_depth_profile.py
+                                         used by river_conditioning.py,
+                                         river_preburn.py, river_burn.py
   - compute_river_elevation_profile()  — chains slope attribute upstream from
                                          mouth outlets (bifurcation-aware)
-  - compute_seed_path_offsets()        — cumulative distance-from-seed offsets
-                                         along a traced mainstem path; used by
-                                         test_subgrid_river_depth_profile.py
+  - trace_widest_path() /
+    compute_seed_path_offsets()        — widest-branch downstream path from a
+                                         seed + cumulative distance along it;
+                                         used by river_depth_calibration's
+                                         round-profile diagnostics
+  (trace_seed_mainstem_paths()/sample_dem_near_river() were REMOVED
+  2026-09-11d together with their only user, a broken test script.)
   (_end_direction_vec()/_angle_factor() were REMOVED along with the
   angle-weighted bifurcation split.)
 
@@ -1232,8 +1314,8 @@ REDESIGNED EVA OUTPUT — return-period table, build-time discharge (NEW):
   (flood_discharge at eva.rp_fl), baked directly into a sinusoidal discharge
   timeseries at THIS rule's own run time (build_river_dataset). Changing the
   design return period meant re-running the whole EVA fit.
-  Now: gpd_return_value_table() (src/extreme_values.py, vectorized sibling
-  of the existing gpd_return_value() — same fit, no re-fitting) evaluates
+  Now: gpd_return_value_table() (src/extreme_values.py, reuses the fitted
+  GPD — no re-fitting) evaluates
   the already-fitted POT/GPD curve at a fixed standard set of return
   periods, STANDARD_RETURN_PERIODS_YR = 1, 1.5, 2, then 5-yr steps to 1000,
   then 1000-yr steps to 10000 (212 values), producing discharge_rp_table
@@ -1280,11 +1362,8 @@ REDESIGNED EVA OUTPUT — return-period table, build-time discharge (NEW):
   every standard RP regardless of rp_fl) or on any scenario's own actual
   forcing (rule 13 always uses its own real design_rp_river_yr from
   scenario_params(), never this diagnostic value).
-  Three test scripts (test_discharge_sensitivity.py,
-  test_discharge_return_period_response.py, test_river_burning_methods.py)
-  now call build_design_discharge_matrix directly instead of each
-  duplicating GPD-reconstruction logic (deleted their own
-  target_discharge()/ad-hoc build_scaled_dis_table() implementations).
+  (The test scripts that once reconstructed GPD discharges themselves were
+  switched to build_design_discharge_matrix and have since been deleted.)
   EVA diagnostic-plot crossing selection also changed: now picks the
   crossing with the highest q_rp100 (previously: widest crossing by raw
   SWORD width, which didn't reliably track actual discharge magnitude), and
@@ -1304,7 +1383,9 @@ SURGE FORCING:
     (slr.enabled: true by default; slr_m: 0.5).
       MDT correction: storm_tide_rp levels (stated local-MSL) -> geoid via
         AVISO MDT_CNES-CLS22 (nearest-cell, +/-fallback_search_deg NaN
-        fallback). rp_level_raw/mdt always recorded for diagnostics.
+        fallback): rp_level = rp_level_raw + mdt (was - mdt before
+        2026-09-10, wrong sign). rp_level_raw/mdt always recorded for
+        diagnostics.
         surge_forcing.nc's own rp_level/water_level/baseline_m/
         station_baseline are ALL MDT-only -- SLR is never baked into this
         file (2026-08-06 change, see below).
@@ -1760,20 +1841,43 @@ src/protection_weir.py   — NEW. Builds a coastal/riverbank protection weir
                             dropped as if it were a separate tiny island —
                             see section 14's WEIR TOPOLOGY GAPS (DIAGONAL
                             4-CONNECTIVITY) entry.
+src/landuse.py            — NEW 2026-09-14. Everything land-use-specific:
+                            SEA_CODE (200) and OCEAN_WETLAND_CLASSES
+                            (80/90/95 — 95 = WorldCover mangroves, added
+                            with the source switch), both re-exported by
+                            src/protection_weir.py under its own long-
+                            standing names; prepare_landuse_source() (rule
+                            02b, incl. worldcover_to_pipeline_codes()'s own
+                            sea derivation against LC100);
+                            landuse_to_manning() + aggregate_manning() +
+                            build_roughness_on_reference_grid() (rules 05c
+                            and 09b — area_mean or conveyance/harmonic,
+                            never the dominant class's own value).
 src/raster.py             — find_fathomdem_tiles() (the only tile finder),
-                            merging, roughness reclassification,
-                            resample_to_utm_array(), compute_geoid_offset_arr(),
+                            merging, grid alignment,
+                            compute_geoid_offset_arr(),
                             reproject_to_reference_grid(),
                             vectorize_land_from_landuse() -- NEW 2026-08-06.
                             Windowed-read + vectorize landuse != 200 (not
-                            sea) from the global landuse raster, native
-                            WGS84. Shared by rule get_land_polygons (03, the
-                            main per-basin land_polygons.gpkg) and rule
+                            sea), native WGS84, decimating by mode to
+                            max_pixels (4M) first. Shared by rule
+                            get_land_polygons (03, the main per-basin
+                            land_polygons.gpkg, from THIS BASIN's own
+                            landuse_source.tif since 2026-09-14) and rule
                             get_protection_levels (04, which vectorizes its
-                            own small window directly since it deliberately
-                            doesn't depend on rule 03's own output).
+                            own wider window straight from the raw LC100
+                            source since it deliberately doesn't depend on
+                            rule 03's own output -- and so keeps an LC100
+                            background even when landuse.source is
+                            esa_worldcover, which has no sea class of its
+                            own to vectorize against).
+                            (build_roughness_raster() was REMOVED
+                            2026-09-14 -- superseded by
+                            src.landuse.build_roughness_on_reference_grid,
+                            which averages n instead of reclassifying an
+                            already-upscaled class raster.)
 src/river_burn.py         — burn_river_channel() (+ build_channel_mask_
-                            regular, build_smoothed_weir_crest_regular):
+                            regular):
                             burns a per-reach, in-memory river-bed anchor
                             profile (never a standalone zbed_anchors file
                             anymore) directly into a channel-only DEM at
@@ -1805,50 +1909,33 @@ src/river_burn.py         — burn_river_channel() (+ build_channel_mask_
                             rule 13's regular-grid discharge forcing.
                             Used by BOTH rule 10-modelled and rule 13's
                             discharge forcing.
-                            build_nearest_weir_crest_regular() — NEW
-                            (2026-07-29). Sibling of build_smoothed_weir_
-                            crest_regular: paints every raster cell with
-                            its NEAREST centerline anchor's crest value
-                            directly, no along-reach interpolation/
-                            junction blending — used by rule 10-modelled's
-                            own correction rounds only (section 14, crest
-                            redesign entry). build_smoothed_weir_crest_
-                            regular itself has no remaining caller as of
-                            2026-08-04's quadtree removal (its only caller
-                            was rule 13's quadtree fallback) — left in place,
-                            flagged as dead code rather than removed, since
-                            that's outside quadtree-removal scope.
+                            build_nearest_weir_crest_regular() / build_
+                            smoothed_weir_crest_regular() — REMOVED
+                            2026-09-10: rule 10-modelled's weir crest is now
+                            looked up per edge from the simulated water
+                            level (src.protection_weir), no centerline-
+                            anchor painting.
                             _flush_capped_buffer() / _half_plane_beyond() —
                             NEW. line.buffer(width/2) with the round end
                             cap clipped to a flat cut at clip_start/
                             clip_end, used by ALL per-reach buffer call
                             sites (burn_river_channel,
                             _channel_buffer_polygons/build_channel_mask_
-                            regular, build_smoothed_weir_crest_regular)
-                            with clip_start=is_seed — see
+                            regular) with clip_start=is_seed — see
                             section 14's SEED REACH ROUNDED-CAP entry for
                             why the default round cap is wrong at a
                             network seed specifically.
 src/river_conditioning.py — enforce_river_monotonicity(): topological
                             downstream-min DEM conditioning; used by rule 09.
 src/river_depth_calibration.py — NEW. The core of rule modelled_depth_
-                            estimation (10-modelled): runs a minimal SFINCS
-                            model with the river confined by artificially
-                            high (1000 m) walls, forced with a steady
-                            protection-level discharge, and once each
-                            reach's own observation point stabilizes, splits
-                            the simulated rise above the (un-excavated,
-                            conditioned) DEM between real channel excavation
-                            and an actual weir crest
-                            (river_processing.river_depth_modelling.
-                            weir_crest_fraction). This isolated "round 0"
-                            can't see backwater coupling between reaches;
-                            n_correction_iterations further rounds each
-                            re-run the model with the CURRENT best
-                            excavation + REAL per-reach crest instead of an
-                            isolated wall, raising the crest wherever it's
-                            still overtopped. See section 5 for the full
-                            round-by-round design
+                            estimation (10-modelled): calibration discharge,
+                            period-max water level, and the excavation
+                            depth (compute_excavation_depth:
+                            excavation_fraction × the confined rise above
+                            the un-excavated, conditioned DEM). The crest
+                            comes from a second confined run on the
+                            excavated channel, per weir edge. See section 5
+                            for the full round-by-round design
                             and its known limits (this doc intentionally
                             does not try to keep every mechanic mirrored
                             here — read the module itself for the current
@@ -1988,9 +2075,6 @@ D:/GCFM_UU/results/{basin_id}/
 │   │   ├── domain_bbox.json                       ← bounds, UTM CRS, basin_id (no prefix — see below)
 │   │   ├── {basin_id}_delta_polygon.gpkg           ← rule 01
 │   │   ├── {basin_id}_domain.gpkg                  ← rule 02 (= the delta polygon, reprojected to UTM)
-│   │   ├── {basin_id}_intersecting_basins.gpkg     ← rule 02; VESTIGIAL now that the "basins"
-│   │   │                                              domain mode was removed — just a copy of
-│   │   │                                              domain.gpkg, n_intersecting_basins always 0
 │   │   ├── {basin_id}_land_polygons.gpkg           ← rule 03
 │   │   ├── protection_levels.json                  ← FLOPROS-derived RP per delta (rule 04, no prefix)
 │   │   ├── {basin_id}_elevation_merged.tif         ← FathomDEM where available, GEBCO
@@ -2230,13 +2314,12 @@ D:/GCFM_UU/results/{basin_id}/
     │   │   │   ├── river_depth.png            three plots above (mutually exclusive
     │   │   │   ├── water_level_timeseries.png with them — see section 2's rule-10
     │   │   │   ├── max_inundation.png         DAG-shape note): canonical copies of
-    │   │   │   ├── flood_animation.mp4        the LAST converged round's own plots
+    │   │   │   ├── flood_animation.mp4        round 2's (verification) own plots
     │   │   │   └── rounds/                    below
-    │   │   │       └── round{i}_{river_depth.png,water_level_timeseries.png,
-    │   │   │                     max_inundation.png,flood_animation.mp4}
-    │   │   │           ← one full set per round (0..n_correction_iterations),
-    │   │   │             i.e. the isolated round-0 calibration through every
-    │   │   │             coupled-system correction round — see section 5
+    │   │   │       └── {river_depth,water_level_timeseries,max_inundation}_round{i}.png,
+    │   │   │           flood_animation_round{i}.mp4, crest_gap_map_round2.png
+    │   │   │           ← one set per round (0 = confined/un-excavated,
+    │   │   │             1 = confined/excavated, 2 = verification) — see section 5
     │   │   └── 11_upstream_boundary_check.png  ← tracked output (rule 11,
     │   │                                          test_upstream_boundary)
     │   └── 11b_bifurcation_calibration_options/  ← tracked output (rule 11,
@@ -2245,8 +2328,8 @@ D:/GCFM_UU/results/{basin_id}/
     │                                            per bifurcation compared (see section 8)
     └── depth_crest_calibration/       ← rule 10-modelled's own intermediate/
                                           disposable calibration model
-                                          (round{i}/ subdirs, calibration_state.csv,
-                                          river_burned_round{i}_native.tif) --
+                                          (round0-2/ subdirs, calibration_state.csv,
+                                          river_burned_subgrid.tif) --
                                           renamed+moved from a bare top-level
                                           sfincs_calibration/, 2026-08-04 reorg.
                                           NOT where the canonical diagnostic
@@ -2377,50 +2460,13 @@ deleted (the benchmark test and its exclusive runner helper were removed
 deliberately this branch as their interface had drifted from the current
 scripts; the others predate this document's last sync and are simply gone
 from the working tree — don't assume anything below the CURRENT list still
-matches an older mental model of this directory).
-
-Diagnostic / hypothesis-sweep scripts:
-  test_discharge_sensitivity.py — sweeps river-discharge scale factor, measures
-                                   spin-up wet-cell count sensitivity (mirrors
-                                   13_build_sfincs.py / 14_run_spinup.py logic).
-                                   REBUILDS a standalone model per scale, with
-                                   the coastal boundary forced flat/dry at
-                                   COASTAL_BOUNDARY_LEVEL_M — isolates the pure
-                                   river effect from surge/tide interaction.
-                                   Builds its baseline discharge via
-                                   build_design_discharge_matrix() (section 7)
-                                   instead of reading a precomputed
-                                   river_ds.discharge array. Resolves its
-                                   design_rp_river_yr from the ACTIVE TARGETED
-                                   SCENARIO (config/scenarios.yml, config.get(
-                                   "target_scenarios", ["default"])[0]) —
-                                   NOT a hardcoded "default" — falling back to
-                                   mean/bankfull (None) if that scenario's own
-                                   river_rp is null.
-  test_zsini_sensitivity.py     — sweeps zsini sea-cell initial water level,
-                                   measures spin-up wet-cell count sensitivity
-                                   (mirrors 13/14 logic)
-  test_discharge_return_period_response.py — Reuses the production SFINCS
-                                   build directly (RESULTS_DIR / BASIN_ID /
-                                   "scenarios" / <resolved target scenario> /
-                                   "sfincs" — resolved the same way as
-                                   test_discharge_sensitivity.py above, not a
-                                   hardcoded "default" path), varies ONLY
-                                   sfincs.dis, built from discharge_rp_table
-                                   via build_design_discharge_matrix() at
-                                   different return periods, measures
-                                   flooded-area response. Requires the
-                                   resolved target scenario's OWN DERIVED mode
-                                   (derive_forcing_mode(river_rp, surge_rp),
-                                   src/river_forcing.py) to be "river_only" —
-                                   raises with a clear message naming the
-                                   scenario and its actual derived mode if not.
-  test_bank_elevation_check.py / test_bank_elevation_check_sfincs.py —
-                                   Diagnose whether DEM banks are high enough
-                                   beside each conditioned channel to prevent
-                                   breach; the _sfincs variant checks the
-                                   actual built/burned subgrid bed level
-                                   instead of the pre-build DEM.
+matches an older mental model of this directory). Deleted 2026-09-11d because
+they read files, folders or config keys the pipeline no longer has:
+test_bank_elevation_check.py, test_bank_elevation_check_sfincs.py,
+test_discharge_sensitivity.py, test_zsini_sensitivity.py,
+test_discharge_return_period_response.py, test_subgrid_river_depth_profile.py,
+diagnose_landuse_correction.py, plot_main_grid.py, animate_water_level.py
+(the pipeline's own 02_flood_animation.mp4 covers the latter).
 
 Standalone analysis / plotting tools (reusable, produce figures/CSVs):
   inspect_grdc_correlation.py   — raw GRDC-vs-GloFAS correlation per basin
@@ -2432,22 +2478,6 @@ Standalone analysis / plotting tools (reusable, produce figures/CSVs):
   plot_global_protection_levels.py — Standalone global FLOPROS choropleth
                                    generator, uses plots.
                                    plot_global_protection_map().
-  plot_main_grid.py             — Reads an already-built SFINCS model's MAIN
-                                   computational grid DEM (sfincs.dep, what
-                                   SFINCS actually solves hydrodynamics on —
-                                   NOT the finer subgrid reference raster,
-                                   see src.postprocessing.get_bed_level for
-                                   that), writes it as a standalone GeoTIFF
-                                   and plots it. Regular grids only.
-  animate_water_level.py        — Regenerates the flood-progression
-                                   animation for an already-run spin-up or
-                                   event, as either water DEPTH (the normal
-                                   02_flood_animation.mp4 content) or water
-                                   LEVEL — reuses postprocessing.
-                                   compute_flood_progression / plots.
-                                   animate_flood_progression directly
-                                   (variable="depth"|"level"), does not
-                                   re-run SFINCS.
   plot_calibration_round_profiles.py — Diagnostic for rule 10-modelled: how
                                    do the calibrated river bed, weir crest,
                                    and period-max water level change
@@ -2464,12 +2494,6 @@ Standalone analysis / plotting tools (reusable, produce figures/CSVs):
                                    regenerating these plots without
                                    re-running the whole (expensive) SFINCS
                                    calibration.
-  test_subgrid_river_depth_profile.py — reads ACTUAL built SFINCS subgrid
-                                   dep_subgrid*.tif files, samples burned bed
-                                   elevation along mainstem paths (no
-                                   re-computation); uses trace_seed_mainstem_paths/
-                                   compute_seed_path_offsets/sample_dem_near_river
-                                   from river_network.py
 
 Deprecated (orphaned, not deleted; tests/archive/) utility scripts:
   tests/archive/check_diluvium.py, sync_deltadtm.py — standalone downloader/
@@ -3181,10 +3205,15 @@ MONOTONE ELEVATION (rule 09 is now the ONLY mechanism, and ALWAYS runs):
   elevation at all. Don't look for a max_elevation column in
   river_network.gpkg anymore — see section 6.)
 
-OSM LAND POLYGONS:
-  File has TWO layers: 'land_polygons' and 'marine_buffer'.
-  gpd.read_file() defaults to the first layer ('marine_buffer') silently.
-  Always specify layer="land_polygons" explicitly.
+LAND MASKS (no OSM since 2026-08-06):
+  {basin}_land_polygons.gpkg (rule 03) = land use != 200 from the NATIVE
+  Copernicus raster -- background of the figures made before the SFINCS grid
+  exists (rules 04-09, 11b) only. {basin}_land_mask_on_grid.gpkg (rule 09b)
+  = land use != 200 traced from landuse_on_grid.tif, cell-aligned -- the
+  background of every figure of model output, and of the former web-tile
+  basemaps (rule 13 skeleton diagnostics, 18c attribution map, 11b). The
+  models' water-level boundary uses landuse_on_grid.tif directly
+  (src.raster.restrict_waterlevel_boundary_to_sea), no polygons (2026-09-11).
 
 WIDTH DATA QUALITY (SWORD):
   Some reaches report width > max_width (swapped) or max_width tens-
@@ -3295,6 +3324,9 @@ ZSINI BASELINE CONNECTIVITY FIX (fixed — was silently broken on most basins):
   2433835 now correctly shows uniform -0.3955 m across the entire real
   ocean, with only 7 genuinely isolated cells (small ponds, landuse classes
   30/90 — vegetation/wetland, nowhere near open water) reverted to dry.
+  [SUPERSEDED 2026-08-06: the pipeline DID switch to landuse==200 as the
+  single sea/land classification and dropped OSM entirely -- the note below
+  is kept as history only, not current guidance.]
   CONSIDERED AND REJECTED: using landuse.tif's landuse==200 ("Sea", see
   src.plots._LC_NAMES) directly instead of this connectivity approach —
   checked empirically for basin 2433835 and it's worse on both ends:

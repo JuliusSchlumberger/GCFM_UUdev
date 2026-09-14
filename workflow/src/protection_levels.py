@@ -21,8 +21,6 @@ from shapely.geometry import Polygon
 
 log = logging.getLogger(__name__)
 
-_HAZARDS = ("Riverine", "Coastal")
-
 
 def load_flopros_table(path: str) -> pd.DataFrame:
     """

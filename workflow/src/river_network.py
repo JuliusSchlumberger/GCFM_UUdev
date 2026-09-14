@@ -5,15 +5,11 @@ from __future__ import annotations
 import logging
 import re
 from collections import deque
-from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
-import shapely
-from rasterio.features import geometry_mask
-from rasterio.windows import Window, intersect
 from shapely.geometry import LineString, Point
 
 from src.geometry import pick_utm_crs
@@ -128,94 +124,6 @@ def collect_downstream_main_paths(
         f"from {len(seed_reach_ids)} seeds"
     )
     return visited
-
-
-def trace_seed_mainstem_paths(rivers: gpd.GeoDataFrame) -> dict[str, list[str]]:
-    """
-    For each 'is_seed' reach (an active river boundary-forcing point), trace
-    its downstream mainstem run through the network.
-
-    Starting at the seed, repeatedly steps onto its current reach's
-    downstream neighbour. Where a reach has more than one in-domain
-    downstream neighbour (a bifurcation), only a candidate that shares the
-    current reach's 'main_path_id' *and* is flagged 'is_mainstem_edge' is
-    eligible to continue the run -- i.e. the same SWORD river arm is followed
-    through every bifurcation it crosses (confluences don't create a choice
-    here; they only add upstream contributions, which doesn't affect a
-    downstream walk). The run stops the moment no candidate satisfies both
-    conditions, or there is no downstream neighbour at all (a true outlet).
-    Where more than one candidate qualifies, one is picked arbitrarily
-    (sorted by reach_id, for determinism).
-
-    Args:
-        rivers: River network with 'reach_id', 'rch_id_dn', 'main_path_id',
-                'is_mainstem_edge', 'is_seed' columns.
-
-    Returns:
-        Dict mapping each seed reach_id (str) to the ordered list of
-        reach_id strings from the seed (inclusive) to wherever its mainstem
-        run ends.
-    """
-    required = {"reach_id", "rch_id_dn", "main_path_id", "is_mainstem_edge", "is_seed"}
-    missing = required - set(rivers.columns)
-    if missing:
-        raise ValueError(f"rivers is missing required column(s): {sorted(missing)}")
-
-    adjacency = build_downstream_adjacency(rivers)
-    main_path_id: dict[str, object] = {}
-    is_mainstem: dict[str, bool] = {}
-    seeds: list[str] = []
-    for rid_raw, mpid, mainstem_flag, seed_flag in zip(
-        rivers["reach_id"],
-        rivers["main_path_id"],
-        rivers["is_mainstem_edge"],
-        rivers["is_seed"],
-    ):
-        rid = normalize_reach_id(rid_raw)
-        if rid is None:
-            continue
-        main_path_id[rid] = mpid if not pd.isna(mpid) else None
-        is_mainstem[rid] = bool(mainstem_flag) if not pd.isna(mainstem_flag) else False
-        if not pd.isna(seed_flag) and bool(seed_flag):
-            seeds.append(rid)
-
-    paths: dict[str, list[str]] = {}
-    for seed in seeds:
-        path = [seed]
-        seen = {seed}
-        current = seed
-        while True:
-            candidates = adjacency.get(current, [])
-            if not candidates:
-                break
-            if len(candidates) == 1:
-                nxt = candidates[0]
-            else:
-                eligible = sorted(
-                    c
-                    for c in candidates
-                    if main_path_id.get(c) == main_path_id.get(current)
-                    and is_mainstem.get(c)
-                )
-                if not eligible:
-                    break
-                nxt = eligible[0]
-            if nxt in seen:
-                break  # defensive cycle guard
-            path.append(nxt)
-            seen.add(nxt)
-            current = nxt
-        paths[seed] = path
-
-    if paths:
-        lengths = [len(p) for p in paths.values()]
-        log.info(
-            f"trace_seed_mainstem_paths: traced {len(paths)} seed path(s), "
-            f"{min(lengths)}-{max(lengths)} reach(es) each"
-        )
-    else:
-        log.warning("trace_seed_mainstem_paths: no 'is_seed' reach found")
-    return paths
 
 
 def build_downstream_adjacency(
@@ -922,136 +830,14 @@ def _sample_line_cells(
     return cells
 
 
-def sample_dem_near_river(
-    rivers: gpd.GeoDataFrame,
-    dem_path: str | Path,
-    width_column: str = "max_width",
-) -> pd.DataFrame:
-    """
-    Sample every valid DEM pixel within ``width_column``/2 of each reach's
-    centerline, recording its elevation and approximate along-network
-    distance from the river mouth.
-
-    Distance from mouth is anchored on the SWORD 'dist_out' attribute (m;
-    distance from a reach's upstream point to the network outlet) and
-    interpolated linearly within each reach via the pixel's projected
-    position along the centerline (``shapely.line_locate_point``, measured
-    from the line's start = the reach's upstream end) — exact at reach
-    boundaries, approximate within a reach (assumes 'dist_out' deltas track
-    reach length; at bifurcations the chosen distributary's 'dist_out' is
-    used as-is, so branches downstream of a split are not forced consistent
-    with each other).
-
-    Args:
-        rivers:       River network with 'reach_id', 'dist_out', and
-                      ``width_column`` columns (any CRS — reprojected
-                      internally to the DEM's CRS).
-        dem_path:     Path to a merged elevation raster (e.g.
-                      elevation_merged.tif).
-        width_column: Column giving the full channel width (m); reaches with
-                      a missing/non-positive value are skipped.
-
-    Returns:
-        DataFrame with one row per sampled pixel: 'reach_id',
-        'distance_from_mouth_m', 'along_m' (distance from the reach's own
-        upstream end, measured along its own centerline -- independent of
-        'dist_out', see trace_seed_mainstem_paths/compute_seed_path_offsets
-        for why that matters), 'elevation_m', 'lateral_offset_m' (unsigned
-        distance from the centerline, m).
-    """
-    if "dist_out" not in rivers.columns:
-        raise ValueError(
-            "rivers is missing the SWORD 'dist_out' column needed for distance-from-mouth"
-        )
-
-    with rasterio.open(dem_path) as dem_src:
-        dem_crs = dem_src.crs
-        nodata = dem_src.nodata
-        rivers_proj = rivers.to_crs(dem_crs) if rivers.crs != dem_crs else rivers
-
-        records: list[dict] = []
-        n_skipped_width = 0
-        n_skipped_empty = 0
-        for _, row in rivers_proj.iterrows():
-            line = _as_linestring(row.geometry)
-            half_width = row[width_column]
-            if (
-                line is None
-                or line.length == 0
-                or pd.isna(half_width)
-                or half_width <= 0
-                or pd.isna(row["dist_out"])
-            ):
-                n_skipped_width += 1
-                continue
-            half_width = float(half_width) / 2.0
-
-            buffer_poly = line.buffer(half_width)
-            window = dem_src.window(*buffer_poly.bounds).round_offsets().round_lengths()
-            full_window = Window(0, 0, dem_src.width, dem_src.height)
-            if not intersect(window, full_window):
-                n_skipped_empty += 1
-                continue
-            # Clip to the raster's own extent -- a reach buffer that overhangs the edge
-            # (e.g. near the domain boundary) would otherwise leave window_transform()
-            # anchored to the *unclipped* (possibly negative) offset while .read() quietly
-            # returns the smaller, clipped array, misaligning every sampled coordinate.
-            window = window.intersection(full_window)
-            if window.width <= 0 or window.height <= 0:
-                n_skipped_empty += 1
-                continue
-            arr = dem_src.read(1, window=window)
-            transform = dem_src.window_transform(window)
-
-            inside = geometry_mask(
-                [buffer_poly], out_shape=arr.shape, transform=transform, invert=True
-            )
-            valid = inside & np.isfinite(arr)
-            if nodata is not None:
-                valid &= arr != nodata
-            if not valid.any():
-                n_skipped_empty += 1
-                continue
-
-            rows_idx, cols_idx = np.where(valid)
-            xs, ys = rasterio.transform.xy(transform, rows_idx, cols_idx)
-            points = shapely.points(np.asarray(xs), np.asarray(ys))
-
-            along = shapely.line_locate_point(line, points)
-            lateral = shapely.distance(line, points)
-            dist_from_mouth = float(row["dist_out"]) - along
-
-            reach_id = normalize_reach_id(row.get("reach_id"))
-            records.extend(
-                {
-                    "reach_id": reach_id,
-                    "distance_from_mouth_m": float(d),
-                    "along_m": float(a),
-                    "elevation_m": float(e),
-                    "lateral_offset_m": float(lat),
-                }
-                for d, a, e, lat in zip(
-                    dist_from_mouth, along, arr[rows_idx, cols_idx], lateral
-                )
-            )
-
-    log.info(
-        f"sample_dem_near_river: {len(records)} pixel sample(s) from "
-        f"{len(rivers_proj) - n_skipped_width} reach(es) "
-        f"({n_skipped_width} skipped: no/zero {width_column} or dist_out; "
-        f"{n_skipped_empty} skipped: no valid DEM pixel in buffer)"
-    )
-    return pd.DataFrame.from_records(records)
-
-
 def trace_widest_path(rivers: gpd.GeoDataFrame, seed: str) -> list[str]:
     """
     From `seed`, walk downstream; at a bifurcation always continue onto the
     candidate with the largest 'width'. Stops at a true outlet (no
     downstream neighbour).
 
-    Deliberately NOT trace_seed_mainstem_paths' own main_path_id/
-    is_mainstem_edge tagging (by request) -- that SWORD-provided tagging
+    Deliberately NOT SWORD's own main_path_id/is_mainstem_edge
+    tagging (by request) -- that SWORD-provided tagging
     can be unreliable, whereas width is a directly observed quantity
     already used everywhere else a bifurcation choice matters (e.g.
     accumulate_discharge's own width-proportional split).
@@ -1108,7 +894,7 @@ def compute_seed_path_offsets(
         rivers:    River network with 'reach_id' and geometry (any CRS —
                    reprojected internally to a metric CRS to measure each
                    reach's length).
-        path_rids: Ordered reach_id list from trace_seed_mainstem_paths()
+        path_rids: Ordered reach_id list from trace_widest_path()
                    (seed reach first, walking downstream).
 
     Returns:

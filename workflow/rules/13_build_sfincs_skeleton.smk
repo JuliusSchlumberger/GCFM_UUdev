@@ -16,7 +16,7 @@
 # (sf.root.set(...)), and writes ONLY the forcing-specific components on
 # top, referencing this rule's geometry files via relative paths in its own
 # hand-crafted sfincs.inp -- never re-writing/duplicating them. Rule
-# run_spinup (14_run_spinup.smk) does the same, for its own RP=1 forcing.
+# run_spinup (14_run_spinup.smk) does the same, for its own forcing (RP=1 river, calm sea).
 #
 # zsini (the model's real initial-condition GRID LAYER) is built HERE (a
 # pure function of baseline_m + a sea/land classification, neither of which
@@ -66,7 +66,10 @@ rule build_sfincs_skeleton:
         # same as elevation). The main regular-grid "manning" field uses
         # roughness_on_grid below instead.
         roughness         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"),
-        land_polygons     = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
+        # Grid-aligned land mask (rule grid_align_landuse) -- plot
+        # background only; the water-level boundary uses landuse_on_grid
+        # itself (see src.raster.restrict_waterlevel_boundary_to_sea).
+        land_mask_on_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
         river_network     = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
         delta_outflow_points = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_outflow_points.gpkg"),
         # Already rasterized directly onto this model's own grid (rule

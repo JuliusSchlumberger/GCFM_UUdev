@@ -36,8 +36,8 @@ rule test_upstream_boundary:
         river_network_depth_estimated = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
         river_forcing           = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
         surge_forcing           = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
-        land_polygons           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
-        spec_landuse            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
+        # Grid-aligned land mask (rule grid_align_landuse) -- plot background.
+        land_mask_on_grid       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
     output:
         plot_upstream_check = results_path("{basin_id}/preprocessing_inputs/visuals/11_upstream_boundary_check.png"),
     params:
@@ -75,6 +75,9 @@ rule test_bifurcation_calibration_options:
         domain_gpkg            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         delta_polygon          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
         river_forcing          = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
+        # Land mask from the native land-use raster (rule get_land_polygons)
+        # -- the figures' background (runs before the SFINCS grid exists).
+        land_polygons          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
         river_network_original = catalogue_path("river_network_original"),
         river_network          = catalogue_path("river_network"),
     output:

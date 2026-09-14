@@ -4,7 +4,7 @@ source (river / coastal / compound / spin-up "permanent water"), from
 three already-computed max_flood_depth.tif rasters (no new SFINCS runs):
 - a river-only counterpart scenario's own flood map
 - a coastal-only counterpart scenario's own flood map
-- the basin-level spin-up's own flood depth (RP=1, both drivers -- the
+- the basin-level spin-up's own flood depth (RP=1 river, calm sea -- the
   permanent-water class, overrides the other three; catches cells like the
   perennial river channel that stay wet from the SAME spin-up restart every
   scenario's own event run picks up from, regardless of that scenario's own
@@ -22,15 +22,17 @@ from pathlib import Path
 import numpy as np
 import rasterio
 import rioxarray as rxr
-import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap, BoundaryNorm
 from hydromt_sfincs import SfincsModel
+
+from src.plots import add_land_background_to_geoaxes, save_figure
 
 
 def generate_attribution_maps(
     base_root: Path,
     attribution_runs: list[tuple[str, Path, Path, Path, Path]],
+    land_mask_path: str | Path,
     threshold: float = 0.05,
     colors_cat: list[str] = ["#d1c740", "#3277d3", "#b063c0", "#d8d4d4"],
     labels_cat: list[str] = [
@@ -40,7 +42,6 @@ def generate_attribution_maps(
         "Spinup (permanent water)",
     ],
     data_libs: list[str] | None = None,
-    zoomlevel: int = 11,
 ) -> None:
     """
     Args:
@@ -50,12 +51,15 @@ def generate_attribution_maps(
         attribution_runs : list of (label, river_tif, coastal_tif, spinup_tif,
                             out_folder) tuples -- one per basin x scenario being
                             classified. spinup_tif is the basin-level spin-up's
-                            own flood depth (RP=1, both drivers) -- cells
+                            own flood depth (RP=1 river, calm sea) -- cells
                             already wet there (e.g. the perennial river
                             channel, kept wet by the SAME spin-up restart every
                             scenario's own event run picks up from) are
                             permanent water, not event-driven flooding, and
                             override any river/coastal/compound classification.
+        land_mask_path   : grid-aligned land mask ({basin}_land_mask_on_grid.gpkg,
+                            rule grid_align_landuse) drawn as the map background
+                            (see src.plots' module docstring) -- no web map tiles.
         threshold         : depth [m] above which a cell counts as flooded
                             in each of the three input rasters.
     """
@@ -118,12 +122,11 @@ def generate_attribution_maps(
             variable=da_attr,
             plot_bounds=False,
             plot_geoms=False,
-            bmap="sat",
-            zoomlevel=zoomlevel,
             cmap=cmap_attr,
             norm=norm_attr,
             cbar_kwargs={"shrink": 0},
         )
+        add_land_background_to_geoaxes(ax, str(land_mask_path), mod_ref.crs)
         for _ax in fig.axes:
             if _ax is not ax:
                 _ax.remove()
@@ -138,6 +141,5 @@ def generate_attribution_maps(
         )
         ax.set_title(f"Flood source attribution – {label}")
         out_png = out_folder / "attribution_mask.png"
-        fig.savefig(str(out_png), dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        save_figure(fig, out_png, dpi=150, bbox_inches="tight")
         print(f"  Saved PNG: {out_png}")

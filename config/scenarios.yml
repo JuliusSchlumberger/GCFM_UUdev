@@ -27,6 +27,10 @@ coast_500:
   surge_rp: 500
   river_rp: 2
 
+coast_10:
+  surge_rp: 10
+  river_rp: 2
+
 coast_only_500:
   surge_rp: 500
   river_rp: Null
@@ -44,3 +48,17 @@ river_only_500:
 compound_500:
   surge_rp: 500
   river_rp: 500
+
+# River flood
+river_50:
+  surge_rp: 2
+  river_rp: 50
+
+coast_50:
+  surge_rp: 50
+  river_rp: 2
+
+# Compound
+compound_50:
+  surge_rp: 50
+  river_rp: 50

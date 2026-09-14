@@ -46,7 +46,9 @@ if weir_gdf.empty:
     raise SystemExit(f"{weir_path} has no segments -- nothing to plot.")
 
 utm_crs = weir_gdf.crs
-land_path = domain_dir / f"{basin_id}_land_polygons.gpkg"
+land_path = (
+    domain_dir / f"{basin_id}_land_mask_on_grid.gpkg"
+)  # grid-aligned land mask (rule 09b)
 river_path = domain_dir / f"{basin_id}_river_network_clean.gpkg"
 
 land_gdf = gpd.read_file(land_path).to_crs(utm_crs) if land_path.exists() else None

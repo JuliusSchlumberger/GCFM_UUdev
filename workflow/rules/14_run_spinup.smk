@@ -1,5 +1,6 @@
 # Rule: run a short, basin-level SFINCS spin-up to produce a restart file,
-# at a fixed RP=1 (coast and river), entirely independent of any scenario's
+# with the river at a fixed RP=1 and a calm sea (the level every event's own
+# boundary lead-in starts at), entirely independent of any scenario's
 # own design RP -- see 14_run_spinup.py's own module docstring for the
 # full rationale and how it borrows geometry from the skeleton (rule
 # build_sfincs_skeleton). No {scenario} wildcard: this runs ONCE per basin,
@@ -14,7 +15,7 @@
 rule run_spinup:
     input:
         skeleton_inp         = results_path("{basin_id}/sfincs_skeleton/sfincs.inp"),
-        land_polygons        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
+        land_mask_on_grid    = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
         # Corrected sea/land classification (rule modelled_depth_estimation/
         # empirical_depth_estimation, whichever ran) -- cells the final weir
         # protects are cleared to "land" so they aren't masked as open sea in
@@ -47,6 +48,7 @@ rule run_spinup:
         include_subgrid           = config["sfincs"]["subgrid"]["enabled"],
         timeout_s                 = config["sfincs"]["simulation"]["timeout_s"],
         waterlevel_buffer_m       = config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
+        boundary_ramp_hours       = config["sfincs"]["spinup"]["boundary_ramp_hours"],
     # Claims the whole --cores budget: SFINCS itself can use multiple
     # threads (see run_sfincs_subprocess's OMP_NUM_THREADS handling), but
     # hydromt-sfincs/Snakemake can't parallelize *within* one run, so this
