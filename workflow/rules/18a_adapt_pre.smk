@@ -20,10 +20,18 @@ rule adapt_apply_pre:
         # pull in rule attribution_mask's own prerequisites.
         baseline_excess_volume = water_retention_excess_volume_input,
         measure_data       = lambda wildcards: strategy_measure_input_paths(wildcards.strategy),
+        # basin-level spin-up restart, reused (patched, when the strategy
+        # uses water_retention, since its own zs was computed on the
+        # ORIGINAL terrain -- see apply_water_retention's own docstring;
+        # otherwise just copied through unchanged) into this strategy's own
+        # adapted_root -- so adapt_build_forcing_pre/adapt_run_event_pre
+        # always read a strategy-local restart instead of the shared one.
+        rstart = results_path("{basin_id}/spin_up/" + RST_FNAME),
     output:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sfincs.inp"),
         retreat_landuse = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/retreat_landuse.tif"),
         sea_mask   = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sea_mask.tif"),
+        rstart     = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/" + RST_FNAME),
     params:
         strategy_def       = lambda wildcards: STRATEGY_DEFS[wildcards.strategy],
         measures_def       = MEASURES_DEFS,
@@ -44,7 +52,11 @@ rule adapt_build_forcing_pre:
         surge_forcing   = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         river_forcing   = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
         grid_resolution = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_grid_resolution.json"),
-        rstart          = results_path("{basin_id}/spin_up/" + RST_FNAME),   # baseline restart, reused
+        # THIS strategy's own restart (patched or copied-through by
+        # adapt_apply_pre above, see its own comment) -- NOT the shared
+        # basin-level spin_up/ one directly, so a water_retention strategy's
+        # own excavation-adjusted initial water level is actually used.
+        rstart          = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/" + RST_FNAME),
     output:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs.inp"),
     params:
@@ -65,7 +77,7 @@ rule adapt_build_forcing_pre:
         design_rp_river_yr = lambda wildcards: scenario_params(wildcards.scenario)["river_rp"],
         design_rp_surge_yr = lambda wildcards: scenario_params(wildcards.scenario)["surge_rp"],
         compound_lag_hr = config["sfincs"]["boundary_setup"]["compound"]["lag_hr"],
-        discharge_multiplier = config["boundary_forcings"]["river"]["discharge_multiplier"],
+        discharge_multiplier = lambda wildcards: scenario_params(wildcards.scenario)["discharge_multiplier"],
         slr_enabled = config["boundary_forcings"]["surge"]["slr"]["enabled"],
         slr_m = config["boundary_forcings"]["surge"]["slr"]["slr_m"],
         flat_boundary_point_spacing_m = config["sfincs"]["boundary_setup"]["flat_boundary_point_spacing_m"],
@@ -75,7 +87,12 @@ rule adapt_build_forcing_pre:
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
         sfincs_root   = lambda wildcards: results_path(
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs"),
-        spin_up_root  = lambda wildcards: results_path(f"{wildcards.basin_id}/spin_up"),
+        # THIS strategy's own sfincs_skeleton folder (same as skeleton_root
+        # above) -- adapt_apply_pre already wrote this strategy's own
+        # restart (patched or copied-through) there, see its own comment --
+        # NOT the shared basin-level spin_up/ folder.
+        spin_up_root  = lambda wildcards: results_path(
+            f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
     log: "logs/{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/13_build_sfincs.log"
     script: "../scripts/13_build_sfincs.py"          # REUSED, UNMODIFIED
 
@@ -84,7 +101,15 @@ rule adapt_run_event_pre:
     # Reuses scripts/16_run_event.py UNMODIFIED.
     input:
         sfincs_inp          = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs.inp"),
-        rstart              = results_path("{basin_id}/spin_up/" + RST_FNAME),
+        # THIS strategy's own restart (patched or copied-through by
+        # adapt_apply_pre), not the shared basin-level spin_up/ one -- see
+        # adapt_apply_pre's own comment. Dependency-tracking only: the
+        # actual rstfile path SFINCS reads was already written into
+        # sfincs.inp by adapt_build_forcing_pre above.
+        rstart              = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/" + RST_FNAME),
+        # Grid-aligned land mask (rule grid_align_landuse, 09b) -- the plot
+        # background 16_run_event.py reads; it no longer takes land_polygons
+        # or the landuse raster (the water-body overlay was dropped 2026-09-11c).
         land_mask_on_grid   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
         sea_mask            = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sea_mask.tif"),
         domain_gpkg         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
@@ -128,5 +153,11 @@ rule adapt_flood_metrics_pre:
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
         hmin = config["metrics"]["hmin"], urban_code = config["metrics"]["urban_landuse_code"],
         include_subgrid = config["sfincs"]["subgrid"]["enabled"],
+        # only THIS rule (not the plain baseline compute_flood_metrics) passes
+        # these -- lets 17_flood_metrics.py optionally exclude a
+        # water_retention/water_retention_greening measure's own retention
+        # zone from its risk metrics (see that script's own comment).
+        strategy_def    = lambda wildcards: STRATEGY_DEFS[wildcards.strategy],
+        adaptation_root = ADAPT_CATALOGUE_ROOT,
     log: "logs/{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/17_flood_metrics.log"
-    script: "../scripts/17_flood_metrics.py"         # REUSED, UNMODIFIED
+    script: "../scripts/17_flood_metrics.py"         # reused, with two extra optional params
