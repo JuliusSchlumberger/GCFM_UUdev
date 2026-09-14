@@ -159,7 +159,7 @@ def _offshore_buffer(
     return unary_union(polys)
 
 
-# ── Advance: offshore_barrier ─────────────────────────────────────────────────
+# Advance: offshore_barrier
 def apply_offshore_barrier(
     mod: SfincsModel,
     locations: Path,
@@ -202,7 +202,7 @@ def apply_offshore_barrier(
     return mod
 
 
-# ── Grey protect-open: river_levee ───────────────────────────────
+# Grey protect-open: river_levee
 def apply_river_levee(
     mod: SfincsModel,
     locations: Path,
@@ -283,7 +283,7 @@ def apply_river_levee(
     return mod
 
 
-# # ── Grey protect-open: storm_surge_barrier ───────────────────────────────────
+# # Grey protect-open: storm_surge_barrier
 # def apply_storm_surge_barrier(
 #     mod: SfincsModel,
 #     locations: Path,
@@ -308,8 +308,7 @@ def apply_river_levee(
 #     return mod
 
 
-# NBS Protect-open
-# ── NbS advance: vegetated_foreshore ──────────────────────────────────────────
+# NbS Protect-open: Land reclamation
 def apply_NbS_land_reclamation(
     mod: SfincsModel,
     distance: float,
@@ -969,7 +968,7 @@ def apply_water_retention(
     return mod
 
 
-# ── Water retention (storage-volume / FloodAdapt-style green infrastructure) ──
+# Water retention (storage-volume / FloodAdapt-style green infrastructure)
 # def apply_water_retention_greening(
 #     mod: SfincsModel,
 #     locations: Path,
@@ -1080,7 +1079,7 @@ def apply_water_retention(
 #     return mod
 
 
-# ── Protect-closed: coastal_levee ────────────────────────────────────────────
+#  Protect-closed: coastal_levee
 def apply_coastal_levee(
     mod: SfincsModel,
     locations: Path,
@@ -1166,7 +1165,7 @@ def apply_coastal_levee(
     return mod
 
 
-# ── Advance / Protect-closed: pumps ──────────────────────────────────────────
+# Advance / Protect-closed: pumps
 def apply_pumps(
     mod: SfincsModel,
     locations: Path,
@@ -1217,7 +1216,7 @@ def apply_pumps(
     return mod
 
 
-# # ── Accommodate: dike_ring aroun location ─────────────────────────────────────────────────────
+# #  Accommodate: dike_ring aroun location
 # def apply_dike_ring(
 #     mod: SfincsModel,
 #     locations: Path,
@@ -1260,7 +1259,7 @@ def apply_pumps(
 #     return mod
 
 
-# ── Accommodate: urban_raising ────────────────────────────────────────────────
+#  Accommodate: urban_raising
 def apply_urban_raising(
     mod: SfincsModel,
     elevation: float,
@@ -1409,7 +1408,7 @@ def apply_urban_raising(
     return mod
 
 
-# ── Retreat ───────────────────────────────────────────────────────────────────
+#  Retreat
 def apply_retreat(
     mod: SfincsModel,
     urban_code: int = 50,

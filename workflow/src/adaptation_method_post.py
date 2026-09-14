@@ -500,6 +500,7 @@ def apply_coastal_levee(
     return {"method": "flood_map", "out_raster": str(out_path)}
 
 
+# Advance/ Protect-closed
 def apply_pumps(
     flood_map_path: str, scenario_root: str, output_dir: str, discharge: float, **kwargs
 ) -> dict:
@@ -679,6 +680,7 @@ def _ring_interior_mask(locations, out_shape, transform, raster_crs):
 #     return {"method": "flood_map", "out_raster": str(out_path)}
 
 
+# Accommodate
 def apply_urban_raising(
     flood_map_path: str,
     scenario_root: str,
