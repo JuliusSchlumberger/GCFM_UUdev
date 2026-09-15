@@ -25,7 +25,7 @@ METRICS = ["flooded_area_km2", "urban_exposed_km2", "mean_depth_m", "volume_m3"]
 SCALES = ["04", "09", "1"]  # raw strategy-name suffix, low -> high implementation scale
 
 # ----------------------------------------------------------------- 1. parse
-raw = pd.read_csv(CSV)
+raw = pd.read_csv(CSV, sep=";")
 baselines = raw[raw.method == "baseline"].set_index("scenario")
 
 d = raw[raw.method != "baseline"].copy()
@@ -146,16 +146,16 @@ for METRIC, LABEL, YLIM, YTICKS in METRIC_INFO:
     d["ratio"] = d[METRIC] / d.event.map(BL)
 
     fig, axes = plt.subplots(
-        len(events),
         len(measures),
-        figsize=(3 * len(measures), 2.7 * len(events)),
+        len(events),
+        figsize=(3 * len(events), 2.7 * len(measures)),
         sharex=True,
         sharey=True,
         squeeze=False,
     )
 
-    for i, e in enumerate(events):
-        for j, ms in enumerate(measures):
+    for i, ms in enumerate(measures):
+        for j, e in enumerate(events):
             A = axes[i, j]
             g = d[(d.event == e) & (d.short == ms)]
 
@@ -172,16 +172,26 @@ for METRIC, LABEL, YLIM, YTICKS in METRIC_INFO:
             A.set_yticklabels([f"{t:g}" for t in YTICKS], fontsize=7)
             A.tick_params(labelsize=7, labelrotation=45)
             if i == 0:
-                A.set_title(label(ms), fontsize=9)
+                A.set_title(label(e), fontsize=9)
             if j == 0:
-                A.set_ylabel(f"{label(e)}\n{LABEL}", fontsize=8)
+                A.set_ylabel(LABEL, fontsize=8)
+                A.annotate(
+                    label(ms),
+                    xy=(-0.42, 0.5),
+                    xycoords="axes fraction",
+                    fontsize=11,
+                    rotation=90,
+                    va="center",
+                    ha="center",
+                )
 
     axes[0, 0].legend(fontsize=8)
-    fig.suptitle(
-        f"{LABEL.capitalize()} relative to the no-adaptation baseline "
-        "(1 = no change, 0 = eliminated, >1 = worse)"
-    )
-    plt.tight_layout()
+    # fig.suptitle(
+    #     f"{LABEL.capitalize()} relative to the no-adaptation baseline\n"
+    #     "(1 = no change, 0 = eliminated, >1 = worse)",
+    #     fontsize=10,
+    # )
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(OUT_DIR / f"fig_scale_response_{METRIC}.png", dpi=150)
 
 print(
@@ -332,61 +342,3 @@ plt.close(fig)
 river_ds.close()
 surge_ds.close()
 print(f"Wrote fig_return_period_curves.png, fig_forced_hydrograph.png to {OUT_DIR}")
-
-
-# # plot 3: flood arrival-time map -- where/when the river first overtops onto
-# # the floodplain, from the UNMODIFIED baseline run (not an adapted one, so
-# # this shows the natural overtopping pattern, uncontaminated by any
-# # measure's own DEM/weir changes). Cells already wet at hour 0 (spin-up
-# # baseline) are excluded, so the colour only shows genuinely NEW flooding
-# # during the event itself.
-# SCENARIO_FOR_ARRIVAL = "river_500"
-# baseline_sfincs_root = BASIN_ROOT / "runs" / SCENARIO_FOR_ARRIVAL / "sfincs"
-# ds = xr.open_dataset(baseline_sfincs_root / "sfincs_map.nc")
-
-# zb = ds["zb"].values
-# zs = ds["zs"].values
-# depth = zs - zb[None, :, :]
-# HMIN = 0.05
-# wet = depth > HMIN
-# already_wet = wet[0]
-
-# arrival_idx = np.full(zb.shape, -1, dtype=int)
-# for t in range(1, wet.shape[0]):
-#     newly = wet[t] & ~already_wet & (arrival_idx == -1)
-#     arrival_idx[newly] = t
-# arrival_hours = np.where(arrival_idx >= 0, arrival_idx.astype(float), np.nan)
-
-# x, y = ds["x"].values, ds["y"].values
-# zone = gpd.read_file(r"D:\GCFM_UU\raw_data\adaptation\water_retention_area.geojson").to_crs("EPSG:32631")
-# river = gpd.read_file(
-#     BASIN_ROOT / "preprocessing_inputs" / "domain" / "2433835_river_network_clean.gpkg"
-# ).to_crs("EPSG:32631")
-
-# minx, miny, maxx, maxy = zone.total_bounds
-# margin = 3000
-# in_view = (x >= minx - margin) & (x <= maxx + margin) & (y >= miny - margin) & (y <= maxy + margin)
-
-# fig, ax = plt.subplots(figsize=(9, 8), facecolor="white")
-# sc = ax.scatter(x[in_view], y[in_view], c=arrival_hours[in_view], cmap="turbo_r", s=8, marker="s")
-# cb = fig.colorbar(sc, ax=ax, shrink=0.7)
-# cb.set_label("Hours after event start when cell first floods")
-# gpd.GeoSeries([zone.geometry.union_all()], crs="EPSG:32631").boundary.plot(
-#     ax=ax, color="red", linewidth=2, linestyle="--", label="retention zone"
-# )
-# river.clip([minx - margin, miny - margin, maxx + margin, maxy + margin]).plot(
-#     ax=ax, color="black", linewidth=1, label="river network"
-# )
-# ax.set_xlim(minx - margin, maxx + margin)
-# ax.set_ylim(miny - margin, maxy + margin)
-# ax.set_title(f"Flood arrival time -- baseline {SCENARIO_FOR_ARRIVAL} (no adaptation)")
-# ax.set_xlabel("x (m)")
-# ax.set_ylabel("y (m)")
-# ax.legend(loc="upper right", fontsize=8, frameon=False)
-# ax.set_aspect("equal")
-# ax.spines[["top", "right"]].set_visible(False)
-# fig.tight_layout()
-# fig.savefig(OUT_DIR / "fig_flood_arrival_time.png", dpi=200, facecolor="white")
-# plt.close(fig)
-# ds.close()
-# print(f"Wrote fig_flood_arrival_time.png to {OUT_DIR}")
