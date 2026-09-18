@@ -1,7 +1,7 @@
 """
 14_run_spinup.py — Run a short, basin-level SFINCS spin-up to produce a
-restart file, at a fixed RP=1 (coast AND river), entirely independent of
-any scenario's own design RP.
+restart file, with the river at a fixed RP=1 and a calm sea, entirely
+independent of any scenario's own design RP.
 
 Runs ONCE per basin (no {scenario} wildcard) -- every scenario's own event
 run (rule run_event, 16) picks up from the SAME restart file via its own
@@ -9,7 +9,7 @@ sfincs.inp's rstfile entry (set in 13_build_sfincs.py). Changing a
 scenario's own RP (surge_rp/river_rp in config/scenarios.yml) never
 touches this rule's own inputs, so it never needs to re-run for that
 reason -- only a real change to the basin's own skeleton (grid/mask/
-elevation/etc, or a change to spinup_days/the RP=1 forcing itself) does.
+elevation/etc, or a change to spinup_days/the spin-up forcing itself) does.
 
 Borrows ALL geometry (grid/elevation/mask/roughness/weir/subgrid/
 observation points, plus the skeleton's own default spatially-varying
@@ -24,13 +24,20 @@ into this directory) or sf.config.write() (which silently absolutizes any
 file reference outside the model's own root -- see either script's own
 module docstring for the full rationale).
 
-Forcing: each station/crossing's own real RP=1 level (`lookup_storm_tide_
-at_rp`/`interpolate_discharge_at_rp` -- exact table lookups, both COAST-RP
-and the river GPD return-value table tabulate RP=1 directly, no
-extrapolation), held CONSTANT over the whole spinup_days duration (a flat
-2-point timeseries, not a sinusoidal ramp) -- spin-up exists to let the
+Forcing: each crossing's own real RP=1 discharge (`interpolate_discharge_
+at_rp` -- an exact table lookup, the river GPD return-value table tabulates
+RP=1 directly), held CONSTANT over the whole spinup_days duration, and the
+sea at each station's calm-sea level (`calm_sea_levels`, the same level
+every event's own boundary lead-in starts at) -- spin-up exists to let the
 river network reach a realistic steady background state, not to simulate
 an event.
+
+Why a calm sea, not RP=1 (changed 2026-09-11): the event's boundary lead-in
+starts at the calm-sea level, so an RP=1 spin-up sea made the boundary drop
+0.30 m (basin 2433835) the instant the event started from the restart,
+sending a drawdown wave in -- and the spin-up's own rise to RP=1 from the
+calm starting sea had already overtopped the coastal dike. A calm spin-up
+sea matches both the starting sea (zsini) and the event lead-in.
 
 Outputs (all directly under results/{basin_id}/spin_up/, not nested under
 any scenario)
@@ -59,7 +66,7 @@ from src.plots import plot_max_inundation_map, plot_water_level_timeseries
 from src.postprocessing import compute_max_inundation
 from src.river_forcing import interpolate_discharge_at_rp
 from src.sfincs_run import forward_geometry_files, parse_sfincs_inp, run_sfincs_subprocess
-from src.surge import lookup_storm_tide_at_rp
+from src.surge import calm_sea_levels, read_baseline_m
 
 log = setup_logging(snakemake.log[0])
 
@@ -76,7 +83,8 @@ dthisout_s          = int(snakemake.params.dthisout_s)
 include_subgrid     = bool(snakemake.params.include_subgrid)
 timeout_s           = int(snakemake.params.timeout_s)
 waterlevel_buffer_m = snakemake.params.waterlevel_buffer_m
-land_polygons_path  = Path(snakemake.input.land_polygons)
+boundary_ramp_hours = float(snakemake.params.boundary_ramp_hours)
+land_polygons_path  = Path(snakemake.input.land_mask_on_grid)  # grid-aligned land mask, plot background
 sea_mask_path       = Path(snakemake.input.sea_mask)
 river_network_path  = Path(snakemake.input.clean_river_network)
 domain_gpkg_path    = Path(snakemake.input.domain_gpkg)
@@ -122,7 +130,17 @@ sf.config.set("tref", tref)
 sf.config.set("tstart", tref)
 sf.config.set("tstop", tstop)
 
-# ── water-level boundary forcing: RP=1, constant over time ──────────────────
+# ── water-level boundary forcing: calm sea ───────────────────────────────────
+# Each station's calm-sea level (calm_sea_levels) -- the level the event's
+# own boundary lead-in starts at, so the event continues from the restart
+# with no jump at the boundary (see this module's own docstring). The sea
+# itself starts at baseline_m (the skeleton's zsini: the ROUNDED basin mean,
+# while the station levels are rounded individually -- normally equal, but
+# up to 0.1 m apart), so the boundary ramps from that start level to the
+# station levels over boundary_ramp_hours rather than stepping: a step at
+# the boundary sends a front in that shoals and reflects at the coast (a
+# 0.30 m step built up to +1.1 m at the 0.40 m coastal dike of basin
+# 2433835).
 surge_ds = xr.open_dataset(surge_forcing_path, decode_times=False)
 n_stations = surge_ds.sizes["station"]
 stations_gdf = gpd.GeoDataFrame(
@@ -130,14 +148,18 @@ stations_gdf = gpd.GeoDataFrame(
     geometry=gpd.points_from_xy(surge_ds.longitude.values, surge_ds.latitude.values),
     crs="EPSG:4326",
 )
-rp1_levels = lookup_storm_tide_at_rp(surge_ds, 1)  # (n_station,), real per-station RP=1 level
-wl_df = pd.DataFrame(
-    data=np.tile(rp1_levels, (len(spinup_times), 1)),
-    index=spinup_times,
-    columns=range(n_stations),
-)
+start_level = read_baseline_m(surge_ds)  # the sea's own starting level (skeleton zsini)
+calm_levels = calm_sea_levels(surge_ds)  # (n_station,), the event lead-in's own level
+ramp_end = tref + timedelta(hours=min(boundary_ramp_hours, spinup_days * 24.0))
+wl_times = pd.DatetimeIndex(sorted({tref, ramp_end, tstop}))
+wl_values = np.array([np.full(n_stations, start_level) if t == tref else calm_levels for t in wl_times])
+wl_df = pd.DataFrame(data=wl_values, index=wl_times, columns=range(n_stations))
 sf.water_level.create(timeseries=wl_df, locations=stations_gdf, buffer=waterlevel_buffer_m)
-log.info(f"Water-level forcing: {n_stations} station(s) at RP=1, held constant for {spinup_days} d")
+log.info(
+    f"Water-level forcing: {n_stations} station(s) at the calm-sea level "
+    f"({calm_levels.min():+.2f}..{calm_levels.max():+.2f} m; ramped from the starting sea "
+    f"{start_level:+.2f} m over {boundary_ramp_hours:.1f} h), held until {tstop}"
+)
 sf.water_level.write()
 
 # ── river discharge forcing: RP=1, constant over time ────────────────────────

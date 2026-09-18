@@ -17,42 +17,71 @@
 # at its raw value even though river_500/river_only_500/compound_500 below
 # are amplified.
 
+# slr_m (optional, default 0.0 = no SLR): per-scenario target global-mean
+# sea-level rise (m), added to each station's storm-tide level via its own
+# AR6 slr_fingerprint (see scenario_params in 00_common.smk /
+# src.surge.build_design_surge_matrix). Applied at scenario-build time, same
+# as discharge_multiplier above -- so changing one scenario's slr_m does NOT
+# force every other already-built scenario to rebuild, which is what
+# happened when slr_m lived as a single shared value in config.yml.
+
+# Null = either river_rp or coast_rp forcing is set to 0
+# Mean = mean river discharge
+# Tide = mean tidal conditions for surge (based on coast-hp)
 
 default:                  # what plain `snakemake build` runs (no target_scenarios given)
   surge_rp: 250
   river_rp: 50
+  discharge_multiplier: 1.0
+  slr_m: 0.5
+
 
 # Attribution runs (also uses spinup for the "always flooded" class)
+# Maybe only one is needed as baseline? for mean and tide for both drivers?
 coast_only:
-  surge_rp: 2
-  river_rp: Null
+  surge_rp: Tide
+  river_rp: Null # No discharge forcing
+  discharge_multiplier: 1.0
+  slr_m: 0
 
 river_only:
-  surge_rp: Null
-  river_rp: 2
+  surge_rp: Null # No surge forcing
+  river_rp: Mean
+  discharge_multiplier: 1.0
+  slr_m: 0
+
 
 # Coastal flood
-coast_500:
-  surge_rp: 500
-  river_rp: 2
+coast_100:
+  surge_rp: 100
+  river_rp: Mean
+  discharge_multiplier: 1.0
+  slr_m: 0.5
 
-coast_only_500:
-  surge_rp: 500
-  river_rp: Null
+coast_only_100: # needed? because Null will mean that the dynamics change
+  surge_rp: 100
+  river_rp: Null # No discharge forcing
+  discharge_multiplier: 1.0
+  slr_m: 0.5
+
 
 # River flood
 river_500:
-  surge_rp: 2
+  surge_rp: Tide
   river_rp: 500
-  discharge_multiplier: 2.0
+  discharge_multiplier: 1.0
+  slr_m: 0
 
-river_only_500:
+river_only_500: # needed? because Null will mean that the dynamics change
   surge_rp: Null
   river_rp: 500
-  discharge_multiplier: 2.0
+  discharge_multiplier: 1.0
+  slr_m: 0
+
 
 # Compound
-compound_500:
-  surge_rp: 500
+compound_100c_500r:
+  surge_rp: 100
   river_rp: 500
-  discharge_multiplier: 2.0
+  discharge_multiplier: 1.0
+  slr_m: 0.5

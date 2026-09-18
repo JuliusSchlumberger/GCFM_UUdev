@@ -416,12 +416,12 @@ def compute_risk_metrics(
 def compute_excess_volume(
     flood_map_path: str | Path,
     attribution_mask_path: str | Path,
-    classes: tuple = (1, 3, 4),
+    classes: tuple = (1, 3),
 ) -> float:
     """
-    Total flood volume [m3] in the given attribution classes (default: river,
-    compound, and spin-up baseline -- i.e. everything except pure-coastal)
-    from an UNCONTROLLED (no adaptation applied) max-flood-depth raster.
+    Total flood volume [m3] in the given attribution classes (default: river
+    and compound -- i.e. everything except pure-coastal) from an
+    UNCONTROLLED (no adaptation applied) max-flood-depth raster.
 
     Ported from the author's separate delta_model project
     (preprocessing_adaptation.py's own compute_excess_volume). There it was
@@ -439,7 +439,7 @@ def compute_excess_volume(
     touching attribution_mask.tif directly.
 
     `classes` is the knob for later extending water_retention to a
-    coastal-fed variant (e.g. classes=(2, 3, 4) with a separate coastal
+    coastal-fed variant (e.g. classes=(2, 3) with a separate coastal
     retention-zone geojson) -- not used for that yet.
 
     Args:
@@ -447,7 +447,7 @@ def compute_excess_volume(
                                  UNCONTROLLED (no adaptation) baseline run
         attribution_mask_path : path to that same scenario's attribution_mask.tif
         classes                : attribution mask classes to include
-                                 (1=river, 2=coastal, 3=compound, 4=spin-up baseline)
+                                 (1=river, 2=coastal, 3=compound)
 
     Returns:
         excess_volume [m3]

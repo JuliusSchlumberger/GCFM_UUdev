@@ -14,11 +14,8 @@ rule run_event:
     input:
         sfincs_inp           = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs.inp"),
         rstart               = results_path("{basin_id}/spin_up/" + RST_FNAME),
-        land_polygons        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
-        # Raw landuse -- cosmetic plot background only (plot_inundation_
-        # check's water_bodies_path). Flood-depth masking uses sea_mask
-        # below instead.
-        landuse              = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
+        # Grid-aligned land mask (rule grid_align_landuse) -- plot background.
+        land_mask_on_grid    = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
         # Corrected sea/land classification (see rule run_spinup's own
         # comment) -- cells the final weir protects are cleared to "land",
         # not masked as open sea in this scenario's own flood diagnostics.

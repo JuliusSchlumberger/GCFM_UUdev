@@ -16,7 +16,6 @@ from rasterio.features import geometry_mask
 # 1 = river-only
 # 2 = coastal-only
 # 3 = compound
-# 4 = baseline/ spinup
 
 
 # Advance
@@ -55,7 +54,7 @@ def apply_offshore_barrier(
             mask_path
         ) as attr_src:  # opens attribution mask which labels each pixel by flood source
             flood = np.where(
-                np.isin(attr_src.read(1), [2, 3, 4]), prof["nodata"], flood
+                np.isin(attr_src.read(1), [2, 3]), prof["nodata"], flood
             )  # if barrier height exceeds surge, the pixels in 2 are replaced with nodata
         print(
             f"  Barrier sufficient (H={elevation}m > Surge={max_wl:.2f}m) = all coastal flooding removed"
@@ -265,7 +264,7 @@ def apply_water_retention(
 
     Logic:
         - Deducts fraction * baseline_excess_volume from the river+compound
-          flood volume (classes 1, 3, 4).
+          flood volume (classes 1, 3).
         - Translates the reduction into a SINGLE uniform depth `tau` [m],
           SOLVED (not `target_volume / target_area`) so that the volume
           actually removed -- sum(min(depth_i, tau)) * cell_area, accounting
@@ -285,7 +284,7 @@ def apply_water_retention(
     `baseline_excess_volume` is deliberately a fixed, externally-supplied
     reference -- computed ONCE per basin x scenario by rule attribution_mask
     (18c_attribution_mask.py, via src.postprocessing.compute_excess_volume,
-    classes=(1, 3, 4)) and read here from its baseline_excess_volume.json
+    classes=(1, 3)) and read here from its baseline_excess_volume.json
     output (see 18b_adapt_post.py) -- rather than recomputed from
     `flood_map_path` here. This is the SAME reference number the preprocessing
     sibling (src.adaptation_method_pre.apply_water_retention) reads, so
@@ -323,7 +322,7 @@ def apply_water_retention(
         scenario_root  : the scenario's sfincs/ model root; attribution_mask.tif
                          lives in its parent folder
         baseline_excess_volume : excess flood volume [m3] from the uncontrolled
-                         baseline run, classes (1, 3, 4) (see
+                         baseline run, classes (1, 3) (see
                          src.postprocessing.compute_excess_volume;
                          auto-injected by 18b_adapt_post.py, never
                          strategy-configured)
@@ -353,7 +352,7 @@ def apply_water_retention(
         attr = attr_src.read(1)
 
     target_mask = (
-        np.isin(attr, [1, 3, 4]) & (flood > 0) & (flood != prof["nodata"])
+        np.isin(attr, [1, 3]) & (flood > 0) & (flood != prof["nodata"])
     )  # river and compound
 
     target_volume = storage_fraction * baseline_excess_volume
@@ -471,7 +470,7 @@ def apply_coastal_levee(
     has_sibling_river_levee = (
         bool(strategy_measures) and "river_levee" in strategy_measures
     )
-    classes_to_clear = [2, 4] if has_sibling_river_levee else [2, 3, 4]
+    classes_to_clear = [2] if has_sibling_river_levee else [2, 3]
 
     if elevation > max_wl:
         with rasterio.open(

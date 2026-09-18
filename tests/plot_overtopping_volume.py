@@ -3,9 +3,12 @@ plot_overtopping_volume.py — Crude approximation of coastal-crest overtopping
 volume, driven by the ACTUAL time-series forcing written into a scenario's
 own run (sfincs.bnd/sfincs.bzs — the real per-station water-level boundary
 SFINCS was given, already resolved to the scenario's design RP and snapped
-to real boundary-cell coordinates), applied through the SAME weir discharge
-formula SFINCS itself uses for these structures: Q = par1 * L * head^1.5
-(see config/config.yml's weir_par1 comment and src.protection_weir).
+to real boundary-cell coordinates), applied through SFINCS's own free-flow weir
+formula for these structures: Q = par1 * 1.7049 * L * head^1.5, 1.7049 =
+(2/3)^1.5 * sqrt(g) (see config/config.yml's weir_par1 comment). SFINCS
+switches to a submerged-weir formula once the landward side fills above
+2/3 of the seaward head -- ignored here (landward level unknown), so this
+overestimates discharge once the land behind a segment has flooded.
 
 For each of the basin's built coastal-protection weir segments, the nearest
 boundary station's own water-level timeseries drives that segment's head
@@ -144,10 +147,13 @@ log.info(
     f"Weir: {n_segment} segment(s), crest [{elevation.min():.3f}, {elevation.max():.3f}] m"
 )
 
-# ── per-segment head & discharge: Q = par1 * L * max(0, head)^1.5 ───────────
+# ── per-segment head & discharge: Q = par1 * 1.7049 * L * max(0, head)^1.5 ──
+SFINCS_CWEIR = 1.7049  # (2/3)^1.5 * sqrt(g), SFINCS's own free-flow weir constant
 level_at_segment = levels[:, nearest_station]  # (n_time, n_segment)
 head = np.maximum(0.0, level_at_segment - elevation[None, :])
-q_segment = par1[None, :] * length_m[None, :] * head**1.5  # (n_time, n_segment), m^3/s
+q_segment = (
+    par1[None, :] * SFINCS_CWEIR * length_m[None, :] * head**1.5
+)  # (n_time, n_segment), m^3/s
 q_total = q_segment.sum(axis=1)  # (n_time,), m^3/s
 
 overtopped_mask = np.any(head > 0, axis=0)
@@ -174,7 +180,7 @@ ax_q.plot(times, q_total, color="firebrick", linewidth=1.5)
 ax_q.set_ylabel("Overtopping discharge\n(m³/s, summed over all segments)")
 ax_q.set_title(
     f"Coastal-crest overtopping — basin {BASIN_ID}, scenario {SCENARIO}\n"
-    f"crude approx.: Q = par1·L·head^1.5 per weir segment, driven by the actual "
+    f"crude approx.: Q = par1·1.7049·L·head^1.5 per weir segment, driven by the actual "
     f"boundary timeseries SFINCS used (nearest station per segment)"
 )
 ax_q.grid(True, alpha=0.3, linewidth=0.5)

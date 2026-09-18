@@ -28,7 +28,7 @@ for borrowing this rule's own output, before this split).
 Splitting the build this way means changing a scenario's own RP
 (surge_rp/river_rp in config/scenarios.yml) only re-runs THIS (cheap)
 script, not the expensive HydroMT skeleton build -- and, more importantly,
-does not force rule run_spinup (now basin-level, RP=1 fixed, entirely
+does not force rule run_spinup (now basin-level, RP=1 river + calm sea, entirely
 independent of any scenario's own RP) to re-run either.
 
 Forcing mode (derived per-scenario by scenario_params in 00_common.smk,
@@ -66,6 +66,15 @@ factor, so changing it only reruns this per-scenario build and its
 downstream event run. Being per-scenario (not global) lets e.g.
 river_500/river_only_500/compound_500 be amplified past their raw RP lookup
 without affecting coast_500's own small RP=2 river_rp.
+
+slr_m (per-scenario, config/scenarios.yml, default 0.0 -- see
+scenario_params in 00_common.smk) is the target global-mean SLR (m) scaled
+by each station's own slr_fingerprint (from surge_forcing.nc) and applied
+HERE, at build time (src.surge.build_design_surge_matrix), never baked into
+surge_forcing.nc -- same deferred/per-scenario pattern as
+discharge_multiplier above, and for the same reason: changing one scenario's
+slr_m only reruns THIS scenario's build + event run, never rule 07, rule
+10's calibration, the skeleton build, or any other scenario.
 """
 
 import logging
@@ -118,23 +127,36 @@ river_only_flat_level_m = float(snakemake.params.river_only_flat_level_m)
 # "river_100" has surge_rp=None -> forcing_mode="river_only") -- NOT forced
 # to float unconditionally here, since float(None) raises. design_rp_river_yr
 # flows into build_design_discharge_matrix, which already accepts None
-# natively (falls back to a constant bankfull hydrograph); design_rp_surge_yr
-# is only ever dereferenced inside the `forcing_mode != "river_only"` branch,
-# i.e. exactly when it's guaranteed non-None.
+# natively (falls back to zero discharge -- river driver fully excluded),
+# and the string "mean" (case-insensitive; falls back to a constant
+# mean-discharge hydrograph instead, a realistic ambient river rather than
+# an excluded one) -- float() would raise on that string, so it's left
+# alone too. design_rp_surge_yr flows into build_design_surge_matrix, which
+# similarly accepts the string "tide" (tiles each station's own
+# representative tidal cycle instead of a flat calm-sea baseline) -- also
+# left uncoerced. design_rp_surge_yr is only ever dereferenced inside the
+# `forcing_mode != "river_only"` branch, i.e. exactly when it's guaranteed
+# non-None.
 design_rp_river_yr = snakemake.params.design_rp_river_yr
-design_rp_river_yr = None if design_rp_river_yr is None else float(design_rp_river_yr)
+if isinstance(design_rp_river_yr, str) and design_rp_river_yr.strip().lower() == "mean":
+    pass
+elif design_rp_river_yr is not None:
+    design_rp_river_yr = float(design_rp_river_yr)
 design_rp_surge_yr = snakemake.params.design_rp_surge_yr
-design_rp_surge_yr = None if design_rp_surge_yr is None else float(design_rp_surge_yr)
+if isinstance(design_rp_surge_yr, str) and design_rp_surge_yr.strip().lower() == "tide":
+    pass
+elif design_rp_surge_yr is not None:
+    design_rp_surge_yr = float(design_rp_surge_yr)
 compound_lag_hr   = float(snakemake.params.compound_lag_hr)
 # Uniform scaling factor on the built river discharge hydrograph (default
 # 1.0 = no-op), applied HERE -- not baked into river_forcing.nc, see this
 # script's own module docstring.
 discharge_multiplier = float(snakemake.params.discharge_multiplier)
-# Target global-mean SLR (m), applied HERE (not baked into surge_forcing.nc,
-# see src.surge.apply_slr_fingerprint's own docstring) against each
-# station's own slr_fingerprint ratio -- 0.0 whenever SLR is disabled, so
-# this scenario's own forcing matches surge_forcing.nc's MDT-only fields
-# exactly.
+# Target global-mean SLR (m), per-scenario (config/scenarios.yml, default
+# 0.0), applied HERE (not baked into surge_forcing.nc, see
+# src.surge.apply_slr_fingerprint's own docstring) against each station's
+# own slr_fingerprint ratio -- 0.0 whenever SLR is disabled, so this
+# scenario's own forcing matches surge_forcing.nc's MDT-only fields exactly.
 effective_slr_m = float(snakemake.params.slr_m) if snakemake.params.slr_enabled else 0.0
 flat_boundary_point_spacing_m = snakemake.params.flat_boundary_point_spacing_m
 waterlevel_buffer_m = snakemake.params.waterlevel_buffer_m
@@ -399,7 +421,7 @@ scalar_lines = [
 
 lines = list(scalar_lines) + list(geometry_lines)
 
-# rstfile: points at run_spinup's own (basin-level, shared, RP=1) restart
+# rstfile: points at run_spinup's own (basin-level, shared, RP=1 river + calm sea) restart
 # file -- a SIBLING of this scenario's own sfincs_root (both live under
 # results/{basin_id}/, sfincs_root under runs/{scenario}/sfincs/, spin_up
 # directly under spin_up/), so the relative path depth depends on the
@@ -501,6 +523,8 @@ for _i in range(_n_stn):
 ax5a.set_ylabel("Water level (m+ref)")
 if forcing_mode == "river_only":
     _surge_rp_label = "flat (river_only)"
+elif isinstance(design_rp_surge_yr, str):
+    _surge_rp_label = design_rp_surge_yr
 elif design_rp_surge_yr:
     _surge_rp_label = f"RP{design_rp_surge_yr:g}"
 else:

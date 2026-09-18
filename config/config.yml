@@ -13,6 +13,27 @@ results_dir: D:/GCFM_UU/results
 domain:
   delta_buffer_m: 2000   # clipping bbox buffer around the delta polygon (m)
 
+# ── Land use (rule 02b; feeds 03/04/05b/05c and, on the model grid, 09b) ─────
+landuse:
+  source: esa_worldcover   # copernicus_lc100 (100 m, catalogue 'land_use')
+                             # | esa_worldcover (10 m, catalogue
+                             # 'land_use_esa_worldcover' -- build its VRT first
+                             # with tools/build_esa_worldcover_vrt.py)
+  # esa_worldcover only: WorldCover has no sea class, so open sea (200) is derived
+  # as the water that reaches the domain border and holds an LC100 open-sea pixel,
+  # with THIS basin's own river network (rule 06) buffered as a barrier so the sea
+  # stops at the river mouths instead of running up every channel. Barrier width
+  # per reach = max(SWORD width / 2 * factor, min_width_m). See src/landuse.py.
+  river_barrier_width_factor: 1.0
+  river_barrier_min_width_m: 30.0   # floor for reaches with a missing/zero width
+  roughness_aggregation: area_mean  # area_mean | conveyance -- how Manning's n from
+                             # the (finer) land-use source is averaged onto a coarser
+                             # grid. Never the dominant class's own value: a 70 m cell
+                             # that is 60% water/40% built-up would take water's 0.02.
+                             # conveyance = harmonic mean (equal-depth composite n,
+                             # what hydromt's subgrid tables do), biased to the
+                             # smoothest pixels.
+
 # ── Shared vertical datum correction ─────────────────────────────────────────
 datum_correction: # EGM2008 -> GOCO06s (DEM) or local MSL -> GOCO06s (bathymetry), surge
   mdt_load_margin_deg: 5.0       # margin (degrees) beyond domain bbox when loading MDT
@@ -39,15 +60,13 @@ river_processing:
   river_depth_modelling:  # rule modelled_depth_estimation (10), only used when depth_method == "modelled"
     calibration_days: 1             # single fixed run duration (days)
     discharge_ramp_hours: 6.0        # linear ramp from each crossing's own bankfull_discharge up to the full calibration discharge over this many hours (from t=0), then held flat for the rest of the run -- avoids forcing the full (often many-times-bankfull) calibration discharge as an instantaneous step into an initially near-dry channel, which produces a startup shock wave that can persist/oscillate for the whole run instead of damping out. Mirrors production's own bankfull-lead-in-then-ramp hydrograph shape (src.river_forcing.build_design_discharge_matrix/sinusoidal_wave, rule 13/14's own spin-up), just linear instead of sinusoidal since calibration only needs to reach and hold the peak, not simulate a full event recession.
-    weir_crest_m: 1000.0            # initial channel-confinement weir crest (m) -- effectively never overtopped
-    weir_crest_fraction: 0.2        # ROUND 0 ONLY, applied UNIFORMLY to every cell with no magnitude threshold: fraction of the isolated-confinement rise above DEM (period_max_zs - dem_at_point) assigned to the production riverbank weir's crest; the remainder (1 - this) becomes channel excavation depth (rivdph) -- this initial depth/crest split is never revisited again; correction rounds only ever adjust the crest (see freeboard_m below). The mouth reach's own separate 2-anchor bed interpolation (see 10_depth_estimation_modelled.py) is what keeps its interior cells smooth.
-    n_correction_iterations: 10      # MAXIMUM number of additional coupled-system correction rounds after the initial isolated-confinement calibration (round 0) -- each builds a model with round 0's own (fixed, never revisited) excavation + the CURRENT calibrated crest, and raises the crest wherever the resulting water level leaves less than _CALIBRATION_FREEBOARD_M (a fixed 0.5 m, hardcoded in 10_depth_estimation_modelled.py -- NOT this section's own freeboard_m, see that key's own comment below) of margin below it. Corrects for backwater coupling between reaches that round 0's isolated-per-reach confinement can't see. 0 = round 0's own estimate used unchanged. Calibration STOPS EARLY, before reaching this maximum, once the crest already exceeds the period-max water level everywhere (no raw overtopping under that round's own simulation, centerline + coastal probes + river boundary probes) -- containment alone, checked directly against real overtopping, not against how much total area ends up flooded (a realized-inundated-cell-count-vs-round-0 stability check was removed 2026-08-06: round 0 is confined by an effectively un-overtoppable 1000 m wall, so its own flooded footprint is artificially tiny, and a real, correctly-contained crest can legitimately have a much larger but perfectly genuine and stable flooded footprint than that -- the check was overly protective and could block convergence indefinitely even with zero overtopping observed for many rounds running). That first convergence isn't the final round, though: the raise-only process above can leave real excess margin behind (it never lowers crest while any cell is still overtopped elsewhere), so this spends exactly ONE more round tightening every cell's crest down to period_max_zs + _CALIBRATION_FREEBOARD_M in one shot and re-simulating once to verify it still holds everywhere; if it doesn't, that whole snap is abandoned (not patched cell-by-cell) and the round before it becomes the converged one instead. Any remaining round slot(s) up to this maximum are then backfilled with the converged round's own files (no further SFINCS runtime spent on rounds that can't change the outcome).
-    min_crest_increment_per_round_m: 2.5  # CORRECTION ROUNDS ONLY, overtopped cells (period_max_zs > weir_crest_current): minimum-step-size FLOOR (m) on the crest's own increment -- delta = max(period_max_zs - weir_crest_current, this), i.e. close the full gap if it's larger than this floor, otherwise overshoot on purpose by at least this much, so the crest keeps making real progress toward containment instead of stalling on a residual that never grows enough to matter. Where the cell is already contained (period_max_zs <= weir_crest_current), this floor does not apply at all.
+    weir_crest_m: 1000.0            # confinement weir crest (m) for rounds 0 and 1 -- effectively never overtopped
+    excavation_fraction: 0.8        # fraction of round 0's confined rise above the DEM (period_max_zs - dem_at_cell, per centerline cell) excavated as channel depth (rivdph). The mouth rules in 10_depth_estimation_modelled.py (coastal endpoint at natural bathymetry, bed floored upstream of it) are applied on top.
     # ── weir-building params (used by modelled_depth_estimation every round)
     min_component_cells: 30           # discard small isolated land islands or water patches below this cell count on either side -- neither gets a weir ring around it
-    weir_par1: 1.0                    # SFINCS weir discharge coefficient (Cd in Q = Cd*L*head^1.5) -- scales overtopping discharge directly; lower = more throttled flow for the same exceedance
-    freeboard_m: 0.0                  # REAL PRODUCTION top-up only (2026-08-05 fix): added once, uniformly, on the FINAL exported weir in 10_depth_estimation_modelled.py, on top of whatever the calibration's own internal convergence (fixed at _CALIBRATION_FREEBOARD_M=0.5, NOT this value) already converged to. Previously this config value was silently a no-op in production -- the final weir trace always passed freeboard_m=0.0 regardless of this setting, since it assumed the margin was already baked in by this same value during calibration. Now genuinely controls how much extra safety margin ends up in the built model.
-    river_crest_dilation_cells: 5     # FLOOR only, not the actual value used -- modelled_depth_estimation (every round) computes the real dilation radius as max(this floor, river_width_m / (2 * coarse_grid_resolution_m)) per basin, tying it to a physically meaningful scale (a wide river's calibrated crest needs to reach further onto adjacent land than a narrow one does) instead of one arbitrary constant for every basin. This value is the minimum below which that formula never goes.
+    unprotected_ocean_wetlands: false # true: wetland/lagoon patches (80 = permanent water/tidal flats, 90 = herbaceous wetland, and 95 = mangroves under ESA WorldCover; src.landuse.OCEAN_WETLAND_CLASSES) sharing a cell edge with the open sea are left on the SEAWARD side of the coastal dike -- the dike runs along their landward edge and they flood freely (still counted as land in flood metrics). false: the dike follows the open-sea (200) boundary.
+    weir_par1: 0.6                    # SFINCS weir discharge coefficient Cd (0.6 = SFINCS's own recommended value). Per metre of weir, with h1/h2 = water level above crest on the high/low side: free flow q = Cd * 1.7049 * h1^1.5 (1.7049 = (2/3)^1.5 * sqrt(g)); submerged (h2 > 2/3 h1) q = Cd * h2 * sqrt(2g (h1 - h2)). No flow while both sides are below the crest. Scales overtopping discharge directly; lower = more throttled flow for the same exceedance
+    freeboard_m: 0.0                  # margin added on top of every production weir crest: crest(edge) = max(round-1 water level on the edge's own water side, coastal protection crest) + freeboard_m, rounded UP to the next 0.1 m. The only margin -- round 1 is still confined by 1000 m walls, so its water level already holds the calibration discharge exactly (the round-up adds 0-0.1 m on top).
   empirical_estimation: # only used when depth_method == "empirical" (rule empirical_depth_estimation, 10); ignored entirely under depth_method == "modelled"
     modify_hydrograph: false # Toggle to include flopras protection
     hydraulic_geometry: # Bankfull depth using the downstream hydraulic geometry power-law relation (Leopold & Maddock, 1953, and successors), depth = c*Q^f
@@ -72,9 +91,13 @@ boundary_forcings:
     dedupe_radius_km: 1
     search_radii_km: [10, 25, 50, 1000]
     period_hr: 12
-    slr: # IPCC AR6 sea-level-rise fingerprint, scaled to a single global-mean target (slr_m) and added to each station's storm-tide level. slr_m is deliberately applied at scenario-build time (rule build_sfincs), not baked into surge_forcing.nc (rule get_boundary_forcings) -- so changing slr_m only reruns the per-scenario build + event run, never the basin-level weir/depth calibration or skeleton build (which only ever see the MDT-only baseline). See src.surge.apply_slr_fingerprint / build_design_surge_matrix.
+    coast_hg: # COAST-HG (Dullaart et al. 2023) -- source for surge_rp: Tide's
+      # representative tidal cycle (tide_cycle_hr/tide_cycle_value_m, tiled
+      # via tile_periodic_signal in build_design_surge_matrix). See
+      # src.surge.extract_tide_cycle_from_coast_hg.
+      variable: hydrograph_average_tide_signal  # or hydrograph_spring_tide_signal (more conservative, larger amplitude)
+    slr: # IPCC AR6 sea-level-rise fingerprint. `enabled` gates whether the AR6 slr_data catalogue is even fetched/computed (rule get_boundary_forcings) -- the actual target global-mean SLR (slr_m) is NOT here: it's per-scenario in config/scenarios.yml (see scenario_params in 00_common.smk), applied at scenario-build time (rule build_sfincs) against each station's slr_fingerprint, so changing one scenario's slr_m only reruns that scenario's build + event run, never the basin-level weir/depth calibration, skeleton build, or any OTHER scenario. See src.surge.apply_slr_fingerprint / build_design_surge_matrix.
       enabled: true
-      slr_m: 0.5                # target global-mean SLR (m); 0 = no SLR added; applied downstream, not by rule get_boundary_forcings itself
       ssp_scenario: ssp245
       confidence_level: medium   # "medium" or "low"
       year: 2100
@@ -171,12 +194,13 @@ sfincs:
     dthisout:      600           # time-series output at observation points (s) -- MAIN EVENT run only
     storevelmax:     0           # write maximum flow velocity (0=off, 1=on)
     storetwet:       0           # write inundation duration / time-wet (0=off, 1=on)
-    sfincs_exe: "C:\\Users\\2899043\\PhD\\SFINCS_software\\SFINCS_v2.3.0_mt_Faber_release_exe\\sfincs.exe"
+    sfincs_exe: "C:/Users/2899043/PhD/SFINCS_software/SFINCS_v2.3.0_mt_Faber_release_exe/sfincs.exe"
     timeout_s: 68400             # max wall-clock time for a SFINCS subprocess (s, 19 h) --
                                   # shared by both the spin-up and main event runs
   spinup: # Spin-up simulation with constant forcings
     enabled: true                # run a spin-up + create a restart file before the main event run
     spinup_days: 1               # days of constant bankfull forcing to reach steady river state
+    boundary_ramp_hours: 6.0     # the spin-up sea is held at each station's calm-sea level (the event lead-in's own level; the river stays at RP=1); the boundary ramps linearly from the sea's starting level (rounded basin mean) to those station levels over this many hours -- normally identical, but a step at the boundary sends a front in that can overtop the coastal dike (basin 2433835: a 0.30 m step gave up to +1.1 m at a 0.40 m crest)
     dthisout_s: 3600              # obs-point output interval during spinup (s) — for validation plot
     dtmapout_s: 3600              # map snapshot interval during spinup (s) — controls animation frame count
 

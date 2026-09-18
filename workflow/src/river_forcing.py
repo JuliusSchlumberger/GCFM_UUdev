@@ -17,7 +17,7 @@ from src.extreme_values import EVAResult
 log = logging.getLogger(__name__)
 
 
-def derive_forcing_mode(river_rp: float | None, surge_rp: float | None) -> str:
+def derive_forcing_mode(river_rp: float | None | str, surge_rp: float | None) -> str:
     """
     Derive SFINCS forcing mode from which design RPs a scenario sets: both
     -> "compound"; river_rp only -> "river_only"; surge_rp only ->
@@ -528,6 +528,7 @@ def build_river_dataset(
     period_hr: float,
     results: list[EVAResult | None],
     rp_bankfull: float,
+    mean_q: np.ndarray,
     bias_corrected: np.ndarray,
     grdc_station_id: np.ndarray,
     grdc_correlation: np.ndarray,
@@ -560,6 +561,10 @@ def build_river_dataset(
             overlap period, or NaN if no correction was applied.
         grdc_overlap_days: float array, number of overlapping valid days used
             for bias correction, or NaN if no correction was applied.
+        mean_q: Grand-mean discharge over the full GloFAS record per crossing
+            (same, possibly bias-corrected, series the bankfull/EVA fit used).
+            Selected at SFINCS-build time via river_rp: "mean" in
+            config/scenarios.yml -- see build_design_discharge_matrix.
     """
     n_cross = len(crossings)
 
@@ -627,6 +632,16 @@ def build_river_dataset(
                     "long_name": f"bankfull discharge (AMAX/GEV, RP={rp_bankfull:g} yr)",
                 },
             ),
+            "mean_discharge": (
+                ["crossing"],
+                mean_q,
+                {
+                    "units": "m3 s-1",
+                    "long_name": "grand-mean discharge over the full GloFAS "
+                    "record (time-mean of this crossing's own, possibly "
+                    "bias-corrected, series)",
+                },
+            ),
             "inside_reach_id": (
                 ["crossing"],
                 inside_reach_ids_arr,
@@ -660,7 +675,7 @@ def build_river_dataset(
                     "long_name": "GPD scale parameter -- with pot_threshold, "
                     "gpd_shape, and pot_peaks_per_year, fully determines the "
                     "fitted return-value curve (see "
-                    "src.extreme_values.gpd_return_value)"
+                    "src.extreme_values.gpd_return_value_table)"
                 },
             ),
             "gev_shape": (
@@ -769,7 +784,7 @@ def interpolate_discharge_at_rp(
 def build_design_discharge_matrix(
     river_ds: xr.Dataset,
     active: np.ndarray,
-    design_rp_yr: float | None,
+    design_rp_yr: float | None | str,
     apply_protection_floor: bool = True,
     discharge_multiplier: float = 1.0,
 ) -> np.ndarray:
@@ -813,9 +828,14 @@ def build_design_discharge_matrix(
                   crossings to build (typically has_glofas).
         design_rp_yr: Return period (years) to build the event at -- a
                   scenario's own river_rp (config/scenarios.yml, see
-                  scenario_params in 00_common.smk). None builds a
-                  constant bankfull hydrograph instead (mean-conditions
-                  scenario).
+                  scenario_params in 00_common.smk). None means the river
+                  driver is fully excluded: zero discharge, flat hydrograph
+                  -- e.g. for coast_only scenarios that should be driven by
+                  the coastal boundary alone. The string "mean"
+                  (case-insensitive) instead builds a constant hydrograph at
+                  mean_discharge -- the record's own grand-mean discharge --
+                  for a scenario that wants a realistic ambient river
+                  present (not absent) while the other driver is tested.
         apply_protection_floor: Whether to apply step 2 (the protection-
                   discharge floor) when protection_discharge is present.
                   Only meaningful in "empirical" depth_method: in "modelled"
@@ -837,8 +857,18 @@ def build_design_discharge_matrix(
     period_hr = float(river_ds.attrs["period_hr"])
 
     n_active = int(active.sum())
-    if design_rp_yr is None:
-        design_q = bankfull_q.copy()  # mean river: constant bankfull hydrograph
+    lead_q = bankfull_q
+    if isinstance(design_rp_yr, str) and design_rp_yr.strip().lower() == "mean":
+        # Genuinely constant mean-discharge hydrograph: both the ramp-in
+        # level and the "design" level are mean_discharge -- a realistic
+        # ambient river, present but not driving an event.
+        mean_q = river_ds["mean_discharge"].values[active]
+        lead_q = mean_q
+        design_q = mean_q.copy()
+    elif design_rp_yr is None:
+        # River driver fully excluded: zero discharge, flat hydrograph.
+        design_q = np.zeros(n_active, dtype=float)
+        lead_q = design_q
     else:
         design_q = interpolate_discharge_at_rp(table, table_rps, design_rp_yr)
 
@@ -855,7 +885,7 @@ def build_design_discharge_matrix(
     discharge_matrix = np.full((n_active, len(times)), np.nan)
     for i in range(n_active):
         discharge_matrix[i] = sinusoidal_wave(
-            bankfull_q[i], design_q[i], times, lead_days, period_hr
+            lead_q[i], design_q[i], times, lead_days, period_hr
         )
     if discharge_multiplier != 1.0:
         discharge_matrix *= discharge_multiplier

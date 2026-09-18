@@ -397,6 +397,83 @@ datasets:
       (per the LC100 product user manual). The 111–116 / 121–126 numbering separates closed
       vs open forest variants for the same forest type."
 
+  - name: land_use_esa_worldcover
+    # Alternative land-use source to `land_use` (Copernicus LC100, 100 m),
+    # selected with config landuse.source: esa_worldcover. Rule prepare_landuse
+    # (02b) clips whichever source is selected to the basin's domain bbox.
+    #
+    # IMPORTANT: WorldCover has NO open-sea class. Sea, lagoons, rivers and
+    # lakes are ALL class 80 ("permanent water bodies"), whereas this pipeline
+    # identifies the sea everywhere as class 200 (sea_mask, both land masks,
+    # the coastal-protection weir's ocean mask, zsini, the water-level
+    # boundary). Rule prepare_landuse therefore DERIVES 200: WorldCover water
+    # reaching the domain border, with the basin's own river network (rule 06)
+    # as a barrier so the sea stops at the river mouths, keeping only bodies
+    # that hold an LC100 open-sea pixel -- so the `land_use` entry above is
+    # still required when this source is selected, both as that guard and to
+    # fill the open ocean beyond WorldCover's tile footprint (the Gulf of
+    # Mexico is 11,177 km2 of nodata in the Mississippi's own domain).
+    # See workflow/src/landuse.py for the rule.
+    description: >
+      ESA WorldCover 2021 (v200): global land cover at 10 m from Sentinel-1 +
+      Sentinel-2, 11 classes. Distributed as 3x3 degree tiles in WGS84;
+      tiles exist over land only (no open-ocean tiles). Class codes 20-100
+      coincide with Copernicus LC100's; class 10 (tree cover) replaces
+      LC100's 111-126 forest classes and 95 (mangroves) has no LC100
+      equivalent -- both need a row in lu_to_roughness_lookup.
+    source: "Zanaga, D., Van De Kerchove, R., Daems, D., De Keersmaecker, W., Brockmann, C., Kirches, G., Wevers, J., Cartus, O., Santoro, M., Fritz, S., Lesiv, M., Herold, M., Tsendbazar, N.E., Xu, P., Ramoino, F., Arino, O. (2022). ESA WorldCover 10 m 2021 v200. https://doi.org/10.5281/zenodo.7254221"
+    provider: gdal
+    file_format: VRT (GDAL virtual mosaic over per-tile GeoTIFFs)
+    file_path: ESA_Worldcover/esa_worldcover_2021_v200.vrt
+    file_naming_convention: "ESA_WorldCover_10m_2021_v200_{ns}{lat:02d}{ew}{lon:03d}_Map.tif"
+    file_naming_notes: >
+      Uppercase {ns} (N/S) and {ew} (E/W); {lat} (2-digit) and {lon}
+      (3-digit) are the tile's SW-corner integer degrees on a 3-degree grid
+      (e.g. N39E000_Map.tif spans 39-42N, 0-3E). The .vrt itself is NOT part
+      of the download -- build it with tools/build_esa_worldcover_vrt.py
+      (--check-deltas also reports which tiles each delta polygon still
+      lacks), and rebuild it after downloading more tiles.
+    tile_examples:
+      - ESA_WorldCover_10m_2021_v200_N39E000_Map.tif
+      - ESA_WorldCover_10m_2021_v200_S15W042_Map.tif
+    crs:
+      epsg: 4326
+      name: WGS 84
+      type: Geographic (2D)
+      units: degrees
+    raster_properties:
+      data_type: Byte (UInt8)
+      nodata_value: 0     # the product's own "no data" class
+      band_count: 1
+      pixel_size_deg: 0.00008333333333333333  # 1/12000 deg = 10 m at the equator
+      tile_size_deg: 3
+    coverage:
+      spatial_extent: Global land (no open-ocean tiles)
+      latitude_range: [-60, 84]
+      longitude_range: [-180, 180]
+    temporal_coverage:
+      reference_year: 2021
+    classification:
+      scheme: ESA WorldCover 11-class legend
+      class_count: 11
+      classes:
+        10: tree_cover
+        20: shrubland
+        30: grassland
+        40: cropland
+        50: built-up
+        60: bare_sparse_vegetation
+        70: snow_ice
+        80: permanent_water_bodies   # sea AND inland water -- see note above
+        90: herbaceous_wetland
+        95: mangroves
+        100: moss_lichen
+        0: no_data (NoData)
+    notes: >
+      Rule prepare_landuse (02b) writes the per-basin product with 200 for
+      open sea and 255 for nodata, so every later rule reads the same
+      pipeline codes regardless of which source was selected.
+
   - name: lu_to_roughness_lookup
     description: "Lookup table to convert land use classes from the Copernicus Land Use dataset to Manning's n roughness coefficients for hydrodynamic modeling. Note: Copernicus land use has 23 classes, while ESA only distinguishes 11. We subsume various Copernicus forest classes into a single 'forest' class, to match the ESA land use classes. The Manning's n values are based on typical values for each land use type from the literature, but may need to be adjusted based on local conditions or specific modeling needs."
     source:  https://www.hec.usace.army.mil/confluence/rasdocs/r2dum/latest/developing-a-terrain-model-and-geospatial-layers/creating-land-cover-mannings-n-values-and-impervious-layers
@@ -415,7 +492,7 @@ datasets:
         description: Manning's n roughness coefficient associated with each land use class, used for hydrodynamic modeling of flow resistance.
 
 
-  - name: storm_tide_return_periods # TODO: get real timeseries information for extracting real time series
+  - name: storm_tide_return_periods
     description: >
       Global dataset of coastal storm tide return periods (storm surge + tide) at output
       locations of the Global Tide and Surge Model (GTSM). Surges from extratropical
@@ -496,6 +573,21 @@ datasets:
       spatial_extent: global (coastal output stations)
     notes: >
       Data are provided at discrete GTSM stations along the coast.
+
+
+  - name: Coast_HG
+    description: >
+      COAST-HG (COastal dAtaset of Storm Tide HydroGraphs): per-station RP100
+      storm tide hydrographs (tide + surge combined), built by combining an
+      average/spring tide signal with a scaled surge event (HGRAPHER method).
+      Used here only for its quiet, pre-storm portion as a stand-in for a
+      pure tidal cycle (no standalone tide-only variable is published) --
+      see src.surge.extract_tide_cycle_from_coast_hg.
+    source: "Dullaart, J.C.M., Muis, S., de Moel, H., Ward, P.J., Eilander, D. & Aerts, J.C.J.H. (2023). Enabling dynamic modelling of coastal flooding by defining storm tide hydrographs. Data: 4TU.ResearchData, https://data.4tu.nl/datasets/738a74dd-9856-4f21-b02a-14ecbdb26198 (COAST-HG)"
+    provider: xarray
+    file_format: NetCDF
+    file_path: COAST-HG_RP100.nc
+
 
   - name: river_discharge
     description: >
@@ -680,6 +772,8 @@ datasets:
       Gives the time-mean sea-surface height above the GOCO06s geoid [m].
       Subtracting MDT from a GOCO06s-referenced DEM converts it to orthometric
       heights above local Mean Sea Level (MSL): H_MSL = H_GOCO06s − MDT.
+      The pipeline works in GOCO06s, so MSL-referenced data (GEBCO, COAST-RP)
+      goes the other way: H_GOCO06s = H_MSL + MDT (rules 05a and 07).
       Download from AVISO+ (https://www.aviso.altimetry.fr) — requires free account.
       Note: MDT is defined over ocean only; near-coastal values are used for
       the coastal DiluviumDEM correction (all deltas lie within the 500 km
@@ -792,8 +886,8 @@ datasets:
       on a 1°x1° grid). Used to derive a per-station SLR "fingerprint" —
       sea_level_change at the nearest location, normalised by the
       global-mean sea_level_change over valid 1° grid cells — for the
-      configured SSP/confidence/year/quantile. Scaled by
-      boundary_forcings.surge.slr.slr_m and added to each surge station's
+      configured SSP/confidence/year/quantile. Scaled by each scenario's own
+      slr_m (config/scenarios.yml) and added to each surge station's
       storm-tide return-period level (see src/surge.py).
     source: "IPCC AR6 Sea Level Projections (Garner et al. 2021), via Zenodo DOI 10.5281/zenodo.5914710"
     provider: xarray

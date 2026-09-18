@@ -87,20 +87,34 @@ for _name, _s in SCENARIO_DEFS.items():
     if not _re.fullmatch(r"[A-Za-z0-9_-]+", _name):
         raise ValueError(f"scenario name {_name!r} invalid (use letters/digits/_/- only)")
     _srp, _rrp = _s.get("surge_rp"), _s.get("river_rp")
-    if _srp is not None and _srp not in _SURGE_RPS:
-        raise ValueError(f"{_name}: surge_rp must be a COAST-RP tabulated value {_SURGE_RPS}")
-    if _rrp is not None and not _RIVER_RP_MIN <= _rrp <= _RIVER_RP_MAX:
-        raise ValueError(f"{_name}: river_rp must be in [{_RIVER_RP_MIN}, {_RIVER_RP_MAX}] yr")
+    _srp_is_tide = isinstance(_srp, str) and _srp.strip().lower() == "tide"
+    if _srp is not None and not _srp_is_tide and _srp not in _SURGE_RPS:
+        raise ValueError(
+            f"{_name}: surge_rp must be 'Tide', null, or a COAST-RP "
+            f"tabulated value {_SURGE_RPS}"
+        )
+    _rrp_is_mean = isinstance(_rrp, str) and _rrp.strip().lower() == "mean"
+    if _rrp is not None and not _rrp_is_mean and not _RIVER_RP_MIN <= _rrp <= _RIVER_RP_MAX:
+        raise ValueError(
+            f"{_name}: river_rp must be 'Mean', null, or in "
+            f"[{_RIVER_RP_MIN}, {_RIVER_RP_MAX}] yr"
+        )
     _dm = _s.get("discharge_multiplier", 1.0)
     if not _dm > 0:
         raise ValueError(f"{_name}: discharge_multiplier must be > 0")
 
 def scenario_params(name):
-    """-> dict(mode, surge_rp, river_rp, discharge_multiplier); mode via
-    derive_forcing_mode. discharge_multiplier is per-scenario (default 1.0)
-    -- e.g. river_500/river_only_500/compound_500 can be scaled up to reach
-    a genuinely flood-inducing river discharge without also inflating
-    coast_500's own small RP=2 river component."""
+    """-> dict(mode, surge_rp, river_rp, discharge_multiplier, slr_m); mode
+    via derive_forcing_mode. discharge_multiplier is per-scenario (default
+    1.0) -- e.g. river_500/river_only_500/compound_500 can be scaled up to
+    reach a genuinely flood-inducing river discharge without also inflating
+    coast_500's own small RP=2 river component. slr_m is per-scenario
+    (default 0.0 = no SLR) for the same reason: it's a single scalar read
+    ONLY by rule build_sfincs/adapt_build_forcing_pre (never rule
+    get_boundary_forcings), so keeping it per-scenario -- rather than one
+    shared config.yml value -- means changing it only invalidates the
+    scenario(s) whose own entry changed, not every already-built scenario's
+    sfincs.inp."""
     s = SCENARIO_DEFS[name]
     river_rp, surge_rp = s.get("river_rp"), s.get("surge_rp")
     try:
@@ -112,6 +126,7 @@ def scenario_params(name):
         "surge_rp": surge_rp,
         "river_rp": river_rp,
         "discharge_multiplier": s.get("discharge_multiplier", 1.0),
+        "slr_m": s.get("slr_m", 0.0),
     }
 
 def attribution_counterparts(scenario):
@@ -151,7 +166,7 @@ if _unknown:
     raise ValueError(f"target_scenarios {_unknown} not defined in {config['scenarios_file']}")
 
 # Basin-level (not scenario-level) restart filename: run_spinup (14) always
-# runs at a fixed RP=1/spinup_days, entirely independent of any scenario's
+# runs at a fixed RP=1 river + calm sea for spinup_days, entirely independent of any scenario's
 # own RP, so its restart file -- and this filename -- is the SAME for every
 # scenario of a basin. Computed here (00_common.smk, included first) rather
 # than in 14_run_spinup.smk itself since rules build_sfincs (13, sets

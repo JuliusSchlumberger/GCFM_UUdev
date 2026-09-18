@@ -9,71 +9,71 @@ meta:
 
 # -----------------------------------------------------------------------------------------------
 # ADVANCE
-# # Coastal flood
+# Coastal flood
 # advance_04:
 #   measures:
-#     offshore_barrier: {elevation: 0.456,
+#     offshore_barrier: {elevation: 0.4,
 #                       locations: adaptation/offshore_island.geojson }
 #     pumps: {discharge: 526,
 #             locations: adaptation/advance_pumps.geojson }
 
 # advance_09:
 #   measures:
-#     offshore_barrier: {elevation: 1.026,
+#     offshore_barrier: {elevation: 1,
 #                       locations: adaptation/offshore_island.geojson }
 #     pumps: {discharge: 1184,
 #             locations: adaptation/advance_pumps.geojson }
 
 # advance_1:
 #   measures:
-#     offshore_barrier: {elevation: 1.14,
+#     offshore_barrier: {elevation: 1.2,
 #                       locations: adaptation/offshore_island.geojson }
 #     pumps: {discharge: 1316,
 #             locations: adaptation/advance_pumps.geojson }
 
 # River flood
-# advance_04:
-#   measures:
-#     offshore_barrier: {elevation: 0.164,
-#                       locations: adaptation/offshore_island.geojson }
-#     pumps: {discharge: 4083.2,
-#             locations: adaptation/advance_pumps.geojson }
-
-# advance_09:
-#   measures:
-#     offshore_barrier: {elevation: 0.36,
-#                       locations: adaptation/offshore_island.geojson }
-#     pumps: {discharge: 9187.2,
-#             locations: adaptation/advance_pumps.geojson }
-
-# advance_1:
-#   measures:
-#     offshore_barrier: {elevation: 0.41,
-#                       locations: adaptation/offshore_island.geojson }
-#     pumps: {discharge: 10208,
-#             locations: adaptation/advance_pumps.geojson }
-
-# Compound flood
 advance_04:
   measures:
-    offshore_barrier: {elevation: 0.456,
+    offshore_barrier: {elevation: 0.1,
                       locations: adaptation/offshore_island.geojson }
-    pumps: {discharge: 4083.2,
+    pumps: {discharge: 2080,
             locations: adaptation/advance_pumps.geojson }
 
 advance_09:
   measures:
-    offshore_barrier: {elevation: 1.026,
+    offshore_barrier: {elevation: 0.1,
                       locations: adaptation/offshore_island.geojson }
-    pumps: {discharge: 9187.2,
+    pumps: {discharge: 4680,
             locations: adaptation/advance_pumps.geojson }
 
 advance_1:
   measures:
-    offshore_barrier: {elevation: 1.14,
+    offshore_barrier: {elevation: 0.1,
                       locations: adaptation/offshore_island.geojson }
-    pumps: {discharge: 10208,
+    pumps: {discharge: 5200,
             locations: adaptation/advance_pumps.geojson }
+
+# # Compound flood
+# advance_04:
+#   measures:
+#     offshore_barrier: {elevation: 0.4,
+#                       locations: adaptation/offshore_island.geojson }
+#     pumps: {discharge: 2080,
+#             locations: adaptation/advance_pumps.geojson }
+
+# advance_09:
+#   measures:
+#     offshore_barrier: {elevation: 1,
+#                       locations: adaptation/offshore_island.geojson }
+#     pumps: {discharge: 4680,
+#             locations: adaptation/advance_pumps.geojson }
+
+# advance_1:
+#   measures:
+#     offshore_barrier: {elevation: 1.2,
+#                       locations: adaptation/offshore_island.geojson }
+#     pumps: {discharge: 5200,
+#             locations: adaptation/advance_pumps.geojson }
 
 
 # -----------------------------------------------------------------------------------------------
@@ -81,7 +81,7 @@ advance_1:
 # Coastal flood
 # grey_protect_open_04:
 #   measures:
-#     coastal_levee: {elevation: 0.456,
+#     coastal_levee: {elevation: 0.4,
 #                     locations: adaptation/coast_protection_weir_PO.geojson,
 #                     merge: false }
 #     river_levee: {elevation: 0.94,
@@ -90,7 +90,7 @@ advance_1:
 
 # grey_protect_open_09:
 #   measures:
-#     coastal_levee: {elevation: 1.026,
+#     coastal_levee: {elevation: 1,
 #                     locations: adaptation/coast_protection_weir_PO.geojson,
 #                     merge: false }
 #     river_levee: {elevation: 2.124,
@@ -99,45 +99,17 @@ advance_1:
 
 # grey_protect_open_1:
 #   measures:
-#     coastal_levee: {elevation: 1.14,
+#     coastal_levee: {elevation: 1.2,
 #                     locations: adaptation/coast_protection_weir_PO.geojson,
 #                     merge: false }
 #     river_levee: {elevation: 2.36,
 #                     locations: adaptation/river_protection_weir_PO.geojson,
 #                     merge: false }
 
-# # River flood
-# grey_protect_open_04:
-#   measures:
-#     coastal_levee: {elevation: 0.164,
-#                     locations: adaptation/coast_protection_weir_PO.geojson,
-#                     merge: false }
-#     river_levee: {elevation: 3.824,
-#                     locations: adaptation/river_protection_weir_PO.geojson,
-#                     merge: false }
-
-# grey_protect_open_09:
-#   measures:
-#     coastal_levee: {elevation: 0.36,
-#                     locations: adaptation/coast_protection_weir_PO.geojson,
-#                     merge: false }
-#     river_levee: {elevation: 8.604,
-#                     locations: adaptation/river_protection_weir_PO.geojson,
-#                     merge: false }
-
-# grey_protect_open_1:
-#   measures:
-#     coastal_levee: {elevation: 0.41,
-#                     locations: adaptation/coast_protection_weir_PO.geojson,
-#                     merge: false }
-#     river_levee: {elevation: 9.56,
-#                     locations: adaptation/river_protection_weir_PO.geojson,
-#                     merge: false }
-
-# Compound flood
+# River flood
 grey_protect_open_04:
   measures:
-    coastal_levee: {elevation: 0.456,
+    coastal_levee: {elevation: 0.1,
                     locations: adaptation/coast_protection_weir_PO.geojson,
                     merge: false }
     river_levee: {elevation: 3.824,
@@ -146,7 +118,7 @@ grey_protect_open_04:
 
 grey_protect_open_09:
   measures:
-    coastal_levee: {elevation: 1.026,
+    coastal_levee: {elevation: 0.1,
                     locations: adaptation/coast_protection_weir_PO.geojson,
                     merge: false }
     river_levee: {elevation: 8.604,
@@ -155,12 +127,40 @@ grey_protect_open_09:
 
 grey_protect_open_1:
   measures:
-    coastal_levee: {elevation: 1.14,
+    coastal_levee: {elevation: 0.1,
                     locations: adaptation/coast_protection_weir_PO.geojson,
                     merge: false }
     river_levee: {elevation: 9.56,
                     locations: adaptation/river_protection_weir_PO.geojson,
                     merge: false }
+
+# # Compound flood
+# grey_protect_open_04:
+#   measures:
+#     coastal_levee: {elevation: 0.4,
+#                     locations: adaptation/coast_protection_weir_PO.geojson,
+#                     merge: false }
+#     river_levee: {elevation: 3.824,
+#                     locations: adaptation/river_protection_weir_PO.geojson,
+#                     merge: false }
+
+# grey_protect_open_09:
+#   measures:
+#     coastal_levee: {elevation: 1,
+#                     locations: adaptation/coast_protection_weir_PO.geojson,
+#                     merge: false }
+#     river_levee: {elevation: 8.604,
+#                     locations: adaptation/river_protection_weir_PO.geojson,
+#                     merge: false }
+
+# grey_protect_open_1:
+#   measures:
+#     coastal_levee: {elevation: 1.2,
+#                     locations: adaptation/coast_protection_weir_PO.geojson,
+#                     merge: false }
+#     river_levee: {elevation: 9.56,
+#                     locations: adaptation/river_protection_weir_PO.geojson,
+#                     merge: false }
 
 
 # -----------------------------------------------------------------------------------------------
@@ -220,7 +220,7 @@ NbS_protect_open_04:
 # Coastal flood
 # protect_closed_04:
 #   measures:
-#     coastal_levee: {elevation: 0.456,
+#     coastal_levee: {elevation: 0.4,
 #                     locations: adaptation/coast_protection_weir_PC.geojson,
 #                     merge: false }
 #     pumps:         {discharge: 526,
@@ -228,7 +228,7 @@ NbS_protect_open_04:
 
 # protect_closed_09:
 #   measures:
-#     coastal_levee: {elevation: 1.026,
+#     coastal_levee: {elevation: 1,
 #                     locations: adaptation/coast_protection_weir_PC.geojson,
 #                     merge: false }
 #     pumps:         {discharge: 1184,
@@ -236,115 +236,111 @@ NbS_protect_open_04:
 
 # protect_closed_1:
 #   measures:
-#     coastal_levee: {elevation: 1.14,
+#     coastal_levee: {elevation: 1.2,
 #                     locations: adaptation/coast_protection_weir_PC.geojson,
 #                     merge: false }
 #     pumps:         {discharge: 1316,
 #                     locations: adaptation/pump_river_mouth.geojson }
 
 # River flood
-# protect_closed_04:
-#   measures:
-#     coastal_levee: {elevation: 0.164,
-#                     locations: adaptation/coast_protection_weir_PC.geojson,
-#                     merge: false }
-#     pumps:         {discharge: 4083.2,
-#                     locations: adaptation/pump_river_mouth.geojson }
-
-# protect_closed_09:
-#   measures:
-#     coastal_levee: {elevation: 0.36,
-#                     locations: adaptation/coast_protection_weir_PC.geojson,
-#                     merge: false }
-#     pumps:         {discharge: 9187.2,
-#                     locations: adaptation/pump_river_mouth.geojson }
-
-# protect_closed_1:
-#   measures:
-#     coastal_levee: {elevation: 0.41,
-#                     locations: adaptation/coast_protection_weir_PC.geojson,
-#                     merge: false }
-#     pumps:         {discharge: 10208,
-#                     locations: adaptation/pump_river_mouth.geojson }
-
-
-# Compound flood
 protect_closed_04:
   measures:
-    coastal_levee: {elevation: 0.456,
+    coastal_levee: {elevation: 0.1,
                     locations: adaptation/coast_protection_weir_PC.geojson,
                     merge: false }
-    pumps:         {discharge: 4083.2,
+    pumps:         {discharge: 2080,
                     locations: adaptation/pump_river_mouth.geojson }
 
 protect_closed_09:
   measures:
-    coastal_levee: {elevation: 1.026,
+    coastal_levee: {elevation: 0.1,
                     locations: adaptation/coast_protection_weir_PC.geojson,
                     merge: false }
-    pumps:         {discharge: 9187.2,
+    pumps:         {discharge: 4680,
                     locations: adaptation/pump_river_mouth.geojson }
 
 protect_closed_1:
   measures:
-    coastal_levee: {elevation: 1.14,
+    coastal_levee: {elevation: 0.1,
                     locations: adaptation/coast_protection_weir_PC.geojson,
                     merge: false }
-    pumps:         {discharge: 10208,
+    pumps:         {discharge: 5200,
                     locations: adaptation/pump_river_mouth.geojson }
+
+
+# # Compound flood
+# protect_closed_04:
+#   measures:
+#     coastal_levee: {elevation: 0.4,
+#                     locations: adaptation/coast_protection_weir_PC.geojson,
+#                     merge: false }
+#     pumps:         {discharge: 2080,
+#                     locations: adaptation/pump_river_mouth.geojson }
+
+# protect_closed_09:
+#   measures:
+#     coastal_levee: {elevation: 1,
+#                     locations: adaptation/coast_protection_weir_PC.geojson,
+#                     merge: false }
+#     pumps:         {discharge: 4680,
+#                     locations: adaptation/pump_river_mouth.geojson }
+
+# protect_closed_1:
+#   measures:
+#     coastal_levee: {elevation: 1.2,
+#                     locations: adaptation/coast_protection_weir_PC.geojson,
+#                     merge: false }
+#     pumps:         {discharge: 5200,
+#                     locations: adaptation/pump_river_mouth.geojson }
 
 # -----------------------------------------------------------------------------------------------
 # ACCOMMODATE
 
-# Coast
+# # Coast
 # accommodate_04:
 #   measures:
-#     urban_raising: {elevation: 0.456,
+#     urban_raising: {elevation: 0.4,
 #                 }
 
 # accommodate_09:
 #   measures:
-#     urban_raising: {elevation: 1.026,
+#     urban_raising: {elevation: 1,
 #                 }
 
 # accommodate_1: # based on coast water level
 #   measures:
-#     urban_raising: {elevation: 1.14,
+#     urban_raising: {elevation: 1.2,
 #                 }
 
-# # River
-# accommodate_04:
-#   measures:
-#     urban_raising: {elevation: 3.824,
-#                 }
-
-# accommodate_09:
-#   measures:
-#     urban_raising: {elevation: 8.604,
-#                 }
-
-# accommodate_1: # based on river WL
-#   measures:
-#     urban_raising: {elevation: 9.56,
-#                 }
-
-
-# Compound - largest scale of each driver of flood - coast in this case
-# urban_raising: delta-wide DEM raise at flooded urban cells (no locations
-# given -- see apply_urban_raising's own docstring), directly comparable to
-# the other delta-wide strategies, unlike the earlier dike_ring (scoped to
-# # one hand-drawn ring around a single location).
+# River
 accommodate_04:
   measures:
-    urban_raising: {elevation: 3.824}
+    urban_raising: {elevation: 3.824,
+                }
 
 accommodate_09:
   measures:
-    urban_raising: {elevation: 8.604}
+    urban_raising: {elevation: 8.604,
+                }
 
-accommodate_1: # based on max WL (river or coast)
+accommodate_1: # based on river WL
   measures:
-    urban_raising: {elevation: 9.56}
+    urban_raising: {elevation: 9.56,
+                }
+
+
+# # Compound - largest scale of each driver of flood
+# accommodate_04:
+#   measures:
+#     urban_raising: {elevation: 3.824}
+
+# accommodate_09:
+#   measures:
+#     urban_raising: {elevation: 8.604}
+
+# accommodate_1: # based on max WL (river or coast)
+#   measures:
+#     urban_raising: {elevation: 9.56}
 
 
 # -----------------------------------------------------------------------------------------------
@@ -352,10 +348,6 @@ accommodate_1: # based on max WL (river or coast)
 retreat_04:
   measures:
     retreat: {retreat_fraction: 0.4}
-    # dep_subgrid is NOT set here -- it's auto-derived by 18a_adapt_pre.py from
-    # this basin's own already-built {basin_id}/sfincs_skeleton/subgrid/dep_subgrid.tif,
-    # since retreat must reuse the EXACT SAME elevation the skeleton was built
-    # from (only roughness changes) -- never a separately-authored raw-data file.
 
 retreat_09:
   measures:

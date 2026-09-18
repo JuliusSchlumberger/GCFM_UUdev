@@ -50,7 +50,7 @@ from __future__ import annotations
 import logging
 import os
 import warnings
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pyextremes import EVA
@@ -62,7 +62,7 @@ import pandas as pd
 from scipy import stats
 from shapely.geometry import Polygon
 
-from src.plots import map_background
+from src.plots import map_background, save_figure
 
 log = logging.getLogger(__name__)
 
@@ -130,15 +130,6 @@ class EVAResult:
     record_years: float = np.nan
     ok: bool = False
     messages: list[str] = field(default_factory=list)
-
-    def as_flat_dict(self) -> dict:
-        d = asdict(self)
-        d["q_rp2_ci_lower"], d["q_rp2_ci_upper"] = self.q_rp2_ci
-        d["q_rp100_ci_lower"], d["q_rp100_ci_upper"] = self.q_rp100_ci
-        d.pop("q_rp2_ci")
-        d.pop("q_rp100_ci")
-        d.pop("messages")
-        return d
 
 
 # ── config helpers ────────────────────────────────────────────────────────────
@@ -466,43 +457,6 @@ def _rv(eva_instance, rp: float) -> float:
     return float(result)
 
 
-def gpd_return_value(
-    threshold: float,
-    scale: float,
-    shape: float,
-    peaks_per_year: float,
-    return_period: float,
-) -> float:
-    """Discharge for an arbitrary return period from an already-fitted GPD.
-
-    Reconstructs pyextremes' own POT/GPD return-value formula directly from
-    the fitted parameters (pot_threshold/pot_scale/pot_shape/pot_peaks_per_year
-    -- e.g. as saved in river_forcing.nc), with no need to re-fit or re-touch
-    the raw discharge series. Matches both _gpd_boot_ci's formula and
-    pyextremes.eva.EVA.get_return_value's: exceedance probability =
-    1/(return_period * peaks_per_year), evaluated via
-    scipy.stats.genpareto.ppf on the exceedances distribution (fit with
-    floc=0), then shifted back up by the threshold.
-
-    Args:
-        threshold:      POT threshold (m³/s) -- pot_threshold.
-        scale:          Fitted GPD scale parameter -- pot_scale.
-        shape:          Fitted GPD shape parameter (c) -- pot_shape.
-        peaks_per_year: Declustered peaks per year at that threshold --
-                        pot_peaks_per_year.
-        return_period:  Return period (years) to evaluate.
-
-    Returns:
-        Discharge (m³/s) for the requested return period, or NaN if any
-        input isn't finite.
-    """
-    inputs = (threshold, scale, shape, peaks_per_year, return_period)
-    if not all(np.isfinite(v) for v in inputs):
-        return np.nan
-    p = max(0.0, 1.0 - 1.0 / (peaks_per_year * return_period))
-    return float(threshold + stats.genpareto.ppf(p, shape, scale=scale))
-
-
 # Standard return-period list stored per crossing in river_forcing.nc
 # (discharge_rp_table) -- 5-yr steps from 5 to 1000 yr, then 1000-yr steps to
 # 10000 yr, plus the sub-5yr bankfull-adjacent points (1, 1.5, 2 yr). Fixed,
@@ -528,8 +482,7 @@ def gpd_return_value_table(
     return_periods: np.ndarray = STANDARD_RETURN_PERIODS_YR,
 ) -> np.ndarray:
     """Discharge at every return period in ``return_periods`` from an
-    already-fitted GPD -- vectorized sibling of ``gpd_return_value``, same
-    formula, no re-fitting.
+    already-fitted GPD, no re-fitting.
 
     Args:
         threshold:      POT threshold (m³/s) -- pot_threshold.
@@ -691,7 +644,6 @@ def _search_threshold(
     max_iter = int(_c(cfg, "threshold_max_iter", 30))
     ppy_min = float(_c(cfg, "peaks_per_year_min", 1.0))
     ppy_max = float(_c(cfg, "peaks_per_year_max", 5.0))
-    _fit_method = str(_c(cfg, "fit_method", "Lmoments"))  # reserved for future use
 
     pct = float(np.clip(thr_start, thr_min, thr_max))
     last_eva = last_choice = None
@@ -736,44 +688,6 @@ def _search_threshold(
         f"using last attempt (flagged reject)"
     )
     return last_eva, last_choice
-
-
-# ── fast AMAX-only entry point ────────────────────────────────────────────────
-
-
-def analyse_cell_gev_only(
-    times: np.ndarray,
-    values: np.ndarray,
-    eva_cfg: dict,
-    label: str = "",
-) -> float:
-    """AMAX/GEV fit returning the bankfull return-level only.
-
-    Skips POT/GPD, trend test, and bootstrap CIs — use when only the RP=rp_bf
-    point estimate is needed and computational speed matters (e.g. validating
-    many grid cells).
-
-    Returns np.nan if the fit fails or the series is too short.
-    """
-    s = _to_series(times, values)
-    min_days = int(_c(eva_cfg, "min_days", 9131))  # ≈25 yr — see analyse_cell
-    fit_method = str(_c(eva_cfg, "fit_method", "Lmoments"))
-    rp_bf = float(_c(eva_cfg, "rp_bf", 2.0))
-    tag = f"[{label}] " if label else ""
-
-    if s.size < min_days:
-        return np.nan
-
-    try:
-        eva_bm = EVA(data=s)
-        eva_bm.get_extremes("BM", block_size="365.2425D", errors="coerce")
-        if len(eva_bm.extremes) < 3:
-            return np.nan
-        eva_bm.fit_model(fit_method)
-        return _rv(eva_bm, rp_bf)
-    except Exception as exc:
-        log.debug(f"{tag}AMAX-only fit failed: {exc}")
-        return np.nan
 
 
 # ── full pipeline entry point ─────────────────────────────────────────────────
@@ -974,7 +888,7 @@ def analyse_cell(
             res.pot_shape = float(gpd_params.get("c", 0.0))
             # Saved alongside pot_threshold/pot_shape/pot_peaks_per_year so a
             # downstream consumer can compute the discharge for an arbitrary
-            # return period later without re-fitting -- see gpd_return_value.
+            # return period later without re-fitting -- see gpd_return_value_table.
             res.pot_scale = float(gpd_params.get("scale", np.nan))
 
             # Per-fit sanity check (advisory): |shape| > 0.5 is implausible for
@@ -1051,7 +965,6 @@ def plot_cell_diagnostics(
     import matplotlib.pyplot as plt
 
     fit_method = str(_c(eva_cfg, "fit_method", "Lmoments"))
-    _ci_alpha = float(_c(eva_cfg, "ci_alpha", 0.95))  # reserved for future use
     rp_bf = float(_c(eva_cfg, "rp_bf", 2.0))
     rp_fl = float(_c(eva_cfg, "rp_fl", 100.0))
 
@@ -1120,8 +1033,7 @@ def plot_cell_diagnostics(
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=130)
-    plt.close(fig)
+    save_figure(fig, output_path, dpi=130)
     log.info(f"Wrote EVA diagnostic plot: {output_path}")
     return res
 
@@ -1409,8 +1321,7 @@ def plot_bias_correction(
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=130)
-    plt.close(fig)
+    save_figure(fig, output_path, dpi=130)
     log.info(f"Wrote bias-correction diagnostic plot: {output_path}")
 
 
@@ -1419,7 +1330,7 @@ def plot_bias_correction(
 
 def plot_grdc_overview(
     domain_poly: Polygon,
-    osm_land_path: str,
+    land_polygons_path: str,
     river_gdf: gpd.GeoDataFrame,
     crossings_gdf: gpd.GeoDataFrame,
     grdc_stations: gpd.GeoDataFrame,
@@ -1428,7 +1339,6 @@ def plot_grdc_overview(
     diagnostics: dict,
     output_path: str | Path,
     label: str = "",
-    water_bodies_path: str | None = None,
 ) -> None:
     """Render a 2x2 GRDC-vs-GloFAS correlation overview figure.
 
@@ -1452,8 +1362,8 @@ def plot_grdc_overview(
 
     Args:
         domain_poly: Model domain polygon (WGS84).
-        osm_land_path: Path to the land polygons geopackage (landuse-derived,
-            not OSM) used as a map background (see ``src.plots.map_background``).
+        land_polygons_path: Path to the land mask geopackage (land use != 200)
+            used as a map background (see ``src.plots.map_background``).
         river_gdf: River network GeoDataFrame (WGS84).
         crossings_gdf: One row per river crossing, with a ``has_glofas`` bool
             column and point geometry (WGS84).
@@ -1493,13 +1403,7 @@ def plot_grdc_overview(
     ].iloc[0]
     crossing_pt = crossings_gdf.geometry.iloc[highlight_crossing_idx]
 
-    map_background(
-        ax,
-        domain_poly,
-        osm_land_path,
-        margin_frac=0.15,
-        water_bodies_path=water_bodies_path,
-    )
+    map_background(ax, domain_poly, land_polygons_path, margin_frac=0.15)
     bx, by = domain_poly.exterior.xy
     ax.plot(bx, by, color="black", linewidth=2, zorder=2, label="Model domain")
 
@@ -1580,6 +1484,5 @@ def plot_grdc_overview(
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=130)
-    plt.close(fig)
+    save_figure(fig, output_path, dpi=130)
     log.info(f"Wrote GRDC overview plot: {output_path}")

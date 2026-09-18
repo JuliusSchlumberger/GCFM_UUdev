@@ -31,14 +31,23 @@ rule grid_align_landuse:
         spec_basins_meta      = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
         domain_gpkg           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         landuse                = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
+        # Roughness is area-averaged from the SOURCE at its own resolution,
+        # not reclassified from landuse_on_grid's dominant class -- same
+        # reasoning as rule get_roughness (05c); see src.landuse.
+        landuse_source         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"),
         grid_resolution        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_grid_resolution.json"),
         matching_lu_roughness  = catalogue_path("lu_to_roughness_lookup"),
-        land_polygons          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
     output:
         landuse_on_grid          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_on_grid.tif"),
         roughness_on_grid        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness_on_grid.tif"),
+        # Land mask (land use != 200) traced from landuse_on_grid, WGS84,
+        # cell-aligned with the model -- the land background of every
+        # figure of model output from here on (see src.plots' docstring).
+        land_mask_on_grid        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
         plot_landuse_on_grid     = results_path("{basin_id}/preprocessing_inputs/visuals/09b_landuse_on_grid.png"),
         plot_roughness_on_grid   = results_path("{basin_id}/preprocessing_inputs/visuals/09b_roughness_on_grid.png"),
+    params:
+        roughness_aggregation = config["landuse"]["roughness_aggregation"],
     log:
         "logs/{basin_id}/09b_grid_align_landuse.log"
     script:

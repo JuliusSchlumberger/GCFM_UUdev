@@ -11,13 +11,13 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 import pandas as pd
-from scipy.stats import spearmanr
 from hydromt_sfincs import SfincsModel
 import matplotlib
 import matplotlib.dates as mdates
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 
 OUT_DIR = Path(r"D:\GCFM_UU\results\2433835\runs")
 CSV = OUT_DIR / "metrics_comparison.csv"
@@ -25,7 +25,7 @@ METRICS = ["flooded_area_km2", "urban_exposed_km2", "mean_depth_m", "volume_m3"]
 SCALES = ["04", "09", "1"]  # raw strategy-name suffix, low -> high implementation scale
 
 # ----------------------------------------------------------------- 1. parse
-raw = pd.read_csv(CSV, sep=";")
+raw = pd.read_csv(CSV)
 baselines = raw[raw.method == "baseline"].set_index("scenario")
 
 d = raw[raw.method != "baseline"].copy()
@@ -68,51 +68,51 @@ cols = ["flooded_area_km2", "urban_exposed_km2", "mean_depth_m", "volume_m3"]
 for (e, a), g in d.groupby(["event", "approach"]):
     print(f"  {e:14s} {a:5s}: {g.duplicated(cols, keep=False).sum():2d} / {len(g)}")
 
-# ------------------------------------------------------ 3b. Spearman per event
-print("\n# Spearman rho, POST vs PRE ranking of all measure-scale combinations")
-rows = []
-for e, g in d.groupby("event"):
-    p = g.pivot_table(
-        index=["measure", "scale"],
-        columns="approach",
-        values=["red_" + m for m in METRICS],
-        observed=True,
-    )
-    for m in METRICS:
-        r, pv = spearmanr(p[("red_" + m, "POST")], p[("red_" + m, "PRE")])
-        rows.append(dict(event=e, metric=m, rho=round(r, 2), p=round(pv, 4)))
-sp = pd.DataFrame(rows)
-print(sp.pivot(index="metric", columns="event", values="rho").to_string())
-sp.to_csv(OUT_DIR / "spearman_by_event_metric.csv", index=False)
+# # ------------------------------------------------------ 3b. Spearman per event
+# print("\n# Spearman rho, POST vs PRE ranking of all measure-scale combinations")
+# rows = []
+# for e, g in d.groupby("event"):
+#     p = g.pivot_table(
+#         index=["measure", "scale"],
+#         columns="approach",
+#         values=["red_" + m for m in METRICS],
+#         observed=True,
+#     )
+#     for m in METRICS:
+#         r, pv = spearmanr(p[("red_" + m, "POST")], p[("red_" + m, "PRE")])
+#         rows.append(dict(event=e, metric=m, rho=round(r, 2), p=round(pv, 4)))
+# sp = pd.DataFrame(rows)
+# print(sp.pivot(index="metric", columns="event", values="rho").to_string())
+# sp.to_csv(OUT_DIR / "spearman_by_event_metric.csv", index=False)
 
-# ------------------------------------------- 3c. binary agreement (tune threshold)
-THRESH = 25.0  # % reduction in urban exposure counted as "effective"
-u = wide["red_urban_exposed_km2"].reset_index()
-u["POST_eff"], u["PRE_eff"] = u.POST > THRESH, u.PRE > THRESH
-print(f"\n# Confusion matrix, 'effective' = >{THRESH:.0f}% reduction in urban exposure")
-print(
-    pd.crosstab(u.PRE_eff, u.POST_eff, rownames=["PRE (benchmark)"], colnames=["POST"])
-)
-u["error"] = u.POST - u.PRE
-print("\n# Disagreements, sorted by magnitude")
-print(
-    u[u.POST_eff != u.PRE_eff]
-    .reindex(u.error.abs().sort_values(ascending=False).index)
-    .dropna(subset=["error"])[["event", "short", "scale", "PRE", "POST", "error"]]
-    .round(1)
-    .to_string(index=False)
-)
+# # ------------------------------------------- 3c. binary agreement (tune threshold)
+# THRESH = 25.0  # % reduction in urban exposure counted as "effective"
+# u = wide["red_urban_exposed_km2"].reset_index()
+# u["POST_eff"], u["PRE_eff"] = u.POST > THRESH, u.PRE > THRESH
+# print(f"\n# Confusion matrix, 'effective' = >{THRESH:.0f}% reduction in urban exposure")
+# print(
+#     pd.crosstab(u.PRE_eff, u.POST_eff, rownames=["PRE (benchmark)"], colnames=["POST"])
+# )
+# u["error"] = u.POST - u.PRE
+# print("\n# Disagreements, sorted by magnitude")
+# print(
+#     u[u.POST_eff != u.PRE_eff]
+#     .reindex(u.error.abs().sort_values(ascending=False).index)
+#     .dropna(subset=["error"])[["event", "short", "scale", "PRE", "POST", "error"]]
+#     .round(1)
+#     .to_string(index=False)
+# )
 
 # ------------------------------------------------------------------ 4. figures
-EVENT_ORDER = ["coast_500", "river_500", "compound_500"]
+EVENT_ORDER = ["coast_100", "river_500", "compound_100c_500r"]
 events = sorted(d.event.unique(), key=EVENT_ORDER.index)
 # case-insensitive: plain sorted() puts "NbS_..." before "grey_..." (uppercase
 # N sorts before lowercase g in ASCII), not the intended alphabetical order
 measures = sorted(d.short.unique(), key=str.lower)
 
 STYLE = {
-    "PRE": dict(fmt="-o", color="#1b4965", label="Modelled (re-run)"),
-    "POST": dict(fmt="--s", color="#e07a5f", label="Postprocessed (not re-run)"),
+    "PRE": dict(fmt="-o", color="#0072B2", label="Modelled (re-run)"),
+    "POST": dict(fmt="--s", color="#E69F00", label="Postprocessed (not re-run)"),
 }
 
 
@@ -137,7 +137,7 @@ SCALE_LABELS = {
     "0": "No adaptation",
     "04": "Highly ineffective",
     "09": "Marginally ineffective",
-    "1": "Theoretically effective",
+    "1": "Full potential",
 }
 X_LABELS = [SCALE_LABELS[s] for s in PLOT_SCALES]
 
@@ -167,7 +167,7 @@ for METRIC, LABEL, YLIM, YTICKS in METRIC_INFO:
             A.set_yscale("symlog", linthresh=0.05)
             A.set_ylim(*YLIM)
             A.axhline(1, c="crimson", lw=0.8)
-            A.axhspan(1, YLIM[1], color="crimson", alpha=0.06)
+            A.axhspan(1, YLIM[1], color="crimson", alpha=0.07)
             A.set_yticks(YTICKS)
             A.set_yticklabels([f"{t:g}" for t in YTICKS], fontsize=7)
             A.tick_params(labelsize=7, labelrotation=45)
@@ -185,12 +185,10 @@ for METRIC, LABEL, YLIM, YTICKS in METRIC_INFO:
                     ha="center",
                 )
 
-    axes[0, 0].legend(fontsize=8)
-    # fig.suptitle(
-    #     f"{LABEL.capitalize()} relative to the no-adaptation baseline\n"
-    #     "(1 = no change, 0 = eliminated, >1 = worse)",
-    #     fontsize=10,
-    # )
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    handles.append(Patch(facecolor="crimson", alpha=0.1, edgecolor="none"))
+    labels.append("Residual risk")
+    axes[0, 0].legend(handles, labels, fontsize=8)
     plt.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(OUT_DIR / f"fig_scale_response_{METRIC}.png", dpi=150)
 
@@ -262,16 +260,16 @@ plt.close(fig)
 # bottom, y-axis shared within each row so magnitudes are directly
 # comparable across scenarios (coast_500's surge peak vs. compound_500's,
 # river_500's discharge peak vs. compound_500's, etc.)
-SCENARIOS = ["coast_500", "river_500", "compound_500"]
+SCENARIOS = ["coast_100", "river_500", "compound_100c_500r"]
 SCENARIO_COLOR = "#14b5dd"
-# current config (config.yml boundary_forcings.surge.slr.slr_m) is 0.0, so
+# if these scenarios' own slr_m (config/scenarios.yml, per-scenario) is 0.0,
 # the plotted water level IS the actual built forcing, with no SLR -- shown
 # as a flat reference line AT y=SLR_M (an illustrative SLR magnitude, not a
 # baseline+SLR shift) on the coastal scenarios only, so the flood peak's
 # height can be read directly against it (river_500 has near-baseline surge
 # to begin with, so this reference isn't the interesting comparison there).
 SLR_M = 0.5
-SLR_SCENARIOS = {"coast_500", "compound_500"}
+SLR_SCENARIOS = {"coast_100", "compound_100c_500r"}
 
 fig, axes = plt.subplots(
     2,

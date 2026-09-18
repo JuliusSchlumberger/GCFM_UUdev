@@ -12,6 +12,7 @@ rule get_boundary_forcings:
         spec_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network.gpkg"),
         river_discharge = catalogue_path("river_discharge"),
         surge_data = catalogue_path("storm_tide_return_periods"),
+        coast_hg_data = catalogue_path("Coast_HG"),
         land_polygons = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
         grdc_data = catalogue_path("grdc_discharge"),
         mdt_data = catalogue_path("mdt_cnes_cls22"),
@@ -56,15 +57,18 @@ rule get_boundary_forcings:
         surge_return_period = scenario_params("default")["surge_rp"],
         search_radii_km = config["boundary_forcings"]["surge"]["search_radii_km"],
         surge_period_hr = config["boundary_forcings"]["surge"]["period_hr"],
+        coast_hg = config["boundary_forcings"]["surge"]["coast_hg"],
         mdt_fallback_search_deg = config["datum_correction"]["fallback_search_deg"],
-        # Deliberately excludes slr_m: the target global-mean SLR value must
-        # NOT be a param of this rule, or changing it would bump
-        # surge_forcing.nc's mtime and force rule 10's weir/depth calibration
-        # and rule 13's skeleton build to rerun for no physical reason (they
-        # only ever read the MDT-only baseline_m). slr_m is instead a param
-        # of rule build_sfincs/run_spinup, applied at build time to
-        # slr_fingerprint (see 07_get_boundary_forcings.py, src.surge).
-        surge_slr = {k: v for k, v in config["boundary_forcings"]["surge"]["slr"].items() if k != "slr_m"},
+        # slr_m (the target global-mean SLR value) deliberately lives in
+        # config/scenarios.yml, not here: it must NOT be a param of this
+        # rule, or changing it would bump surge_forcing.nc's mtime and force
+        # rule 10's weir/depth calibration and rule 13's skeleton build to
+        # rerun for no physical reason (they only ever read the MDT-only
+        # baseline_m). slr_m is instead a per-scenario param of rule
+        # build_sfincs/run_spinup, applied at build time to slr_fingerprint
+        # (see 07_get_boundary_forcings.py, src.surge, scenario_params in
+        # 00_common.smk).
+        surge_slr = config["boundary_forcings"]["surge"]["slr"],
         # river
         river_period_hr = config["boundary_forcings"]["river"]["period_hr"],
         glofas_buffer_deg = config["boundary_forcings"]["river"]["glofas_buffer_deg"],

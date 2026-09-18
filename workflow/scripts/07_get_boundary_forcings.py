@@ -36,6 +36,7 @@ from src.surge import (
     build_time_axis,
     compute_distances_to_bbox,
     compute_global_mean_slr,
+    extract_tide_cycle_from_coast_hg,
     interpolate_protection_level,
     load_coastrp_stations,
     load_mdt,
@@ -56,6 +57,7 @@ load_slr_fingerprint           = profiler.wrap(load_slr_fingerprint)
 compute_global_mean_slr        = profiler.wrap(compute_global_mean_slr)
 apply_slr_fingerprint          = profiler.wrap(apply_slr_fingerprint)
 build_surge_dataset           = profiler.wrap(build_surge_dataset)
+extract_tide_cycle_from_coast_hg = profiler.wrap(extract_tide_cycle_from_coast_hg)
 find_boundary_crossings       = profiler.wrap(find_boundary_crossings)
 resolve_inside_domain_reaches = profiler.wrap(resolve_inside_domain_reaches)
 load_glofas_clip              = profiler.wrap(load_glofas_clip)
@@ -135,8 +137,10 @@ log.info(f"Most distant selected station: {stations['dist_m'].max() / 1000:.1f} 
 # Mandatory, not optional: the coastal DEM (FathomDEM) is always referenced
 # to GOCO06s via the mandatory datum correction in 05a_get_elevation.py, so
 # leaving the surge boundary in local MSL would put the DEM and the water-
-# level forcing in inconsistent vertical references. Mirrors the sign
-# convention used in 05a to re-reference GEBCO to GOCO06s (gebco -= mdt).
+# level forcing in inconsistent vertical references. MDT is the mean sea
+# surface's height ABOVE the geoid, so MSL-referenced COAST-RP levels get
+# +MDT (H_GOCO06s = H_MSL + MDT) -- the same correction 05a applies to
+# GEBCO (gebco += mdt). See src.surge.apply_mdt_correction.
 mdt_fallback_search_deg = float(snakemake.params.mdt_fallback_search_deg)
 mdt_da = load_mdt(snakemake.input.mdt_data)
 stations = apply_mdt_correction(stations, mdt_da, mdt_fallback_search_deg)
@@ -147,22 +151,24 @@ if n_nan_mdt:
         f"+/-{mdt_fallback_search_deg} deg; mdt set to 0 for these"
     )
     stations["mdt"] = stations["mdt"].fillna(0.0)
-stations["rp_level"] = stations["rp_level_raw"] - stations["mdt"]
+stations["rp_level"] = stations["rp_level_raw"] + stations["mdt"]
 log.info(
-    f"MDT vertical correction applied (local MSL -> GOCO06s): "
-    f"delta = [{(-stations['mdt']).min():.3f}, {(-stations['mdt']).max():.3f}] m"
+    f"MDT vertical correction applied (local MSL -> GOCO06s, +MDT): "
+    f"delta = [{stations['mdt'].min():.3f}, {stations['mdt'].max():.3f}] m"
 )
 # ── SLR fingerprint (dimensionless, target-independent) ─────────────────────
-# Deliberately does NOT scale by slr_cfg["slr_m"] or touch rp_level here --
+# Deliberately does NOT scale by an slr_m value or touch rp_level here --
 # only the reference distribution (ssp_scenario/confidence_level/year/
 # quantile) is baked into this rule's output, so surge_forcing.nc stays
-# byte-identical (mtime-wise, to Snakemake) regardless of the slr_m target.
-# slr_m itself is read as a param ONLY by rule 13_build_sfincs and
-# rule run_spinup, which multiply it by slr_fingerprint at build time (see
-# src.surge.lookup_storm_tide_at_rp/build_design_surge_matrix). Changing
-# slr_m therefore reruns only those (cheap) per-scenario builds and the
-# event runs below them, never this rule, rule 10's weir/depth calibration,
-# or rule 13's skeleton build.
+# byte-identical (mtime-wise, to Snakemake) regardless of any scenario's
+# slr_m target. slr_m itself now lives per-scenario in config/scenarios.yml
+# (see scenario_params in 00_common.smk) and is read as a param ONLY by
+# rule build_sfincs/adapt_build_forcing_pre, which multiply it by
+# slr_fingerprint at build time (see
+# src.surge.lookup_storm_tide_at_rp/build_design_surge_matrix). Changing one
+# scenario's slr_m therefore reruns only that (cheap) per-scenario build and
+# its event run below it, never this rule, rule 10's weir/depth calibration,
+# rule 13's skeleton build, or any OTHER scenario.
 slr_cfg = snakemake.params.surge_slr
 if slr_cfg["enabled"]:
     slr_ds = load_slr_fingerprint(
@@ -207,11 +213,11 @@ t_surge = build_time_axis(surge_lead, surge_period, surge_dt, total_hr=forcing_t
 baseline_m = float((stations["rp_level"] - stations["rp_level_raw"]).mean())
 log.info(
     f"Surge boundary baseline (MDT-only, SLR applied downstream): {baseline_m:+.4f} m "
-    f"(= mean(−MDT) across {len(stations)} stations — local MSL in model coords)"
+    f"(= mean(+MDT) across {len(stations)} stations — local MSL in model coords)"
 )
 
 # Per-station lead-period baselines: each station's own local MSL in model
-# coordinates (= rp_level_i - rp_level_raw_i = -mdt_i, MDT-only).
+# coordinates (= rp_level_i - rp_level_raw_i = +mdt_i, MDT-only).
 # Using these (not the scalar mean) ensures each station's sinusoidal wave
 # amplitude = rp_level_raw_i exactly, regardless of how MDT varies across
 # the selected stations.  The scalar baseline_m is still stored for zsini.
@@ -243,10 +249,10 @@ protection_level = np.full(len(stations), mean_prot_raw)   # uniform across stat
 # GOCO06s-referenced crest: protection_level_raw/mean_prot_raw above is
 # LOCAL-MSL-referenced (COAST-RP's native datum), but the coastal DEM
 # (FathomDEM) is always GOCO06s-referenced (mandatory correction in
-# 05a_get_elevation.py) -- apply the SAME per-station MDT subtraction
-# rp_level itself gets (rp_level = rp_level_raw - mdt) so the crest is
-# directly comparable to the DEM the weir will be built against.
-coastal_protection_crest_m = mean_prot_raw - float(stations["mdt"].mean())
+# 05a_get_elevation.py) -- apply the SAME MDT correction rp_level itself
+# gets (rp_level = rp_level_raw + mdt) so the crest is directly comparable to
+# the DEM the weir will be built against.
+coastal_protection_crest_m = mean_prot_raw + float(stations["mdt"].mean())
 
 surge_ds["protection_level"] = (
     ["station"],
@@ -277,6 +283,39 @@ log.info(
     f"crest(GOCO06s)={coastal_protection_crest_m:+.4f} m (mean across {len(stations)} stations, "
     f"RP{coastal_rp_yr:g} yr; per-station range was "
     f"[{protection_level_raw.min():.3f}, {protection_level_raw.max():.3f}] m)"
+)
+
+# ── COAST-HG: representative tidal cycle (feeds surge_rp: Tide) ─────────────
+coast_hg_cfg = snakemake.params.coast_hg
+station_lons = stations.geometry.x.to_numpy()
+station_lats = stations.geometry.y.to_numpy()
+
+tide_cycle_hr, tide_cycle_values = extract_tide_cycle_from_coast_hg(
+    snakemake.input.coast_hg_data, station_lons, station_lats,
+    variable=coast_hg_cfg["variable"],
+)
+surge_ds = surge_ds.assign_coords(tide_cycle_hr=("tide_cycle_hr", tide_cycle_hr))
+surge_ds["tide_cycle_hr"].attrs = {
+    "units": "hours",
+    "long_name": "elapsed hours within one representative tidal cycle (~1 lunar day)",
+}
+surge_ds["tide_cycle_value_m"] = (
+    ["station", "tide_cycle_hr"],
+    tide_cycle_values,
+    {
+        "units": "m",
+        "long_name": (
+            "representative tidal cycle per station, extracted from the "
+            f"quiet pre-storm portion of COAST-HG's {coast_hg_cfg['variable']} "
+            "(Dullaart et al. 2023) -- see build_design_surge_matrix's 'tide' "
+            "branch (surge_rp: Tide) and tile_periodic_signal"
+        ),
+    },
+)
+log.info(
+    f"COAST-HG tide cycle: {len(tide_cycle_hr)} steps, {tide_cycle_hr[-1]:.2f} h span, "
+    f"amplitude range across stations "
+    f"[{tide_cycle_values.min():.3f}, {tide_cycle_values.max():.3f}] m"
 )
 
 Path(snakemake.output.surge_forcing).parent.mkdir(parents=True, exist_ok=True)
@@ -343,6 +382,7 @@ if crossings.empty:
     cell_lon = np.array([])
     cell_lat = np.array([])
     bankfull_q = np.array([])
+    mean_q = np.array([])
     flood_q = np.array([])
     protection_q = np.array([])
     results: list = []
@@ -463,6 +503,7 @@ else:
     cell_lon   = np.full(n, np.nan)
     cell_lat   = np.full(n, np.nan)
     bankfull_q   = np.full(n, np.nan)
+    mean_q       = np.full(n, np.nan)
     discharge_rp_table = np.full((n, len(STANDARD_RETURN_PERIODS_YR)), np.nan)
     protection_q = np.full(n, np.nan)
     results      = [None] * n
@@ -558,6 +599,11 @@ else:
         cell_lon[i]   = float(lon_arr[i_lon])
         cell_lat[i]   = float(lat_arr[i_lat])
         bankfull_q[i] = eva.q_rp2
+        # Grand mean over the full record, same (possibly bias-corrected)
+        # series the EVA/bankfull fit above just used -- so "mean" and
+        # "bankfull" river_rp options are methodologically consistent with
+        # each other, not one raw-GloFAS and one bias-corrected.
+        mean_q[i] = float(np.nanmean(ts_cache[(i_lat, i_lon)]))
         # Full return-period discharge table from the already-fitted POT/GPD
         # curve -- no re-fitting. The actual design discharge used to build
         # the model is looked up from this table at SFINCS-build time (each
@@ -592,6 +638,7 @@ river_ds = build_river_dataset(
     crossings, has_glofas, bankfull_q, discharge_rp_table, STANDARD_RETURN_PERIODS_YR,
     cell_lon, cell_lat, t_river, river_lead, river_period, results,
     rp_bankfull=eva_cfg.get("rp_bf", 2),
+    mean_q=mean_q,
     bias_corrected=bias_corrected_arr,
     grdc_station_id=grdc_station_id_arr,
     grdc_correlation=grdc_correlation_arr,
@@ -659,7 +706,7 @@ plot_domain_map(
     stations=stations,
     crossings=crossings,
     has_glofas=has_glofas,
-    osm_land_path=snakemake.input.land_polygons,
+    land_polygons_path=snakemake.input.land_polygons,
     output_path=snakemake.output.plot_map,
 )
 plot_forcing_timeseries(

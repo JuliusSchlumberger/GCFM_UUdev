@@ -1,8 +1,9 @@
 """
 plot_calibration_round_profiles.py -- Diagnostic: how do the calibrated
-river bed, weir crest, and period-max water level change round-by-round
-during iterative calibration (rule modelled_depth_estimation,
-10_depth_estimation_modelled.py)?
+river bed, weir crest, and period-max water level change across the three
+calibration rounds (rule modelled_depth_estimation,
+10_depth_estimation_modelled.py: confined/un-excavated, confined/excavated,
+verification)?
 
 Thin CLI wrapper around the same functions modelled_depth_estimation calls
 automatically at the end of its own round loop
@@ -17,7 +18,7 @@ before modelled_depth_estimation has produced them itself.
 
 Path selection uses src.river_network.trace_widest_path (starting at each
 is_seed reach, always continuing onto the widest in-domain downstream
-candidate at a bifurcation) rather than trace_seed_mainstem_paths' own
+candidate at a bifurcation) rather than SWORD's own
 main_path_id/is_mainstem_edge tagging, since SWORD's is_delta_outflow
 attribute can be unreliable -- it may be False even for a reach that is
 the network's actual outlet.
@@ -59,9 +60,14 @@ FIGS_DIR.mkdir(parents=True, exist_ok=True)
 with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
 RESULTS_DIR = Path(config["results_dir"])
-N_ROUNDS = int(
-    config["river_processing"]["river_depth_modelling"]["n_correction_iterations"]
-)
+# Rounds after round 0 -- fixed by 10_depth_estimation_modelled.py's own
+# design (N_ROUNDS_AFTER_0/ROUND_TITLES there).
+N_ROUNDS = 2
+ROUND_TITLES = [
+    "round 0 (confined, un-excavated)",
+    "round 1 (confined, excavated)",
+    "round 2 (verification, real crests)",
+]
 
 
 def process_basin(basin_id: str) -> None:
@@ -81,22 +87,10 @@ def process_basin(basin_id: str) -> None:
     last_state_csv = calib_root / f"round{N_ROUNDS}" / "calibration_state.csv"
     if not last_state_csv.exists():
         log.warning(
-            f"basin {basin_id}: {last_state_csv} not found -- config's "
-            f"n_correction_iterations ({N_ROUNDS}) may not match what's on disk, "
-            f"or rule modelled_depth_estimation hasn't been (re-)run yet"
+            f"basin {basin_id}: {last_state_csv} not found -- rule "
+            f"modelled_depth_estimation hasn't been (re-)run yet"
         )
         return
-    stale_state_csv = calib_root / f"round{N_ROUNDS + 1}" / "calibration_state.csv"
-    if (
-        stale_state_csv.exists()
-        and stale_state_csv.stat().st_mtime > last_state_csv.stat().st_mtime
-    ):
-        log.warning(
-            f"basin {basin_id}: round{N_ROUNDS + 1}/calibration_state.csv is NEWER than "
-            f"round{N_ROUNDS}/calibration_state.csv -- config's n_correction_iterations "
-            f"({N_ROUNDS}) looks stale vs. what's actually on disk; results below may not "
-            f"match the current config"
-        )
 
     rivers = gpd.read_file(network_path)
     with rasterio.open(elevation_path) as src:
@@ -130,6 +124,7 @@ def process_basin(basin_id: str) -> None:
             output_combined_path=str(
                 FIGS_DIR / f"{basin_id}_seed{seed}_profiles_combined.png"
             ),
+            round_titles=ROUND_TITLES,
         )
         pd.concat(
             [df.assign(round=i) for i, df in profiles_by_round.items()],
@@ -137,7 +132,7 @@ def process_basin(basin_id: str) -> None:
         ).to_csv(FIGS_DIR / f"{basin_id}_seed{seed}_profiles.csv", index=False)
         log.info(
             f"basin {basin_id} seed {seed}: wrote profile plots "
-            f"({N_ROUNDS} correction round(s), path of {len(path_rids)} reach(es))"
+            f"(path of {len(path_rids)} reach(es))"
         )
 
 

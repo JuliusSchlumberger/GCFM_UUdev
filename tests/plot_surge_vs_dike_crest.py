@@ -19,13 +19,14 @@ Reads:
     first, then older pre-reorg locations, since local results directories
     can lag behind the current pipeline layout.
   - coastal_protection_crest_m from surge_forcing.nc — the FLAT, per-basin
-    FLOPROS design crest BEFORE any freeboard/river-crest combination (see
+    FLOPROS design crest; + config freeboard_m and rounded UP to 0.1 m it is
+    the floor every built weir segment sits at or above (see
     src.protection_weir.build_coastal_protection_weir's own docstring):
-    pure-coastal weir segments equal this value exactly; segments also
-    covered by a calibrated river reach can be pushed much higher via
-    max(coastal, river_crest) -- so the built weir's own min matches this
-    floor while its max can be dominated entirely by inland river reaches
-    that have nothing to do with the coastal surge at all.
+    pure-coastal weir segments equal that floor exactly; segments holding
+    back a higher simulated water level (river banks, the mouth) are pushed
+    higher -- so the built weir's own min matches this floor while its max
+    can be dominated entirely by inland river reaches that have nothing to
+    do with the coastal surge at all.
 
 Usage:
     conda run -n hmt_sfincs_dev python tests/plot_surge_vs_dike_crest.py [basin_id] [scenario_surge_rp]
@@ -48,7 +49,7 @@ import xarray as xr
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
-from src.surge import lookup_storm_tide_at_rp
+from src.surge import ceil_water_level, lookup_storm_tide_at_rp
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
@@ -59,6 +60,8 @@ SCENARIO_SURGE_RP = float(sys.argv[2]) if len(sys.argv) > 2 else 500.0
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
+with open(REPO_ROOT / "config" / "scenarios.yml") as fh:
+    SCENARIO_DEFS = yaml.safe_load(fh) or {}
 RESULTS_DIR = Path(config["results_dir"])
 FIGS_DIR = REPO_ROOT / "figs" / "surge_vs_dike_crest"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -103,17 +106,26 @@ log.info(f"coastal_protection_weir.gpkg: {weir_path}")
 # stored as a dimensionless slr_fingerprint, not baked in -- see
 # src.surge.apply_slr_fingerprint) so that this basin-level file never
 # changes when only the slr_m target changes. This script isn't
-# snakemake-driven, so it reads the CURRENT config.yml target itself and
-# applies it the same way 13_build_sfincs.py does at real build time, to
+# snakemake-driven, so it reads the CURRENT scenarios.yml target itself
+# (slr_m is per-scenario, see scenario_params in 00_common.smk -- this uses
+# the "default" scenario's own value since this script isn't scenario-aware)
+# and applies it the same way 13_build_sfincs.py does at real build time, to
 # show the actual, currently-configured SLR-inclusive levels.
 surge_ds = xr.open_dataset(surge_forcing_path, decode_times=False)
 table_rps = surge_ds["table_rp"].values.astype(float)
 n_stations = surge_ds.sizes["station"]
-coastal_protection_crest_m = float(surge_ds["coastal_protection_crest_m"].values)
+coastal_protection_crest_raw_m = float(surge_ds["coastal_protection_crest_m"].values)
+# The floor as actually built (src.protection_weir): + freeboard_m, rounded
+# up to the next 0.1 m -- same rounding the storm-tide levels below get.
+_freeboard_m = float(config["river_processing"]["river_depth_modelling"]["freeboard_m"])
+coastal_protection_crest_m = float(
+    ceil_water_level(coastal_protection_crest_raw_m + _freeboard_m)
+)
 baseline_m = float(surge_ds["baseline_m"].values)
 
 slr_cfg = config["boundary_forcings"]["surge"]["slr"]
-effective_slr_m = float(slr_cfg["slr_m"]) if slr_cfg["enabled"] else 0.0
+default_slr_m = float(SCENARIO_DEFS.get("default", {}).get("slr_m", 0.0))
+effective_slr_m = default_slr_m if slr_cfg["enabled"] else 0.0
 
 levels_by_rp = np.stack(
     [lookup_storm_tide_at_rp(surge_ds, rp, slr_m=effective_slr_m) for rp in table_rps]
@@ -124,11 +136,12 @@ rp_max = levels_by_rp.max(axis=1)
 
 log.info(f"Stations: {n_stations}")
 log.info(
-    f"coastal_protection_crest_m (flat FLOPROS design crest, MDT-only): {coastal_protection_crest_m:+.4f} m"
+    f"coastal crest floor as built: {coastal_protection_crest_m:+.2f} m (FLOPROS design crest "
+    f"{coastal_protection_crest_raw_m:+.4f} m, MDT-only, +{_freeboard_m:.2f} m freeboard, rounded up to 0.1 m)"
 )
 log.info(f"baseline_m (mean sea level correction, MDT-only): {baseline_m:+.4f} m")
 log.info(
-    f"SLR target applied (config boundary_forcings.surge.slr): "
+    f"SLR target applied (scenarios.yml 'default' slr_m): "
     f"{effective_slr_m:+.3f} m x per-station fingerprint "
     f"(enabled={slr_cfg['enabled']}) -- levels below already include this"
 )
@@ -201,7 +214,7 @@ ax_zoom.axhline(
     color="black",
     linestyle="--",
     linewidth=1.5,
-    label=f"Coastal design crest (flat, no freeboard) = {coastal_protection_crest_m:+.3f} m",
+    label=f"Coastal crest floor as built = {coastal_protection_crest_m:+.2f} m",
 )
 
 ax_zoom.axvline(

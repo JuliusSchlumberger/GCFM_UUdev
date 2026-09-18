@@ -1,18 +1,22 @@
 """
-03_get_land_polygons.py — Vectorize the global landuse raster (landuse != 200,
-i.e. not sea) clipped to the basin model domain, in its native WGS84
-resolution/CRS.
+03_get_land_polygons.py — Vectorize this basin's own land-use raster
+(landuse != 200, i.e. not sea; rule prepare_landuse, 02b) in its native
+WGS84 resolution/CRS.
 
-2026-08-06: replaces the previous OSM land-polygons clip entirely (OSM's own
+A land MASK for figure backgrounds only -- the figures made before the
+SFINCS grid exists (rules 04-09, 11b). Every figure of model output uses
+the grid-aligned mask rule grid_align_landuse (09b) traces from
+landuse_on_grid.tif instead, and the models' own water-level boundary uses
+landuse_on_grid.tif directly (src.raster.restrict_waterlevel_boundary_to_sea)
+-- so nothing computational depends on this file anymore (2026-09-11). See
+src.plots' module docstring.
+
+2026-08-06: replaced the previous OSM land-polygons clip entirely (OSM's own
 coastline data disagreed with landuse at some basins' tidal flats/lagoons --
-see CHANGELOG). Every other consumer of "land_polygons" project-wide (every
-diagnostic plot's own background overlay, plus the two real, functional
-exclude_polygon uses in 10_depth_estimation_modelled.py/
-13_build_sfincs_skeleton.py's own waterlevel boundary mask) now traces back
-to this same landuse==200 criterion -- the same one sea_mask.tif (rule 05b)
-and src.protection_weir's own ocean_mask already use -- so there is exactly
-one source of truth for "is this land or sea" everywhere, not several
-independently-derived opinions that can disagree with each other.
+see CHANGELOG); no OSM data is used anywhere since. Same landuse==200
+criterion sea_mask.tif (rule 05b) and src.protection_weir's own ocean_mask
+use -- and, for ESA WorldCover, 200 is what rule prepare_landuse derived
+(WorldCover has no sea class; see src.landuse).
 """
 
 from pathlib import Path
@@ -34,7 +38,7 @@ wgs84_bounds, _, _ = load_domain(
 log.info(f"Domain WGS84 bounds: {wgs84_bounds}")
 
 # ── vectorize landuse != 200 ──────────────────────────────────────────────────
-land = vectorize_land_from_landuse(snakemake.input.global_landuse, wgs84_bounds)
+land = vectorize_land_from_landuse(snakemake.input.landuse_source, wgs84_bounds)
 log.info(f"Landuse land polygons: {len(land)} polygon(s) (landuse != 200)")
 
 # ── write ─────────────────────────────────────────────────────────────────────

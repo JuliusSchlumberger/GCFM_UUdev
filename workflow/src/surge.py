@@ -14,6 +14,12 @@ log = logging.getLogger(__name__)
 # Fixed return periods tabulated in COAST-RP (storm_tide_rp_{rp:04d} variables).
 _COASTRP_RPS = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000)
 
+# One lunar (tidal) day -- the period a representative tidal cycle is
+# extracted/tiled over (see tile_periodic_signal), chosen so consecutive
+# repeats stay phase-continuous instead of the ~12h drift a plain 24h
+# calendar day would accumulate against the real semidiurnal/diurnal tide.
+LUNAR_DAY_HOURS = 24.0 + 50.0 / 60.0
+
 
 # ── time series primitives ────────────────────────────────────────────────────
 
@@ -50,6 +56,28 @@ def build_time_axis(
     return np.arange(n_steps + 1, dtype=float) * dt_hr
 
 
+WATER_LEVEL_STEP_M = 0.1
+
+
+def ceil_water_level(values, step_m: float = WATER_LEVEL_STEP_M) -> np.ndarray:
+    """
+    Round a water level / weir crest UP to the next multiple of ``step_m``
+    (0.1 m by default) -- never down, so neither a water level nor a
+    protection crest is underestimated by rounding. Used for every coastal
+    water level here (calm sea: calm_sea_levels/read_baseline_m; COAST-RP
+    storm tide: lookup_storm_tide_at_rp) and for every production weir
+    crest (src.protection_weir.build_coastal_protection_weir), so all sit on
+    the same 0.1 m grid; sfincs.weir itself stores crests at 0.1 m
+    precision, so an already-rounded crest is written exactly as computed.
+
+    The inner np.round strips float noise so an exact multiple (0.3, stored
+    as 0.30000000000000004) isn't bumped a whole step; the outer one keeps
+    the result clean (0.4, not 0.4000000000000001). NaN passes through.
+    """
+    steps = np.ceil(np.round(np.asarray(values, dtype=float) / step_m, 6))
+    return np.round(steps * step_m, 6) + 0.0  # + 0.0: -0.0 (e.g. from -0.05) -> 0.0
+
+
 def sinusoidal_wave(
     baseline: float,
     peak: float,
@@ -84,6 +112,145 @@ def sinusoidal_wave(
     return values
 
 
+def tile_periodic_signal(
+    cycle_time_hr: np.ndarray,
+    cycle_values: np.ndarray,
+    target_times: np.ndarray,
+) -> np.ndarray:
+    """
+    Repeat one representative tidal cycle (e.g. one lunar day,
+    LUNAR_DAY_HOURS) across an arbitrary-length target time axis, by
+    wrapping elapsed time modulo the cycle's own period and interpolating --
+    NOT by tiling arrays index-for-index (np.tile), which would silently
+    assume the target axis shares the source cycle's own sampling interval
+    and produce a phase-mismatched seam wherever it doesn't (e.g. a cycle
+    extracted at COAST-HG's ~10 min resolution against a model time axis
+    built at a different dt_hr).
+
+    cycle_time_hr/cycle_values must together describe exactly one full
+    period, phase-continuous end-to-end (cycle_values at the last
+    cycle_time_hr should sit close to its value at the first) -- e.g. one
+    lunar day extracted from the quiet, pre-storm portion of a COAST-HG
+    hydrograph. This function is deliberately source-agnostic: swapping
+    where the cycle itself comes from (a different COAST-HG variable, a
+    harmonic tidal model, a raw GTSM reanalysis fit, ...) never requires
+    touching this function or its caller (build_design_surge_matrix) --
+    only whatever step populates the cycle in the first place.
+
+    Args:
+        cycle_time_hr: 1-D array, elapsed hours within one cycle (starts at 0).
+        cycle_values:  Same length, water level (m) at each cycle_time_hr.
+        target_times:  Hours since simulation start (build_time_axis output)
+                       to evaluate the repeated cycle at.
+
+    Returns:
+        1-D array, same length as target_times.
+    """
+    period_hr = float(cycle_time_hr[-1] - cycle_time_hr[0])
+    phase = (target_times - target_times[0]) % period_hr
+    return np.interp(phase, cycle_time_hr - cycle_time_hr[0], cycle_values)
+
+
+def extract_tide_cycle_from_coast_hg(
+    coast_hg_path: str,
+    station_lons: np.ndarray,
+    station_lats: np.ndarray,
+    variable: str = "hydrograph_average_tide_signal",
+    cycle_hours: float = LUNAR_DAY_HOURS,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Extract a representative tidal cycle per station from a COAST-HG storm
+    tide hydrograph file (Dullaart et al. 2023's HGRAPHER dataset) -- the
+    first ``cycle_hours`` of ``variable`` at each station's nearest COAST-HG
+    output location, i.e. the quiet portion before the RP100 surge visibly
+    begins. COAST-HG only publishes the combined tide+surge hydrograph (no
+    standalone tide-only variable), so this quiet lead-in is used as an
+    approximation of the underlying tide signal.
+
+    This is ONE way to populate a station's tide_cycle_hr/tide_cycle_value_m
+    (consumed by build_design_surge_matrix's "tide" branch via
+    tile_periodic_signal) -- deliberately kept separate from both of those
+    so a different source (a harmonic tidal model, a raw GTSM reanalysis
+    fit, a local tide gauge) can replace it later without touching the
+    build-time code at all.
+
+    Args:
+        coast_hg_path:  Path to a COAST-HG NetCDF file (e.g. COAST-HG_RP100.nc).
+        station_lons/station_lats: This basin's own surge station coordinates
+            (surge_forcing.nc's longitude/latitude), matched to the nearest
+            COAST-HG output location independently per station.
+        variable: "hydrograph_average_tide_signal" (default) or
+            "hydrograph_spring_tide_signal" for the more conservative,
+            larger-amplitude spring-tide base.
+        cycle_hours: Length of the extracted cycle (hours) -- LUNAR_DAY_HOURS
+            by default, so tile_periodic_signal repeats it phase-continuously.
+
+    Returns:
+        (cycle_hr, cycle_values): cycle_hr is 1-D (n_cycle,) elapsed hours
+        from 0, shared across stations; cycle_values is
+        (n_station, n_cycle) water level (m) per station.
+    """
+    with xr.open_dataset(coast_hg_path) as ds:
+        hg_lons = ds["station_x_coordinate"].values
+        hg_lats = ds["station_y_coordinate"].values
+        times = ds["time"].values
+        all_values = ds[variable].values  # (n_hg_station, n_time)
+
+    elapsed_hr = (times - times[0]) / np.timedelta64(1, "h")
+    mask = elapsed_hr <= cycle_hours
+    cycle_hr = elapsed_hr[mask]
+
+    cycle_values = np.full((len(station_lons), int(mask.sum())), np.nan)
+    for i, (lon, lat) in enumerate(zip(station_lons, station_lats)):
+        dist2 = (hg_lons - lon) ** 2 + (hg_lats - lat) ** 2
+        i_nearest = int(np.argmin(dist2))
+        cycle_values[i] = all_values[i_nearest, mask]
+
+    return cycle_hr, cycle_values
+
+
+def _station_calm_levels_unrounded(surge_ds: xr.Dataset, slr_m: float) -> np.ndarray:
+    """Per-station calm-sea level before rounding: rule 07's own
+    station_baseline (MDT-only; the scalar baseline_m for every station if
+    absent) plus the optional SLR term (slr_m x slr_fingerprint).
+    """
+    baselines = (
+        surge_ds["station_baseline"].values
+        if "station_baseline" in surge_ds
+        else np.full(surge_ds.sizes["station"], float(surge_ds["baseline_m"].values))
+    )
+    if slr_m != 0.0 and "slr_fingerprint" in surge_ds:
+        baselines = baselines + surge_ds["slr_fingerprint"].values * slr_m
+    return baselines
+
+
+def calm_sea_levels(surge_ds: xr.Dataset, slr_m: float = 0.0) -> np.ndarray:
+    """
+    Per-station calm-sea (tide-only, no storm surge) water level -- the
+    event forcing's own lead-in level -- rounded UP to the next 0.1 m, like
+    every other absolute water level/crest in the model (ceil_water_level).
+
+    Returns:
+        (n_station,) np.ndarray, water level (m).
+    """
+    return ceil_water_level(_station_calm_levels_unrounded(surge_ds, slr_m))
+
+
+def read_baseline_m(surge_ds: xr.Dataset) -> float:
+    """
+    surge_forcing.nc's scalar baseline_m (basin-mean local MSL in model
+    coordinates, MDT-only -- see 07_get_boundary_forcings.py), rounded UP to
+    the next 0.1 m (ceil_water_level); 0.0 if the file predates the field.
+    THE single reader for every consumer that starts/holds the sea at this
+    level (rule 10's calibration boundary + zsini, rule 13's skeleton
+    zsini), so they all agree with the rounded per-station calm-sea levels
+    (calm_sea_levels) the event forcing uses.
+    """
+    if "baseline_m" not in surge_ds:
+        return 0.0
+    return float(ceil_water_level(float(surge_ds["baseline_m"].values)))
+
+
 def lookup_storm_tide_at_rp(
     surge_ds: xr.Dataset, rp_yr: float | None, slr_m: float = 0.0
 ) -> np.ndarray:
@@ -104,19 +271,19 @@ def lookup_storm_tide_at_rp(
     rp_yr=None means mean coastal conditions: each station's own baseline
     (tide-only / calm sea, no storm surge), plus the same optional SLR term.
 
+    Every returned level is rounded UP to the next 0.1 m (ceil_water_level)
+    as an ABSOLUTE water level, after the MDT/SLR terms are added -- so it
+    is never underestimated, and sits on the same 0.1 m grid as the weir
+    crests it's compared against. The storm-tide level is ceil(calm level +
+    storm tide), not ceil(calm level) + storm tide: each absolute level is
+    the smallest 0.1 m multiple at or above its own true value.
+
     Returns:
         (n_station,) np.ndarray, water level (m).
     """
-    n_stations = surge_ds.sizes["station"]
-    baselines = (
-        surge_ds["station_baseline"].values
-        if "station_baseline" in surge_ds
-        else np.full(n_stations, float(surge_ds["baseline_m"].values))
-    )
-    if slr_m != 0.0 and "slr_fingerprint" in surge_ds:
-        baselines = baselines + surge_ds["slr_fingerprint"].values * slr_m
     if rp_yr is None:
-        return baselines  # flat: no storm surge
+        return calm_sea_levels(surge_ds, slr_m)  # flat: no storm surge
+    baselines = _station_calm_levels_unrounded(surge_ds, slr_m)
     table_rps = surge_ds["table_rp"].values
     idx = np.nonzero(np.isclose(table_rps, float(rp_yr)))[0]
     if idx.size == 0:
@@ -124,12 +291,39 @@ def lookup_storm_tide_at_rp(
             f"surge RP {rp_yr} not tabulated in COAST-RP "
             f"({[int(r) for r in table_rps]})"
         )
-    return surge_ds["storm_tide_rp_table"].values[:, idx[0]] + baselines
+    return ceil_water_level(
+        surge_ds["storm_tide_rp_table"].values[:, idx[0]] + baselines
+    )
+
+
+def storm_tide_at_rp_interpolated(
+    surge_ds: xr.Dataset, rp_yr: float, slr_m: float = 0.0
+) -> np.ndarray:
+    """
+    Per-station storm-tide water level at an ARBITRARY return period (e.g.
+    the FLOPROS coastal protection RP, which COAST-RP doesn't tabulate) --
+    linear in RP between the two bracketing tabulated RPs, the same rule
+    interpolate_protection_level uses for the coastal crest itself; clamped
+    to the tabulated range. Then the same vertical terms and 0.1 m round-up
+    as lookup_storm_tide_at_rp (which it equals at a tabulated RP).
+
+    Returns:
+        (n_station,) np.ndarray, water level (m).
+    """
+    table_rps = surge_ds["table_rp"].values.astype(float)
+    rp = float(np.clip(rp_yr, table_rps.min(), table_rps.max()))
+    raw = np.array(
+        [
+            np.interp(rp, table_rps, row)
+            for row in surge_ds["storm_tide_rp_table"].values
+        ]
+    )
+    return ceil_water_level(raw + _station_calm_levels_unrounded(surge_ds, slr_m))
 
 
 def build_design_surge_matrix(
     surge_ds: xr.Dataset,
-    design_rp_yr: int | None,
+    design_rp_yr: int | None | str,
     slr_m: float = 0.0,
 ) -> np.ndarray:
     """
@@ -140,10 +334,24 @@ def build_design_surge_matrix(
 
     design_rp_yr=None means mean coastal conditions: zero surge amplitude, a
     flat timeseries at each station's own baseline (tide-only / calm sea).
+    The string "tide" (case-insensitive) instead builds a genuinely
+    oscillating hydrograph: each station's own representative tidal cycle
+    (tide_cycle_hr coordinate + tide_cycle_value_m data var -- populated by
+    whatever extraction step is currently in use, e.g. the quiet pre-storm
+    portion of a COAST-HG hydrograph; deliberately swappable later without
+    touching this function, see tile_periodic_signal) tiled across the full
+    time axis via tile_periodic_signal, instead of collapsing to a flat
+    calm-sea baseline.
+
+    Both the lead-in level (calm_sea_levels) and the peak
+    (lookup_storm_tide_at_rp) are rounded UP to the next 0.1 m. The "tide"
+    branch is NOT rounded -- it's a genuinely varying signal, not a single
+    absolute crest/lead-in level being compared against a weir.
 
     slr_m: target global-mean SLR (m), scaled by each station's own
         'slr_fingerprint' and added to both the lead-period baseline and the
-        RP-level peak (see lookup_storm_tide_at_rp). Applied HERE, not baked
+        RP-level peak (see lookup_storm_tide_at_rp) -- and, in the "tide"
+        branch, to the tiled cycle itself. Applied HERE, not baked
         into surge_forcing.nc -- 0.0 (default) reproduces surge_forcing.nc's
         own MDT-only fields exactly, so calibration/skeleton callers that
         never pass slr_m are fully insulated from the slr_m config value.
@@ -161,15 +369,24 @@ def build_design_surge_matrix(
     Returns:
         (n_station, n_time) np.ndarray, water level (m).
     """
-    baselines = (
-        surge_ds["station_baseline"].values
-        if "station_baseline" in surge_ds
-        else np.full(surge_ds.sizes["station"], float(surge_ds["baseline_m"].values))
-    )
-    if slr_m != 0.0 and "slr_fingerprint" in surge_ds:
-        baselines = baselines + surge_ds["slr_fingerprint"].values * slr_m
-    rp_level = lookup_storm_tide_at_rp(surge_ds, design_rp_yr, slr_m=slr_m)
     times = surge_ds["time"].values
+
+    if isinstance(design_rp_yr, str) and design_rp_yr.strip().lower() == "tide":
+        cycle_hr = surge_ds["tide_cycle_hr"].values  # (n_cycle,), shared
+        cycle_vals = surge_ds["tide_cycle_value_m"].values  # (n_station, n_cycle)
+        n_station = surge_ds.sizes["station"]
+        wave = np.stack(
+            [
+                tile_periodic_signal(cycle_hr, cycle_vals[i], times)
+                for i in range(n_station)
+            ]
+        )
+        if slr_m != 0.0 and "slr_fingerprint" in surge_ds:
+            wave = wave + (surge_ds["slr_fingerprint"].values * slr_m)[:, None]
+        return wave
+
+    baselines = calm_sea_levels(surge_ds, slr_m)
+    rp_level = lookup_storm_tide_at_rp(surge_ds, design_rp_yr, slr_m=slr_m)
     wave = np.stack(
         [
             sinusoidal_wave(
@@ -271,9 +488,17 @@ def apply_mdt_correction(
                        per the COAST-RP source documentation).
         mdt:          MDT value at the station (m; NaN if no valid cell was
                        found within +/-fallback_deg).
-        rp_level:     rp_level_raw - mdt (local MSL -> GOCO06s geoid), matching
-                       the sign convention used to re-reference GEBCO to
-                       GOCO06s (gebco -= mdt) in 05a_get_elevation.py.
+        rp_level:     rp_level_raw + mdt (local MSL -> GOCO06s geoid), matching
+                       the re-referencing of GEBCO to GOCO06s (gebco += mdt)
+                       in 05a_get_elevation.py.
+
+    Sign: MDT is the height of the mean sea surface ABOVE the geoid (CF
+    standard_name mean_dynamic_topography; e.g. +0.6 m in the Sargasso Sea,
+    -1.5 m in the Southern Ocean), so H_GOCO06s = H_MSL + MDT. Before
+    2026-09-10 this subtracted MDT -- the GOCO06s -> MSL direction, carried
+    over from an earlier pipeline that converted the DEM to local MSL (see
+    workflow/archive/datum_correction/) -- putting every MSL-referenced level
+    2*MDT off relative to the GOCO06s DEM.
     """
     lat_dim = next(d for d in mdt_da.dims if "lat" in d.lower())
     lon_dim = next(d for d in mdt_da.dims if "lon" in d.lower())
@@ -284,7 +509,7 @@ def apply_mdt_correction(
         _nearest_valid_grid(mdt_da, lon_dim, geom.x, lat_dim, geom.y, fallback_deg)
         for geom in result.geometry
     ]
-    result["rp_level"] = result["rp_level_raw"] - result["mdt"]
+    result["rp_level"] = result["rp_level_raw"] + result["mdt"]
     return result
 
 
@@ -619,10 +844,11 @@ def build_surge_dataset(
     (lookup_storm_tide_at_rp/build_design_surge_matrix's own ``slr_m``
     argument).
 
-    Datum note: GEBCO is re-referenced to GOCO06s by subtracting MDT in rule
-    03a, so local MSL maps to −MDT in model coordinates.  When
+    Datum note: MSL-referenced data (GEBCO in rule 05a, COAST-RP here) is
+    re-referenced to GOCO06s by ADDING MDT, so local MSL maps to +MDT in
+    model coordinates.  When
     ``station_baselines`` is provided each station uses its own local MSL
-    (−mdt_i) as the wave baseline, so the surge amplitude equals
+    (+mdt_i) as the wave baseline, so the surge amplitude equals
     exactly ``rp_level_raw`` (the COAST-RP storm-tide above calm water)
     regardless of how MDT varies spatially across the selected stations.
     ``baseline_m`` (the mean of those per-station values) is still stored in
@@ -637,7 +863,7 @@ def build_surge_dataset(
         period_hr:         Wave period (hours).
         return_period:     Return period label written to the 'rp_level' metadata.
         baseline_m:        Mean vertical correction applied to rp_level (m).
-                           Equals mean(−MDT) across selected stations (MDT-only,
+                           Equals mean(+MDT) across selected stations (MDT-only,
                            SLR-independent by design -- see this function's own
                            docstring). Stored in the dataset so rule 10's
                            calibration and rule 13's skeleton can initialise sea
@@ -645,7 +871,7 @@ def build_surge_dataset(
         station_baselines: Per-station lead-period flat values (m), length
                            equal to ``len(stations)``.  Each entry is the
                            station's own local MSL in model coordinates
-                           (= rp_level_i − rp_level_raw_i = −mdt_i, MDT-only).
+                           (= rp_level_i − rp_level_raw_i = +mdt_i, MDT-only).
                            When None, ``baseline_m`` is used for all stations.
 
     Returns:
@@ -722,7 +948,7 @@ def build_surge_dataset(
             "units": "m",
             "long_name": (
                 "Mean vertical correction applied as lead-period baseline "
-                "(mean(−MDT) across selected stations = calm sea level in "
+                "(mean(+MDT) across selected stations = calm sea level in "
                 "model coordinates, MDT-only -- SLR deliberately excluded, "
                 "see apply_slr_fingerprint). Read by rule 10's calibration "
                 "and rule 13's skeleton to initialise sea cells (zsini.tif) "
@@ -739,7 +965,7 @@ def build_surge_dataset(
             {
                 "units": "m",
                 "long_name": (
-                    "Per-station lead-period flat value (−mdt_i, MDT-only). "
+                    "Per-station lead-period flat value (+mdt_i, MDT-only). "
                     "Local MSL for each station in model coordinates. "
                     "Ensures surge amplitude = rp_level_raw per station. "
                     "SLR is NOT included here -- see slr_fingerprint and "

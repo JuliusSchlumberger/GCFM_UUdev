@@ -36,12 +36,12 @@ DOMAIN_DIR = BASIN_ROOT / "preprocessing_inputs" / "domain"
 LAND_POLYGONS_PATH = DOMAIN_DIR / f"{BASIN_ID}_land_polygons.gpkg"
 RIVER_NETWORK_PATH = DOMAIN_DIR / f"{BASIN_ID}_river_network_clean.gpkg"
 
-SCENARIOS = ["coast_500", "river_500", "compound_500"]
+SCENARIOS = ["coast_100", "river_500", "compound_100c_500r"]
 
-ATTR_COLORS = ["#d1c740", "#3277d3", "#b063c0", "#d8d4d4"]
-ATTR_LABELS = ["River", "Coastal", "Compound", "Spin-up (permanent water)"]
+ATTR_COLORS = ["#d1c740", "#3277d3", "#d883e9"]
+ATTR_LABELS = ["River", "Coastal", "Compound"]
 ATTR_CMAP = ListedColormap(ATTR_COLORS)
-ATTR_NORM = BoundaryNorm([0.5, 1.5, 2.5, 3.5, 4.5], ATTR_CMAP.N)
+ATTR_NORM = BoundaryNorm([0.5, 1.5, 2.5, 3.5], ATTR_CMAP.N)
 
 
 def label(s):
@@ -110,7 +110,14 @@ def draw_attribution_panel(ax, scen, dst_bounds):
 
     if not land.empty:
         land.plot(ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
-    attr_plot = np.ma.masked_equal(np.nan_to_num(wgs_arr, nan=0), 0)
+    # class 4 (spin-up/permanent water, e.g. the perennial river channel) has
+    # no color slot in ATTR_CMAP/ATTR_NORM (only river/coastal/compound) --
+    # left unmasked it falls above ATTR_NORM's top boundary and clips to the
+    # colormap's last color (compound), making the river channel look
+    # compound-attributed. Mask it out here, same as attribution_plot.py's
+    # own da_attr filtering.
+    attr_arr = np.nan_to_num(wgs_arr, nan=0)
+    attr_plot = np.ma.masked_where((attr_arr == 0) | (attr_arr == 4), attr_arr)
     ax.imshow(
         attr_plot,
         cmap=ATTR_CMAP,
@@ -210,3 +217,19 @@ out_path = OUT_DIR / "fig_flood_attribution_comparison.png"
 fig.savefig(out_path, dpi=150, bbox_inches="tight")
 plt.close(fig)
 print(f"Wrote {out_path}")
+
+# --------------------------------------------------------------3. Flood map CSI comparison
+
+# Coast 100 protect-closed, marginally effective vs effective
+"D:\GCFM_UU\results\2433835\runs\coast_100\adaptation\pre\protect_closed_09\max_flood_depth.tif"
+"D:\GCFM_UU\results\2433835\runs\coast_100\adaptation\post\protect_closed_09\max_flood_depth.tif"
+
+
+"D:\GCFM_UU\results\2433835\runs\coast_100\adaptation\pre\protect_closed_1\max_flood_depth.tif"
+"D:\GCFM_UU\results\2433835\runs\coast_100\adaptation\post\protect_closed_1\max_flood_depth.tif"
+
+
+# River 500 grey protect-open
+
+
+# Compound Accommodate

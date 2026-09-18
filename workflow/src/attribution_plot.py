@@ -4,7 +4,7 @@ source (river / coastal / compound / spin-up "permanent water"), from
 three already-computed max_flood_depth.tif rasters (no new SFINCS runs):
 - a river-only counterpart scenario's own flood map
 - a coastal-only counterpart scenario's own flood map
-- the basin-level spin-up's own flood depth (RP=1, both drivers -- the
+- the basin-level spin-up's own flood depth (RP=1 river, calm sea -- the
   permanent-water class, overrides the other three; catches cells like the
   perennial river channel that stay wet from the SAME spin-up restart every
   scenario's own event run picks up from, regardless of that scenario's own
@@ -22,25 +22,26 @@ from pathlib import Path
 import numpy as np
 import rasterio
 import rioxarray as rxr
-import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap, BoundaryNorm
 from hydromt_sfincs import SfincsModel
+
+from src.plots import add_land_background_to_geoaxes, save_figure
 
 
 def generate_attribution_maps(
     base_root: Path,
     attribution_runs: list[tuple[str, Path, Path, Path, Path]],
+    land_mask_path: str | Path,
     threshold: float = 0.05,
-    colors_cat: list[str] = ["#d1c740", "#3277d3", "#b063c0", "#d8d4d4"],
+    colors_cat: list[str] = ["#d1c740", "#2168c5", "#b063c0", "#7a9cb1"],
     labels_cat: list[str] = [
         "River",
         "Coastal",
         "Compound",
-        "Spinup (permanent water)",
+        "Permanent water",
     ],
     data_libs: list[str] | None = None,
-    zoomlevel: int = 11,
 ) -> None:
     """
     Args:
@@ -50,12 +51,15 @@ def generate_attribution_maps(
         attribution_runs : list of (label, river_tif, coastal_tif, spinup_tif,
                             out_folder) tuples -- one per basin x scenario being
                             classified. spinup_tif is the basin-level spin-up's
-                            own flood depth (RP=1, both drivers) -- cells
+                            own flood depth (RP=1 river, calm sea) -- cells
                             already wet there (e.g. the perennial river
                             channel, kept wet by the SAME spin-up restart every
                             scenario's own event run picks up from) are
                             permanent water, not event-driven flooding, and
                             override any river/coastal/compound classification.
+        land_mask_path   : grid-aligned land mask ({basin}_land_mask_on_grid.gpkg,
+                            rule grid_align_landuse) drawn as the map background
+                            (see src.plots' module docstring) -- no web map tiles.
         threshold         : depth [m] above which a cell counts as flooded
                             in each of the three input rasters.
     """
@@ -110,7 +114,10 @@ def generate_attribution_maps(
 
         # Load back as georeferenced DataArray
         da_attr = rxr.open_rasterio(out_tif).squeeze(drop=True).astype(float)
-        da_attr = da_attr.where(da_attr > 0)  # class 0 → NaN (transparent)
+        # class 0 (no flooding) and class 4 (spin-up/permanent water -- not a
+        # real attribution outcome, see legend note above) -> NaN (transparent);
+        # attribution_mask.tif on disk still keeps class 4 for downstream use.
+        da_attr = da_attr.where((da_attr > 0) & (da_attr != 4))
         da_attr.name = "attribution"
 
         fig, ax = mod_ref.plot_basemap(
@@ -118,19 +125,23 @@ def generate_attribution_maps(
             variable=da_attr,
             plot_bounds=False,
             plot_geoms=False,
-            bmap="sat",
-            zoomlevel=zoomlevel,
             cmap=cmap_attr,
             norm=norm_attr,
             cbar_kwargs={"shrink": 0},
         )
+        add_land_background_to_geoaxes(ax, str(land_mask_path), mod_ref.crs)
         for _ax in fig.axes:
             if _ax is not ax:
                 _ax.remove()
+        # Classes 1-3 (river/coastal/compound) always appear in the legend
+        # regardless of whether this basin x scenario actually has any
+        # pixels in them; class 4 (spin-up/permanent water) never gets a
+        # legend entry -- it's plotted (in its own color) but not labelled,
+        # since it isn't a real attribution outcome.
         ax.legend(
             handles=[
                 mpatches.Patch(color=colors, label=labels)
-                for colors, labels in zip(colors_cat, labels_cat)
+                for colors, labels in zip(colors_cat[:3], labels_cat[:3])
             ],
             loc="lower right",
             framealpha=0.9,
@@ -138,6 +149,5 @@ def generate_attribution_maps(
         )
         ax.set_title(f"Flood source attribution – {label}")
         out_png = out_folder / "attribution_mask.png"
-        fig.savefig(str(out_png), dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        save_figure(fig, out_png, dpi=150, bbox_inches="tight")
         print(f"  Saved PNG: {out_png}")

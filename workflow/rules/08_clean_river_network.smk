@@ -5,8 +5,7 @@ rule clean_river_network:
         spec_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network.gpkg"),
         delta_polygon      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
         river_forcing      = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
-        land_polygons           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
-        specific_basins    = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_intersecting_basins.gpkg")
+        land_polygons      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
     output:
         clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
         delta_outflow_points = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_outflow_points.gpkg"),
