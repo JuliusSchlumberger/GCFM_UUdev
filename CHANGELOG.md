@@ -6,7 +6,7 @@ and why*.
 
 # 2026-09-18: changes SLR to be outside config.yml, added Tide and Mean river discharge (-KL)
 
-## SLR moved from config.yml to per-scenario (`config/scenarios.yml`)
+## SLR moved from config.yml to being per scenario, so river flood can run without SLR (`config/scenarios.yml`)
 
 `slr_m` (target global-mean SLR, m) is no longer a single shared value in
 `config.yml`'s `boundary_forcings.surge.slr` block -- it is now a per-scenario
