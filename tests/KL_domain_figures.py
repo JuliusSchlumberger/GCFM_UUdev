@@ -45,7 +45,7 @@ from src.plots import (  # noqa: E402
     read_raster_reprojected_for_plot,
 )
 
-BASIN_ID = "2433835"
+BASIN_ID = "3279946"
 BASIN_ROOT = Path(r"D:\GCFM_UU\results") / BASIN_ID
 RUNS_DIR = BASIN_ROOT / "runs"
 OUT_DIR = RUNS_DIR

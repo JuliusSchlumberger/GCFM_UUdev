@@ -14,12 +14,6 @@ log = logging.getLogger(__name__)
 # Fixed return periods tabulated in COAST-RP (storm_tide_rp_{rp:04d} variables).
 _COASTRP_RPS = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000)
 
-# One lunar (tidal) day -- the period a representative tidal cycle is
-# extracted/tiled over (see tile_periodic_signal), chosen so consecutive
-# repeats stay phase-continuous instead of the ~12h drift a plain 24h
-# calendar day would accumulate against the real semidiurnal/diurnal tide.
-LUNAR_DAY_HOURS = 24.0 + 50.0 / 60.0
-
 
 # ── time series primitives ────────────────────────────────────────────────────
 
@@ -112,101 +106,102 @@ def sinusoidal_wave(
     return values
 
 
-def tile_periodic_signal(
-    cycle_time_hr: np.ndarray,
-    cycle_values: np.ndarray,
-    target_times: np.ndarray,
-) -> np.ndarray:
-    """
-    Repeat one representative tidal cycle (e.g. one lunar day,
-    LUNAR_DAY_HOURS) across an arbitrary-length target time axis, by
-    wrapping elapsed time modulo the cycle's own period and interpolating --
-    NOT by tiling arrays index-for-index (np.tile), which would silently
-    assume the target axis shares the source cycle's own sampling interval
-    and produce a phase-mismatched seam wherever it doesn't (e.g. a cycle
-    extracted at COAST-HG's ~10 min resolution against a model time axis
-    built at a different dt_hr).
-
-    cycle_time_hr/cycle_values must together describe exactly one full
-    period, phase-continuous end-to-end (cycle_values at the last
-    cycle_time_hr should sit close to its value at the first) -- e.g. one
-    lunar day extracted from the quiet, pre-storm portion of a COAST-HG
-    hydrograph. This function is deliberately source-agnostic: swapping
-    where the cycle itself comes from (a different COAST-HG variable, a
-    harmonic tidal model, a raw GTSM reanalysis fit, ...) never requires
-    touching this function or its caller (build_design_surge_matrix) --
-    only whatever step populates the cycle in the first place.
-
-    Args:
-        cycle_time_hr: 1-D array, elapsed hours within one cycle (starts at 0).
-        cycle_values:  Same length, water level (m) at each cycle_time_hr.
-        target_times:  Hours since simulation start (build_time_axis output)
-                       to evaluate the repeated cycle at.
-
-    Returns:
-        1-D array, same length as target_times.
-    """
-    period_hr = float(cycle_time_hr[-1] - cycle_time_hr[0])
-    phase = (target_times - target_times[0]) % period_hr
-    return np.interp(phase, cycle_time_hr - cycle_time_hr[0], cycle_values)
-
-
-def extract_tide_cycle_from_coast_hg(
-    coast_hg_path: str,
+def extract_hydrograph_components(
+    hydrograph_path: str,
     station_lons: np.ndarray,
     station_lats: np.ndarray,
-    variable: str = "hydrograph_average_tide_signal",
-    cycle_hours: float = LUNAR_DAY_HOURS,
-) -> tuple[np.ndarray, np.ndarray]:
+    window_hr: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Extract a representative tidal cycle per station from a COAST-HG storm
-    tide hydrograph file (Dullaart et al. 2023's HGRAPHER dataset) -- the
-    first ``cycle_hours`` of ``variable`` at each station's nearest COAST-HG
-    output location, i.e. the quiet portion before the RP100 surge visibly
-    begins. COAST-HG only publishes the combined tide+surge hydrograph (no
-    standalone tide-only variable), so this quiet lead-in is used as an
-    approximation of the underlying tide signal.
-
-    This is ONE way to populate a station's tide_cycle_hr/tide_cycle_value_m
-    (consumed by build_design_surge_matrix's "tide" branch via
-    tile_periodic_signal) -- deliberately kept separate from both of those
-    so a different source (a harmonic tidal model, a raw GTSM reanalysis
-    fit, a local tide gauge) can replace it later without touching the
-    build-time code at all.
-
-    Args:
-        coast_hg_path:  Path to a COAST-HG NetCDF file (e.g. COAST-HG_RP100.nc).
-        station_lons/station_lats: This basin's own surge station coordinates
-            (surge_forcing.nc's longitude/latitude), matched to the nearest
-            COAST-HG output location independently per station.
-        variable: "hydrograph_average_tide_signal" (default) or
-            "hydrograph_spring_tide_signal" for the more conservative,
-            larger-amplitude spring-tide base.
-        cycle_hours: Length of the extracted cycle (hours) -- LUNAR_DAY_HOURS
-            by default, so tile_periodic_signal repeats it phase-continuously.
+    Per-station storm-tide hydrograph components (HGRAPHER, Dullaart et al.
+    2023) from the storm_tide_hydrographs file (tests/KL_gtsm_storm_tide.py):
+    the average tide signal (high water at t=0) and the normalised average
+    surge hydrograph (peak=1 at t=0), cut to -window_hr..+window_hr, at each
+    station's nearest hydrograph location. Levels are relative to a fixed
+    local MSL, same datum as COAST-RP -- MDT/SLR are added at build time.
 
     Returns:
-        (cycle_hr, cycle_values): cycle_hr is 1-D (n_cycle,) elapsed hours
-        from 0, shared across stations; cycle_values is
-        (n_station, n_cycle) water level (m) per station.
+        (hg_time_hr, tide, shape, match_km): hg_time_hr (n_t,) hours relative
+        to the peak, shared; tide/shape (n_station, n_t); match_km (n_station,)
+        distance to the matched hydrograph location.
     """
-    with xr.open_dataset(coast_hg_path) as ds:
-        hg_lons = ds["station_x_coordinate"].values
-        hg_lats = ds["station_y_coordinate"].values
-        times = ds["time"].values
-        all_values = ds[variable].values  # (n_hg_station, n_time)
+    with xr.open_dataset(hydrograph_path) as ds:
+        hx = ds["station_x_coordinate"].values
+        hy = ds["station_y_coordinate"].values
+        t = ds["event_time_hr"].values
+        win = np.abs(t) <= window_hr + 1e-9
+        tide_all = ds["average_tide_event"].values[:, win]
+        shape_all = ds["surge_shape"].values[:, win]
+    if t[win][0] > -window_hr + 1e-6 or t[win][-1] < window_hr - 1e-6:
+        raise ValueError(
+            f"hydrograph file spans {t[0]:.1f}..{t[-1]:.1f} h, shorter than the "
+            f"requested +-{window_hr:g} h window"
+        )
 
-    elapsed_hr = (times - times[0]) / np.timedelta64(1, "h")
-    mask = elapsed_hr <= cycle_hours
-    cycle_hr = elapsed_hr[mask]
-
-    cycle_values = np.full((len(station_lons), int(mask.sum())), np.nan)
+    n = len(station_lons)
+    tide = np.full((n, int(win.sum())), np.nan)
+    shape = np.full_like(tide, np.nan)
+    match_km = np.full(n, np.nan)
     for i, (lon, lat) in enumerate(zip(station_lons, station_lats)):
-        dist2 = (hg_lons - lon) ** 2 + (hg_lats - lat) ** 2
-        i_nearest = int(np.argmin(dist2))
-        cycle_values[i] = all_values[i_nearest, mask]
+        d = np.hypot((hx - lon) * np.cos(np.radians(lat)), hy - lat) * 111.0
+        j = int(np.nanargmin(d))
+        tide[i], shape[i], match_km[i] = tide_all[j], shape_all[j], d[j]
+    return t[win], tide, shape, match_km
 
-    return cycle_hr, cycle_values
+
+def _hydrograph_surge_matrix(
+    surge_ds: xr.Dataset, design_rp_yr: float | str, slr_m: float
+) -> np.ndarray:
+    """
+    build_design_surge_matrix's storm-tide-hydrograph branch (surge_forcing.nc
+    carries hg_tide_m/hg_surge_shape, rule 07 with
+    boundary_forcings.surge.hydrograph.enabled). Per station, on the model
+    time axis with the window's t=0 at attrs["hg_peak_hr"]:
+
+      tide  = average tide + station calm level (MDT, + SLR x fingerprint)
+      "tide": tide only
+      RP:   tide + A x surge_shape, A = RP level - tide high water, so the
+            peak (surge on high water) equals lookup_storm_tide_at_rp exactly
+            (rounded up to 0.1 m like every coastal level); A >= 0
+
+    Before the window the boundary holds the calm lead-in level (as the
+    spin-up ends); over the window's first attrs["hg_ramp_hours"] it blends
+    linearly from that level into the series (surge is still 0 there), so
+    the event starts from the restart without a step at the boundary.
+    """
+    times = surge_ds["time"].values
+    peak_hr = float(surge_ds.attrs["hg_peak_hr"])
+    ramp_hr = float(surge_ds.attrs.get("hg_ramp_hours", 0.0))
+    hg_t = surge_ds["hg_time_hr"].values
+    tide = surge_ds["hg_tide_m"].values
+    shape = surge_ds["hg_surge_shape"].values
+    rel = times - peak_hr
+
+    base = _station_calm_levels_unrounded(surge_ds, slr_m)
+    event = (
+        np.stack([np.interp(rel, hg_t, tide[i]) for i in range(len(base))])
+        + base[:, None]
+    )
+    if not (isinstance(design_rp_yr, str) and design_rp_yr.strip().lower() == "tide"):
+        level = lookup_storm_tide_at_rp(surge_ds, design_rp_yr, slr_m=slr_m)
+        high_water = tide.max(axis=1) + base
+        amp = np.maximum(level - high_water, 0.0)
+        surge = np.stack(
+            [
+                np.interp(rel, hg_t, shape[i], left=0.0, right=0.0)
+                for i in range(len(base))
+            ]
+        )
+        event = event + amp[:, None] * surge
+
+    start_hr = peak_hr + hg_t[0]
+    w = (
+        np.clip((times - start_hr) / ramp_hr, 0.0, 1.0)
+        if ramp_hr > 0
+        else (times >= start_hr).astype(float)
+    )
+    calm = calm_sea_levels(surge_ds, slr_m)
+    return (1.0 - w) * calm[:, None] + w * event
 
 
 def _station_calm_levels_unrounded(surge_ds: xr.Dataset, slr_m: float) -> np.ndarray:
@@ -333,28 +328,28 @@ def build_design_surge_matrix(
     re-runs the build (rule 13), never rule 07.
 
     design_rp_yr=None means mean coastal conditions: zero surge amplitude, a
-    flat timeseries at each station's own baseline (tide-only / calm sea).
-    The string "tide" (case-insensitive) instead builds a genuinely
-    oscillating hydrograph: each station's own representative tidal cycle
-    (tide_cycle_hr coordinate + tide_cycle_value_m data var -- populated by
-    whatever extraction step is currently in use, e.g. the quiet pre-storm
-    portion of a COAST-HG hydrograph; deliberately swappable later without
-    touching this function, see tile_periodic_signal) tiled across the full
-    time axis via tile_periodic_signal, instead of collapsing to a flat
-    calm-sea baseline.
+    flat timeseries at each station's own baseline (calm sea, no tide).
+
+    When surge_forcing.nc carries storm-tide hydrograph components
+    (hg_tide_m/hg_surge_shape, boundary_forcings.surge.hydrograph.enabled),
+    an RP and the string "tide" (case-insensitive) are built by
+    _hydrograph_surge_matrix: average tide + surge peaking on tidal high
+    water over the event window, tide only for "tide". Without them an RP
+    falls back to a half-cosine wave (sinusoidal_wave) from the calm level to
+    the RP level, and "tide" is unavailable.
 
     Both the lead-in level (calm_sea_levels) and the peak
-    (lookup_storm_tide_at_rp) are rounded UP to the next 0.1 m. The "tide"
-    branch is NOT rounded -- it's a genuinely varying signal, not a single
+    (lookup_storm_tide_at_rp) are rounded UP to the next 0.1 m. The tide
+    itself is NOT rounded -- it's a genuinely varying signal, not a single
     absolute crest/lead-in level being compared against a weir.
 
     slr_m: target global-mean SLR (m), scaled by each station's own
-        'slr_fingerprint' and added to both the lead-period baseline and the
-        RP-level peak (see lookup_storm_tide_at_rp) -- and, in the "tide"
-        branch, to the tiled cycle itself. Applied HERE, not baked
-        into surge_forcing.nc -- 0.0 (default) reproduces surge_forcing.nc's
-        own MDT-only fields exactly, so calibration/skeleton callers that
-        never pass slr_m are fully insulated from the slr_m config value.
+        'slr_fingerprint' and added to the lead-period baseline, the
+        RP-level peak (see lookup_storm_tide_at_rp) and the tide. Applied
+        HERE, not baked into surge_forcing.nc -- 0.0 (default) reproduces
+        surge_forcing.nc's own MDT-only fields exactly, so calibration/
+        skeleton callers that never pass slr_m are fully insulated from the
+        slr_m config value.
 
     The stored protection_level (if rule 07 wrote one) is deliberately NOT
     subtracted here -- see 07_get_boundary_forcings.py's own design comment
@@ -371,19 +366,14 @@ def build_design_surge_matrix(
     """
     times = surge_ds["time"].values
 
+    if design_rp_yr is not None and "hg_tide_m" in surge_ds:
+        return _hydrograph_surge_matrix(surge_ds, design_rp_yr, slr_m)
+
     if isinstance(design_rp_yr, str) and design_rp_yr.strip().lower() == "tide":
-        cycle_hr = surge_ds["tide_cycle_hr"].values  # (n_cycle,), shared
-        cycle_vals = surge_ds["tide_cycle_value_m"].values  # (n_station, n_cycle)
-        n_station = surge_ds.sizes["station"]
-        wave = np.stack(
-            [
-                tile_periodic_signal(cycle_hr, cycle_vals[i], times)
-                for i in range(n_station)
-            ]
+        raise ValueError(
+            "surge_rp 'Tide' needs the storm-tide hydrographs (tide signal) in "
+            "surge_forcing.nc -- enable boundary_forcings.surge.hydrograph and rerun rule 07"
         )
-        if slr_m != 0.0 and "slr_fingerprint" in surge_ds:
-            wave = wave + (surge_ds["slr_fingerprint"].values * slr_m)[:, None]
-        return wave
 
     baselines = calm_sea_levels(surge_ds, slr_m)
     rp_level = lookup_storm_tide_at_rp(surge_ds, design_rp_yr, slr_m=slr_m)

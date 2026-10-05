@@ -12,7 +12,11 @@ rule get_boundary_forcings:
         spec_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network.gpkg"),
         river_discharge = catalogue_path("river_discharge"),
         surge_data = catalogue_path("storm_tide_return_periods"),
-        coast_hg_data = catalogue_path("Coast_HG"),
+        storm_tide_hydrographs = lambda wc: (
+            catalogue_path("storm_tide_hydrographs")
+            if config["boundary_forcings"]["surge"]["hydrograph"]["enabled"]
+            else []
+        ),
         land_polygons = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
         grdc_data = catalogue_path("grdc_discharge"),
         mdt_data = catalogue_path("mdt_cnes_cls22"),
@@ -57,7 +61,7 @@ rule get_boundary_forcings:
         surge_return_period = scenario_params("default")["surge_rp"],
         search_radii_km = config["boundary_forcings"]["surge"]["search_radii_km"],
         surge_period_hr = config["boundary_forcings"]["surge"]["period_hr"],
-        coast_hg = config["boundary_forcings"]["surge"]["coast_hg"],
+        surge_hydrograph = config["boundary_forcings"]["surge"]["hydrograph"],
         mdt_fallback_search_deg = config["datum_correction"]["fallback_search_deg"],
         # slr_m (the target global-mean SLR value) deliberately lives in
         # config/scenarios.yml, not here: it must NOT be a param of this

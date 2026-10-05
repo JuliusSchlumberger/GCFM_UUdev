@@ -8,7 +8,8 @@ datasets:
     description: Dataset of manually drawn polygons representing the delta areas globally based on earth-observation data. The polygons are drawn using five defined points as a first approximation of the geomorphologically active deltaic zone.
     source: Edmonds, D.A., Caldwell, R.L., Brondizio, E.S. et al. Coastal flooding will disproportionately impact people on river deltas. Nat Commun 11, 4741 (2020). https://doi.org/10.1038/s41467-020-18531-4
     file_format: gpkg
-    file_path: DeltaWebs/modified/8_polygons.gpkg  # options: TestDelta_small.gpkg, TestPolygon.gpkg (Mississippi), 8_polygons.json (Mississippi, Zambezi, Ebro, Calvert, Mangoky, Vijose, Taiwan, Rhine-Meuse)
+    # file_path: DeltaWebs/modified/9_polygons.gpkg  # options: TestDelta_small.gpkg, TestPolygon.gpkg (Mississippi), 9_polygons.json (Mississippi, Zambezi, Ebro, Calvert, Mangoky, Vijose, Taiwan, Rhine-Meuse, Chao Phraya)
+    file_path: DeltaWebs/chao_phraya_reprojected.gpkg
     crs:
       epsg: 4326
       name: WGS 84
@@ -575,18 +576,17 @@ datasets:
       Data are provided at discrete GTSM stations along the coast.
 
 
-  - name: Coast_HG
+  - name: storm_tide_hydrographs
     description: >
-      COAST-HG (COastal dAtaset of Storm Tide HydroGraphs): per-station RP100
-      storm tide hydrographs (tide + surge combined), built by combining an
-      average/spring tide signal with a scaled surge event (HGRAPHER method).
-      Used here only for its quiet, pre-storm portion as a stand-in for a
-      pure tidal cycle (no standalone tide-only variable is published) --
-      see src.surge.extract_tide_cycle_from_coast_hg.
-    source: "Dullaart, J.C.M., Muis, S., de Moel, H., Ward, P.J., Eilander, D. & Aerts, J.C.J.H. (2023). Enabling dynamic modelling of coastal flooding by defining storm tide hydrographs. Data: 4TU.ResearchData, https://data.4tu.nl/datasets/738a74dd-9856-4f21-b02a-14ecbdb26198 (COAST-HG)"
+      Per-station storm tide hydrograph components for the GTSM output locations near the
+      study deltas: average tide signal (high water at t=0) and normalised average surge
+      hydrograph (peak=1 at t=0), 10-min, -74.5..+74.3 h, plus COAST-RP storm tide levels.
+      Built with the HGRAPHER method from the hourly GTSMv3 reanalysis 1950-2024, mean sea
+      level trend removed (1-yr running mean), so levels refer to a fixed local MSL like COAST-RP.
+    source: "Method: Dullaart et al. (2023), NHESS 23:1847 (HGRAPHER). Data: Copernicus CDS sis-water-level-change-timeseries-cmip6 (GTSMv3 reanalysis, hourly). Produced by tests/KL_gtsm_storm_tide.py"
     provider: xarray
     file_format: NetCDF
-    file_path: COAST-HG_RP100.nc
+    file_path: GTSM_storm_tide_hourly/GTSM_storm_tide_rp_hg.nc
 
 
   - name: river_discharge

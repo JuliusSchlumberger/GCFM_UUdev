@@ -360,30 +360,12 @@ def apply_water_retention(
     target_area = depths.size * cell_area
     current_volume = float(depths.sum() * cell_area)
 
-    if depths.size == 0 or target_volume <= 0:
-        reduction_depth = 0.0
-        remaining = depths
-    else:
-        # Solve for the single uniform depth `reduction_depth` such that
-        # sum(min(depth_i, reduction_depth)) * cell_area exactly equals
-        # target_volume (capped at current_volume -- a uniform cut can't
-        # remove more than is actually present). Cells whose own depth is
-        # BELOW reduction_depth clip to 0 and can only give up their own
-        # depth, not their "fair share" -- so this is solved via a sort +
-        # cumulative-sum (the classic monotonic "water-level" construction),
-        # not the naive target_volume/target_area mean, which silently
-        # under-removes volume whenever depths aren't uniform.
-        v = min(target_volume / cell_area, depths.sum())
-        sorted_d = np.sort(depths)
-        n = sorted_d.size
-        prefix = np.concatenate(
-            ([0.0], np.cumsum(sorted_d))
-        )  # prefix[k] = sum of k smallest
-        # breakpoints[k] = volume removed if reduction_depth == sorted_d[k]
-        breakpoints = prefix[:-1] + sorted_d * np.arange(n, 0, -1)
-        k = min(int(np.searchsorted(breakpoints, v, side="left")), n - 1)
-        reduction_depth = (v - prefix[k]) / (n - k)
-        remaining = np.maximum(depths - reduction_depth, 0.0)
+    # Single uniform depth such that sum(min(depth_i, reduction_depth)) *
+    # cell_area equals target_volume (capped at the volume present) -- see
+    # _uniform_layer_depth; not the naive target_volume/target_area mean,
+    # which under-removes whenever depths aren't uniform.
+    reduction_depth = _uniform_layer_depth(depths, target_volume, cell_area)
+    remaining = np.maximum(depths - reduction_depth, 0.0)
 
     # Fully-drained cells (remaining == 0) must become NODATA, not a literal
     # 0.0 -- downstream (18b_adapt_post.py's own inundation-ratio plot and
@@ -499,6 +481,71 @@ def apply_coastal_levee(
     return {"method": "flood_map", "out_raster": str(out_path)}
 
 
+def _uniform_layer_depth(depths: np.ndarray, volume: float, cell_area: float) -> float:
+    """
+    Thickness d of the water layer to take off every wet cell so that the
+    removed volume equals `volume`: each cell loses min(depth, d), so cells
+    shallower than d are emptied and the volume they could not give comes
+    from the deeper cells. Same result as repeatedly splitting the remaining
+    volume evenly over the cells that still have water.
+
+    Shallowest cell first: removing depth h_k from every cell that is still
+    wet costs (water already taken from the shallower cells + h_k x the
+    number of cells at least that deep) x cell_area. The first h_k whose
+    cost exceeds `volume` is where the layer stops; d then follows from
+    sharing the remaining volume over those deeper cells. If `volume`
+    exceeds all the water present, d is the deepest depth (all cells -> 0).
+    """
+    h = np.sort(depths)
+    n = len(h)
+    if n == 0 or volume <= 0:
+        return 0.0
+    shallower = np.concatenate(
+        [[0.0], np.cumsum(h)[:-1]]
+    )  # water in the cells shallower than h_k
+    cost = cell_area * (shallower + (n - np.arange(n)) * h)  # volume removed if d = h_k
+    k = int(np.searchsorted(cost, volume))
+    if k >= n:
+        return float(h[-1])
+    return float((volume / cell_area - shallower[k]) / (n - k))
+
+
+def _river_flood_duration_s(scenario_root: str) -> float:
+    """
+    Time [s] within the event run (tstart..tstop of the scenario's
+    sfincs.inp) during which the river discharge (sfincs.dis) is above the
+    level it starts the event at, i.e. the level the spin-up leaves it at
+    (bankfull for a river RP scenario): the duration of the river flood
+    wave. Counted when any discharge point is above its own starting level.
+    0 when the run has no discharge forcing or the discharge never rises
+    (e.g. river_rp Mean or Null).
+    """
+    import pandas as pd
+
+    root = Path(scenario_root)
+    dis_path = root / "sfincs.dis"
+    if not dis_path.exists():
+        return 0.0
+    inp = {
+        line.split("=")[0].strip(): line.split("=", 1)[1].strip()
+        for line in open(root / "sfincs.inp")
+        if "=" in line
+    }
+    fmt = "%Y%m%d %H%M%S"
+    tref = pd.to_datetime(inp["tref"], format=fmt)
+    t0 = (pd.to_datetime(inp["tstart"], format=fmt) - tref).total_seconds()
+    t1 = (pd.to_datetime(inp["tstop"], format=fmt) - tref).total_seconds()
+
+    dis = np.atleast_2d(np.loadtxt(dis_path))
+    t, q = dis[:, 0], dis[:, 1:]
+    # 1-min grid over the event run, linear between the forcing steps (as
+    # SFINCS interpolates them); start level = discharge at tstart.
+    tt = np.arange(t0, t1, 60.0)
+    q_tt = np.column_stack([np.interp(tt, t, q[:, i]) for i in range(q.shape[1])])
+    rising = (q_tt > q_tt[0]).any(axis=1)
+    return float(np.count_nonzero(rising) * 60.0)
+
+
 # Advance/ Protect-closed
 def apply_pumps(
     flood_map_path: str, scenario_root: str, output_dir: str, discharge: float, **kwargs
@@ -507,34 +554,35 @@ def apply_pumps(
     Post-processing pumps rule.
 
     Logic:
-        - Computes the pumped volume as discharge capacity [m3/s] * event
-          duration [s] (tstop - tstart from the scenario model config) --
-          the volume the pump could evacuate running continuously for the
-          whole modeled event, matching how the preprocessing pump structure
-          (mod.drainage_structures.create()) operates: it discharges up to
-          `discharge` m3/s whenever the water level is between zmin/zmax,
-          not as a single on/off switch at peak discharge.
-        - Translates that volume into a uniform depth reduction [m] over the
-          river and compound cells (attribution classes 1, 3), the same
-          volume -> depth conversion used by apply_water_retention():
-          reduction = pumped_volume / target_area.
-        - Subtracts that depth uniformly from those cells in the max flood
-          depth map, clipped at 0.
+        - Computes the pumped volume as discharge capacity [m3/s] * flood
+          duration [s]: the time within the event run during which the
+          river discharge is above the level the spin-up leaves it at
+          (_river_flood_duration_s), i.e. the duration of the river flood
+          wave. Not the whole simulation: flood water does not drain within
+          the run and the run includes calm lead-in/tail hours, so duration
+          from the run length or from the flood volume time series would
+          cover the whole event. 0 when the discharge never rises (e.g.
+          river_rp Mean), so the pumps then remove nothing.
+        - Removes that volume from the river and compound cells (attribution
+          classes 1, 3) of the max flood depth map as a uniform layer: the
+          pumped volume is split evenly over the wet cells, cells without
+          enough water are set to 0, and the volume they could not give is
+          split evenly over the cells that still have water, until all of it
+          is removed (computed directly by _uniform_layer_depth). Every cell
+          loses min(depth, d); if the pumped volume exceeds all the water in
+          those cells, they all become 0.
 
     This replaces an earlier binary rule (fully remove river+compound
     flooding if discharge >= peak river discharge, else no removal at all)
     with a graded, volume-based reduction so small/partial pump capacities
     show up as partial relief instead of nothing.
 
-    NOTE: cells where the reduction depth
-    exceeds the local flood depth are simply clipped to 0. The realized
-    removed volume is reported alongside the nominal pumped volume.
-
     Args:
         flood_map_path : path to the max flood depth raster to reduce (may
                          already reflect earlier measures in the chain)
-        scenario_root  : the scenario's sfincs/ model root (for tstart/tstop);
-                         attribution_mask.tif lives in its parent folder
+        scenario_root  : the scenario's sfincs/ model root (sfincs.inp/.dis for
+                         the flood duration); attribution_mask.tif lives in
+                         its parent folder
         output_dir     : where to write the reduced raster
         discharge      : pump discharge capacity [m3/s]
 
@@ -544,11 +592,8 @@ def apply_pumps(
     out_path = Path(output_dir) / "max_flood_depth.tif"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Event duration: the pump runs continuously over the simulated event,
-    # same as the preprocessing drainage structure.
-    mod = SfincsModel(root=scenario_root, mode="r")
-    tstart, tstop = mod.get_model_time()
-    duration_s = (tstop - tstart).total_seconds()
+    # Flood duration: time the river discharge is above its spin-up level.
+    duration_s = _river_flood_duration_s(scenario_root)
     pumped_volume = discharge * duration_s
 
     with rasterio.open(flood_map_path) as src:
@@ -565,15 +610,19 @@ def apply_pumps(
     target_mask = (
         np.isin(attr, [1, 3]) & (flood > 0) & (flood != prof["nodata"])
     )  # river and compound
-    target_area = np.count_nonzero(target_mask) * cell_area
-    reduction_depth = pumped_volume / target_area if target_area > 0 else 0.0
+    depths = flood[target_mask].astype(np.float64)
+    target_area = depths.size * cell_area
+    reduction_depth = _uniform_layer_depth(depths, pumped_volume, cell_area)
+    remaining = np.maximum(depths - reduction_depth, 0.0)
 
-    flood_new = np.where(target_mask, np.maximum(flood - reduction_depth, 0.0), flood)
-    current_volume = np.sum(flood[target_mask] * cell_area)
-    realized_volume = current_volume - np.sum(flood_new[target_mask] * cell_area)
+    # Drained cells -> NODATA, not 0.0: downstream metrics count "flooded" via
+    # notnull (see apply_water_retention).
+    flood_new = flood.copy()
+    flood_new[target_mask] = np.where(remaining <= 0, prof["nodata"], remaining)
+    realized_volume = float((depths.sum() - remaining.sum()) * cell_area)
     cap_note = (
-        " [reduction depth exceeded local depth in some cells; pumped volume not fully realized]"
-        if realized_volume < pumped_volume - 1e-6
+        " [pumped volume exceeds all river+compound flood water; those cells are now dry]"
+        if realized_volume < pumped_volume * (1 - 1e-6)
         else ""
     )
 
@@ -583,7 +632,7 @@ def apply_pumps(
 
     print(
         f"  Applied pumps to river+compound flooding: discharge={discharge:.1f} m3/s x "
-        f"duration={duration_s / 86400:.1f} d -> pumped volume={pumped_volume:.0f} m3, "
+        f"flood duration (river above spin-up level)={duration_s / 3600:.1f} h -> pumped volume={pumped_volume:.0f} m3, "
         f"reduction depth={reduction_depth:.4f} m over {target_area / 1e6:.2f} km2, "
         f"realized={realized_volume:.0f} m3{cap_note}."
     )

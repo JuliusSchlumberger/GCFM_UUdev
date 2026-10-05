@@ -15,6 +15,10 @@ Outputs (all in OUT_DIR = results/2433835/runs/):
   fig_flood_attribution_comparison.png  3 rows (event) x 2 cols (depth | attribution)
 """
 
+from __future__ import (
+    annotations,
+)  # must be the first statement; section 3 below needs it
+
 import sys
 from pathlib import Path
 
@@ -217,19 +221,3 @@ out_path = OUT_DIR / "fig_flood_attribution_comparison.png"
 fig.savefig(out_path, dpi=150, bbox_inches="tight")
 plt.close(fig)
 print(f"Wrote {out_path}")
-
-# --------------------------------------------------------------3. Flood map CSI comparison
-
-# Coast 100 protect-closed, marginally effective vs effective
-"D:\GCFM_UU\results\2433835\runs\coast_100\adaptation\pre\protect_closed_09\max_flood_depth.tif"
-"D:\GCFM_UU\results\2433835\runs\coast_100\adaptation\post\protect_closed_09\max_flood_depth.tif"
-
-
-"D:\GCFM_UU\results\2433835\runs\coast_100\adaptation\pre\protect_closed_1\max_flood_depth.tif"
-"D:\GCFM_UU\results\2433835\runs\coast_100\adaptation\post\protect_closed_1\max_flood_depth.tif"
-
-
-# River 500 grey protect-open
-
-
-# Compound Accommodate

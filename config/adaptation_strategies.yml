@@ -243,29 +243,29 @@ NbS_protect_open_04:
 #                     locations: adaptation/pump_river_mouth.geojson }
 
 # River flood
-protect_closed_04:
-  measures:
-    coastal_levee: {elevation: 0.1,
-                    locations: adaptation/coast_protection_weir_PC.geojson,
-                    merge: false }
-    pumps:         {discharge: 2080,
-                    locations: adaptation/pump_river_mouth.geojson }
+# protect_closed_04:
+#   measures:
+#     coastal_levee: {elevation: 0.1,
+#                     locations: adaptation/coast_protection_weir_PC.geojson,
+#                     merge: false }
+#     pumps:         {discharge: 2080,
+#                     locations: adaptation/pump_river_mouth.geojson }
 
-protect_closed_09:
-  measures:
-    coastal_levee: {elevation: 0.1,
-                    locations: adaptation/coast_protection_weir_PC.geojson,
-                    merge: false }
-    pumps:         {discharge: 4680,
-                    locations: adaptation/pump_river_mouth.geojson }
+# protect_closed_09:
+#   measures:
+#     coastal_levee: {elevation: 0.1,
+#                     locations: adaptation/coast_protection_weir_PC.geojson,
+#                     merge: false }
+#     pumps:         {discharge: 4680,
+#                     locations: adaptation/pump_river_mouth.geojson }
 
-protect_closed_1:
-  measures:
-    coastal_levee: {elevation: 0.1,
-                    locations: adaptation/coast_protection_weir_PC.geojson,
-                    merge: false }
-    pumps:         {discharge: 5200,
-                    locations: adaptation/pump_river_mouth.geojson }
+# protect_closed_1:
+#   measures:
+#     coastal_levee: {elevation: 0.1,
+#                     locations: adaptation/coast_protection_weir_PC.geojson,
+#                     merge: false }
+#     pumps:         {discharge: 5200,
+#                     locations: adaptation/pump_river_mouth.geojson }
 
 
 # # Compound flood
@@ -293,6 +293,31 @@ protect_closed_1:
 #     pumps:         {discharge: 5200,
 #                     locations: adaptation/pump_river_mouth.geojson }
 
+# Chao Phraya - coastal flood:
+protect_closed_04:
+  measures:
+    coastal_levee: {elevation: 2.3,
+                    locations: adaptation_chaophraya/coastal_protection_weir_PC_chaophraya.geojson,
+                    merge: false }
+    pumps:         {discharge: 620,
+                    locations: adaptation_chaophraya/pump_river_mouth_chaophraya.geojson }
+
+protect_closed_09:
+  measures:
+    coastal_levee: {elevation: 5.1,
+                    locations: adaptation_chaophraya/coastal_protection_weir_PC_chaophraya.geojson,
+                    merge: false }
+    pumps:         {discharge: 1395,
+                    locations: adaptation_chaophraya/pump_river_mouth_chaophraya.geojson }
+
+protect_closed_1:
+  measures:
+    coastal_levee: {elevation: 5.7,
+                    locations: adaptation_chaophraya/coastal_protection_weir_PC_chaophraya.geojson,
+                    merge: false }
+    pumps:         {discharge: 1550,
+                    locations: adaptation_chaophraya/pump_river_mouth_chaophraya.geojson }
+
 # -----------------------------------------------------------------------------------------------
 # ACCOMMODATE
 
@@ -313,19 +338,36 @@ protect_closed_1:
 #                 }
 
 # River
+# accommodate_04:
+#   measures:
+#     urban_raising: {elevation: 3.824,
+#                 }
+
+# accommodate_09:
+#   measures:
+#     urban_raising: {elevation: 8.604,
+#                 }
+
+# accommodate_1: # based on river WL
+#   measures:
+#     urban_raising: {elevation: 9.56,
+#                 }
+
+
+# Chao Phraya - coastal flood
 accommodate_04:
   measures:
-    urban_raising: {elevation: 3.824,
+    urban_raising: {elevation: 2.3,
                 }
 
 accommodate_09:
   measures:
-    urban_raising: {elevation: 8.604,
+    urban_raising: {elevation: 5.1,
                 }
 
 accommodate_1: # based on river WL
   measures:
-    urban_raising: {elevation: 9.56,
+    urban_raising: {elevation: 5.7,
                 }
 
 

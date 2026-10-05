@@ -857,13 +857,15 @@ def build_design_discharge_matrix(
     period_hr = float(river_ds.attrs["period_hr"])
 
     n_active = int(active.sum())
-    lead_q = bankfull_q
+    # Base flow before/after the event = mean discharge for every scenario
+    # (also the spin-up's discharge), so a river RP scenario differs from a
+    # "mean" one only by its flood peak.
+    mean_q = river_ds["mean_discharge"].values[active]
+    lead_q = mean_q
     if isinstance(design_rp_yr, str) and design_rp_yr.strip().lower() == "mean":
         # Genuinely constant mean-discharge hydrograph: both the ramp-in
         # level and the "design" level are mean_discharge -- a realistic
         # ambient river, present but not driving an event.
-        mean_q = river_ds["mean_discharge"].values[active]
-        lead_q = mean_q
         design_q = mean_q.copy()
     elif design_rp_yr is None:
         # River driver fully excluded: zero discharge, flat hydrograph.

@@ -32,11 +32,12 @@ from src.river_network import normalize_channel_widths
 from src.surge import (
     apply_mdt_correction,
     apply_slr_fingerprint,
+    build_design_surge_matrix,
     build_surge_dataset,
     build_time_axis,
     compute_distances_to_bbox,
     compute_global_mean_slr,
-    extract_tide_cycle_from_coast_hg,
+    extract_hydrograph_components,
     interpolate_protection_level,
     load_coastrp_stations,
     load_mdt,
@@ -57,7 +58,7 @@ load_slr_fingerprint           = profiler.wrap(load_slr_fingerprint)
 compute_global_mean_slr        = profiler.wrap(compute_global_mean_slr)
 apply_slr_fingerprint          = profiler.wrap(apply_slr_fingerprint)
 build_surge_dataset           = profiler.wrap(build_surge_dataset)
-extract_tide_cycle_from_coast_hg = profiler.wrap(extract_tide_cycle_from_coast_hg)
+extract_hydrograph_components = profiler.wrap(extract_hydrograph_components)
 find_boundary_crossings       = profiler.wrap(find_boundary_crossings)
 resolve_inside_domain_reaches = profiler.wrap(resolve_inside_domain_reaches)
 load_glofas_clip              = profiler.wrap(load_glofas_clip)
@@ -197,12 +198,31 @@ river_lead   = surge_lead
 river_period = snakemake.params.river_period_hr
 river_dt     = surge_dt
 
-forcing_total_hr = max(surge_lead * 24 + surge_period, river_lead * 24 + river_period)
-log.info(
-    f"Forcing total duration: {forcing_total_hr:.0f} h "
-    f"(surge: {surge_lead * 24 + surge_period:.0f} h, "
-    f"river: {river_lead * 24 + river_period:.0f} h)"
-)
+# Storm-tide hydrograph mode: the event window (-window_hr..+window_hr around
+# the surge peak / tidal high water) starts right after the lead-in, and the
+# river wave's own lead is set so its peak lands on the surge peak.
+hg_cfg = snakemake.params.surge_hydrograph
+if hg_cfg["enabled"]:
+    hg_window_hr = float(hg_cfg["window_hr"])
+    if river_period / 2.0 > hg_window_hr:
+        raise ValueError(
+            f"river period_hr/2 ({river_period / 2:g} h) exceeds the hydrograph window "
+            f"({hg_window_hr:g} h) -- the river wave would not fit around the surge peak"
+        )
+    hg_peak_hr = surge_lead * 24 + hg_window_hr
+    river_lead = (hg_peak_hr - river_period / 2.0) / 24.0
+    forcing_total_hr = hg_peak_hr + hg_window_hr
+    log.info(
+        f"Forcing total duration: {forcing_total_hr:.0f} h (lead-in {surge_lead * 24:.0f} h + "
+        f"storm-tide window +-{hg_window_hr:g} h); surge and river peaks at {hg_peak_hr:.0f} h"
+    )
+else:
+    forcing_total_hr = max(surge_lead * 24 + surge_period, river_lead * 24 + river_period)
+    log.info(
+        f"Forcing total duration: {forcing_total_hr:.0f} h "
+        f"(surge: {surge_lead * 24 + surge_period:.0f} h, "
+        f"river: {river_lead * 24 + river_period:.0f} h)"
+    )
 t_surge = build_time_axis(surge_lead, surge_period, surge_dt, total_hr=forcing_total_hr)
 
 # Baseline = mean MDT correction actually applied to rp_level. Deliberately
@@ -285,38 +305,51 @@ log.info(
     f"[{protection_level_raw.min():.3f}, {protection_level_raw.max():.3f}] m)"
 )
 
-# ── COAST-HG: representative tidal cycle (feeds surge_rp: Tide) ─────────────
-coast_hg_cfg = snakemake.params.coast_hg
-station_lons = stations.geometry.x.to_numpy()
-station_lats = stations.geometry.y.to_numpy()
-
-tide_cycle_hr, tide_cycle_values = extract_tide_cycle_from_coast_hg(
-    snakemake.input.coast_hg_data, station_lons, station_lats,
-    variable=coast_hg_cfg["variable"],
-)
-surge_ds = surge_ds.assign_coords(tide_cycle_hr=("tide_cycle_hr", tide_cycle_hr))
-surge_ds["tide_cycle_hr"].attrs = {
-    "units": "hours",
-    "long_name": "elapsed hours within one representative tidal cycle (~1 lunar day)",
-}
-surge_ds["tide_cycle_value_m"] = (
-    ["station", "tide_cycle_hr"],
-    tide_cycle_values,
-    {
-        "units": "m",
-        "long_name": (
-            "representative tidal cycle per station, extracted from the "
-            f"quiet pre-storm portion of COAST-HG's {coast_hg_cfg['variable']} "
-            "(Dullaart et al. 2023) -- see build_design_surge_matrix's 'tide' "
-            "branch (surge_rp: Tide) and tile_periodic_signal"
-        ),
-    },
-)
-log.info(
-    f"COAST-HG tide cycle: {len(tide_cycle_hr)} steps, {tide_cycle_hr[-1]:.2f} h span, "
-    f"amplitude range across stations "
-    f"[{tide_cycle_values.min():.3f}, {tide_cycle_values.max():.3f}] m"
-)
+# ── storm-tide hydrographs (HGRAPHER): tide + surge shape per station ───────
+# Used by build_design_surge_matrix for every surge scenario (an RP and
+# "Tide") -- see src.surge._hydrograph_surge_matrix.
+if hg_cfg["enabled"]:
+    hg_time_hr, hg_tide, hg_shape, hg_match_km = extract_hydrograph_components(
+        snakemake.input.storm_tide_hydrographs,
+        stations.geometry.x.to_numpy(), stations.geometry.y.to_numpy(), hg_window_hr,
+    )
+    max_match_km = float(hg_cfg["max_match_km"])
+    if np.nanmax(hg_match_km) > max_match_km:
+        raise ValueError(
+            f"selected surge station(s) lie up to {np.nanmax(hg_match_km):.1f} km from the nearest "
+            f"storm-tide hydrograph location (max_match_km={max_match_km:g}) -- the hydrograph file "
+            f"does not cover this basin; rerun tests/KL_gtsm_storm_tide.py including it"
+        )
+    surge_ds = surge_ds.assign_coords(hg_time_hr=("hg_time_hr", hg_time_hr))
+    surge_ds["hg_time_hr"].attrs = {"units": "hours", "long_name": "hours relative to the surge peak / tidal high water"}
+    surge_ds["hg_tide_m"] = (
+        ["station", "hg_time_hr"], hg_tide,
+        {"units": "m", "long_name": "average tide signal (HGRAPHER), local MSL, high water at hg_time_hr=0"},
+    )
+    surge_ds["hg_surge_shape"] = (
+        ["station", "hg_time_hr"], hg_shape,
+        {"units": "1", "long_name": "normalised average surge hydrograph (HGRAPHER), peak=1 at hg_time_hr=0"},
+    )
+    surge_ds["hg_match_km"] = (
+        ["station"], hg_match_km,
+        {"units": "km", "long_name": "distance to the matched storm-tide hydrograph location"},
+    )
+    surge_ds.attrs.update({
+        "hg_peak_hr": float(hg_peak_hr),
+        "hg_window_hr": float(hg_window_hr),
+        "hg_ramp_hours": float(hg_cfg["ramp_hours"]),
+    })
+    # Diagnostic preview (07 timeseries plot) at the default RP, built the
+    # same way the production boundary is (rule 13) instead of the cosine.
+    surge_ds["water_level"] = (
+        ["station", "time"], build_design_surge_matrix(surge_ds, return_period),
+        surge_ds["water_level"].attrs,
+    )
+    log.info(
+        f"Storm-tide hydrographs: {len(hg_time_hr)} steps (+-{hg_window_hr:g} h), peak at "
+        f"{hg_peak_hr:.0f} h, tide high water [{hg_tide.max(axis=1).min():.2f}, "
+        f"{hg_tide.max(axis=1).max():.2f}] m (local MSL), match distance <= {np.nanmax(hg_match_km):.2f} km"
+    )
 
 Path(snakemake.output.surge_forcing).parent.mkdir(parents=True, exist_ok=True)
 surge_ds.to_netcdf(snakemake.output.surge_forcing)

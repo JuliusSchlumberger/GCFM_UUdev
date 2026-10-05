@@ -91,11 +91,16 @@ boundary_forcings:
     dedupe_radius_km: 1
     search_radii_km: [10, 25, 50, 1000]
     period_hr: 12
-    coast_hg: # COAST-HG (Dullaart et al. 2023) -- source for surge_rp: Tide's
-      # representative tidal cycle (tide_cycle_hr/tide_cycle_value_m, tiled
-      # via tile_periodic_signal in build_design_surge_matrix). See
-      # src.surge.extract_tide_cycle_from_coast_hg.
-      variable: hydrograph_average_tide_signal  # or hydrograph_spring_tide_signal (more conservative, larger amplitude)
+    hydrograph: # storm-tide hydrographs (HGRAPHER, Dullaart et al. 2023) from the GTSM reanalysis --
+      # data_catalogue storm_tide_hydrographs, made by tests/KL_gtsm_storm_tide.py. When enabled,
+      # every surge scenario uses average tide + surge peaking on tidal high water ("Tide": tide
+      # only) over -window_hr..+window_hr; the window starts right after the lead-in (lead_days)
+      # and the river peak is aligned with the surge peak. Disabled: an RP falls back to a
+      # half-cosine of period_hr after the lead-in, and surge_rp "Tide" is unavailable.
+      enabled: true
+      window_hr: 60          # event = -60..+60 h around the peak -> 120 h event window
+      ramp_hours: 6.0        # boundary blends from the calm lead-in level into the tide over the window's first hours (surge is still 0 there)
+      max_match_km: 10.0     # a selected COAST-RP station must have a hydrograph station within this distance
     slr: # IPCC AR6 sea-level-rise fingerprint. `enabled` gates whether the AR6 slr_data catalogue is even fetched/computed (rule get_boundary_forcings) -- the actual target global-mean SLR (slr_m) is NOT here: it's per-scenario in config/scenarios.yml (see scenario_params in 00_common.smk), applied at scenario-build time (rule build_sfincs) against each station's slr_fingerprint, so changing one scenario's slr_m only reruns that scenario's build + event run, never the basin-level weir/depth calibration, skeleton build, or any OTHER scenario. See src.surge.apply_slr_fingerprint / build_design_surge_matrix.
       enabled: true
       ssp_scenario: ssp245
