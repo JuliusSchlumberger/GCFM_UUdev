@@ -185,8 +185,7 @@ def apply_nbs_land_reclamation(
 
     r is a water-level (surge) attenuation rate, NOT a wave attenuation rate:
     wetland/saltmarsh 0.017-0.25 m/km (Wamsley et al. 2010), mangrove
-    0.05-0.50 m/km (McIvor et al. 2012). NBSOS, van Zelst et al. (2021) and
-    Tiggeloven et al. (2022) publish no per-km water-level attenuation rate.
+    0.05-0.50 m/km (McIvor et al. 2012).
 
     Args:
         distance          : Foreshore / vegetation belt width [m]

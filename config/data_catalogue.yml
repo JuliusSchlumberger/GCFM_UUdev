@@ -8,8 +8,8 @@ datasets:
     description: Dataset of manually drawn polygons representing the delta areas globally based on earth-observation data. The polygons are drawn using five defined points as a first approximation of the geomorphologically active deltaic zone.
     source: Edmonds, D.A., Caldwell, R.L., Brondizio, E.S. et al. Coastal flooding will disproportionately impact people on river deltas. Nat Commun 11, 4741 (2020). https://doi.org/10.1038/s41467-020-18531-4
     file_format: gpkg
-    # file_path: DeltaWebs/modified/9_polygons.gpkg  # options: TestDelta_small.gpkg, TestPolygon.gpkg (Mississippi), 9_polygons.json (Mississippi, Zambezi, Ebro, Calvert, Mangoky, Vijose, Taiwan, Rhine-Meuse, Chao Phraya)
-    file_path: DeltaWebs/chao_phraya_reprojected.gpkg
+    file_path: DeltaWebs/modified/9_polygons.gpkg  # options: TestDelta_small.gpkg, TestPolygon.gpkg (Mississippi), 9_polygons.json (Mississippi, Zambezi, Ebro, Calvert, Mangoky, Vijose, Taiwan, Rhine-Meuse, Chao Phraya)
+    # file_path: DeltaWebs/chao_phraya_reprojected.gpkg
     crs:
       epsg: 4326
       name: WGS 84
