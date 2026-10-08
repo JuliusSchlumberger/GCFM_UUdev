@@ -4,6 +4,182 @@ Newest changes first. See `Reference_memory.txt` for the current, up-to-date
 description of how the pipeline works; this file only describes *what changed
 and why*.
 
+# 2026-10-08: storm-tide hydrographs from GTSM, mean-discharge base flow and spin-up, volume-based pumps, Chao Phraya strategies scales (-KL)
+
+## Surge boundary from storm-tide hydrographs (HGRAPHER on GTSM) instead of COAST-HG / half-cosine
+
+The `boundary_forcings.surge.coast_hg` config block and the `Coast_HG`
+catalogue entry are replaced by `boundary_forcings.surge.hydrograph` and a
+new catalogue entry `storm_tide_hydrographs`
+(`GTSM_storm_tide_hourly/GTSM_storm_tide_rp_hg.nc`). The file is built by
+the new `tests/KL_gtsm_storm_tide.py`, which ports the HGRAPHER method
+(Dullaart et al. 2023) to the hourly GTSMv3 reanalysis 1950-2024 (CDS
+`sis-water-level-change-timeseries-cmip6`). Before the analysis it removes
+the mean-sea-level trend with a 1-yr running mean, so levels refer to a fixed
+local MSL like COAST-RP. Per station it holds the average tide (high water at
+t=0), the normalised average surge shape (peak = 1 at t=0), and COAST-RP
+storm-tide levels.
+
+- Rule 07: new `src.surge.extract_hydrograph_components` matches each
+  surge station to its nearest hydrograph location and cuts the tide and the
+  surge shape to `-window_hr..+window_hr`. They are written to
+  `surge_forcing.nc` as `hg_time_hr`/`hg_tide_m`/`hg_surge_shape`/`hg_match_km`.
+  Rule 07 raises if any station lies more than `max_match_km` from the
+  nearest location. The event window starts right after the lead-in, and the
+  river wave's lead is shifted so **the river peak lands on the surge peak**.
+  The total forcing length becomes lead-in + 2 x `window_hr`. Rule 07 raises
+  if half the river period doesn't fit in the window.
+- New `src.surge._hydrograph_surge_matrix`, used by
+  `build_design_surge_matrix` for every non-null `surge_rp` whenever the
+  hydrograph data is present. The boundary is the average tide plus each
+  station's calm level (MDT, + SLR x fingerprint). For an RP it adds
+  `A x surge_shape`, where `A = RP level - tide high water` (A >= 0). The
+  peak, a surge on tidal high water, therefore equals
+  `lookup_storm_tide_at_rp` exactly. `Tide` gives the tide only. The
+  boundary holds the calm lead-in level before the window and blends into
+  the series over `ramp_hours`.
+- Removed: `extract_tide_cycle_from_coast_hg`, `tile_periodic_signal`,
+  `LUNAR_DAY_HOURS`, and the `tide_cycle_hr`/`tide_cycle_value_m` variables.
+  With `hydrograph.enabled: false`, an RP falls back to the old half-cosine
+  over `period_hr`, and `surge_rp: Tide` raises an error.
+- New config keys: `enabled` (true), `window_hr` (60 -> 120 h event window),
+  `ramp_hours` (6), and `max_match_km` (10).
+
+## River base flow is the mean discharge, in the events and the spin-up
+
+- `build_design_discharge_matrix`'s lead-in/tail level is now
+  `mean_discharge` for every scenario, no longer bankfull. A river-RP
+  scenario now differs from `river_rp: Mean` only by its flood peak.
+- The spin-up (rule 14) now holds each crossing at its `mean_discharge`
+  instead of the RP=1 discharge (`interpolate_discharge_at_rp`, no longer
+  imported there). Spin-up and event base flow now match, so the river no
+  longer steps when an event starts from the restart. Rule 18c's "spin-up
+  permanent water" class now means wet under a mean-discharge river with a
+  calm sea.
+
+## Post-processing pumps: volume over the flood duration, removed as a uniform layer
+
+`apply_pumps` (`src/adaptation_method_post.py`):
+- **Pumped volume** = capacity x the **river flood duration**, no longer
+  capacity x the whole event run (`tstop - tstart`, which included the calm
+  lead-in/tail). New `_river_flood_duration_s` reads the scenario's
+  `sfincs.inp`/`sfincs.dis` and counts the time within the event run when
+  any discharge point is above its starting level. It returns 0 for
+  `river_rp: Mean`/`null`, so the pumps then remove nothing.
+- **Removal**: the volume is removed as a uniform layer over the river and
+  compound cells (attribution classes 1 and 3). This replaces the naive
+  `volume / area`, which under-removed whenever depths weren't uniform. Each
+  cell loses `min(depth, d)`, where `d` comes from the new shared helper
+  `_uniform_layer_depth`. `apply_water_retention` now uses the same helper
+  in place of its own inline copy.
+- Fully drained cells now become NODATA instead of 0.0, as in
+  `apply_water_retention`, so downstream "flooded" counts are correct.
+
+## Strategies for the Chao Phraya
+
+`config/adaptation_strategies.yml`: `protect_closed_04/09/1` and
+`accommodate_04/09/1` now carry Chao Phraya coastal-flood values: levee and
+urban raising of 2.3 / 5.1 / 5.7 m, and pumps of 620 / 1395 / 1550 m3/s at
+`adaptation_chaophraya/*.geojson`. The previous river-flood values are kept
+as comments. `data_catalogue.yml`'s delta polygons were briefly switched to a
+Chao-Phraya-only file to run it and now point back at
+`DeltaWebs/modified/9_polygons.gpkg` (all 9 deltas, Chao Phraya included).
+
+## New analysis scripts (`tests/`)
+
+- `KL_gtsm_storm_tide.py`: builds the storm-tide hydrograph file (see above).
+- `KL_rp100_event_plot.py`: plots the RP100 storm-tide event (tide + surge)
+  at the station nearest each delta.
+- `KL_csi.py`: compares the post-processed (POST) and re-modelled (PRE) flood
+  maps per event and strategy, with PRE as the reference. Reports
+  hits/misses/false alarms, CSI, agreement and the Heidke skill score.
+- `KL_flood_map_pre_post.py`: maps PRE and POST side by side, with a third
+  panel showing where they agree and disagree.
+- `KL_results_figures.py`, `KL_flood_maps.py`, `KL_domain_figures.py`: extended.
+
+
+# 2026-09-18: changes SLR to be outside config.yml, added Tide and Mean river discharge (-KL)
+
+## SLR moved from config.yml to being per scenario, so river flood can run without SLR (`config/scenarios.yml`)
+
+`slr_m` (target global-mean SLR, m) is no longer a single shared value in
+`config.yml`'s `boundary_forcings.surge.slr` block -- it is now a per-scenario
+key in `config/scenarios.yml` (default `0.0` if omitted), read via
+`scenario_params()` in `00_common.smk` and applied at scenario-build time the
+same way `discharge_multiplier` already was. Previously every scenario shared
+one `slr_m`, so bumping it forced every already-built scenario's forcing to
+rebuild; now changing one scenario's `slr_m` only reruns that scenario's
+build + event run. `config.yml`'s `slr:` block keeps only `enabled` (gates
+whether rule `get_boundary_forcings` fetches/computes the AR6 fingerprint at
+all) plus the AR6 lookup coordinates (`ssp_scenario`, `confidence_level`,
+`year`, `quantile`) -- these still apply to every scenario of a basin, since
+`slr_fingerprint` itself is scenario-independent (dimensionless, only scaled
+by `slr_m` downstream).
+
+## New `surge_rp: Tide`
+
+A scenario's `surge_rp` (`config/scenarios.yml`) can now be the string
+`Tide` (case-insensitive) instead of `null` or a COAST-RP tabulated RP --
+validated in `00_common.smk`. It builds a genuinely oscillating tidal
+hydrograph instead of collapsing to a flat calm-sea baseline:
+
+- New `src.surge.extract_tide_cycle_from_coast_hg` pulls one representative
+  tidal cycle per station (default one lunar day, `LUNAR_DAY_HOURS` =
+  24h50m) from the quiet, pre-storm portion of a COAST-HG hydrograph
+  (Dullaart et al. 2023) -- COAST-HG only publishes the combined tide+surge
+  signal, no standalone tide-only variable, so this lead-in is used as an
+  approximation. Rule `get_boundary_forcings` (07) now writes this cycle
+  into `surge_forcing.nc` as `tide_cycle_hr`/`tide_cycle_value_m`. New config
+  key `boundary_forcings.surge.coast_hg.variable`:
+  `hydrograph_average_tide_signal` (default) or `hydrograph_spring_tide_signal`
+  (more conservative, larger amplitude).
+- New `src.surge.tile_periodic_signal` repeats that one cycle across the
+  full run by wrapping elapsed time modulo the cycle's own period and
+  interpolating, so it stays phase-continuous instead of drifting the way a
+  plain 24 h tiling would against the real semidiurnal/diurnal tide.
+- `build_design_surge_matrix`'s new `"tide"` branch tiles the cycle across
+  the whole time axis (NOT rounded to 0.1 m -- it's a varying signal, not a
+  single absolute crest/lead-in level) and adds `slr_fingerprint * slr_m` on
+  top when SLR is active.
+
+## New `river_rp: Mean`
+
+A scenario's `river_rp` can now be the string `Mean` (case-insensitive)
+instead of `null` or a numeric RP -- validated in `00_common.smk`. It builds
+a constant hydrograph at the crossing's own grand-mean discharge rather than
+bankfull:
+
+- Rule `get_boundary_forcings` (07) now computes `mean_discharge` per
+  crossing (grand mean over the full GloFAS record, same possibly
+  bias-corrected series the bankfull/EVA fit uses) and writes it into
+  `river_forcing.nc`.
+- `build_design_discharge_matrix`'s `"mean"` branch uses `mean_discharge` as
+  both the lead-in and design level -- a flat, realistic ambient river,
+  useful for isolating the other driver (e.g. `coast_100`'s river side).
+- **Behaviour change:** `river_rp: null` used to mean "mean conditions" and
+  built a constant *bankfull* hydrograph. It now means the river driver is
+  fully excluded -- zero discharge, flat hydrograph (matching how
+  `surge_rp: null` already meant no surge). Any scenario that wants a
+  present-but-inactive river now sets `river_rp: Mean` explicitly instead of
+  relying on `null`.
+
+## Related
+
+Every absolute coastal water level (calm-sea baseline, storm-tide RP
+lookup, weir crests) is now rounded UP to the next 0.1 m via new
+`src.surge.ceil_water_level`, used consistently by `calm_sea_levels`,
+`lookup_storm_tide_at_rp`, and the new `storm_tide_at_rp_interpolated`
+(arbitrary-RP interpolation, used by rule 10's coastal calibration) -- so a
+level is never underestimated by rounding, and every level sits on the same
+grid as the weir crests it's compared against.
+
+`config/scenarios.yml` scenarios reworked around the new keywords:
+`coast_only`/`river_only` now use `Tide`/`Mean` respectively for the
+inactive-but-present driver instead of a small numeric RP; `coast_500` /
+`coast_only_500` renamed to `coast_100` / `coast_only_100`; `compound_500`
+renamed to `compound_100c_500r`; `discharge_multiplier` reset to `1.0`
+everywhere now that `river_rp: 500` etc. reach real RP discharges directly.
+
 # 2026-09-14: selectable land-use source, ESA WorldCover (10 m) alongside Copernicus LC100 (- JS)
 
 `config landuse.source` now picks the land-use source: `copernicus_lc100` (the previous behaviour, 100 m) or `esa_worldcover` (ESA WorldCover 2021 v200, 10 m). **Committed set to `esa_worldcover`**, so a run picks the 10 m source unless the key is switched back. New **rule prepare_landuse (02b)** writes THE per-basin classification both modes share, `{basin}_landuse_source.tif` (WGS84, source resolution, clipped to the domain bbox, in pipeline codes), which rules 03/05b/05c/09b all read -- so nothing downstream is source-conditional.

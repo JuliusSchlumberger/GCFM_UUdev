@@ -23,7 +23,7 @@ rule attribution_mask:
         attribution_mask_tif = results_path("{basin_id}/runs/{scenario}/attribution_mask.tif"),
         attribution_mask_png = results_path("{basin_id}/runs/{scenario}/attribution_mask.png"),
         # baseline_excess_volume.json: computed HERE (once per basin x scenario,
-        # classes=(1,3,4) i.e. everything but pure-coastal) so both
+        # classes=(1,3) i.e. everything but pure-coastal) so both
         # adapt_apply_pre (18a) and adapt_metrics_post (18b) can read the SAME
         # fixed reference number for water_retention's own baseline_excess_volume,
         # without either touching attribution_mask_tif directly.

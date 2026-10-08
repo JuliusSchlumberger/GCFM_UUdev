@@ -8,7 +8,8 @@ datasets:
     description: Dataset of manually drawn polygons representing the delta areas globally based on earth-observation data. The polygons are drawn using five defined points as a first approximation of the geomorphologically active deltaic zone.
     source: Edmonds, D.A., Caldwell, R.L., Brondizio, E.S. et al. Coastal flooding will disproportionately impact people on river deltas. Nat Commun 11, 4741 (2020). https://doi.org/10.1038/s41467-020-18531-4
     file_format: gpkg
-    file_path: DeltaWebs/modified/8_polygons.gpkg  # options: TestDelta_small.gpkg, TestPolygon.gpkg (Mississippi), 8_polygons.json (Mississippi, Zambezi, Ebro, Calvert, Mangoky, Vijose, Taiwan, Rhine-Meuse)
+    file_path: DeltaWebs/modified/9_polygons.gpkg  # options: TestDelta_small.gpkg, TestPolygon.gpkg (Mississippi), 9_polygons.json (Mississippi, Zambezi, Ebro, Calvert, Mangoky, Vijose, Taiwan, Rhine-Meuse, Chao Phraya)
+    # file_path: DeltaWebs/chao_phraya_reprojected.gpkg
     crs:
       epsg: 4326
       name: WGS 84
@@ -492,7 +493,7 @@ datasets:
         description: Manning's n roughness coefficient associated with each land use class, used for hydrodynamic modeling of flow resistance.
 
 
-  - name: storm_tide_return_periods # TODO: get real timeseries information for extracting real time series
+  - name: storm_tide_return_periods
     description: >
       Global dataset of coastal storm tide return periods (storm surge + tide) at output
       locations of the Global Tide and Surge Model (GTSM). Surges from extratropical
@@ -573,6 +574,20 @@ datasets:
       spatial_extent: global (coastal output stations)
     notes: >
       Data are provided at discrete GTSM stations along the coast.
+
+
+  - name: storm_tide_hydrographs
+    description: >
+      Per-station storm tide hydrograph components for the GTSM output locations near the
+      study deltas: average tide signal (high water at t=0) and normalised average surge
+      hydrograph (peak=1 at t=0), 10-min, -74.5..+74.3 h, plus COAST-RP storm tide levels.
+      Built with the HGRAPHER method from the hourly GTSMv3 reanalysis 1950-2024, mean sea
+      level trend removed (1-yr running mean), so levels refer to a fixed local MSL like COAST-RP.
+    source: "Method: Dullaart et al. (2023), NHESS 23:1847 (HGRAPHER). Data: Copernicus CDS sis-water-level-change-timeseries-cmip6 (GTSMv3 reanalysis, hourly). Produced by tests/KL_gtsm_storm_tide.py"
+    provider: xarray
+    file_format: NetCDF
+    file_path: GTSM_storm_tide_hourly/GTSM_storm_tide_rp_hg.nc
+
 
   - name: river_discharge
     description: >
@@ -871,8 +886,8 @@ datasets:
       on a 1°x1° grid). Used to derive a per-station SLR "fingerprint" —
       sea_level_change at the nearest location, normalised by the
       global-mean sea_level_change over valid 1° grid cells — for the
-      configured SSP/confidence/year/quantile. Scaled by
-      boundary_forcings.surge.slr.slr_m and added to each surge station's
+      configured SSP/confidence/year/quantile. Scaled by each scenario's own
+      slr_m (config/scenarios.yml) and added to each surge station's
       storm-tide return-period level (see src/surge.py).
     source: "IPCC AR6 Sea Level Projections (Garner et al. 2021), via Zenodo DOI 10.5281/zenodo.5914710"
     provider: xarray

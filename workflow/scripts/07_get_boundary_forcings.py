@@ -32,10 +32,12 @@ from src.river_network import normalize_channel_widths
 from src.surge import (
     apply_mdt_correction,
     apply_slr_fingerprint,
+    build_design_surge_matrix,
     build_surge_dataset,
     build_time_axis,
     compute_distances_to_bbox,
     compute_global_mean_slr,
+    extract_hydrograph_components,
     interpolate_protection_level,
     load_coastrp_stations,
     load_mdt,
@@ -56,6 +58,7 @@ load_slr_fingerprint           = profiler.wrap(load_slr_fingerprint)
 compute_global_mean_slr        = profiler.wrap(compute_global_mean_slr)
 apply_slr_fingerprint          = profiler.wrap(apply_slr_fingerprint)
 build_surge_dataset           = profiler.wrap(build_surge_dataset)
+extract_hydrograph_components = profiler.wrap(extract_hydrograph_components)
 find_boundary_crossings       = profiler.wrap(find_boundary_crossings)
 resolve_inside_domain_reaches = profiler.wrap(resolve_inside_domain_reaches)
 load_glofas_clip              = profiler.wrap(load_glofas_clip)
@@ -155,16 +158,18 @@ log.info(
     f"delta = [{stations['mdt'].min():.3f}, {stations['mdt'].max():.3f}] m"
 )
 # ── SLR fingerprint (dimensionless, target-independent) ─────────────────────
-# Deliberately does NOT scale by slr_cfg["slr_m"] or touch rp_level here --
+# Deliberately does NOT scale by an slr_m value or touch rp_level here --
 # only the reference distribution (ssp_scenario/confidence_level/year/
 # quantile) is baked into this rule's output, so surge_forcing.nc stays
-# byte-identical (mtime-wise, to Snakemake) regardless of the slr_m target.
-# slr_m itself is read as a param ONLY by rule 13_build_sfincs and
-# rule run_spinup, which multiply it by slr_fingerprint at build time (see
-# src.surge.lookup_storm_tide_at_rp/build_design_surge_matrix). Changing
-# slr_m therefore reruns only those (cheap) per-scenario builds and the
-# event runs below them, never this rule, rule 10's weir/depth calibration,
-# or rule 13's skeleton build.
+# byte-identical (mtime-wise, to Snakemake) regardless of any scenario's
+# slr_m target. slr_m itself now lives per-scenario in config/scenarios.yml
+# (see scenario_params in 00_common.smk) and is read as a param ONLY by
+# rule build_sfincs/adapt_build_forcing_pre, which multiply it by
+# slr_fingerprint at build time (see
+# src.surge.lookup_storm_tide_at_rp/build_design_surge_matrix). Changing one
+# scenario's slr_m therefore reruns only that (cheap) per-scenario build and
+# its event run below it, never this rule, rule 10's weir/depth calibration,
+# rule 13's skeleton build, or any OTHER scenario.
 slr_cfg = snakemake.params.surge_slr
 if slr_cfg["enabled"]:
     slr_ds = load_slr_fingerprint(
@@ -193,12 +198,31 @@ river_lead   = surge_lead
 river_period = snakemake.params.river_period_hr
 river_dt     = surge_dt
 
-forcing_total_hr = max(surge_lead * 24 + surge_period, river_lead * 24 + river_period)
-log.info(
-    f"Forcing total duration: {forcing_total_hr:.0f} h "
-    f"(surge: {surge_lead * 24 + surge_period:.0f} h, "
-    f"river: {river_lead * 24 + river_period:.0f} h)"
-)
+# Storm-tide hydrograph mode: the event window (-window_hr..+window_hr around
+# the surge peak / tidal high water) starts right after the lead-in, and the
+# river wave's own lead is set so its peak lands on the surge peak.
+hg_cfg = snakemake.params.surge_hydrograph
+if hg_cfg["enabled"]:
+    hg_window_hr = float(hg_cfg["window_hr"])
+    if river_period / 2.0 > hg_window_hr:
+        raise ValueError(
+            f"river period_hr/2 ({river_period / 2:g} h) exceeds the hydrograph window "
+            f"({hg_window_hr:g} h) -- the river wave would not fit around the surge peak"
+        )
+    hg_peak_hr = surge_lead * 24 + hg_window_hr
+    river_lead = (hg_peak_hr - river_period / 2.0) / 24.0
+    forcing_total_hr = hg_peak_hr + hg_window_hr
+    log.info(
+        f"Forcing total duration: {forcing_total_hr:.0f} h (lead-in {surge_lead * 24:.0f} h + "
+        f"storm-tide window +-{hg_window_hr:g} h); surge and river peaks at {hg_peak_hr:.0f} h"
+    )
+else:
+    forcing_total_hr = max(surge_lead * 24 + surge_period, river_lead * 24 + river_period)
+    log.info(
+        f"Forcing total duration: {forcing_total_hr:.0f} h "
+        f"(surge: {surge_lead * 24 + surge_period:.0f} h, "
+        f"river: {river_lead * 24 + river_period:.0f} h)"
+    )
 t_surge = build_time_axis(surge_lead, surge_period, surge_dt, total_hr=forcing_total_hr)
 
 # Baseline = mean MDT correction actually applied to rp_level. Deliberately
@@ -281,6 +305,52 @@ log.info(
     f"[{protection_level_raw.min():.3f}, {protection_level_raw.max():.3f}] m)"
 )
 
+# ── storm-tide hydrographs (HGRAPHER): tide + surge shape per station ───────
+# Used by build_design_surge_matrix for every surge scenario (an RP and
+# "Tide") -- see src.surge._hydrograph_surge_matrix.
+if hg_cfg["enabled"]:
+    hg_time_hr, hg_tide, hg_shape, hg_match_km = extract_hydrograph_components(
+        snakemake.input.storm_tide_hydrographs,
+        stations.geometry.x.to_numpy(), stations.geometry.y.to_numpy(), hg_window_hr,
+    )
+    max_match_km = float(hg_cfg["max_match_km"])
+    if np.nanmax(hg_match_km) > max_match_km:
+        raise ValueError(
+            f"selected surge station(s) lie up to {np.nanmax(hg_match_km):.1f} km from the nearest "
+            f"storm-tide hydrograph location (max_match_km={max_match_km:g}) -- the hydrograph file "
+            f"does not cover this basin; rerun tests/KL_gtsm_storm_tide.py including it"
+        )
+    surge_ds = surge_ds.assign_coords(hg_time_hr=("hg_time_hr", hg_time_hr))
+    surge_ds["hg_time_hr"].attrs = {"units": "hours", "long_name": "hours relative to the surge peak / tidal high water"}
+    surge_ds["hg_tide_m"] = (
+        ["station", "hg_time_hr"], hg_tide,
+        {"units": "m", "long_name": "average tide signal (HGRAPHER), local MSL, high water at hg_time_hr=0"},
+    )
+    surge_ds["hg_surge_shape"] = (
+        ["station", "hg_time_hr"], hg_shape,
+        {"units": "1", "long_name": "normalised average surge hydrograph (HGRAPHER), peak=1 at hg_time_hr=0"},
+    )
+    surge_ds["hg_match_km"] = (
+        ["station"], hg_match_km,
+        {"units": "km", "long_name": "distance to the matched storm-tide hydrograph location"},
+    )
+    surge_ds.attrs.update({
+        "hg_peak_hr": float(hg_peak_hr),
+        "hg_window_hr": float(hg_window_hr),
+        "hg_ramp_hours": float(hg_cfg["ramp_hours"]),
+    })
+    # Diagnostic preview (07 timeseries plot) at the default RP, built the
+    # same way the production boundary is (rule 13) instead of the cosine.
+    surge_ds["water_level"] = (
+        ["station", "time"], build_design_surge_matrix(surge_ds, return_period),
+        surge_ds["water_level"].attrs,
+    )
+    log.info(
+        f"Storm-tide hydrographs: {len(hg_time_hr)} steps (+-{hg_window_hr:g} h), peak at "
+        f"{hg_peak_hr:.0f} h, tide high water [{hg_tide.max(axis=1).min():.2f}, "
+        f"{hg_tide.max(axis=1).max():.2f}] m (local MSL), match distance <= {np.nanmax(hg_match_km):.2f} km"
+    )
+
 Path(snakemake.output.surge_forcing).parent.mkdir(parents=True, exist_ok=True)
 surge_ds.to_netcdf(snakemake.output.surge_forcing)
 log.info(f"Written surge forcing ({len(stations)} stations): {snakemake.output.surge_forcing}")
@@ -345,6 +415,7 @@ if crossings.empty:
     cell_lon = np.array([])
     cell_lat = np.array([])
     bankfull_q = np.array([])
+    mean_q = np.array([])
     flood_q = np.array([])
     protection_q = np.array([])
     results: list = []
@@ -465,6 +536,7 @@ else:
     cell_lon   = np.full(n, np.nan)
     cell_lat   = np.full(n, np.nan)
     bankfull_q   = np.full(n, np.nan)
+    mean_q       = np.full(n, np.nan)
     discharge_rp_table = np.full((n, len(STANDARD_RETURN_PERIODS_YR)), np.nan)
     protection_q = np.full(n, np.nan)
     results      = [None] * n
@@ -560,6 +632,11 @@ else:
         cell_lon[i]   = float(lon_arr[i_lon])
         cell_lat[i]   = float(lat_arr[i_lat])
         bankfull_q[i] = eva.q_rp2
+        # Grand mean over the full record, same (possibly bias-corrected)
+        # series the EVA/bankfull fit above just used -- so "mean" and
+        # "bankfull" river_rp options are methodologically consistent with
+        # each other, not one raw-GloFAS and one bias-corrected.
+        mean_q[i] = float(np.nanmean(ts_cache[(i_lat, i_lon)]))
         # Full return-period discharge table from the already-fitted POT/GPD
         # curve -- no re-fitting. The actual design discharge used to build
         # the model is looked up from this table at SFINCS-build time (each
@@ -594,6 +671,7 @@ river_ds = build_river_dataset(
     crossings, has_glofas, bankfull_q, discharge_rp_table, STANDARD_RETURN_PERIODS_YR,
     cell_lon, cell_lat, t_river, river_lead, river_period, results,
     rp_bankfull=eva_cfg.get("rp_bf", 2),
+    mean_q=mean_q,
     bias_corrected=bias_corrected_arr,
     grdc_station_id=grdc_station_id_arr,
     grdc_correlation=grdc_correlation_arr,

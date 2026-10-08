@@ -60,6 +60,8 @@ SCENARIO_SURGE_RP = float(sys.argv[2]) if len(sys.argv) > 2 else 500.0
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
+with open(REPO_ROOT / "config" / "scenarios.yml") as fh:
+    SCENARIO_DEFS = yaml.safe_load(fh) or {}
 RESULTS_DIR = Path(config["results_dir"])
 FIGS_DIR = REPO_ROOT / "figs" / "surge_vs_dike_crest"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -104,8 +106,10 @@ log.info(f"coastal_protection_weir.gpkg: {weir_path}")
 # stored as a dimensionless slr_fingerprint, not baked in -- see
 # src.surge.apply_slr_fingerprint) so that this basin-level file never
 # changes when only the slr_m target changes. This script isn't
-# snakemake-driven, so it reads the CURRENT config.yml target itself and
-# applies it the same way 13_build_sfincs.py does at real build time, to
+# snakemake-driven, so it reads the CURRENT scenarios.yml target itself
+# (slr_m is per-scenario, see scenario_params in 00_common.smk -- this uses
+# the "default" scenario's own value since this script isn't scenario-aware)
+# and applies it the same way 13_build_sfincs.py does at real build time, to
 # show the actual, currently-configured SLR-inclusive levels.
 surge_ds = xr.open_dataset(surge_forcing_path, decode_times=False)
 table_rps = surge_ds["table_rp"].values.astype(float)
@@ -120,7 +124,8 @@ coastal_protection_crest_m = float(
 baseline_m = float(surge_ds["baseline_m"].values)
 
 slr_cfg = config["boundary_forcings"]["surge"]["slr"]
-effective_slr_m = float(slr_cfg["slr_m"]) if slr_cfg["enabled"] else 0.0
+default_slr_m = float(SCENARIO_DEFS.get("default", {}).get("slr_m", 0.0))
+effective_slr_m = default_slr_m if slr_cfg["enabled"] else 0.0
 
 levels_by_rp = np.stack(
     [lookup_storm_tide_at_rp(surge_ds, rp, slr_m=effective_slr_m) for rp in table_rps]
@@ -136,7 +141,7 @@ log.info(
 )
 log.info(f"baseline_m (mean sea level correction, MDT-only): {baseline_m:+.4f} m")
 log.info(
-    f"SLR target applied (config boundary_forcings.surge.slr): "
+    f"SLR target applied (scenarios.yml 'default' slr_m): "
     f"{effective_slr_m:+.3f} m x per-station fingerprint "
     f"(enabled={slr_cfg['enabled']}) -- levels below already include this"
 )

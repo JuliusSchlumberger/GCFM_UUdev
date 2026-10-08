@@ -1,6 +1,6 @@
 """
 14_run_spinup.py — Run a short, basin-level SFINCS spin-up to produce a
-restart file, with the river at a fixed RP=1 and a calm sea, entirely
+restart file, with the river at its mean discharge and a calm sea, entirely
 independent of any scenario's own design RP.
 
 Runs ONCE per basin (no {scenario} wildcard) -- every scenario's own event
@@ -24,9 +24,11 @@ into this directory) or sf.config.write() (which silently absolutizes any
 file reference outside the model's own root -- see either script's own
 module docstring for the full rationale).
 
-Forcing: each crossing's own real RP=1 discharge (`interpolate_discharge_
-at_rp` -- an exact table lookup, the river GPD return-value table tabulates
-RP=1 directly), held CONSTANT over the whole spinup_days duration, and the
+Forcing: each crossing's own mean discharge (mean_discharge, the record's
+grand mean -- the same base flow every scenario's event hydrograph starts
+from, src.river_forcing.build_design_discharge_matrix, so the river doesn't
+step at the restart; RP=1 until 2026-10-07), held CONSTANT over the whole
+spinup_days duration, and the
 sea at each station's calm-sea level (`calm_sea_levels`, the same level
 every event's own boundary lead-in starts at) -- spin-up exists to let the
 river network reach a realistic steady background state, not to simulate
@@ -64,7 +66,6 @@ from src.geometry import snap_points_into_region
 from src.log import setup_logging
 from src.plots import plot_max_inundation_map, plot_water_level_timeseries
 from src.postprocessing import compute_max_inundation
-from src.river_forcing import interpolate_discharge_at_rp
 from src.sfincs_run import forward_geometry_files, parse_sfincs_inp, run_sfincs_subprocess
 from src.surge import calm_sea_levels, read_baseline_m
 
@@ -162,7 +163,7 @@ log.info(
 )
 sf.water_level.write()
 
-# ── river discharge forcing: RP=1, constant over time ────────────────────────
+# ── river discharge forcing: mean discharge, constant over time ──────────────
 river_ds = xr.open_dataset(river_forcing_path, decode_times=False)
 active = river_ds.has_glofas.values.astype(bool)
 n_active = int(active.sum())
@@ -171,9 +172,10 @@ log.info(f"River forcing: {n_active}/{len(active)} crossings with valid GloFAS d
 if n_active == 0:
     log.warning("No active river crossings — discharge forcing skipped")
 else:
-    table = river_ds["discharge_rp_table"].values[active]
-    table_rps = river_ds["return_period"].values
-    rp1_discharge = interpolate_discharge_at_rp(table, table_rps, 1.0)  # (n_active,)
+    # Mean discharge: the same base flow every scenario's event starts from
+    # (src.river_forcing.build_design_discharge_matrix), so the river doesn't
+    # step at the restart.
+    base_discharge = river_ds["mean_discharge"].values[active]  # (n_active,)
 
     crossings_gdf = gpd.GeoDataFrame(
         {"index": range(n_active)},
@@ -187,7 +189,7 @@ else:
     )
 
     dis_df = pd.DataFrame(
-        data=np.tile(rp1_discharge, (len(spinup_times), 1)),
+        data=np.tile(base_discharge, (len(spinup_times), 1)),
         index=spinup_times,
         columns=range(n_active),
     )
@@ -214,7 +216,7 @@ else:
         log.warning("All discharge crossings outside active region — discharge forcing skipped")
     else:
         sf.discharge_points.create(timeseries=dis_df, locations=crossings_filt)
-        log.info(f"Discharge forcing: {len(crossings_filt)}/{n_active} source point(s) at RP=1, held constant")
+        log.info(f"Discharge forcing: {len(crossings_filt)}/{n_active} source point(s) at mean discharge, held constant")
 sf.discharge_points.write()
 
 # ── hand-craft this rule's own sfincs.inp ────────────────────────────────────
