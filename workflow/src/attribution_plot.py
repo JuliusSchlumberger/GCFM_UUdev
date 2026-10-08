@@ -34,12 +34,12 @@ def generate_attribution_maps(
     attribution_runs: list[tuple[str, Path, Path, Path, Path]],
     land_mask_path: str | Path,
     threshold: float = 0.05,
-    colors_cat: list[str] = ["#d1c740", "#3277d3", "#b063c0", "#d8d4d4"],
+    colors_cat: list[str] = ["#d1c740", "#2168c5", "#b063c0", "#7a9cb1"],
     labels_cat: list[str] = [
         "River",
         "Coastal",
         "Compound",
-        "Spinup (permanent water)",
+        "Permanent water",
     ],
     data_libs: list[str] | None = None,
 ) -> None:
@@ -114,7 +114,10 @@ def generate_attribution_maps(
 
         # Load back as georeferenced DataArray
         da_attr = rxr.open_rasterio(out_tif).squeeze(drop=True).astype(float)
-        da_attr = da_attr.where(da_attr > 0)  # class 0 → NaN (transparent)
+        # class 0 (no flooding) and class 4 (spin-up/permanent water -- not a
+        # real attribution outcome, see legend note above) -> NaN (transparent);
+        # attribution_mask.tif on disk still keeps class 4 for downstream use.
+        da_attr = da_attr.where((da_attr > 0) & (da_attr != 4))
         da_attr.name = "attribution"
 
         fig, ax = mod_ref.plot_basemap(
@@ -130,10 +133,15 @@ def generate_attribution_maps(
         for _ax in fig.axes:
             if _ax is not ax:
                 _ax.remove()
+        # Classes 1-3 (river/coastal/compound) always appear in the legend
+        # regardless of whether this basin x scenario actually has any
+        # pixels in them; class 4 (spin-up/permanent water) never gets a
+        # legend entry -- it's plotted (in its own color) but not labelled,
+        # since it isn't a real attribution outcome.
         ax.legend(
             handles=[
                 mpatches.Patch(color=colors, label=labels)
-                for colors, labels in zip(colors_cat, labels_cat)
+                for colors, labels in zip(colors_cat[:3], labels_cat[:3])
             ],
             loc="lower right",
             framealpha=0.9,

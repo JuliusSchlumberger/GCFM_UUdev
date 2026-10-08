@@ -79,7 +79,7 @@ rule adapt_build_forcing_pre:
         compound_lag_hr = config["sfincs"]["boundary_setup"]["compound"]["lag_hr"],
         discharge_multiplier = lambda wildcards: scenario_params(wildcards.scenario)["discharge_multiplier"],
         slr_enabled = config["boundary_forcings"]["surge"]["slr"]["enabled"],
-        slr_m = config["boundary_forcings"]["surge"]["slr"]["slr_m"],
+        slr_m = lambda wildcards: scenario_params(wildcards.scenario)["slr_m"],
         flat_boundary_point_spacing_m = config["sfincs"]["boundary_setup"]["flat_boundary_point_spacing_m"],
         waterlevel_buffer_m = config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
         # only these two differ from build_sfincs's own params:

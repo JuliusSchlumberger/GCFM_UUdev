@@ -683,9 +683,9 @@ def apply_water_retention(
     flood volume, i.e. target_volume = fraction * baseline_excess_volume.
     `baseline_excess_volume` is computed once per basin x scenario by rule
     attribution_mask (18c_attribution_mask.py, via
-    src.postprocessing.compute_excess_volume, classes=(1,3,4) -- river,
-    compound, spin-up baseline, i.e. everything but pure-coastal, since this
-    measure stores RIVER water) and read here from its baseline_excess_volume
+    src.postprocessing.compute_excess_volume, classes=(1,3) -- river and
+    compound, i.e. everything but pure-coastal, since this measure stores
+    RIVER water) and read here from its baseline_excess_volume
     .json output (see 18a_adapt_pre.py) -- reused across every
     storage_fraction scenario so each run is scaled against the same
     reference number.

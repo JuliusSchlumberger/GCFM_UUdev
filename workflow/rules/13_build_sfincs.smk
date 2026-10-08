@@ -74,9 +74,12 @@ rule build_sfincs:
         # rule get_boundary_forcings (07), so changing slr_m only reruns this
         # (cheap) per-scenario build + its downstream event run, never rule
         # 07 itself, rule 10's weir/depth calibration, or the skeleton build.
-        # See src.surge.build_design_surge_matrix's own slr_m argument.
+        # Per-scenario (config/scenarios.yml, like discharge_multiplier
+        # above) rather than global, so changing it also doesn't force every
+        # OTHER already-built scenario to rebuild too. See
+        # src.surge.build_design_surge_matrix's own slr_m argument.
         slr_enabled        = config["boundary_forcings"]["surge"]["slr"]["enabled"],
-        slr_m              = config["boundary_forcings"]["surge"]["slr"]["slr_m"],
+        slr_m              = lambda wildcards: scenario_params(wildcards.scenario)["slr_m"],
         flat_boundary_point_spacing_m = config["sfincs"]["boundary_setup"]["flat_boundary_point_spacing_m"],
         waterlevel_buffer_m = config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
