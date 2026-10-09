@@ -4,8 +4,11 @@
 # name = {strategy} wildcard.  scale = the concrete param values, specified HERE.
 # method (pre/post) is chosen at the CLI and validated against measures.yml.
 
-meta:
-  root: D:/GCFM_UU/raw_data
+# Relative paths below (locations, dep_subgrid) resolve against the raw-data
+# root, which is machine-specific and NOT set here -- it comes from the
+# GCFM_RAW_DATA_ROOT environment variable. Set it once in PowerShell, then
+# restart your terminal:
+#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
 
 # -----------------------------------------------------------------------------------------------
 # ADVANCE

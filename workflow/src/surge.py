@@ -50,26 +50,46 @@ def build_time_axis(
     return np.arange(n_steps + 1, dtype=float) * dt_hr
 
 
-WATER_LEVEL_STEP_M = 0.1
+# Every absolute coastal water level and every weir crest is kept to the
+# centimetre (2 decimals): levels rounded to nearest, crests rounded UP.
+LEVEL_DECIMALS = 2
 
 
-def ceil_water_level(values, step_m: float = WATER_LEVEL_STEP_M) -> np.ndarray:
+def round_level(values) -> np.ndarray:
     """
-    Round a water level / weir crest UP to the next multiple of ``step_m``
-    (0.1 m by default) -- never down, so neither a water level nor a
-    protection crest is underestimated by rounding. Used for every coastal
-    water level here (calm sea: calm_sea_levels/read_baseline_m; COAST-RP
-    storm tide: lookup_storm_tide_at_rp) and for every production weir
-    crest (src.protection_weir.build_coastal_protection_weir), so all sit on
-    the same 0.1 m grid; sfincs.weir itself stores crests at 0.1 m
-    precision, so an already-rounded crest is written exactly as computed.
+    Round a coastal water level to the nearest centimetre.
 
-    The inner np.round strips float noise so an exact multiple (0.3, stored
-    as 0.30000000000000004) isn't bumped a whole step; the outer one keeps
-    the result clean (0.4, not 0.4000000000000001). NaN passes through.
+    THE rounding for every absolute coastal water level: calm sea
+    (calm_sea_levels / read_baseline_m) and storm tide at an RP
+    (lookup_storm_tide_at_rp, storm_tide_at_rp_interpolated). Weir crests
+    are kept on the same centimetre grid but rounded UP -- see ceil_crest.
+
+    Until 2026-10-09 levels and crests alike were rounded UP to the next
+    0.1 m, because hydromt_sfincs writes weir crests at 0.1 m: that added
+    0-10 cm of unphysical level to the forcing and to the crests, and made
+    return periods a few centimetres apart indistinguishable.
+
+    NaN passes through; -0.0 is returned as 0.0.
     """
-    steps = np.ceil(np.round(np.asarray(values, dtype=float) / step_m, 6))
-    return np.round(steps * step_m, 6) + 0.0  # + 0.0: -0.0 (e.g. from -0.05) -> 0.0
+    return np.round(np.asarray(values, dtype=float), LEVEL_DECIMALS) + 0.0
+
+
+def ceil_crest(values) -> np.ndarray:
+    """
+    Round a weir crest UP to the next centimetre -- never down, so a crest
+    is never below the value it was computed from (a simulated water level,
+    a protection level). Used for every weir crest
+    (src.protection_weir.build_coastal_protection_weir, rule 10);
+    sfincs.weir is written at the same precision
+    (src.sfincs_run.write_weir_file), so a crest is stored exactly.
+
+    The inner np.round strips float noise so a value already on the grid
+    (2.75, stored as 2.7500000000000004) isn't bumped a whole centimetre.
+    NaN passes through; -0.0 is returned as 0.0.
+    """
+    step = 10.0**-LEVEL_DECIMALS
+    steps = np.ceil(np.round(np.asarray(values, dtype=float) / step, 6))
+    return np.round(steps * step, LEVEL_DECIMALS) + 0.0
 
 
 def sinusoidal_wave(
@@ -111,42 +131,127 @@ def extract_hydrograph_components(
     station_lons: np.ndarray,
     station_lats: np.ndarray,
     window_hr: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Per-station storm-tide hydrograph components (HGRAPHER, Dullaart et al.
-    2023) from the storm_tide_hydrographs file (tests/KL_gtsm_storm_tide.py):
-    the average tide signal (high water at t=0) and the normalised average
-    surge hydrograph (peak=1 at t=0), cut to -window_hr..+window_hr, at each
-    station's nearest hydrograph location. Levels are relative to a fixed
-    local MSL, same datum as COAST-RP -- MDT/SLR are added at build time.
+    Per-station storm-tide hydrograph components from the basin's own
+    storm_tide_hydrographs.nc (rule storm_tide_hydrographs, src.
+    storm_tide_hydrograph): the average tide signal (high water at t=0) and
+    the normalised surge hydrograph PER RETURN PERIOD (peak=1 at t=0), cut
+    to -window_hr..+window_hr, at each station's own hydrograph location
+    (the same COAST-RP stations, matched by coordinates). Levels are
+    relative to a fixed local MSL, same datum as COAST-RP -- MDT/SLR are
+    added at build time.
 
     Returns:
-        (hg_time_hr, tide, shape, match_km): hg_time_hr (n_t,) hours relative
-        to the peak, shared; tide/shape (n_station, n_t); match_km (n_station,)
-        distance to the matched hydrograph location.
+        (hg_time_hr, tide, shape, shape_rps, match_km): hg_time_hr (n_t,)
+        hours relative to the peak, shared; tide (n_station, n_t); shape
+        (n_station, n_rp, n_t); shape_rps (n_rp,) return periods the shapes
+        belong to; match_km (n_station,) distance to the matched location.
     """
     with xr.open_dataset(hydrograph_path) as ds:
-        hx = ds["station_x_coordinate"].values
-        hy = ds["station_y_coordinate"].values
-        t = ds["event_time_hr"].values
+        hx = ds["longitude"].values
+        hy = ds["latitude"].values
+        t = ds["time_hr"].values
         win = np.abs(t) <= window_hr + 1e-9
-        tide_all = ds["average_tide_event"].values[:, win]
-        shape_all = ds["surge_shape"].values[:, win]
-    if t[win][0] > -window_hr + 1e-6 or t[win][-1] < window_hr - 1e-6:
+        tide_all = ds["average_tide"].values[:, win]
+        shape_all = ds["surge_shape"].values[:, :, win]
+        shape_rps = ds["return_period"].values.astype(float)
+    # The shapes are derived FOR their window (events are cut to it), so a
+    # file built with another window is not the same shapes cut shorter.
+    if abs(t[0] + window_hr) > 1e-6 or abs(t[-1] - window_hr) > 1e-6:
         raise ValueError(
-            f"hydrograph file spans {t[0]:.1f}..{t[-1]:.1f} h, shorter than the "
-            f"requested +-{window_hr:g} h window"
+            f"hydrograph file spans {t[0]:.1f}..{t[-1]:.1f} h but this basin's event window is "
+            f"+-{window_hr:g} h -- it was built with another window_hr; rerun rule storm_tide_hydrographs"
         )
 
     n = len(station_lons)
     tide = np.full((n, int(win.sum())), np.nan)
-    shape = np.full_like(tide, np.nan)
+    shape = np.full((n, len(shape_rps), int(win.sum())), np.nan)
     match_km = np.full(n, np.nan)
     for i, (lon, lat) in enumerate(zip(station_lons, station_lats)):
         d = np.hypot((hx - lon) * np.cos(np.radians(lat)), hy - lat) * 111.0
         j = int(np.nanargmin(d))
         tide[i], shape[i], match_km[i] = tide_all[j], shape_all[j], d[j]
-    return t[win], tide, shape, match_km
+    return t[win], tide, shape, shape_rps, match_km
+
+
+def surge_shape_at_rp(surge_ds: xr.Dataset, rp_yr: float) -> np.ndarray:
+    """
+    surge_forcing.nc's normalised surge shape at an arbitrary return period:
+    (n_station, n_hg_time). The shapes are stored per COAST-RP return period
+    (hg_rp); between two of them the shape is interpolated linearly in RP
+    (the rule storm_tide_at_rp_interpolated uses for the level itself),
+    clamped to the tabulated range. A normalised shape stays normalised
+    (peak = 1 at t = 0) under that interpolation.
+    """
+    shape = surge_ds["hg_surge_shape"].values
+    rps = surge_ds["hg_rp"].values.astype(float)
+    rp = float(np.clip(float(rp_yr), rps.min(), rps.max()))
+    hi = int(np.searchsorted(rps, rp))
+    if np.isclose(rps[hi], rp):
+        return shape[:, hi]
+    lo = hi - 1
+    frac = (rp - rps[lo]) / (rps[hi] - rps[lo])
+    return (1.0 - frac) * shape[:, lo] + frac * shape[:, hi]
+
+
+def storm_tide_event(
+    surge_ds: xr.Dataset,
+    rel_hr: np.ndarray,
+    peak_level: np.ndarray | None,
+    slr_m: float = 0.0,
+    rp_yr: float | None = None,
+) -> np.ndarray:
+    """
+    The storm-tide hydrograph itself, on hours relative to its own peak
+    (rel_hr = 0 is the surge peak on tidal high water), from surge_forcing.nc's
+    hg_tide_m/hg_surge_shape. Per station:
+
+      tide  = average tide + station calm level (MDT, + SLR x fingerprint)
+      event = tide + A x surge_shape(rp_yr), A = peak_level - tide high
+              water (>= 0), so the event peaks at peak_level exactly. The
+              surge shape is the one derived for that return period
+              (surge_shape_at_rp).
+
+    THE single builder of that wave: production's boundary
+    (_hydrograph_surge_matrix, rule 13) and the dike-crest calibration's
+    protection-level storm tide (rule 10, rounds 1-2) both call it, each on
+    its own time axis, so the crests are calibrated against the wave
+    production sends.
+
+    peak_level: (n_station,) absolute water level at the peak (as
+        lookup_storm_tide_at_rp / storm_tide_at_rp_interpolated return it,
+        same slr_m), or None for the tide alone.
+    rp_yr: return period peak_level belongs to -- selects the surge shape;
+        required with peak_level.
+
+    Returns:
+        (n_station, len(rel_hr)) np.ndarray, water level (m). Outside the
+        stored window the tide holds its edge value and the surge is 0.
+    """
+    hg_t = surge_ds["hg_time_hr"].values
+    tide = surge_ds["hg_tide_m"].values
+    base = _station_calm_levels_unrounded(surge_ds, slr_m)
+    event = (
+        np.stack([np.interp(rel_hr, hg_t, tide[i]) for i in range(len(base))])
+        + base[:, None]
+    )
+    if peak_level is not None:
+        if rp_yr is None:
+            raise ValueError(
+                "storm_tide_event: rp_yr is required with peak_level (selects the surge shape)"
+            )
+        shape = surge_shape_at_rp(surge_ds, rp_yr)
+        high_water = tide.max(axis=1) + base
+        amp = np.maximum(np.asarray(peak_level, dtype=float) - high_water, 0.0)
+        surge = np.stack(
+            [
+                np.interp(rel_hr, hg_t, shape[i], left=0.0, right=0.0)
+                for i in range(len(base))
+            ]
+        )
+        event = event + amp[:, None] * surge
+    return event
 
 
 def _hydrograph_surge_matrix(
@@ -160,9 +265,9 @@ def _hydrograph_surge_matrix(
 
       tide  = average tide + station calm level (MDT, + SLR x fingerprint)
       "tide": tide only
-      RP:   tide + A x surge_shape, A = RP level - tide high water, so the
+      RP:   tide + A x surge_shape(RP), A = RP level - tide high water, so the
             peak (surge on high water) equals lookup_storm_tide_at_rp exactly
-            (rounded up to 0.1 m like every coastal level); A >= 0
+            (rounded to the centimetre like every coastal level); A >= 0
 
     Before the window the boundary holds the calm lead-in level (as the
     spin-up ends); over the window's first attrs["hg_ramp_hours"] it blends
@@ -173,26 +278,19 @@ def _hydrograph_surge_matrix(
     peak_hr = float(surge_ds.attrs["hg_peak_hr"])
     ramp_hr = float(surge_ds.attrs.get("hg_ramp_hours", 0.0))
     hg_t = surge_ds["hg_time_hr"].values
-    tide = surge_ds["hg_tide_m"].values
-    shape = surge_ds["hg_surge_shape"].values
-    rel = times - peak_hr
-
-    base = _station_calm_levels_unrounded(surge_ds, slr_m)
-    event = (
-        np.stack([np.interp(rel, hg_t, tide[i]) for i in range(len(base))])
-        + base[:, None]
+    is_tide = isinstance(design_rp_yr, str) and design_rp_yr.strip().lower() == "tide"
+    level = (
+        None
+        if is_tide
+        else lookup_storm_tide_at_rp(surge_ds, design_rp_yr, slr_m=slr_m)
     )
-    if not (isinstance(design_rp_yr, str) and design_rp_yr.strip().lower() == "tide"):
-        level = lookup_storm_tide_at_rp(surge_ds, design_rp_yr, slr_m=slr_m)
-        high_water = tide.max(axis=1) + base
-        amp = np.maximum(level - high_water, 0.0)
-        surge = np.stack(
-            [
-                np.interp(rel, hg_t, shape[i], left=0.0, right=0.0)
-                for i in range(len(base))
-            ]
-        )
-        event = event + amp[:, None] * surge
+    event = storm_tide_event(
+        surge_ds,
+        times - peak_hr,
+        level,
+        slr_m=slr_m,
+        rp_yr=None if is_tide else float(design_rp_yr),
+    )
 
     start_hr = peak_hr + hg_t[0]
     w = (
@@ -222,28 +320,27 @@ def _station_calm_levels_unrounded(surge_ds: xr.Dataset, slr_m: float) -> np.nda
 def calm_sea_levels(surge_ds: xr.Dataset, slr_m: float = 0.0) -> np.ndarray:
     """
     Per-station calm-sea (tide-only, no storm surge) water level -- the
-    event forcing's own lead-in level -- rounded UP to the next 0.1 m, like
-    every other absolute water level/crest in the model (ceil_water_level).
+    event forcing's own lead-in level, rounded to the centimetre
+    (round_level).
 
     Returns:
         (n_station,) np.ndarray, water level (m).
     """
-    return ceil_water_level(_station_calm_levels_unrounded(surge_ds, slr_m))
+    return round_level(_station_calm_levels_unrounded(surge_ds, slr_m))
 
 
 def read_baseline_m(surge_ds: xr.Dataset) -> float:
     """
     surge_forcing.nc's scalar baseline_m (basin-mean local MSL in model
-    coordinates, MDT-only -- see 07_get_boundary_forcings.py), rounded UP to
-    the next 0.1 m (ceil_water_level); 0.0 if the file predates the field.
+    coordinates, MDT-only -- see 07_get_boundary_forcings.py), rounded to
+    the centimetre (round_level); 0.0 if the file predates the field.
     THE single reader for every consumer that starts/holds the sea at this
     level (rule 10's calibration boundary + zsini, rule 13's skeleton
-    zsini), so they all agree with the rounded per-station calm-sea levels
-    (calm_sea_levels) the event forcing uses.
+    zsini).
     """
     if "baseline_m" not in surge_ds:
         return 0.0
-    return float(ceil_water_level(float(surge_ds["baseline_m"].values)))
+    return float(round_level(float(surge_ds["baseline_m"].values)))
 
 
 def lookup_storm_tide_at_rp(
@@ -266,12 +363,8 @@ def lookup_storm_tide_at_rp(
     rp_yr=None means mean coastal conditions: each station's own baseline
     (tide-only / calm sea, no storm surge), plus the same optional SLR term.
 
-    Every returned level is rounded UP to the next 0.1 m (ceil_water_level)
-    as an ABSOLUTE water level, after the MDT/SLR terms are added -- so it
-    is never underestimated, and sits on the same 0.1 m grid as the weir
-    crests it's compared against. The storm-tide level is ceil(calm level +
-    storm tide), not ceil(calm level) + storm tide: each absolute level is
-    the smallest 0.1 m multiple at or above its own true value.
+    The returned levels are ABSOLUTE water levels, rounded to the centimetre
+    (round_level) after the MDT/SLR terms are added.
 
     Returns:
         (n_station,) np.ndarray, water level (m).
@@ -286,9 +379,7 @@ def lookup_storm_tide_at_rp(
             f"surge RP {rp_yr} not tabulated in COAST-RP "
             f"({[int(r) for r in table_rps]})"
         )
-    return ceil_water_level(
-        surge_ds["storm_tide_rp_table"].values[:, idx[0]] + baselines
-    )
+    return round_level(surge_ds["storm_tide_rp_table"].values[:, idx[0]] + baselines)
 
 
 def storm_tide_at_rp_interpolated(
@@ -299,8 +390,9 @@ def storm_tide_at_rp_interpolated(
     the FLOPROS coastal protection RP, which COAST-RP doesn't tabulate) --
     linear in RP between the two bracketing tabulated RPs, the same rule
     interpolate_protection_level uses for the coastal crest itself; clamped
-    to the tabulated range. Then the same vertical terms and 0.1 m round-up
-    as lookup_storm_tide_at_rp (which it equals at a tabulated RP).
+    to the tabulated range. Then the same vertical terms as
+    lookup_storm_tide_at_rp (which it equals at a tabulated RP), rounded to
+    the centimetre.
 
     Returns:
         (n_station,) np.ndarray, water level (m).
@@ -313,7 +405,7 @@ def storm_tide_at_rp_interpolated(
             for row in surge_ds["storm_tide_rp_table"].values
         ]
     )
-    return ceil_water_level(raw + _station_calm_levels_unrounded(surge_ds, slr_m))
+    return round_level(raw + _station_calm_levels_unrounded(surge_ds, slr_m))
 
 
 def build_design_surge_matrix(
@@ -339,7 +431,7 @@ def build_design_surge_matrix(
     the RP level, and "tide" is unavailable.
 
     Both the lead-in level (calm_sea_levels) and the peak
-    (lookup_storm_tide_at_rp) are rounded UP to the next 0.1 m. The tide
+    (lookup_storm_tide_at_rp) are rounded to the centimetre. The tide
     itself is NOT rounded -- it's a genuinely varying signal, not a single
     absolute crest/lead-in level being compared against a weir.
 
@@ -806,6 +898,40 @@ def select_nearest_stations(
         selected = selected.nsmallest(max_stations, "dist_m")
 
     return selected.copy()
+
+
+def select_surge_stations(
+    nc_path: str,
+    domain_utm: gpd.GeoDataFrame,
+    domain_crs: str,
+    min_stations: int,
+    max_stations: int,
+    search_radii_km: list[float],
+    dedupe_radius_km: float,
+    return_period: int = _COASTRP_RPS[0],
+) -> gpd.GeoDataFrame:
+    """
+    THE selection of a basin's surge stations: COAST-RP stations loaded
+    (load_coastrp_stations), ranked by distance to the domain
+    (compute_distances_to_bbox) and picked by select_nearest_stations.
+
+    One function so rule select_surge_stations (07a, which decides what rule
+    extract_gtsm_series extracts) and rule get_boundary_forcings (07) select
+    the identical stations from the same config values. return_period only
+    sets which level lands in the 'rp_level' column; it does not affect the
+    selection.
+    """
+    stations = load_coastrp_stations(nc_path, return_period)
+    log.info(f"CoastRP stations loaded: {len(stations)}")
+    stations = compute_distances_to_bbox(stations, domain_utm, domain_crs)
+    return select_nearest_stations(
+        stations,
+        min_stations,
+        max_stations,
+        search_radii_km,
+        dedupe_radius_km,
+        domain_crs,
+    )
 
 
 # ── dataset assembly ──────────────────────────────────────────────────────────

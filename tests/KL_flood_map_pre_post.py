@@ -10,6 +10,7 @@ scores as KL_csi.py):
     dry in both  land that neither map floods (an agreement too)
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -24,7 +25,11 @@ from src.plots import read_raster_reprojected_for_plot  # noqa: E402
 from KL_csi import THRESHOLD, contingency, land_mask, wet_map  # noqa: E402
 
 BASIN_ID = "2433835"
-BASIN_ROOT = Path(r"D:\GCFM_UU\results") / BASIN_ID
+# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+BASIN_ROOT = Path(os.environ["GCFM_RESULTS_DIR"]) / BASIN_ID
 RUNS = BASIN_ROOT / "runs"
 DOMAIN = BASIN_ROOT / "preprocessing_inputs" / "domain"
 

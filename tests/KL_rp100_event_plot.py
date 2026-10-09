@@ -4,6 +4,7 @@ Reads the output of KL_gtsm_storm_tide.py and plots, for the GTSM station neares
 polygon, the RP100 storm tide hydrograph (average tide + scaled surge, surge peak on high water).
 """
 
+import os
 from pathlib import Path
 
 import geopandas as gpd
@@ -11,8 +12,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-HG_NC = Path(r"D:\GCFM_UU\raw_data\GTSM_storm_tide_hourly\GTSM_storm_tide_rp_hg.nc")
-DELTAS = Path(r"D:\GCFM_UU\raw_data\DeltaWebs\modified\9_polygons.gpkg")
+# Machine-specific path, read from the GCFM_RAW_DATA_ROOT environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+HG_NC = (
+    Path(os.environ["GCFM_RAW_DATA_ROOT"])
+    / "GTSM_storm_tide_hourly/GTSM_storm_tide_rp_hg.nc"
+)
+DELTAS = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "DeltaWebs/modified/9_polygons.gpkg"
 RP = 100
 XLIM_HR = 60
 OUT_PNG = HG_NC.with_name(f"rp{RP:04d}_event_per_delta.png")

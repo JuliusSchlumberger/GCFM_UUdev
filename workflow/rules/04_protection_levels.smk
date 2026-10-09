@@ -13,12 +13,9 @@ rule get_protection_levels:
     from the raw global landuse catalogue source, deliberately NOT from rule
     get_land_polygons' (03) own per-basin output, to avoid pulling in the
     model-domain dependency chain (02/03) this rule otherwise avoids entirely.
-    Always runs and always produces its outputs; river_processing.empirical_estimation.modify_hydrograph
-    (consumed by rule get_boundary_forcings, 07, empirical depth_method only)
-    only gates whether the identified protection level is actually subtracted
-    from the forcing timeseries. Rule modelled_depth_estimation (10, modelled
-    depth_method) always consumes this rule's riverine_rp_yr when finite,
-    independent of that toggle.
+    Always runs and always produces its outputs: coastal_rp_yr feeds the
+    coastal protection crest (rule get_boundary_forcings, 07), and rule
+    modelled_depth_estimation (10) consumes riverine_rp_yr when finite.
     """
     input:
         specific_delta  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),

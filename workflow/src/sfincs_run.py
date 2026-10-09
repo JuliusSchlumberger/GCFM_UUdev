@@ -70,6 +70,45 @@ def forward_geometry_files(
     return lines
 
 
+# Crest (and par1) format of sfincs.weir: 1 cm, the precision every crest is
+# rounded to (src.surge.ceil_crest).
+WEIR_Z_FMT = "%.2f"
+
+
+def write_weir_file(sf) -> Path | None:
+    """
+    (Re)write ``sf``'s sfincs.weir with crests at 1 cm instead of the 0.1 m
+    hydromt_sfincs writes them at.
+
+    That 0.1 m is not a SFINCS limit: ``sf.weirs.write()`` calls
+    ``hydromt_sfincs.utils.write_geoms`` without passing its ``fmt_z``
+    (default "%.1f", round to nearest), and offers no parameter to change
+    it. SFINCS itself honours a finer crest, down to the millimetre (checked
+    with one weir in a flat basin: crests of 0.430 and 0.437 m start
+    overtopping 7 mm of water level apart). Call this AFTER ``sf.write()`` /
+    ``sf.weirs.write()`` -- it overwrites the file they wrote, using the
+    same writer function and the same x/y format.
+
+    Returns the path written, or None when the model has no weirs.
+    """
+    from hydromt_sfincs import utils
+
+    if sf.weirs.data is None or sf.weirs.data.empty:
+        return None
+    path = sf.config.get_set_file_variable(
+        key="weirfile", value=None, default="sfincs.weir"
+    )
+    fmt_xy = "%11.6f" if sf.crs.is_geographic else "%11.1f"
+    utils.write_geoms(
+        path,
+        utils.gdf2linestring(sf.weirs.data),
+        stype="weir",
+        fmt=fmt_xy,
+        fmt_z=WEIR_Z_FMT,
+    )
+    return Path(path)
+
+
 def run_sfincs_subprocess(
     sfincs_exe: str | Path,
     cwd: str | Path,

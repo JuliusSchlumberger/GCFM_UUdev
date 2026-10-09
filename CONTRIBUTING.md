@@ -230,41 +230,40 @@ configures how the built model consumes it. Before adding a new key:
 - Don't pin exact build strings unless there's a known compatibility issue —
   prefer version-only pins so the environment stays resolvable on a
   different machine/OS patch level.
-- The SFINCS executable itself (`sfincs.simulation.sfincs_exe` in
-  `config.yml`) is a separately licensed/downloaded binary, not part of the
-  conda environment or this repo. Rules that only *assemble* SFINCS input
-  files (`build_sfincs`) don't need it; rules that actually *run* the
-  solver (`run_spinup`, `run_event`) do — point at your own local copy via
-  `GCFM_SFINCS_EXE`, not by editing `config.yml` directly (see "Local
-  machine paths" below).
+- The SFINCS executable itself is a separately licensed/downloaded binary,
+  not part of the conda environment or this repo. Rules that only
+  *assemble* SFINCS input files (`build_sfincs`) don't need it; rules that
+  actually *run* the solver (`run_spinup`, `run_event`, the depth
+  calibration, pre-adaptation runs) do — point at your own local copy via
+  `GCFM_SFINCS_EXE` (see "Local machine paths" below).
 
 ## Local machine paths (one-time, after cloning)
 
 Three settings are inherently specific to your own machine, not something
 the codebase can know for you:
 
-- `results_dir` (`config.yml`) — where pipeline outputs get written.
-- the data catalogue root (`data_catalogue.yml`'s `meta.root`) — where raw
-  input data lives locally.
-- `sfincs.simulation.sfincs_exe` (`config.yml`) — your local SFINCS binary.
+- the results directory — where pipeline outputs get written.
+- the raw-data root — where raw input data lives locally (every
+  `file_path` in `data_catalogue.yml` and every measure file in
+  `adaptation_strategies.yml` is relative to it).
+- the SFINCS executable — your local SFINCS binary.
 
-All three are still committed in `config.yml` / `data_catalogue.yml` with
-whichever value the last person to touch those files happened to have
-locally. **Don't hand-edit them there** — every `git pull` that brings in
-an unrelated change to either file will either silently reset your local
-value back to theirs, or turn an unrelated pull into a merge conflict on a
-line that has nothing to do with the actual change.
+None of the three is committed anywhere in the repo (no `results_dir` /
+`sfincs_exe` in `config.yml`, no `meta.root` in `data_catalogue.yml` /
+`adaptation_strategies.yml`), so a `git pull` can never reset or conflict
+with your local paths. Instead, set three environment variables once —
+there is no fallback, the pipeline stops with a message naming the missing
+variable if one is unset:
 
-Instead, set three environment variables once, and leave the committed
-files alone entirely — `workflow/rules/00_common.smk` reads these at
-startup and overrides the committed value when present, falling back to it
-otherwise:
+| Variable | Sets | Required for |
+|---|---|---|
+| `GCFM_RESULTS_DIR` | results directory (`config["results_dir"]`) | every Snakemake run |
+| `GCFM_RAW_DATA_ROOT` | raw-data root (`CATALOGUE["meta"]["root"]`) | every Snakemake run |
+| `GCFM_SFINCS_EXE` | SFINCS executable | only rules that run the solver |
 
-| Variable | Overrides |
-|---|---|
-| `GCFM_RESULTS_DIR` | `config.yml`'s `results_dir` |
-| `GCFM_RAW_DATA_ROOT` | `data_catalogue.yml`'s `meta.root` |
-| `GCFM_SFINCS_EXE` | `config.yml`'s `sfincs.simulation.sfincs_exe` |
+They are read in `workflow/src/io.py` (`local_path`, `load_catalogue`) and
+`workflow/rules/00_common.smk`; the standalone scripts in `tools/` and
+`tests/` read the same variables directly.
 
 **PowerShell** (persists across sessions — set once, restart your terminal):
 
@@ -283,16 +282,14 @@ $env:GCFM_SFINCS_EXE = "C:\path\to\sfincs.exe"
 ```
 
 Verify they're picked up with a dry run — the printed input/output paths
-should reflect your own directories, not whatever happens to be committed:
+should reflect your own directories:
 
 ```powershell
 snakemake preprocess -n --cores 1
 ```
 
-If you ever need to check what's actually committed as the fallback default
-(e.g. to confirm the override is even necessary), just read the plain value
-out of `config.yml`/`data_catalogue.yml` — the env vars only take effect
-when set, they don't change what's on disk.
+A terminal (or VS Code window) that was already open when you set the
+persistent variables doesn't see them yet — restart it first.
 
 ## Setting up pre-commit (one-time, after cloning)
 

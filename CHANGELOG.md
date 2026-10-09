@@ -4,6 +4,491 @@ Newest changes first. See `Reference_memory.txt` for the current, up-to-date
 description of how the pipeline works; this file only describes *what changed
 and why*.
 
+# 2026-10-09d: river events from real GloFAS floods instead of a 24 h wave (- JS)
+
+A scenario's river return period used to become a 24 h half-cosine on the
+mean discharge. Real floods of the main inflow stay above half their height
+for 6-9 days (Ebro), 14-35 (Mississippi), 14-38 (Calvert), so river flood
+volume inside the event window was 2-8 times too small.
+
+- Rule 07 stores each crossing's daily series in `river_forcing.nc`
+  (`discharge_daily(crossing, day)`, `day` = days since 1970-01-01): the
+  series the return periods are fitted on, bias-corrected where applicable.
+  New attribute `event_start_hr`.
+- Rule 13 (`src.river_forcing.real_flood_event_matrix`, via
+  `build_design_discharge_matrix(event=...)`): the event is defined by the
+  basin's MAIN inflow (largest bankfull discharge). The real flood whose
+  peak is nearest the return level is scaled to hit it; a return level above
+  every recorded peak (47 years of record: from ~RP 25-100 upward) uses the
+  `n_largest` (5) floods, each scaled to it and averaged day by day. Every
+  other inflow carries its own discharge on the same date(s) with the same
+  scale factor -- one coherent event, in which only the main inflow is at
+  the return level. The peak day sits on the river peak hour (the surge peak
+  in hydrograph mode); daily means are interpolated linearly.
+- The event run still starts from the shared spin-up at mean discharge,
+  while a real flood is already at 36-93 % of its peak then: the discharge
+  blends from the mean into the event over
+  `max(min_ramp_hours, gap / (max_rise_per_hr x peak))` -- a relative limit
+  (default 5 % of the peak per hour, at least 6 h), because the fastest real
+  rises are ~1 % of the 100-yr peak per hour on small and large rivers alike
+  (Ebro 47, Mississippi 557, Calvert 9 m3/s per hour), which an absolute cap
+  cannot express.
+- Config: `boundary_forcings.river.event_hydrograph` (`source: glofas_event
+  | cosine`, `separation_days`, `n_largest`, `min_ramp_hours`,
+  `max_rise_per_hr`). A parameter of rule 13 (and of rule 07's preview
+  plot). Spin-up, dike calibration and `river_rp: Mean`/null scenarios are
+  unchanged.
+- Also fixed: with `compound.lag_hr` != 0 the shifted river series was
+  padded with bankfull discharge although the base flow is the mean since
+  2026-10-08; it is now padded with the series' own base flow.
+
+Every basin needs rule 07 rerun once (it adds `discharge_daily` to
+`river_forcing.nc`; rule 13 raises without it).
+
+Tested on basin 2433835 (surge 250 / river 50, no SLR, 70 h window): the
+event is the flood of 2018-04-14 scaled x0.975 to 3,265 m3/s, starting from
+the spin-up's 289 m3/s at hour 24, peaking at hour 94 with the sea and still
+at 2,233 m3/s when the run ends; 36.2 km2 flooded (10.2 % of land), against
+31.8 km2 with the 24 h wave and a 60 h window -- the two changes are not
+separated. That run used a fixed 6 h ramp; the rule-based ramp was added
+afterwards and is tested on the forcing only (Mississippi 9-13 h, Calvert
+11-14 h), as is a basin with several inflows (Mississippi: the other inflows
+peak at 0.04-1.0 times their own return level).
+
+Known limits: daily means flatten the peak of small, fast rivers; the
+channels start the event filled for mean flow, not for the days of rising
+water before a real flood (not checked on a large delta); and the river and
+sea peaks still coincide by construction.
+
+# 2026-10-09c: storm-tide hydrographs built in the pipeline, one surge shape per return period; dike crests calibrated against production's wave (- JS)
+
+Every basin needs rules select_surge_stations -> extract_gtsm_series ->
+storm_tide_hydrographs once (the extraction reads ~60 GB of GTSM files:
+12-25 min per basin on a USB hard disk), then rule 07 onward.
+
+## Hydrographs per basin, from the raw GTSM reanalysis
+
+The tide and surge shape used to come from one hand-made file
+(`GTSM_storm_tide_rp_hg.nc`, `tests/KL_gtsm_storm_tide.py`), built outside
+the workflow for a fixed list of deltas. Three new rules
+(`07a_storm_tide_hydrographs.smk`) build them per basin, into
+`preprocessing_inputs/forcing/`:
+
+- **select_surge_stations** -> `surge_stations.json`: the COAST-RP stations
+  rule 07 forces the sea boundary at (`src.surge.select_surge_stations`, now
+  the one selection both rules call).
+- **extract_gtsm_series** -> `gtsm_hourly.nc`: hourly total water level and
+  surge residual 1950-2024 at those stations (`src/gtsm.py`). The reanalysis
+  is one file per month for all ~43,000 stations, so every monthly file has
+  to be read. The rule depends ONLY on `surge_stations.json`: Snakemake
+  compares the checksum of small inputs, so a rewritten but identical file
+  (another delta-polygon file, a rerun of the domain rules) does not
+  re-trigger it -- checked. The GTSM folders are parameters, not inputs.
+- **storm_tide_hydrographs** -> `storm_tide_hydrographs.nc` +
+  `07c_storm_tide_hydrographs.png` (`src/storm_tide_hydrograph.py`).
+
+New catalogue entries `gtsm_total_water_level` / `gtsm_surge_residual` (the
+unzipped monthly files) replace `storm_tide_hydrographs`.
+`tests/KL_gtsm_storm_tide.py` is unchanged but no longer feeds the pipeline.
+
+## One surge shape per return period
+
+HGRAPHER averages the largest surge events into ONE normalised shape and
+scales it to every return period. Checked on Calvert (620947,
+`tests/check_surge_shape_duration.py`): among the events used, larger surges
+are shorter (rank correlation -0.2 to -0.4), and the one event near the
+100-year size lasted 19 h above half its peak against the shape's 59 h.
+
+Now, per station and COAST-RP return period: the shape is averaged over the
+events whose surge peak lies within `match_window_m` (0.05 m) of the surge
+that return period needs (return level - average high water); the
+`min_events` (10) nearest events if fewer; the `min_events` largest if the
+target is above every recorded peak. `match_on: water_level` matches the
+event's peak total water level against the return level instead -- tried and
+rejected as default: at tidal deltas it selects spring tides carrying a
+0.2-0.6 m surge (Taiwan, Chao Phraya: 46-58 h shapes scaled to 1.1-1.6 m).
+The shapes span the event window (+-`window_hr`), so HGRAPHER's cut at +-36 h
+is gone.
+
+`storm_tide_hydrographs.nc` holds, per station: `average_tide(station,
+time_hr)`, `surge_shape(station, return_period, time_hr)`, the COAST-RP
+`storm_tide_level`, and per shape which events it came from
+(`shape_n_events`, `shape_window_m`, `shape_mode` = window | widened |
+above_record, `shape_event_surge_m`, `shape_dur50_hr`). `surge_forcing.nc`
+carries `hg_surge_shape(station, hg_rp, hg_time_hr)`;
+`src.surge.surge_shape_at_rp` interpolates linearly in RP between tabulated
+return periods (used for the protection return period in rule 10).
+
+New keys under `boundary_forcings.surge.hydrograph`: `match_on` (surge),
+`match_window_m` (0.05), `min_events` (10), `window_overrides_hr`.
+`max_match_km` changed meaning and value, 10 -> 0.1: the surge stations and
+the hydrograph stations are now the same COAST-RP/GTSM points, so it is a
+coincidence tolerance, no longer a search radius.
+
+Known limits: where a return period needs more surge than the reanalysis
+ever produced (Zambezi, Mangoky, Chao Phraya from RP 1), every return period
+gets the same largest-events shape; and Calvert's largest events are still
+multi-day ones, so its cyclone-driven return periods remain too wide (a
+cyclone-type shape is still to do). The average tide is unchanged
+(identical to the hand-made file at the same station); it is one mean tidal
+cycle repeated, with a small step where the copies join (~1 cm at the Ebro,
+not checked at strongly tidal deltas).
+
+## Event window per basin
+
+`hydrograph.window_hr` (60) is the default half-length of the storm-tide
+event; `hydrograph.window_overrides_hr` sets it per basin id (committed:
+`2433835: 70`), resolved by `hydrograph_window_hr()` in `00_common.smk`. It
+sets the length of that basin's surge shapes AND of the event: peak (sea and
+river) at lead-in + window, forcing and simulation length lead-in + 2 x
+window (2433835: peak at hour 94, 164 h). Rule 13 takes the simulation end
+from the forcing files, so nothing else needs changing.
+
+- A window must be a multiple of `boundary_forcings.dt_hr` (checked at
+  start-up): off the time step, neither peak is sampled and both are
+  clipped (70.5 h at dt 1 h: river peak at 99.6 %).
+- Rule 07 requires `storm_tide_hydrographs.nc` to have exactly the basin's
+  window (a file built with a longer one used to be cut silently).
+- Rule 07 receives only the hydrograph keys it reads (`enabled`,
+  `ramp_hours`, `max_match_km`), not the whole block: with the override list
+  in its parameters, one basin's change would have rerun every basin.
+- Changing a basin's window reruns its storm_tide_hydrographs and rule 07
+  onward (including its dike calibration), not the GTSM extraction.
+- Unchanged assumption: the event run starts at the end of the spin-up,
+  which is the start of the window only while `spinup_days` equals
+  `lead_days` (both 1). Nothing checks this.
+
+Checked for 2433835 at 70 h (rules 07 to build_sfincs rerun): sea peaks at
++0.44 m and the river at hour 94; the 100-year shapes are at zero 5 h inside
+the window start but still at 0.14 of the peak 5 h before its end.
+
+## New diagnostic
+
+`tests/check_surge_shape_duration.py [BASIN_ID]`: why a basin's surge shape
+is as wide as it is -- surge peak against duration for every event, the
+surge 10 days either side of the events, background level, seasonal cycle,
+and the shape recomputed without the slow background, with a +-120 h window
+and for stricter/looser event selection. It reuses
+`tests/KL_gtsm_storm_tide.py`'s own functions (and reproduces its stored
+shape exactly) and caches every station of that script's output file per
+year under `GCFM_RESULTS_DIR/diagnostics/surge_shape/_cache/`.
+
+## Dike crests calibrated against the wave production sends
+
+Rule 10's rounds 1-2 forced the protection-level storm tide as a 12 h
+half-cosine, while production (rule 13) sends average tide + a multi-day
+surge. Both now call `src.surge.storm_tide_event`: rule 10 with the
+protection return period's level and shape, peak midway between the end of
+the discharge ramp and the end of the run (hour 15 of 24), blended in from
+the calm level over the ramp. The calibration run is still 1 day, so only
+that part of the hydrograph is seen (run length: to be revisited). Without
+hydrograph components in `surge_forcing.nc` the half-cosine is kept.
+
+Tested end to end on basin 2433835 (surge 250 / river 50, no SLR): round 2
+has 36 of 1,899 edge cells above their crest, by at most 0.2 cm; the event
+boundary peaks at +0.44 m at hour 84 and floods 31.8 km2 (8.9 % of land).
+
+Follow-up, not started: the relative timing (lag) of the storm-tide peaks
+across a basin's stations in the GTSM series -- every station currently
+peaks at the same instant.
+
+# 2026-10-09: water levels and weir crests to the centimetre, no more 0.1 m round-up (- JS)
+
+Every absolute coastal water level and every weir crest used to be rounded
+UP to the next 0.1 m, because `sfincs.weir` held crests at 0.1 m. That limit
+comes from hydromt_sfincs' writer, not from SFINCS: `sf.weirs.write()` calls
+`utils.write_geoms` without its `fmt_z` argument (default `"%.1f"`). SFINCS
+itself honours a finer crest -- checked with one weir across a flat basin
+and a slowly rising level: overtopping starts at a left-side level of
+0.422 / 0.452 / 0.459 / 0.522 m for crests of 0.4 / 0.430 / 0.437 / 0.5 m
+(the constant 0.022 m is the detection lag).
+
+The round-up added 0-10 cm of unphysical level to every forcing (Ebro:
+`baseline_m` +0.051 -> +0.10 m) and to every crest, and made return periods
+a few centimetres apart identical (Ebro RP 10 and RP 41, 3.7 cm apart, both
+0.40 m).
+
+- **Both on the centimetre grid** (`ceil_water_level` is gone). Coastal
+  water levels are rounded to the NEAREST centimetre --
+  `src.surge.round_level`, used by `calm_sea_levels`, `read_baseline_m`,
+  `lookup_storm_tide_at_rp`, `storm_tide_at_rp_interpolated`. Weir crests
+  are rounded UP to the next centimetre -- `src.surge.ceil_crest`
+  (`src.protection_weir.build_coastal_protection_weir`, rule 10), so a
+  crest is never below the level it was computed from.
+- **`sfincs.weir` written at 1 cm**: new `src.sfincs_run.write_weir_file(sf)`
+  rewrites the file with the same writer function at `fmt_z="%.2f"`, after
+  every weir write -- rule 10 (each calibration round), rule 13 skeleton,
+  rule 18a (adapted model). The other forcing files were already fine:
+  `sfincs.bzs` is written at 1 mm.
+- Rule 10's own verification ("edge water-side cells exceed their own
+  crest") can still report exceedances of a few millimetres with
+  `river_depth_modelling.freeboard_m: 0`: the verification round's water
+  levels are not identical to those of the round the crests were derived
+  from, and the old 0.1 m round-up used to hide that.
+
+Every basin reruns from rule 10 (calibration boundary and crests) onward.
+
+# 2026-10-09: rotated SFINCS grid is the default; GEBCO/FathomDEM merge reworked (- JS)
+
+## `sfincs.grid.rotated: true`
+
+The rotated model grid (entry of 2026-10-08 below) is now the default.
+Validation on basin 620947, default scenario, storm-tide hydrographs
+switched off (half-cosine surge), on the new elevation merge of this entry:
+
+| Run | Grid | Clipping box | Flooded area | Flood volume |
+|---|---|---|---|---|
+| A | unrotated, 473 x 457 cells | polygon bbox | 326.4 km2 | 619 Mm3 |
+| C | rotated 35.8 deg, 620 x 224 cells (-36%) | bbox around the rotated rectangle | 326.5 km2 (+0.0%) | 624 Mm3 (+0.8%) |
+
+Flood maps: CSI 0.955, depth where both are wet differs by 0.10 m on
+average with no offset (+0.01 m).
+
+On the OLD elevation merge the same pair differed by 15% in area and 16%
+in volume. That was not the rotation: a rotated grid on the unrotated run's
+exact inputs gave +1.6% / +2.2% (CSI 0.96). It was the clipping box, which
+changed the merged sea bed by 0.6 m on average through the tile merge
+fixed below. (A weir-staircase explanation was tested and rejected:
+reducing every weir's discharge coefficient by its local stair-step excess,
+about 21% overall, changed the flood volume by 2-3% and did not close the
+gap.)
+
+**Decision: only the model grid rotates.** The preprocessing rasters
+(elevation, land use, roughness, sea mask) stay north-up, clipped to the
+bbox around the rotated rectangle plus `domain.delta_buffer_m`. Storing
+them on the rotated lattice ("stage B") was audited and is NOT pursued.
+
+Not yet tested on a rotated grid: the adaptation rules (18a/b/c, incl. the
+attribution map), a large basin, and the storm-tide hydrograph path. On a
+large basin rule 09b may need much more memory than before: it reads the
+land-use source in full-width row strips, and a strip of a rotated grid
+covers a far larger source window. A basin can be kept axis-aligned with
+`sfincs.grid.rotated_overrides: {<basin_id>: false}`.
+
+Fixes the validation run exposed (rotated grid only unless noted):
+
+- `rio.transform()` returns an identity transform on a hydromt-native
+  rotated grid; rules 10, 13, 13-skeleton and 14 now use
+  `.raster.transform` for the model grid (spin-up found no river cells).
+- All grids: `config["results_dir"]` is converted to forward slashes -- a
+  Windows-style `GCFM_RESULTS_DIR` gave mixed separators that Snakemake did
+  not match between the spin-up's restart-file output and its consumers.
+
+## Elevation merge
+
+Rule 05a (`get_elevation`), `terrain` block in `config.yml`:
+
+- **Sea/land from the land use, not the DeltaDTM mask.** FathomDEM is now
+  clipped on sea cells = land use 200 (`landuse_source.tif`, rule 02b,
+  resampled onto the elevation grid exactly as rule 05b does), the same
+  cells zsini, the weir tracing and the water-level boundary treat as sea.
+  Rule 05a takes `landuse_source` as input instead of `deltadtm_mask`. On
+  basin 620947 the two differ by 15 km2 of sea-connected creeks, estuaries
+  and lagoon that land use calls sea and DeltaDTM does not (they used to
+  keep FathomDEM's water-surface values), and by a 3.3 km2 strip of beach /
+  tidal flat the other way round. `src.raster.clip_ocean_from_topo`, the
+  `deltadtm_mask` catalogue entry and `tools/build_deltadtm_mask_vrt.py`
+  are no longer used by the pipeline (left in place).
+- **GEBCO depth clamp, both ends, relative to local mean sea level** (the
+  MDT surface in the GOCO06s frame). `terrain.gebco_max_depth_m` is now
+  10 m (was 7 m, and measured from 0 m GOCO06s instead of from MSL, which
+  sits about 1 m higher). New `terrain.gebco_min_depth_m` (2 m): on sea
+  cells, GEBCO shallower than MSL - 2 m is lowered to it. That removes
+  GEBCO's too-shallow / above-sea-level artefacts at the coast, and gives
+  every creek and estuary GEBCO cannot resolve a defined depth: they come
+  out exactly 2 m deep (620947: 13 km2 of narrow sea, median depth 0.96 m
+  before, with values from 8 m below to 10.8 m ABOVE sea level). Not
+  applied to non-sea cells, where GEBCO is only the fallback for a land
+  pixel FathomDEM has no data for.
+- **Coast blend** (`terrain.coast_blend_m`, 300 m; 0 switches it off): in
+  the band of sea within that distance of the coastline, the bed is
+  interpolated linearly from the nearest FathomDEM elevation (at the coast)
+  to GEBCO (at the band's outer edge) -- `src.raster.blend_coast`.
+  FathomDEM pixels themselves are never changed. **Open water only**
+  (`src.raster.open_water_mask`): sea narrower than twice the band (under
+  600 m) is not blended, because a band reaching in from both banks would
+  fill a creek back up towards bank level and undo the 2 m clamp. Inside
+  the band the bed is by design shallower than the clamp, and below a high
+  coast (dune, cliff) it forms a 300 m apron ramping down from that height.
+- **Tiles stay on their own pixel lattice** (`target_aligned_pixels=True` in
+  the GEBCO merge and in `src.raster.merge_tiled_raster`). With bare bounds
+  rasterio starts the output grid at the clipping box's corner and resamples
+  onto it (nearest), which shifted the ~450 m GEBCO field by up to half a
+  pixel depending on where the box happened to start, and FathomDEM by up
+  to half of its ~30 m pixel. On basin 620947 two clipping boxes gave sea
+  beds differing by 0.61 m on average (up to several metres) before, 0.03 m
+  after; land 0.14 m before, 0.02 m after. This also shifts every existing
+  basin's elevation slightly (land: mean +0.007 m on 620947).
+
+`elevation_merged.tif` changes for every basin, so everything from rule 05a
+onward reruns.
+
+# 2026-10-08: optional rotated SFINCS grid, one shared grid definition (- JS)
+
+New `sfincs.grid.rotated` (default `false`) and per-basin
+`sfincs.grid.rotated_overrides`. With `true` the model grid is fitted to the
+minimum rotated rectangle around the delta polygon instead of its
+axis-aligned bounding box, which cuts the inactive part of the grid for
+elongated, oblique deltas (about -37% cells for 1416812, -36% for 620947,
+-6% for 4267691; measured on the existing domain polygons). **Not yet
+validated with a SFINCS run** -- keep the default `false` until one basin
+has been run both ways.
+
+- New `src/grid.py`: the grid frame (`fit_grid_frame`), the grid definition
+  (`build_grid_def` / `load_grid_def`), `create_model_grid`, and
+  orientation-independent `cell_size_m` / `cell_area_m2` / `footprint`.
+- Rule 02 fits the grid frame and stores it in `domain_bbox.json`
+  (`grid_frame`). For a rotated basin the clipping `bounds` are taken around
+  the rotated rectangle (+ `delta_buffer_m`), so every preprocessing raster
+  covers the whole model grid. Preprocessing rasters themselves stay
+  north-up.
+- Rule 08c subdivides the frame and writes `{basin_id}_sfincs_grid.json`
+  (x0/y0/dx/dy/mmax/nmax/rotation/epsg + transform), now in SfincsModel's
+  own orientation (row 0 on the origin side). This file is the only grid
+  definition: rules 09, 09b, 10 and 13 (skeleton) read it and the two
+  SfincsModels are created from it (`sf.grid.create`), replacing four
+  separate `create_from_region(rotated=False)` fits and the y-flip rule 09b
+  replicated. Rules 09b, 10 and 13 take `sfincs_grid` as a new input.
+  Unrotated grids are identical to before (checked against
+  `create_from_region` for all seven existing basins, both orientations).
+- Cell size / area no longer read `transform.a`, `a*e` or
+  `rio.resolution()` on model-grid rasters, which are dx*cos(rotation) and
+  dx*dy*cos^2(rotation) on a rotated grid: `protection_weir.GridArrays`,
+  `river_burn.burn_river_channel`, `landuse.write_roughness_raster`,
+  `river_conditioning`, `adaptation_method_post` (pump / retention volumes),
+  `adaptation_method_pre`, `postprocessing.compute_flood_progression`,
+  rules 15 and 16.
+- `postprocessing._coarsen_for_memory` rewrites the transform after
+  coarsening (rioxarray keeps the fine-pixel one on a rotated raster).
+- Plots: new `plots.imshow_on_grid` (draws a model-grid raster through its
+  own affine transform) used by the coastal protection weir plot, the crest
+  gap map, the wetland dike positions and rule 13's zsini plot;
+  `plots.reproject_max_for_plot` warps with `rasterio.warp` from hydromt's
+  transform instead of `rio.reproject` (which crops or raises on a rotated
+  raster) -- used by the max inundation map, the inundation check and the
+  flood animation.
+
+Rerun scope: `sfincs_grid.json` changes format, so every basin reruns from
+rule 08c; a basin switched to `rotated: true` reruns from rule 02.
+
+# 2026-10-08: machine-specific paths only from environment variables (- JS)
+
+`results_dir` and `sfincs.simulation.sfincs_exe` are removed from
+`config.yml`, and `meta.root` from `data_catalogue.yml` and
+`adaptation_strategies.yml`. The three environment variables that used to
+*override* those committed values are now the only source, and are
+required (see CONTRIBUTING.md "Local machine paths"):
+
+- `GCFM_RESULTS_DIR` → `config["results_dir"]` (`00_common.smk`).
+- `GCFM_RAW_DATA_ROOT` → `CATALOGUE["meta"]["root"]`, now set inside
+  `src.io.load_catalogue`, so scripts that load the catalogue themselves
+  (rule 01, `tests/`) get the same root. Also used as the root for strategy
+  measure files (`ADAPT_CATALOGUE_ROOT`).
+- `GCFM_SFINCS_EXE` → rule param `sfincs_exe = sfincs_exe_path` in rules
+  10 (modelled depth), 14, 16 and 18a — resolved lazily, so rules that
+  don't run the solver work without a SFINCS binary.
+
+A missing variable raises an error naming it and the PowerShell command to
+set it (`src.io.local_path`). The standalone scripts in `tools/` and
+`tests/` no longer hardcode `D:/GCFM_UU/...` and read the same variables.
+
+# 2026-10-08b: fixed main-grid resolution, one river burn on the subgrid pixel grid, empirical depth option and subgrid switch removed (- JS)
+
+Every basin has to be rebuilt from rule build_sfincs_grid (08c) onward.
+
+## Main-grid resolution is a fixed config value (default 100 m)
+
+Rule optimize_grid_resolution (08b) derived dx per basin as
+max(20th-percentile channel width / 3, sqrt(polygon area / 4,000,000)). On
+large deltas the cell budget always won (4267691: 150 m against a 52 m width
+target), so the "3 cells across the channel" criterion was only met on small
+ones. The rule, its script, `src/grid_resolution.py`,
+`{basin_id}_grid_resolution.json` and the `sfincs.grid.optimize_resolution`
+config block are removed.
+
+- `sfincs.grid.resolution_m` (default 100) sets dx for every basin; with
+  `nr_subgrid_pixels: 10` the subgrid pixel is 10 m. Channels narrower than a
+  cell are carried by the subgrid tables.
+- `sfincs.grid.resolution_overrides_m` optionally sets a different dx for
+  individual basins (keyed by basin id), e.g. to keep a very large delta
+  within the memory of the machine it is built on. Committed with
+  `4267691: 150`. Changing one basin's override only reruns that basin.
+- Rules 07, 08c, 09b, 10, 13, 14 and 18a take dx from `grid_resolution_m()`
+  (`00_common.smk`) as a rule parameter. Rule 07's visible_on_grid diagnostic
+  therefore uses the real dx instead of a static 200 m.
+
+## Production now runs on the channel the dike crests were calibrated against
+
+Rule modelled_depth_estimation (10) always burned its calibrated bed on the
+model's own subgrid pixel grid for rounds 1 and 2, but kept that file inside
+`depth_crest_calibration/`. Production (rule build_sfincs_skeleton, 13) built
+its subgrid tables from a second burn on the ~30 m native DEM grid, which
+hydromt then resampled: a different channel shape than the one the weir
+crests were calibrated with.
+
+- Rule 10 now declares the fine burn as an output,
+  `{basin_id}_river_burned_subgrid.tif`, and rule 13 reads it directly for
+  `sf.subgrid.create()`. It is already on hydromt's subgrid pixel grid, so no
+  resampling takes place; rule 13 raises if transform or shape differ.
+- The main-grid channel elevation (`river_burned_dem_sfincs_grid.tif`, same
+  filename) is no longer a separate burn at dx that set every cell the
+  channel touches to bed level. It is the per-cell MEAN of the subgrid pixels
+  with the fine burn in place (`src.river_burn.mean_elevation_on_coarse_grid`),
+  so a narrow channel lowers a cell only in proportion to the area it
+  occupies. Calibration rounds 1-2 and production both use it. The set of
+  channel cells is unchanged.
+- The native-resolution `{basin_id}_river_burned_dem.tif` is no longer
+  written. Rule 13 was its only consumer.
+- `burn_river_channel` now returns the natural DEM on the burn grid in place
+  of its former (always-NaN) nodata value.
+
+Tested on basin 2433835 (rules 07-17 rerun at dx = 100 m, storm-tide
+hydrographs disabled because the GTSM file was not available):
+
+- With the subgrid on, SFINCS does not use the main-grid `dep` for the flow:
+  a spin-up with `sfincs.dep` overwritten by +25 m in every cell gave water
+  levels bit-identical to the unchanged run.
+- Production's `subgrid/dep_subgrid.tif` is pixel-identical to calibration
+  round 1's and round 2's, and all 93,869 burned pixels appear in it
+  unchanged.
+- The main-grid mean differs from the block mean of `dep_subgrid.tif` by
+  0.00 m (median) and at most 0.48 m, in cells the channel only clips (the
+  burn's own bilinear terrain vs hydromt's background).
+- Round 2: 2 of 2,019 edge cells exceed their crest, by at most 0.004 m.
+- `surge 250 / river 50` without SLR floods 14.2 km2 (4.0 % of land),
+  against 12.8 km2 (3.6 %) in the 2026-09-17 results at dx = 70 m. The
+  committed `default` scenario (same RPs, `slr_m: 0.5` since 2026-09-18)
+  floods 266 km2 (75 %): its sea boundary starts at +0.60 m, above the
+  +0.40/+0.50 m coastal crest.
+
+## Empirical depth estimation and power-law depth removed
+
+`river_processing.depth_method` and rule empirical_depth_estimation are gone;
+the SFINCS-based calibration is the only way river depth and dike crests are
+set. Removed with it: `10_depth_estimation_empirical.smk/.py`,
+`src/estuarine_depth.py`, `src/river_preburn.py`,
+`src.river_network.compute_hydraulic_depth`, the `rivdph_powerlaw` comparison
+column, `plot_hydraulic_relations(_with_estuarine)` and
+`plot_river_network_width_discharge`, the whole
+`river_processing.empirical_estimation` config block, and the
+`nienhuis_delta_characteristics` catalogue entry. Rule 13 now imports the
+calibrated coastal protection weir unconditionally.
+
+`modify_hydrograph` (in that config block) went with it: rule 07 no longer
+writes `protection_discharge`/`protection_rp_yr` to `river_forcing.nc`, and
+`build_design_discharge_matrix` lost its `apply_protection_floor` argument.
+Riverine protection is represented by the calibrated riverbank weirs only.
+
+## Subgrid is mandatory
+
+`sfincs.subgrid.enabled` and every `include_subgrid` parameter are removed.
+The model relies on the subgrid tables to carry channels narrower than a main
+cell, so a run without them was never a valid configuration.
+`postprocessing.get_bed_level` now raises if `subgrid/dep_subgrid.tif` is
+missing instead of falling back to the run output's `zb` (the lowest subgrid
+pixel of each cell). `nr_subgrid_pixels`, `nr_levels` and `nrmax` are
+unchanged.
+
 # 2026-10-08: storm-tide hydrographs from GTSM, mean-discharge base flow and spin-up, volume-based pumps, Chao Phraya strategies scales (-KL)
 
 ## Surge boundary from storm-tide hydrographs (HGRAPHER on GTSM) instead of COAST-HG / half-cosine

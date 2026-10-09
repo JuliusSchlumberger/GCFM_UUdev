@@ -81,7 +81,6 @@ sfincs_exe          = Path(snakemake.params.sfincs_exe)
 rst_fname           = snakemake.params.rst_fname  # e.g. sfincs.20000102.000000.rst
 dtmapout_s          = int(snakemake.params.dtmapout_s)
 dthisout_s          = int(snakemake.params.dthisout_s)
-include_subgrid     = bool(snakemake.params.include_subgrid)
 timeout_s           = int(snakemake.params.timeout_s)
 waterlevel_buffer_m = snakemake.params.waterlevel_buffer_m
 boundary_ramp_hours = float(snakemake.params.boundary_ramp_hours)
@@ -135,9 +134,9 @@ sf.config.set("tstop", tstop)
 # Each station's calm-sea level (calm_sea_levels) -- the level the event's
 # own boundary lead-in starts at, so the event continues from the restart
 # with no jump at the boundary (see this module's own docstring). The sea
-# itself starts at baseline_m (the skeleton's zsini: the ROUNDED basin mean,
-# while the station levels are rounded individually -- normally equal, but
-# up to 0.1 m apart), so the boundary ramps from that start level to the
+# itself starts at baseline_m (the skeleton's zsini: the basin MEAN, while
+# each station has its own level -- close, but not identical), so the
+# boundary ramps from that start level to the
 # station levels over boundary_ramp_hours rather than stepping: a step at
 # the boundary sends a front in that shoals and reflects at the coast (a
 # 0.30 m step built up to +1.1 m at the 0.40 m coastal dike of basin
@@ -198,7 +197,7 @@ else:
 
     rivers_utm = gpd.read_file(river_network_path).to_crs(sf.crs)
     centerline_cells = build_centerline_cells_regular(
-        rivers_utm, sf.grid.data["dep"].shape, sf.grid.data["dep"].rio.transform()
+        rivers_utm, sf.grid.data["dep"].shape, sf.grid.data["dep"].raster.transform
     )
     crossings_gdf = snap_points_to_centerline_cells(
         crossings_gdf.to_crs(sf.crs), centerline_cells,
@@ -331,7 +330,7 @@ else:
 plot_inundation_path = Path(snakemake.output.plot_max_inundation)
 
 da_hmax, _da_dep = compute_max_inundation(
-    spin_up_root, skeleton_root, sea_mask_path, hmin=0.0, include_subgrid=include_subgrid,
+    spin_up_root, skeleton_root, sea_mask_path, hmin=0.0,
 )
 if da_hmax is None:
     log.warning("No max inundation data available — creating empty plot sentinel")

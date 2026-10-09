@@ -27,7 +27,7 @@
 
 # Null = either river_rp or coast_rp forcing is set to 0
 # Mean = mean river discharge
-# Tide = mean tidal conditions for surge (average tide from storm_tide_hydrographs, same window as the storm runs)
+# Tide = mean tidal conditions for surge (average tide from the basin's storm_tide_hydrographs.nc, same window as the storm runs)
 
 default:                  # what plain `snakemake build` runs (no target_scenarios given)
   surge_rp: 250

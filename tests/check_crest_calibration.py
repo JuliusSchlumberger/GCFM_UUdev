@@ -29,6 +29,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import logging
 import sys
 from pathlib import Path
@@ -59,7 +60,11 @@ BASIN_ID = sys.argv[1] if len(sys.argv) > 1 else "2433835"
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
-RESULTS_DIR = Path(config["results_dir"])
+# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+RESULTS_DIR = Path(os.environ["GCFM_RESULTS_DIR"])
 FIGS_DIR = REPO_ROOT / "figs" / "crest_calibration_check"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
 

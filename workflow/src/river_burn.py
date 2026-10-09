@@ -1,8 +1,8 @@
 """
 river_burn.py — Burns a per-cell river-bed anchor profile (zbed_anchors,
-built directly in-memory by rule empirical_depth_estimation or
-modelled_depth_estimation -- never a standalone file)
-directly into a channel-only DEM at native (fine) resolution, instead of
+built directly in-memory by rule modelled_depth_estimation -- never a
+standalone file)
+directly into a channel-only DEM at fine resolution, instead of
 hydromt_sfincs's own per-tile burn_river_rect, which produces a wavy,
 non-monotonic burned bed when re-run on an already-burned raster.
 
@@ -45,6 +45,7 @@ from rasterio.transform import from_origin
 from rasterio.windows import Window, transform as window_transform
 from scipy.interpolate import interp1d
 
+from src.grid import cell_size_m
 from src.raster import reproject_nan_aware
 from src.river_network import (
     _as_linestring,
@@ -86,11 +87,9 @@ def burn_river_channel(
                         'reach_id', width_column, geometry.
         zbed_anchors:   Per-pixel/per-cell bed anchor points (any CRS) --
                         needs 'reach_id', 'rivbed', geometry. Built directly
-                        by rule empirical_depth_estimation
-                        (compute_river_bed_points, from the empirical
-                        rivdph column) or rule modelled_depth_estimation
-                        (per-cell, from its own calibrated depth) -- not a
-                        separate rule's own output.
+                        by rule modelled_depth_estimation (per-cell,
+                        from its own calibrated depth) -- not a separate
+                        rule's own output.
         natural_dem_path: Path to the basin's own conditioned/merged DEM
                         (elevation_conditioned.tif or elevation_merged.tif --
                         FathomDEM merged with GEBCO bathymetry, already
@@ -126,12 +125,10 @@ def burn_river_channel(
                         river network's own bounds. The algorithm itself is
                         resolution-agnostic (only evaluates each reach's own
                         along-channel profile at whatever pixel centers it's
-                        given), so this is the same burn, just coarser --
-                        used to eliminate the reprojection gap that opens up
-                        when a separately-computed, native-resolution burn
-                        is later resampled onto the (coarser) SFINCS grid by
-                        HydroMT's own elevation.create() merge. Must supply
-                        both or neither.
+                        given). Rule modelled_depth_estimation passes
+                        the model's own subgrid pixel grid, so the burn
+                        needs no resampling when HydroMT builds the subgrid
+                        tables from it. Must supply both or neither.
         channel_mask:   Optional boolean array, shape == out_shape, ONLY
                         valid together with out_transform/out_shape (raises
                         otherwise). When given, each reach's own buffer
@@ -157,8 +154,11 @@ def burn_river_channel(
     any further than direct neighbours.
 
     Returns:
-        (burned_arr, transform, nodata, stats) — burned_arr is float32, NaN
-        outside every reach's own channel buffer; stats is a dict with
+        (burned_arr, transform, terrain, stats) — burned_arr is float32, NaN
+        outside every reach's own channel buffer; terrain is the natural DEM
+        on the same grid (float32, bilinear, NaN where it has no data), the
+        elevation of every pixel the burn leaves untouched (see
+        mean_elevation_on_coarse_grid); stats is a dict with
         'n_reaches_burned', 'n_reaches_skipped', 'n_pixels_burned'.
     """
     if (out_transform is None) != (out_shape is None):
@@ -189,7 +189,7 @@ def burn_river_channel(
     # a resolution_m lattice ──────────────────────────────────────────────────
     if out_transform is not None:
         height_px, width_px = out_shape
-        resolution_m = abs(out_transform.a)
+        resolution_m = cell_size_m(out_transform)
         # Corner-based bounds (not rasterio.transform.array_bounds, which
         # assumes a north-up/negative-e transform) -- an externally-supplied
         # transform, e.g. a live SFINCS model's own grid, can have a
@@ -428,7 +428,58 @@ def burn_river_channel(
         f"no width/zbed points/geometry), {n_pixels_burned:,} channel pixel(s), "
         f"{n_boundaries_blended} reach-boundary value(s) blended with a neighbour"
     )
-    return output, out_transform, np.nan, stats
+    return output, out_transform, terrain, stats
+
+
+def mean_elevation_on_coarse_grid(
+    burned_fine: np.ndarray,
+    terrain_fine: np.ndarray,
+    nr_subgrid_pixels: int,
+    chunk_rows: int = 256,
+) -> np.ndarray:
+    """Main-grid elevation of the channel cells: per coarse cell, the MEAN
+    of its own nr_subgrid_pixels x nr_subgrid_pixels subgrid pixels with the
+    burn in place (burned_fine where it has a value, terrain_fine elsewhere).
+
+    A channel narrower than a cell therefore lowers that cell only in
+    proportion to the area it occupies, instead of setting the whole cell to
+    bed level. Both inputs must be on the subgrid pixel grid of the coarse
+    grid (coarse transform subdivided by nr_subgrid_pixels, same origin), so
+    pixel block (r, c) is exactly coarse cell (r, c).
+
+    Returns:
+        float32 array on the coarse grid, NaN for every cell that holds no
+        burned pixel (those keep their own background elevation) or no valid
+        pixel at all.
+    """
+    n = int(nr_subgrid_pixels)
+    if burned_fine.shape != terrain_fine.shape:
+        raise ValueError(
+            f"burned_fine {burned_fine.shape} and terrain_fine {terrain_fine.shape} differ"
+        )
+    if burned_fine.shape[0] % n or burned_fine.shape[1] % n:
+        raise ValueError(
+            f"fine shape {burned_fine.shape} is not a multiple of nr_subgrid_pixels={n}"
+        )
+    n_rows, n_cols = burned_fine.shape[0] // n, burned_fine.shape[1] // n
+    out = np.full((n_rows, n_cols), np.nan, dtype=np.float32)
+    # In row chunks: the merged array is as large as the inputs themselves.
+    for r0 in range(0, n_rows, chunk_rows):
+        r1 = min(r0 + chunk_rows, n_rows)
+        burned = burned_fine[r0 * n : r1 * n].reshape(r1 - r0, n, n_cols, n)
+        has_burn = np.isfinite(burned).any(axis=(1, 3))
+        if not has_burn.any():
+            continue
+        terrain = terrain_fine[r0 * n : r1 * n].reshape(r1 - r0, n, n_cols, n)
+        merged = np.where(np.isfinite(burned), burned, terrain)
+        valid = np.isfinite(merged)
+        count = valid.sum(axis=(1, 3))
+        total = np.where(valid, merged, 0.0).sum(axis=(1, 3), dtype=np.float64)
+        mean = np.divide(
+            total, count, out=np.full(total.shape, np.nan), where=count > 0
+        )
+        out[r0:r1] = np.where(has_burn, mean, np.nan)
+    return out
 
 
 def constrain_to_coarse_channel_mask(
@@ -438,21 +489,18 @@ def constrain_to_coarse_channel_mask(
     channel_mask_coarse: np.ndarray,
     coarse_transform,
 ) -> np.ndarray:
-    """Null out any native-resolution burned pixel whose own parent coarse
+    """Null out any fine-resolution burned pixel whose own parent coarse
     cell falls outside channel_mask_coarse.
 
-    burn_river_channel()'s native-resolution call (no channel_mask given)
+    burn_river_channel()'s fine-resolution call (no channel_mask given)
     independently rasterizes each reach's own buf_poly in its own per-reach
-    window -- unlike the coarse-grid call (channel_mask=... passed
-    directly), whose excavated footprint is EXACTLY channel_mask's cells by
-    construction (see burn_river_channel's own channel_mask docstring).
-    Since the native file is layered onto HydroMT's elevation_list at
-    higher priority than the coarse background, any native pixel that
-    lands in a coarse cell channel_mask doesn't cover becomes a deep,
-    unprotected pocket -- the weir's own crest floor there is never raised,
-    since crest_surface is only elevated within channel_mask. Guarantees the
-    native excavated footprint is always a SUBSET of the coarse
-    weir-protection corridor, matching the coarse burn's own guarantee.
+    window. Since the fine burn is layered onto HydroMT's elevation_list at
+    higher priority than the background, any fine pixel that lands in a
+    coarse cell channel_mask doesn't cover becomes a deep, unprotected
+    pocket -- the weir's own crest floor there is never raised, since
+    crest_surface is only elevated within channel_mask. Guarantees the
+    excavated footprint is always a SUBSET of the coarse weir-protection
+    corridor.
     """
     mask_on_native = (
         reproject_nan_aware(

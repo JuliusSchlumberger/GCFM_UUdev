@@ -1,62 +1,47 @@
 """
 08c_build_sfincs_grid.py -- Build the SFINCS model's regular grid ONCE and
-persist its exact transform/shape/CRS, so every later step needing a
-SFINCS-resolution raster (rule enforce_river_monotonicity's coarse
-conditioned-DEM resample, rule modelled_depth_estimation's modelled depth
-calibration, rule 13's production build) targets the identical grid
-instead of each independently calling sf.grid.create_from_region(...).
+persist it, so every later step works on the identical grid: rule
+enforce_river_monotonicity's coarse conditioned-DEM resample (09), rule
+grid_align_landuse (09b), rule modelled_depth_estimation's calibration
+model (10) and rule 13's production build.
 
-create_from_region is a deterministic function of (domain polygon,
-resolution, "utm" CRS rule) -- rule modelled_depth_estimation and rule 13 still each instantiate
-their own SfincsModel and call it themselves to get a populated
-sf.grid.data, reproducing the identical grid this rule already built; this
-rule's own output is a small JSON (transform, shape, CRS, resolution) so a
-plain rasterio consumer (rule 10's resample step) can target the same grid
-without needing to spin up hydromt just to read it.
+The grid frame (axis-aligned, or the minimum rotated rectangle around the
+domain polygon -- sfincs.grid.rotated) was fitted by rule
+determine_model_domain (02); this rule subdivides it at the basin's own
+resolution (src.grid.build_grid_def). The output JSON holds the SFINCS grid
+parameters (x0, y0, dx, dy, mmax, nmax, rotation, epsg) and the equivalent
+affine transform/shape, in SfincsModel's own orientation (row 0 on the
+origin side, i.e. y ascending for an unrotated grid) -- see src/grid.py.
 
-Calls hydromt.model.processes.create_grid_from_region directly -- the same
-standalone function SfincsModel.grid.create_from_region() itself delegates
-to internally -- instead of instantiating a SfincsModel, so this rule never
-creates a Model root directory at all (a SfincsModel(mode="w+") would
-create one on init even though nothing is ever written to it).
+No SfincsModel is instantiated here (that would create a Model root
+directory even though nothing is ever written to it).
 """
 
 import json
 from pathlib import Path
 
 import geopandas as gpd
-from hydromt.model.processes.grid import create_grid_from_region
 
+from src.grid import build_grid_def
 from src.log import setup_logging
 
 log = setup_logging(snakemake.log[0])
 
-with open(snakemake.input.grid_resolution) as f:
-    resolution = float(json.load(f)["resolution"])
+resolution = float(snakemake.params.resolution)
 
 delta_domain = gpd.read_file(snakemake.input.domain_gpkg)
+with open(snakemake.input.spec_basins_meta) as fh:
+    grid_frame = json.load(fh)["grid_frame"]
 
-ds = create_grid_from_region(
-    region={"geom": delta_domain}, res=resolution, crs="utm", region_crs=4326,
-    rotated=False, add_mask=False, align=True,
+grid_def = build_grid_def(delta_domain, grid_frame, resolution)
+log.info(
+    f"Shared SFINCS grid: {grid_def['nmax']}x{grid_def['mmax']} cells @ {resolution} m, "
+    f"CRS={grid_def['crs']}, origin ({grid_def['x0']:.0f}, {grid_def['y0']:.0f}), "
+    f"rotation {grid_def['rotation']:.3f} deg"
 )
-transform = ds.raster.transform
-height, width = ds.raster.shape
-crs = ds.raster.crs
-log.info(f"Shared SFINCS grid created: {resolution} m, auto-UTM CRS={crs}")
-
-grid_def = {
-    "resolution": resolution,
-    "crs": crs.to_string(),
-    "height": int(height),
-    "width": int(width),
-    # affine six-tuple (a, b, c, d, e, f) -- rasterio.Affine(*transform_six)
-    # reconstructs the exact transform.
-    "transform": [transform.a, transform.b, transform.c, transform.d, transform.e, transform.f],
-}
 
 Path(snakemake.output.sfincs_grid).parent.mkdir(parents=True, exist_ok=True)
 with open(snakemake.output.sfincs_grid, "w") as fh:
     json.dump(grid_def, fh, indent=2)
-log.info(f"Written: {snakemake.output.sfincs_grid} ({height}x{width} px @ {resolution} m)")
+log.info(f"Written: {snakemake.output.sfincs_grid}")
 log.info("Done")

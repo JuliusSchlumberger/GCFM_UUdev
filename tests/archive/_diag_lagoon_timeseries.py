@@ -24,7 +24,7 @@ x, y = t.transform(19.405, 40.588)
 print(f"lagoon centroid in model CRS: x={x:.0f}, y={y:.0f}")
 
 # nearest grid cell (regular grid -> x/y dims on the dep/zb DataArray)
-da_dep = get_bed_level(mod, SFINCS_ROOT, include_subgrid=True)
+da_dep = get_bed_level(mod, SFINCS_ROOT)
 bed_here = da_dep.sel(x=x, y=y, method="nearest")
 print(f"bed elevation at lagoon centroid: {float(bed_here.values):.3f} m")
 

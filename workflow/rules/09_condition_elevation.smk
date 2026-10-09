@@ -10,9 +10,8 @@ rule enforce_river_monotonicity:
 
     Operates on the CLEANED river network (river_network_clean.gpkg, rule
     08's output) -- only topology/width (reach_id, rch_id_dn, is_seed,
-    width) are needed, never rivdph, so this rule does not depend on either
-    depth-estimation branch (rule empirical_depth_estimation or
-    modelled_depth_estimation, both numbered 10) -- and on the raw merged
+    width) are needed, never rivdph, so this rule does not depend on rule
+    modelled_depth_estimation (10) -- and on the raw merged
     DEM (elevation_merged.tif, rule 05a's output).
 
     Also produces a SECOND output: the same conditioned DEM resampled onto
@@ -21,15 +20,14 @@ rule enforce_river_monotonicity:
     elevation layer both rule modelled_depth_estimation (10, modelled depth
     calibration) and rule 13 (production build) use as their
     sf.elevation.create() base layer, instead of each independently letting
-    HydroMT resample from the native file. river_burned_dem.tif (produced
-    directly by whichever of rule empirical_depth_estimation or
-    modelled_depth_estimation actually runs, both native- and
-    SFINCS-grid-resolution) is unaffected -- it still layers on top of this
+    HydroMT resample from the native file. The burned river channel (rule
+    modelled_depth_estimation, on the subgrid pixel grid and its main-grid
+    mean) is unaffected -- it still layers on top of this
     coarse background as the higher-priority elevation_list entry in
     rule 13.
 
     Always scheduled -- every basin gets a conditioned DEM, unconditionally.
-    Rule empirical_depth_estimation or modelled_depth_estimation (10) is the
+    Rule modelled_depth_estimation (10) is the
     merge point needing both this rule's native-resolution conditioned
     elevation and the depth-estimated network.
     """

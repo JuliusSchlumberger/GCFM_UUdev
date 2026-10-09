@@ -22,7 +22,7 @@ from hydromt_sfincs import SfincsModel
 
 from src.adaptation_method_pre import dispatch_rules
 from src.log import setup_logging
-from src.sfincs_run import parse_sfincs_inp, forward_geometry_files
+from src.sfincs_run import parse_sfincs_inp, forward_geometry_files, write_weir_file
 
 log = setup_logging(snakemake.log[0])
 
@@ -181,6 +181,7 @@ if not (RESTART_WRITING_MEASURES & set(strategy_def["measures"])):
 # 4. Write only touched components - untocuhe ones stay forwarded by reference below, never duplicated
 if "weirs" in touched:
     sf.weirs.write()
+    write_weir_file(sf)  # crests at 1 cm, not hydromt_sfincs' 0.1 m
 if "drainage_structures" in touched:
     sf.drainage_structures.write()
 if "storage_volume" in touched:

@@ -148,6 +148,7 @@ if isinstance(design_rp_surge_yr, str) and design_rp_surge_yr.strip().lower() ==
 elif design_rp_surge_yr is not None:
     design_rp_surge_yr = float(design_rp_surge_yr)
 compound_lag_hr   = float(snakemake.params.compound_lag_hr)
+river_event       = snakemake.params.river_event
 # Uniform scaling factor on the built river discharge hydrograph (default
 # 1.0 = no-op), applied HERE -- not baked into river_forcing.nc, see this
 # script's own module docstring.
@@ -162,7 +163,6 @@ flat_boundary_point_spacing_m = snakemake.params.flat_boundary_point_spacing_m
 waterlevel_buffer_m = snakemake.params.waterlevel_buffer_m
 include_rstart    = snakemake.params.include_rstart
 spinup_days       = snakemake.params.spinup_days
-depth_method      = snakemake.params.depth_method
 rst_fname         = snakemake.params.rst_fname
 
 sfincs_root.mkdir(parents=True, exist_ok=True)
@@ -319,8 +319,7 @@ else:
     dis_df = pd.DataFrame(
         data=build_design_discharge_matrix(
             river_ds, active, design_rp_river_yr,
-            apply_protection_floor=(depth_method == "empirical"),
-            discharge_multiplier=discharge_multiplier,
+            discharge_multiplier=discharge_multiplier, event=river_event,
         ).T,
         index=river_times,
         columns=range(n_active),
@@ -332,25 +331,27 @@ else:
         dt_hr = float((river_times[1] - river_times[0]).total_seconds() / 3600.0)
         shift_steps = int(round(compound_lag_hr / dt_hr))
         if shift_steps != 0:
-            # Scaled the same way build_design_discharge_matrix scaled the
-            # rest of dis_df, so the padding value stays consistent with the
-            # (already-multiplied) real data being shifted alongside it.
-            bankfull_active = river_ds.bankfull_discharge.values[active] * discharge_multiplier
+            # The vacated side is padded with the series' own base flow -- its
+            # first/last value, i.e. what build_design_discharge_matrix holds
+            # before and after the wave (mean discharge, already multiplied)
+            # -- so the shift never introduces a step. (Until 2026-10-09 it
+            # was padded with bankfull discharge, the base flow before the
+            # mean-discharge change.)
             arr = dis_df.to_numpy()
             shifted = np.empty_like(arr)
             n = min(abs(shift_steps), arr.shape[0])
             if shift_steps > 0:
-                shifted[:n, :] = bankfull_active[np.newaxis, :]
+                shifted[:n, :] = arr[0][np.newaxis, :]
                 shifted[n:, :] = arr[: arr.shape[0] - n, :]
             else:
                 shifted[: arr.shape[0] - n, :] = arr[n:, :]
-                shifted[arr.shape[0] - n :, :] = bankfull_active[np.newaxis, :]
+                shifted[arr.shape[0] - n :, :] = arr[-1][np.newaxis, :]
             dis_df = pd.DataFrame(shifted, index=dis_df.index, columns=dis_df.columns)
             log.info(
                 f"Compound lag applied: river discharge shifted {compound_lag_hr:+.1f} h "
                 f"relative to surge ({shift_steps:+d} step(s) at dt={dt_hr:.2f} h); "
                 f"{'start' if shift_steps > 0 else 'end'} padded with each "
-                f"crossing's bankfull discharge"
+                f"crossing's base flow"
             )
 
     if forcing_mode == "coastal_only":
@@ -368,7 +369,7 @@ else:
 
     rivers_utm = gpd.read_file(snakemake.input.river_network).to_crs(sf.crs)
     centerline_cells = build_centerline_cells_regular(
-        rivers_utm, sf.grid.data["dep"].shape, sf.grid.data["dep"].rio.transform()
+        rivers_utm, sf.grid.data["dep"].shape, sf.grid.data["dep"].raster.transform
     )
     crossings_gdf = snap_points_to_centerline_cells(
         crossings_gdf.to_crs(sf.crs), centerline_cells,
@@ -508,8 +509,7 @@ with xr.open_dataset(river_forcing_path, decode_times=False) as _rds:
     _dis_active   = (
         build_design_discharge_matrix(
             _rds, _active_mask, design_rp_river_yr,
-            apply_protection_floor=(depth_method == "empirical"),
-            discharge_multiplier=discharge_multiplier,
+            discharge_multiplier=discharge_multiplier, event=river_event,
         )
         if _n_cross > 0 else np.zeros((0, len(_river_times)))
     )

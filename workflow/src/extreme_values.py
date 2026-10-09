@@ -710,8 +710,8 @@ def analyse_cell(
         protection_rp: If given, also evaluate the POT/GPD fit at this return
                        period (yr) and store it as ``res.q_protection`` --
                        reuses the already-fitted GPD model, no extra fitting.
-                       Used for the existing flood-protection-level
-                       correction (river_processing.modify_hydrograph);
+                       No pipeline rule passes it since the discharge-side
+                       protection correction was removed (2026-10-08b);
                        NaN if the POT/GPD fit itself failed.
 
     Returns:

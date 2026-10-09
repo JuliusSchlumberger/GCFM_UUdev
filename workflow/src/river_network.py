@@ -19,9 +19,9 @@ log = logging.getLogger(__name__)
 
 # Minimum distance (m) an own anchor must already be from a reach's start/end
 # before a borrowed neighbour junction value is skipped as redundant (used by
-# src.river_burn.burn_river_channel/_smoothed_weir_crest_profiles and
-# src.river_preburn.compute_river_bed_points -- everywhere a per-point
-# profile is extended with a synthetic junction-boundary anchor).
+# src.river_burn.burn_river_channel/_smoothed_weir_crest_profiles --
+# everywhere a per-point profile is extended with a synthetic
+# junction-boundary anchor).
 _BOUNDARY_BLEND_EPS_M = 1.0
 
 
@@ -44,8 +44,7 @@ def _junction_value(
 
     Generic over whatever per-point quantity `reach_data` carries (river bed
     elevation in src.river_burn.burn_river_channel, calibrated weir crest in
-    src.river_burn's smoothed-crest profiles, calibrated channel depth in
-    src.river_preburn.compute_river_bed_points) -- reach_data maps reach_id
+    src.river_burn's smoothed-crest profiles) -- reach_data maps reach_id
     to (line, along_sorted, value_sorted).
     """
     up_entry = reach_data.get(up_rid)
@@ -398,37 +397,6 @@ def accumulate_discharge(
     else:
         log.info("Flow accumulation complete: 0 reaches (empty network)")
     return q
-
-
-def compute_hydraulic_depth(
-    q_acc: np.ndarray,
-    c: float,
-    f: float,
-) -> np.ndarray:
-    """
-    Compute bankfull hydraulic depth directly from the downstream hydraulic
-    geometry depth relation (Leopold & Maddock, 1953 and successors):
-
-        depth = c · Q^f
-
-    Deliberately does NOT derive depth from channel width by dividing the
-    width relation's implied cross-sectional area by the real (SWORD)
-    width: at this pipeline's basin-accumulated discharges, the width
-    relation predicts channel widths of only a few metres against real
-    SWORD widths in the hundreds of metres, so that division would
-    dominate the result by 1-2 orders of magnitude and silently undersize
-    every burnt channel.
-
-    Args:
-        q_acc: Accumulated discharge array (m³ s⁻¹).
-        c:     Depth coefficient.
-        f:     Depth exponent.
-
-    Returns:
-        Array of hydraulic depths (m), same shape as q_acc.
-    """
-    # TODO: update to consider coastal influence. For now, the same formula is applied to all reaches regardless of proximity to the coast, which may lead to overestimation of depth in tidally influenced reaches where the hydraulic geometry may differ from the inland river regime.
-    return c * np.power(q_acc, f)
 
 
 def identify_delta_outflow_points(

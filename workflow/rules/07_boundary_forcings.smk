@@ -12,8 +12,11 @@ rule get_boundary_forcings:
         spec_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network.gpkg"),
         river_discharge = catalogue_path("river_discharge"),
         surge_data = catalogue_path("storm_tide_return_periods"),
+        # The basin's own tide + surge shapes per return period (rule
+        # storm_tide_hydrographs, 07a_storm_tide_hydrographs.smk), at the
+        # same surge stations this rule selects.
         storm_tide_hydrographs = lambda wc: (
-            catalogue_path("storm_tide_hydrographs")
+            results_path(f"{wc.basin_id}/preprocessing_inputs/forcing/storm_tide_hydrographs.nc")
             if config["boundary_forcings"]["surge"]["hydrograph"]["enabled"]
             else []
         ),
@@ -26,10 +29,7 @@ rule get_boundary_forcings:
             else []
         ),
         # Always read (rule get_protection_levels always runs/produces this)
-        # -- coastal_rp_yr feeds the coastal_protection_weir crest (rule 13),
-        # which always runs regardless of river_processing.empirical_estimation.modify_hydrograph;
-        # only the separate riverine-side discharge correction stays gated on
-        # that flag (see 07_get_boundary_forcings.py).
+        # -- coastal_rp_yr feeds the coastal_protection_weir crest (rule 13).
         protection_levels = results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"),
     output:
         river_forcing = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
@@ -61,7 +61,18 @@ rule get_boundary_forcings:
         surge_return_period = scenario_params("default")["surge_rp"],
         search_radii_km = config["boundary_forcings"]["surge"]["search_radii_km"],
         surge_period_hr = config["boundary_forcings"]["surge"]["period_hr"],
-        surge_hydrograph = config["boundary_forcings"]["surge"]["hydrograph"],
+        # Only the keys this rule reads -- NOT the whole block: it also holds
+        # window_overrides_hr, so passing it whole would rerun this rule (and
+        # every rule below it) for EVERY basin whenever one basin's window
+        # changes.
+        surge_hydrograph = {
+            k: config["boundary_forcings"]["surge"]["hydrograph"][k]
+            for k in ("enabled", "ramp_hours", "max_match_km")
+        },
+        # This basin's own event half-window (default or per-basin override,
+        # see hydrograph_window_hr in 00_common.smk) -- the same value rule
+        # storm_tide_hydrographs built the shapes with.
+        hydrograph_window_hr = lambda wildcards: hydrograph_window_hr(wildcards.basin_id),
         mdt_fallback_search_deg = config["datum_correction"]["fallback_search_deg"],
         # slr_m (the target global-mean SLR value) deliberately lives in
         # config/scenarios.yml, not here: it must NOT be a param of this
@@ -79,17 +90,13 @@ rule get_boundary_forcings:
         eva = config["boundary_forcings"]["river"]["eva"],
         # Diagnostic-only use (an informational "visible_on_grid" plot
         # column, doesn't gate anything -- see 07_get_boundary_forcings.py).
-        # Can't use the rule 08b-computed, width-optimized resolution here:
-        # rule clean_river_network (08) depends on THIS rule's river_forcing
-        # output, and 08b depends on 08's bankfull_discharge_acc column --
-        # 07 -> 08b -> 08 -> 07 would be a cycle. Rule build_sfincs (13, the
-        # real consumer) uses the fully computed value; this just needs a
-        # representative static default for an informational annotation.
-        sfincs_resolution          = config["sfincs"]["grid"]["optimize_resolution"]["default_resolution_m"],
+        sfincs_resolution          = lambda wildcards: grid_resolution_m(wildcards.basin_id),
         glofas_search_radius_km    = config["boundary_forcings"]["river"]["glofas_search_radius_km"],
         glofas_min_mean_discharge  = config["boundary_forcings"]["river"]["glofas_min_mean_discharge"],
         bias_correction            = config["boundary_forcings"]["river"]["bias_correction"],
-        modify_hydrograph          = config["river_processing"]["empirical_estimation"]["modify_hydrograph"],
+        # Only for this rule's own preview plot (07_forcing_timeseries.png) --
+        # the scenario's real river event is built in rule build_sfincs.
+        river_event                = config["boundary_forcings"]["river"]["event_hydrograph"],
     log:
         "logs/{basin_id}/07_boundary_forcings.log"
     script:

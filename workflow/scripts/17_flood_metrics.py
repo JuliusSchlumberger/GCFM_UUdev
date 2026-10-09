@@ -19,7 +19,6 @@ da_hmax, da_dep = compute_max_inundation(
     skeleton_root,
     snakemake.input.sea_mask,
     hmin=float(snakemake.params.hmin),
-    include_subgrid=snakemake.params.include_subgrid,
 )
 if da_hmax is None:
     raise RuntimeError("zsmax/bed level unavailable — did the event run (rule 16) finish?")

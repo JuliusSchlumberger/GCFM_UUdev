@@ -12,6 +12,8 @@ import geopandas as gpd
 from shapely.ops import polygonize, unary_union
 from rasterio.features import geometry_mask
 
+from src.grid import cell_area_m2
+
 # Types of flooding attribution classes (used in the attribution mask)
 # 1 = river-only
 # 2 = coastal-only
@@ -341,7 +343,7 @@ def apply_water_retention(
 
     with rasterio.open(flood_map_path) as src:
         flood, prof = src.read(1), src.profile
-        cell_area = abs(src.transform.a * src.transform.e)
+        cell_area = cell_area_m2(src.transform)
 
     mask_path = Path(scenario_root).parent / "attribution_mask.tif"
     if not mask_path.exists():
@@ -597,7 +599,7 @@ def apply_pumps(
 
     with rasterio.open(flood_map_path) as src:
         flood, prof = src.read(1), src.profile
-        cell_area = abs(src.transform.a * src.transform.e)
+        cell_area = cell_area_m2(src.transform)
 
     mask_path = Path(scenario_root).parent / "attribution_mask.tif"
     if not mask_path.exists():

@@ -7,6 +7,7 @@ Step 3: agreement diagnostics (figures in results section)
 
 """
 
+import os
 from pathlib import Path
 import numpy as np
 import xarray as xr
@@ -20,7 +21,11 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-OUT_DIR = Path(r"D:\GCFM_UU\results\3279946\runs")
+# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+OUT_DIR = Path(os.environ["GCFM_RESULTS_DIR"]) / "3279946/runs"
 CSV = OUT_DIR / "metrics_comparison.csv"
 METRICS = ["flooded_area_km2", "urban_exposed_km2", "mean_depth_m", "volume_m3"]
 SCALES = ["04", "09", "1"]  # raw strategy-name suffix, low -> high implementation scale

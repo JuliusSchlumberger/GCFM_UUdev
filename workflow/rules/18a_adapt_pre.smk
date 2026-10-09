@@ -1,4 +1,12 @@
 # 4 rules for adaptation with preprocessing method
+# NOT YET TESTED ON A ROTATED GRID (2026-10-09): sfincs.grid.rotated is now
+# true by default, and the pre-adaptation rules below have not been run on a rotated model grid yet --
+# only the baseline chain (rules 02-17) was validated, on basin 620947. On a
+# rotated grid the model rasters (dep_subgrid.tif, max_flood_depth.tif,
+# attribution_mask.tif) are rotated GeoTIFFs: check the first run's numbers
+# and figures, or keep a basin axis-aligned with
+# sfincs.grid.rotated_overrides: {<basin_id>: false}. See src/grid.py and
+# CHANGELOG.md 2026-10-09.
 
 rule adapt_apply_pre:
     # Applies this strategy's measures (via adaptation_method_pre.dispatch_rules,
@@ -51,7 +59,6 @@ rule adapt_build_forcing_pre:
         river_network   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
         surge_forcing   = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         river_forcing   = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
-        grid_resolution = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_grid_resolution.json"),
         # THIS strategy's own restart (patched or copied-through by
         # adapt_apply_pre above, see its own comment) -- NOT the shared
         # basin-level spin_up/ one directly, so a water_retention strategy's
@@ -61,8 +68,7 @@ rule adapt_build_forcing_pre:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs.inp"),
     params:
         # identical to rule build_sfincs's own params block --
-        depth_method = config["river_processing"]["depth_method"],
-        resolution   = lambda wildcards, input: json.load(open(input.grid_resolution))["resolution"],
+        resolution   = lambda wildcards: grid_resolution_m(wildcards.basin_id),
         tref = config["sfincs"]["simulation"]["tref"],
         dtmapout = config["sfincs"]["simulation"]["dtmapout"],
         dtmaxout = config["sfincs"]["simulation"]["dtmaxout"],
@@ -78,6 +84,7 @@ rule adapt_build_forcing_pre:
         design_rp_surge_yr = lambda wildcards: scenario_params(wildcards.scenario)["surge_rp"],
         compound_lag_hr = config["sfincs"]["boundary_setup"]["compound"]["lag_hr"],
         discharge_multiplier = lambda wildcards: scenario_params(wildcards.scenario)["discharge_multiplier"],
+        river_event = config["boundary_forcings"]["river"]["event_hydrograph"],
         slr_enabled = config["boundary_forcings"]["surge"]["slr"]["enabled"],
         slr_m = lambda wildcards: scenario_params(wildcards.scenario)["slr_m"],
         flat_boundary_point_spacing_m = config["sfincs"]["boundary_setup"]["flat_boundary_point_spacing_m"],
@@ -125,10 +132,9 @@ rule adapt_run_event_pre:
         # the ADAPTED skeleton -- subgrid dep/roughness differs there for `retreat`
         skeleton_root = lambda wildcards: results_path(
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
-        sfincs_exe = config["sfincs"]["simulation"]["sfincs_exe"],
+        sfincs_exe = sfincs_exe_path,
         timeout_s  = config["sfincs"]["simulation"]["timeout_s"],
         min_inundation_depth_m = config["sfincs"]["sanity_checks"]["min_inundation_depth_m"],
-        include_subgrid = config["sfincs"]["subgrid"]["enabled"],
         animation_fps = config["sfincs"]["sanity_checks"]["animation_fps"],
     threads: workflow.cores
     log: "logs/{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/16_run_event.log"
@@ -152,7 +158,6 @@ rule adapt_flood_metrics_pre:
         skeleton_root = lambda wildcards: results_path(
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
         hmin = config["metrics"]["hmin"], urban_code = config["metrics"]["urban_landuse_code"],
-        include_subgrid = config["sfincs"]["subgrid"]["enabled"],
         # only THIS rule (not the plain baseline compute_flood_metrics) passes
         # these -- lets 17_flood_metrics.py optionally exclude a
         # water_retention/water_retention_greening measure's own retention
