@@ -321,68 +321,20 @@ protect_closed_1:
 # -----------------------------------------------------------------------------------------------
 # ACCOMMODATE
 
-# # Coast
-# accommodate_04:
-#   measures:
-#     urban_raising: {elevation: 0.4,
-#                 }
-
-# accommodate_09:
-#   measures:
-#     urban_raising: {elevation: 1,
-#                 }
-
-# accommodate_1: # based on coast water level
-#   measures:
-#     urban_raising: {elevation: 1.2,
-#                 }
-
-# River
-# accommodate_04:
-#   measures:
-#     urban_raising: {elevation: 3.824,
-#                 }
-
-# accommodate_09:
-#   measures:
-#     urban_raising: {elevation: 8.604,
-#                 }
-
-# accommodate_1: # based on river WL
-#   measures:
-#     urban_raising: {elevation: 9.56,
-#                 }
-
-
-# Chao Phraya - coastal flood
+# (same for river and coastal flood) each raised cell goes up by its own
+# baseline flood depth; raise_fraction = share of flooded urban cells raised,
+# deepest first (like retreat_fraction). Optional: freeboard [m] on top.
 accommodate_04:
   measures:
-    urban_raising: {elevation: 2.3,
-                }
+    urban_raising: {raise_fraction: 0.4}
 
 accommodate_09:
   measures:
-    urban_raising: {elevation: 5.1,
-                }
+    urban_raising: {raise_fraction: 0.9}
 
-accommodate_1: # based on river WL
+accommodate_1:
   measures:
-    urban_raising: {elevation: 5.7,
-                }
-
-
-# # Compound - largest scale of each driver of flood
-# accommodate_04:
-#   measures:
-#     urban_raising: {elevation: 3.824}
-
-# accommodate_09:
-#   measures:
-#     urban_raising: {elevation: 8.604}
-
-# accommodate_1: # based on max WL (river or coast)
-#   measures:
-#     urban_raising: {elevation: 9.56}
+    urban_raising: {raise_fraction: 1.0}
 
 
 # -----------------------------------------------------------------------------------------------

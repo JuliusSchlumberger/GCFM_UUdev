@@ -732,7 +732,8 @@ def apply_urban_raising(
     flood_map_path: str,
     scenario_root: str,
     output_dir: str,
-    elevation: float,
+    raise_fraction: float = None,
+    freeboard: float = 0.0,
     landuse_path: str = None,
     urban_code: int = 50,
     flood_threshold: float = 0.05,
@@ -744,13 +745,14 @@ def apply_urban_raising(
 
     Fast, no-rerun approximation of adaptation_method_pre.py's own
     apply_urban_raising (which physically raises the DEM and reruns SFINCS):
-    at eligible cells (urban AND flooded, optionally restricted to
-    `locations`), `elevation` is subtracted directly from the flood DEPTH
-    raster. This method never reads the DEM, so here `elevation` means a
-    depth REDUCTION [m] -- unlike the preprocessing sibling, where it's the
-    absolute elevation eligible cells are raised UP TO.
+    eligible cells are urban AND flooded (optionally restricted to
+    `locations`); the deepest-flooded `raise_fraction` of them (same
+    selection as apply_retreat) are raised by their own flood depth +
+    freeboard, i.e. their flood depth is removed entirely. Without a rerun
+    there is no displaced-water effect, so `freeboard` doesn't change the
+    result here; it's accepted only so both siblings read the same yml.
 
-    Cells whose reduced depth drops to <=0 are set to nodata (not 0.0) --
+    Raised cells are set to nodata (not 0.0) --
     matches apply_dike_ring's own convention above -- since
     compute_risk_metrics (src.postprocessing) tells flooded from dry purely
     via da_hmax.notnull(), not a depth threshold; a plain 0.0 would still
@@ -761,8 +763,9 @@ def apply_urban_raising(
         scenario_root   : (Required) scenario model root -- unused here,
                           accepted only for dispatch_rules' uniform call signature
         output_dir      : (Required) directory the adapted raster is written to
-        elevation       : (Required from measures.yml) depth [m] subtracted from
-                          eligible cells' flood depth
+        raise_fraction  : (Optional) fraction of flooded urban cells to raise (0-1),
+                          deepest flood depth first; if None, all eligible cells are raised
+        freeboard       : (Optional) unused here, see above
         landuse_path    : (Required) path to the current landuse raster,
                           used only to determine which cells are urban
         urban_code      : (Optional) land use code marking urban cells (default 50)
@@ -775,6 +778,8 @@ def apply_urban_raising(
     """
     if landuse_path is None:
         raise ValueError("apply_urban_raising needs landuse_path")
+    if raise_fraction is not None and not 0.0 <= raise_fraction <= 1.0:
+        raise ValueError(f"raise_fraction must be in [0, 1], got {raise_fraction}")
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -801,15 +806,20 @@ def apply_urban_raising(
     if locations is not None:
         eligible &= _ring_interior_mask(locations, out_shape, transform, raster_crs)
 
+    # deepest-flooded urban cells raised first (same selection as apply_retreat)
+    if raise_fraction is not None and raise_fraction < 1.0 and eligible.any():
+        threshold = np.nanquantile(flood[eligible], 1.0 - raise_fraction)
+        raise_mask = eligible & (flood >= threshold)
+    else:
+        raise_mask = eligible
+
     fill = nodata if nodata is not None else 0.0
     new_flood = flood.copy()
-    reduced = flood[eligible] - elevation
-    now_dry = reduced <= 0
-    new_flood[eligible] = np.where(now_dry, fill, reduced)
+    new_flood[raise_mask] = fill
 
     print(
-        f"  Urban raising (postprocessing): {int(eligible.sum())} eligible cell(s), "
-        f"depth reduced by {elevation:.2f} m ({int(now_dry.sum())} now dry)."
+        f"  Urban raising (postprocessing): {int(raise_mask.sum())} of "
+        f"{int(eligible.sum())} flooded urban cell(s) raised by their own depth (now dry)."
     )
 
     prof.update(dtype="float32")

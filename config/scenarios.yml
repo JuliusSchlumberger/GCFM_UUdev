@@ -50,6 +50,24 @@ river_only:
   discharge_multiplier: 1.0
   slr_m: 0
 
+coast_500_noSLR:
+  surge_rp: 500
+  river_rp: Mean
+  discharge_multiplier: 1
+  slr_m: 0
+
+coast_500_01SLR:
+  surge_rp: 500
+  river_rp: Mean
+  discharge_multiplier: 1
+  slr_m: 0.1
+
+coast_500_SLR:
+  surge_rp: 500
+  river_rp: Mean
+  discharge_multiplier: 1
+  slr_m: 0.5
+
 
 # Coastal flood
 coast_100:

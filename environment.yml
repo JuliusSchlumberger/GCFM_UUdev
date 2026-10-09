@@ -102,7 +102,6 @@ dependencies:
   - descartes=1.1.0=pyhd8ed1ab_5
   - distlib=0.4.0=pyhd8ed1ab_0
   - distributed=2026.3.0=pyhc364b38_0
-  - docutils=0.22.4=pyhd8ed1ab_0
   - donfig=0.8.1.post1=pyhd8ed1ab_1
   - double-conversion=3.4.0=hac47afa_0
   - dpath=2.2.0=pyha770c72_1
@@ -502,6 +501,7 @@ dependencies:
       - astropy==7.2.0
       - astropy-iers-data==0.2026.6.1.17.39.59
       - autodoc-pydantic==2.2.0
+      - awscli==1.46.1
       - bcrypt==5.0.0
       - black==26.3.1
       - boto3==1.42.96
@@ -510,10 +510,12 @@ dependencies:
       - cht-tide==0.1.1
       - cht-utils==1.0.0
       - cryptography==47.0.0
+      - docutils==0.19
       - ecmwf-datastores-client==0.5.1
       - geoalchemy2==0.19.0
       - geographiclib==2.1
       - geopy==2.4.1
+      - git-filter-repo==2.47.0
       - greenlet==3.5.0
       - hydromt-sfincs==2.0.0rc2
       - invoke==3.0.3
@@ -528,10 +530,12 @@ dependencies:
       - psycopg==3.3.3
       - psycopg-binary==3.3.3
       - pyarrow==24.0.0
+      - pyasn1==0.6.4
       - pyerfa==2.0.1.5
       - pynacl==1.6.2
       - pyshtools==4.14.1
       - pytokens==0.4.1
+      - rsa==4.7.2
       - s3transfer==0.16.1
       - scikit-image==0.26.0
       - scipy==1.17.1
