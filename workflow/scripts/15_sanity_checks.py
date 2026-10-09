@@ -42,7 +42,6 @@ animation_out_path      = Path(snakemake.output.animation_flood_progress)
 spin_up_root            = Path(snakemake.params.spin_up_root)
 skeleton_root           = Path(snakemake.params.skeleton_root)
 threshold_m             = float(snakemake.params.min_inundation_depth_m)
-include_subgrid         = bool(snakemake.params.include_subgrid)
 animation_fps           = int(snakemake.params.animation_fps)
 
 # Load domain polygon in WGS84 for overlay plots.
@@ -67,7 +66,7 @@ else:
     # its own sfincs.inp, it isn't physically present under spin_up_root.
     da_hmax, da_dep = compute_max_inundation(
         spinup_dir, skeleton_root, sea_mask_path,
-        hmin=threshold_m, include_subgrid=include_subgrid,
+        hmin=threshold_m,
     )
 
     if da_hmax is None or da_dep is None:
@@ -82,7 +81,7 @@ else:
         frac      = n_flooded / n_land if n_land > 0 else 0.0
 
         try:
-            res = abs(da_dep.rio.resolution()[0] * da_dep.rio.resolution()[1])
+            res = abs(da_dep.raster.res[0] * da_dep.raster.res[1])  # rotation-aware
         except Exception:
             res = np.nan
         flooded_km2 = n_flooded * res / 1e6

@@ -1,7 +1,11 @@
 import cdsapi
 import os
 
-OUTPUT_DIR = r"D:\GCFM_UU\raw_data\GloFAS"
+# Machine-specific path, read from the GCFM_RAW_DATA_ROOT environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+OUTPUT_DIR = os.path.join(os.environ["GCFM_RAW_DATA_ROOT"], "GloFAS")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 dataset = "cems-glofas-historical"

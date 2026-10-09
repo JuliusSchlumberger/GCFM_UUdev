@@ -46,8 +46,8 @@ def _infer_nr_subgrid_pixels(mod: SfincsModel, dep: xr.DataArray) -> int:
         np.abs(da_mask.raster.res[1]),
     )
     dep_res_x, dep_res_y = (
-        np.abs(dep.rio.resolution()[0]),
-        np.abs(dep.rio.resolution()[1]),
+        np.abs(dep.raster.res[0]),
+        np.abs(dep.raster.res[1]),
     )
 
     if coarse_res_x == 0 or coarse_res_y == 0:
@@ -469,13 +469,13 @@ def apply_NbS_land_reclamation(
         locations,
         distance,
         water_mask=is_water,
-        transform=dep.rio.transform(),
+        transform=dep.raster.transform,
         out_shape=(dep.rio.height, dep.rio.width),
     )
     footprint = rasterize(
         [(offshore_geom, 1)],
         out_shape=(dep.rio.height, dep.rio.width),
-        transform=dep.rio.transform(),
+        transform=dep.raster.transform,
         fill=0,
         dtype="uint8",
     ).astype(bool)
@@ -793,13 +793,15 @@ def apply_water_retention(
     zone_arr = rasterize(
         [(zone_geom, 1)],
         out_shape=(dep.rio.height, dep.rio.width),
-        transform=dep.rio.transform(),
+        transform=dep.raster.transform,
         fill=0,
         dtype="uint8",
     ).astype(bool)
     zone_mask = xr.DataArray(zone_arr, dims=dep.dims, coords=dep.coords)
 
-    res = dep.rio.resolution()  # (xres, yres) at SUBGRID resolution
+    res = (
+        dep.raster.res
+    )  # (xres, yres) at SUBGRID resolution; rotation-aware, unlike rio.resolution()
     pixel_area = abs(res[0] * res[1])
     zone_area = float(zone_mask.sum()) * pixel_area
     if zone_area == 0:
@@ -1365,7 +1367,7 @@ def apply_urban_raising(
         mask = rasterize(
             [(g, 1) for g in locations.geometry],
             out_shape=(dep.rio.height, dep.rio.width),
-            transform=dep.rio.transform(),
+            transform=dep.raster.transform,
             fill=0,
             dtype="uint8",
         ).astype(bool)
@@ -1505,7 +1507,7 @@ def apply_retreat(
         mask = rasterize(
             [(g, 1) for g in locations.geometry],
             out_shape=(dep.rio.height, dep.rio.width),
-            transform=dep.rio.transform(),
+            transform=dep.raster.transform,
             fill=0,
             dtype="uint8",
         ).astype(bool)

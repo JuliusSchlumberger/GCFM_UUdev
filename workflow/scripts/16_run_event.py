@@ -64,7 +64,6 @@ skeleton_root              = Path(snakemake.params.skeleton_root)
 sfincs_exe                 = Path(snakemake.params.sfincs_exe)
 timeout_s                  = int(snakemake.params.timeout_s)
 min_inundation_depth_m     = float(snakemake.params.min_inundation_depth_m)
-include_subgrid            = bool(snakemake.params.include_subgrid)
 animation_fps               = int(snakemake.params.animation_fps)
 land_polygons_path         = Path(snakemake.input.land_mask_on_grid)  # grid-aligned land mask, plot background
 sea_mask_path               = Path(snakemake.input.sea_mask)
@@ -99,7 +98,7 @@ log.info(f"Event map output written: {sfincs_map_path} ({sfincs_map_path.stat().
 plot_ratio_path = Path(snakemake.output.plot_inundation_ratio)
 
 da_hmax, da_dep = compute_max_inundation(
-    sfincs_root, skeleton_root, sea_mask_path, hmin=min_inundation_depth_m, include_subgrid=include_subgrid,
+    sfincs_root, skeleton_root, sea_mask_path, hmin=min_inundation_depth_m,
 )
 if da_hmax is None or da_dep is None:
     log.warning("Could not compute max inundation depth (missing 'zsmax' or bed level) — skipping")
@@ -110,7 +109,7 @@ else:
     frac      = n_flooded / n_land if n_land > 0 else 0.0
 
     try:
-        res = abs(da_dep.rio.resolution()[0] * da_dep.rio.resolution()[1])
+        res = abs(da_dep.raster.res[0] * da_dep.raster.res[1])  # rotation-aware
     except Exception:
         res = np.nan
     flooded_km2 = n_flooded * res / 1e6
@@ -176,7 +175,6 @@ else:
     # correct peak total flood volume for the event.
     df = compute_flood_timeseries_stats(
         sfincs_root, skeleton_root, sea_mask_path, min_inundation_depth_m,
-        include_subgrid=include_subgrid,
     )
     if df is None:
         log.warning(

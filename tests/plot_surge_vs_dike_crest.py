@@ -35,6 +35,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import logging
 import sys
 from pathlib import Path
@@ -49,7 +50,7 @@ import xarray as xr
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
-from src.surge import ceil_water_level, lookup_storm_tide_at_rp
+from src.surge import ceil_crest, lookup_storm_tide_at_rp
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
@@ -62,7 +63,11 @@ with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
 with open(REPO_ROOT / "config" / "scenarios.yml") as fh:
     SCENARIO_DEFS = yaml.safe_load(fh) or {}
-RESULTS_DIR = Path(config["results_dir"])
+# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+RESULTS_DIR = Path(os.environ["GCFM_RESULTS_DIR"])
 FIGS_DIR = REPO_ROOT / "figs" / "surge_vs_dike_crest"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -119,7 +124,7 @@ coastal_protection_crest_raw_m = float(surge_ds["coastal_protection_crest_m"].va
 # up to the next 0.1 m -- same rounding the storm-tide levels below get.
 _freeboard_m = float(config["river_processing"]["river_depth_modelling"]["freeboard_m"])
 coastal_protection_crest_m = float(
-    ceil_water_level(coastal_protection_crest_raw_m + _freeboard_m)
+    ceil_crest(coastal_protection_crest_raw_m + _freeboard_m)
 )
 baseline_m = float(surge_ds["baseline_m"].values)
 

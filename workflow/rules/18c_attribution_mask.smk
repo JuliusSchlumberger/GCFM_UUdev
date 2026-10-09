@@ -1,5 +1,13 @@
 # flood attribution - check where flooding is coming from - river/ coast
 # ensure the attirbution scenarios are listed in the scenarios run
+# NOT YET TESTED ON A ROTATED GRID (2026-10-09): sfincs.grid.rotated is now
+# true by default, and the attribution rule below has not been run on a rotated model grid yet --
+# only the baseline chain (rules 02-17) was validated, on basin 620947. On a
+# rotated grid the model rasters (dep_subgrid.tif, max_flood_depth.tif,
+# attribution_mask.tif) are rotated GeoTIFFs: check the first run's numbers
+# and figures, or keep a basin axis-aligned with
+# sfincs.grid.rotated_overrides: {<basin_id>: false}. See src/grid.py and
+# CHANGELOG.md 2026-10-09.
 
 rule attribution_mask:
     input:
@@ -31,7 +39,6 @@ rule attribution_mask:
     params:
         skeleton_root   = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         spin_up_root    = lambda wildcards: results_path(f"{wildcards.basin_id}/spin_up"),
-        include_subgrid = config["sfincs"]["subgrid"]["enabled"],
         hmin = config["metrics"]["hmin"],
     log: "logs/{basin_id}/runs/{scenario}/18c_attribution_mask.log"
     script: "../scripts/18c_attribution_mask.py"

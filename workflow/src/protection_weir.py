@@ -58,8 +58,9 @@ from shapely.geometry import LineString, Polygon
 from shapely.ops import linemerge, unary_union
 from shapely.strtree import STRtree
 
+from src.grid import cell_size_m
 from src.landuse import OCEAN_WETLAND_CLASSES, SEA_CODE
-from src.surge import ceil_water_level
+from src.surge import ceil_crest
 
 log = logging.getLogger(__name__)
 
@@ -104,7 +105,7 @@ class GridArrays:
     def from_regular(cls, dep_da, mask_da, crs) -> "GridArrays":
         bed_elevation = dep_da.values.astype(np.float32)
         valid_mask = (mask_da.values > 0) & np.isfinite(bed_elevation)
-        dx = abs(float(dep_da.raster.transform.a))
+        dx = cell_size_m(dep_da.raster.transform)
         return cls(
             crs,
             bed_elevation,
@@ -740,10 +741,11 @@ def build_coastal_protection_weir(
             (subgrid/discretization roundoff, the calibration's steady-
             state assumption, etc.). 0.0 (the default) applies no freeboard.
 
-    Every crest is finally rounded UP to the next 0.1 m (src.surge.
-    ceil_water_level) -- sfincs.weir stores crests at 0.1 m precision with
-    round-to-nearest, which would otherwise put up to half the edges up to
-    5 cm below their computed crest.
+    Every crest is finally rounded UP to the next centimetre
+    (src.surge.ceil_crest), the precision sfincs.weir is written at
+    (src.sfincs_run.write_weir_file) -- never down, so no edge ends up
+    below its computed crest. Until 2026-10-09 crests were rounded UP to the
+    next 0.1 m, the precision hydromt_sfincs' own writer keeps.
     """
     ocean_mask = landuse_on_grid == LANDUSE_SEA
 
@@ -912,14 +914,12 @@ def build_coastal_protection_weir(
         weir_lines = grid.seaward_edges(
             land_mask, water_like, valid_mask=grid.valid_mask, ocean_exempt=ocean_exempt
         )
-        weir_crests: list | float = float(
-            ceil_water_level(crest_elevation_m + freeboard_m)
-        )
+        weir_crests: list | float = float(ceil_crest(crest_elevation_m + freeboard_m))
         log.info(
             f"Weir line: {len(weir_lines)} segment(s) extracted directly at the coast "
             f"({n_final:,} land cells), crest={weir_crests:+.2f} m (floor "
-            f"{crest_elevation_m:+.3f} m +{freeboard_m:.2f} m freeboard, rounded up to 0.1 m) "
-            f"-- empirical mode, no riverbank weir"
+            f"{crest_elevation_m:+.3f} m +{freeboard_m:.2f} m freeboard, rounded up to 1 cm) "
+            f"-- flat crest, no per-edge water-side crest given"
         )
     else:
         # np.fmax (not np.maximum): a NaN water-side cell (never wetted)
@@ -929,8 +929,8 @@ def build_coastal_protection_weir(
         # NaN, which would otherwise leave a dangling gap in an otherwise
         # continuous coastline/riverbank (confirmed via basin 2433835: 38
         # dangling endpoints traced back to exactly this NaN-drop path).
-        # float64 so the rounded-up 0.1 m values stay exact in the gpkg.
-        crest_surface = ceil_water_level(
+        # float64 so the centimetre-rounded values stay exact in the gpkg.
+        crest_surface = ceil_crest(
             np.fmax(water_side_crest_on_grid.astype(float), float(crest_elevation_m))
             + freeboard_m
         )
@@ -948,7 +948,7 @@ def build_coastal_protection_weir(
             f"({n_final:,} land cells); {n_above_floor:,} of {int(edge_water_side_mask.sum()):,} "
             f"water-side cell(s) set their edges' crest from their own water level, the rest use "
             f"the floor crest={crest_elevation_m:+.3f} m (+{freeboard_m:.2f} m freeboard on all, "
-            f"every crest rounded up to 0.1 m)"
+            f"every crest rounded up to 1 cm)"
         )
 
     weir_gdf = build_weir_geodataframe(weir_lines, weir_crests, weir_par1, grid.crs)

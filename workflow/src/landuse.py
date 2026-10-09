@@ -741,7 +741,8 @@ def write_roughness_raster(
         from the lookup (NaN in the output), and the grid actually written.
     """
     lu_to_n = read_roughness_lookup(lookup_path)
-    ref_res_m = abs(ref_meta["transform"].a)
+    # hypot, not abs(a): the reference grid may be rotated (the model grid is).
+    ref_res_m = math.hypot(ref_meta["transform"].a, ref_meta["transform"].d)
 
     with rasterio.open(landuse_source_path) as src:
         src_bounds = src.bounds

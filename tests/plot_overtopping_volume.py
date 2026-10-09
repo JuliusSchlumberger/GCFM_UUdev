@@ -41,6 +41,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import logging
 import sys
 from datetime import datetime, timedelta
@@ -69,7 +70,11 @@ SCENARIO = sys.argv[2] if len(sys.argv) > 2 else "coast_250"
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
-RESULTS_DIR = Path(config["results_dir"])
+# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+RESULTS_DIR = Path(os.environ["GCFM_RESULTS_DIR"])
 FIGS_DIR = REPO_ROOT / "figs" / "surge_vs_dike_crest"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
 

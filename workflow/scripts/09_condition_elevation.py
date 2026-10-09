@@ -15,6 +15,7 @@ from rasterio.enums import Resampling
 from rasterio.transform import Affine
 from rasterio.warp import reproject
 
+from src.grid import load_grid_def
 from src.log import setup_logging
 from src.profiling import ScriptProfiler
 from src.river_conditioning import enforce_river_monotonicity
@@ -65,9 +66,8 @@ log.info(f"Written: {snakemake.output.river_elevation_max}")
 # sf.elevation.create() base layer -- resampling ONCE, here, guarantees they
 # use the identical coarse raster, rather than each independently letting
 # HydroMT resample from elevation_conditioned.tif itself.
-with open(snakemake.input.sfincs_grid) as f:
-    grid_def = json.load(f)
-grid_transform = Affine(*grid_def["transform"])
+grid_def = load_grid_def(snakemake.input.sfincs_grid)
+grid_transform = grid_def["transform"]
 dst_crs = RasterioCRS.from_string(grid_def["crs"])
 
 with rasterio.open(snakemake.output.elevation_conditioned) as src:
@@ -146,7 +146,7 @@ with rasterio.open(snakemake.output.elevation_conditioned) as _src:
     cond_arr = _src.read(1)
     cond_nd  = _src.nodata
 
-step_m = abs(transform.a)
+step_m = float(np.hypot(transform.a, transform.d))  # pixel size, any orientation
 rivers_proj = rivers.to_crs(raster_crs)
 
 line_by_rid:   dict[str, object] = {}

@@ -34,8 +34,7 @@ Two passes:
 This is applied AFTER the river network has been cleaned
 (river_network_clean.gpkg, which carries dist_out, is_seed, rch_id_dn,
 width and geometry in the local UTM CRS -- only topology/width are needed,
-never rivdph, so this runs independently of/before both depth-estimation
-alternatives, rule empirical_depth_estimation and rule
+never rivdph, so this runs independently of/before rule
 modelled_depth_estimation) and BEFORE
 burn_river_rect (build_sfincs), so it sees a DEM that already has no
 upstream-lower-than-downstream pixels along the channel, and no
@@ -114,7 +113,7 @@ def enforce_river_monotonicity(
         raster_crs = src.crs
         raster_profile = src.profile.copy()
 
-    step_m = abs(transform.a)
+    step_m = float(np.hypot(transform.a, transform.d))  # pixel size, any orientation
     rivers_proj = (
         rivers.to_crs(raster_crs) if rivers.crs != raster_crs else rivers.copy()
     )

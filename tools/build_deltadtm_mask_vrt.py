@@ -38,12 +38,15 @@ EXPECTED_EPSG = 4326
 
 
 def catalogue_root_and_relpath(repo_root: Path) -> tuple[Path, str]:
-    """Read meta.root and the deltadtm_mask file_path straight from the catalogue."""
+    """Return the raw-data root (GCFM_RAW_DATA_ROOT) and the deltadtm_mask file_path from the catalogue."""
     cat = yaml.safe_load(
         (repo_root / "config" / "data_catalogue.yml").read_text(encoding="utf-8")
     )
-    # GCFM_RAW_DATA_ROOT overrides the committed root — same rule as 00_common.smk.
-    root = Path(os.environ.get("GCFM_RAW_DATA_ROOT") or cat["meta"]["root"])
+    # Machine-specific path, read from the GCFM_RAW_DATA_ROOT environment variable.
+    # Set it once in PowerShell, then restart your terminal (see
+    # CONTRIBUTING.md "Local machine paths"):
+    #   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+    root = Path(os.environ["GCFM_RAW_DATA_ROOT"])
     for ds in cat["datasets"]:
         if ds["name"] == "deltadtm_mask":
             return root, ds["file_path"]

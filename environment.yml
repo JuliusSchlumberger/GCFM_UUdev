@@ -2,7 +2,6 @@ name: hmt_sfincs_dev
 channels:
   - conda-forge
   - bioconda
-  - defaults
 dependencies:
   - _libavif_api=1.4.2=h57928b3_1
   - _openmp_mutex=4.5=20_gnu
@@ -339,7 +338,6 @@ dependencies:
   - pthread-stubs=0.4=h0e40799_1002
   - pulp=2.8.0=py311h7530b60_3
   - pure_eval=0.2.3=pyhd8ed1ab_1
-  - pyarrow-core=24.0.0=py311hee28c0d_0_cpu
   - pycparser=2.22=pyh29332c3_1
   - pyct=0.6.0=pyhd8ed1ab_0
   - pydantic=2.13.3=pyhcf101f3_0
@@ -529,6 +527,7 @@ dependencies:
       - psycopg-binary==3.3.3
       - pyarrow==24.0.0
       - pyerfa==2.0.1.5
+      - pyflakes==3.4.0
       - pynacl==1.6.2
       - pyshtools==4.14.1
       - pytokens==0.4.1
