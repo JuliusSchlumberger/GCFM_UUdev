@@ -4,54 +4,57 @@
 # name = {strategy} wildcard.  scale = the concrete param values, specified HERE.
 # method (pre/post) is chosen at the CLI and validated against measures.yml.
 
-meta:
-  root: D:/GCFM_UU/raw_data
+# Relative paths below (locations, dep_subgrid) resolve against the raw-data
+# root, which is machine-specific and NOT set here -- it comes from the
+# GCFM_RAW_DATA_ROOT environment variable. Set it once in PowerShell, then
+# restart your terminal:
+#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
 
 # -----------------------------------------------------------------------------------------------
 # ADVANCE
 # Coastal flood
-# advance_04:
-#   measures:
-#     offshore_barrier: {elevation: 0.4,
-#                       locations: adaptation/offshore_island.geojson }
-#     pumps: {discharge: 526,
-#             locations: adaptation/advance_pumps.geojson }
-
-# advance_09:
-#   measures:
-#     offshore_barrier: {elevation: 1,
-#                       locations: adaptation/offshore_island.geojson }
-#     pumps: {discharge: 1184,
-#             locations: adaptation/advance_pumps.geojson }
-
-# advance_1:
-#   measures:
-#     offshore_barrier: {elevation: 1.2,
-#                       locations: adaptation/offshore_island.geojson }
-#     pumps: {discharge: 1316,
-#             locations: adaptation/advance_pumps.geojson }
-
-# River flood
 advance_04:
   measures:
-    offshore_barrier: {elevation: 0.1,
+    offshore_barrier: {elevation: 0.41,
                       locations: adaptation/offshore_island.geojson }
-    pumps: {discharge: 2080,
+    pumps: {discharge: 116,
             locations: adaptation/advance_pumps.geojson }
 
 advance_09:
   measures:
-    offshore_barrier: {elevation: 0.1,
+    offshore_barrier: {elevation: 0.91,
                       locations: adaptation/offshore_island.geojson }
-    pumps: {discharge: 4680,
+    pumps: {discharge: 260,
             locations: adaptation/advance_pumps.geojson }
 
 advance_1:
   measures:
-    offshore_barrier: {elevation: 0.1,
+    offshore_barrier: {elevation: 1.02,
                       locations: adaptation/offshore_island.geojson }
-    pumps: {discharge: 5200,
+    pumps: {discharge: 289,
             locations: adaptation/advance_pumps.geojson }
+
+# # River flood
+# advance_04:
+#   measures:
+#     offshore_barrier: {elevation: 0.1,
+#                       locations: adaptation/offshore_island.geojson }
+#     pumps: {discharge: 2080,
+#             locations: adaptation/advance_pumps.geojson }
+
+# advance_09:
+#   measures:
+#     offshore_barrier: {elevation: 0.1,
+#                       locations: adaptation/offshore_island.geojson }
+#     pumps: {discharge: 4680,
+#             locations: adaptation/advance_pumps.geojson }
+
+# advance_1:
+#   measures:
+#     offshore_barrier: {elevation: 0.1,
+#                       locations: adaptation/offshore_island.geojson }
+#     pumps: {discharge: 5200,
+#             locations: adaptation/advance_pumps.geojson }
 
 # # Compound flood
 # advance_04:
@@ -218,29 +221,29 @@ NbS_protect_open_04:
 # PROTECT-CLOSED
 
 # Coastal flood
-# protect_closed_04:
-#   measures:
-#     coastal_levee: {elevation: 0.4,
-#                     locations: adaptation/coast_protection_weir_PC.geojson,
-#                     merge: false }
-#     pumps:         {discharge: 526,
-#                     locations: adaptation/pump_river_mouth.geojson }
+protect_closed_04:
+  measures:
+    coastal_levee: {elevation: 0.41,
+                    locations: adaptation_ebro/coastal_protection_weir_PC.geojson,
+                    merge: false }
+    pumps:         {discharge: 116,
+                    locations: adaptation_ebro/pump_river_mouth.geojson }
 
-# protect_closed_09:
-#   measures:
-#     coastal_levee: {elevation: 1,
-#                     locations: adaptation/coast_protection_weir_PC.geojson,
-#                     merge: false }
-#     pumps:         {discharge: 1184,
-#                     locations: adaptation/pump_river_mouth.geojson }
+protect_closed_09:
+  measures:
+    coastal_levee: {elevation: 0.91,
+                    locations: adaptation_ebro/coastal_protection_weir_PC.geojson,
+                    merge: false }
+    pumps:         {discharge: 1184,
+                    locations: adaptation_ebro/pump_river_mouth.geojson }
 
-# protect_closed_1:
-#   measures:
-#     coastal_levee: {elevation: 1.2,
-#                     locations: adaptation/coast_protection_weir_PC.geojson,
-#                     merge: false }
-#     pumps:         {discharge: 1316,
-#                     locations: adaptation/pump_river_mouth.geojson }
+protect_closed_1:
+  measures:
+    coastal_levee: {elevation: 1.02,
+                    locations: adaptation_ebro/coastal_protection_weir_PC.geojson,
+                    merge: false }
+    pumps:         {discharge: 289,
+                    locations: adaptation_ebro/pump_river_mouth.geojson }
 
 # River flood
 # protect_closed_04:
@@ -293,30 +296,30 @@ NbS_protect_open_04:
 #     pumps:         {discharge: 5200,
 #                     locations: adaptation/pump_river_mouth.geojson }
 
-# Chao Phraya - coastal flood:
-protect_closed_04:
-  measures:
-    coastal_levee: {elevation: 2.3,
-                    locations: adaptation_chaophraya/coastal_protection_weir_PC_chaophraya.geojson,
-                    merge: false }
-    pumps:         {discharge: 620,
-                    locations: adaptation_chaophraya/pump_river_mouth_chaophraya.geojson }
+# # Chao Phraya - coastal flood:
+# protect_closed_04:
+#   measures:
+#     coastal_levee: {elevation: 2.3,
+#                     locations: adaptation_chaophraya/coastal_protection_weir_PC_chaophraya.geojson,
+#                     merge: false }
+#     pumps:         {discharge: 620,
+#                     locations: adaptation_chaophraya/pump_river_mouth_chaophraya.geojson }
 
-protect_closed_09:
-  measures:
-    coastal_levee: {elevation: 5.1,
-                    locations: adaptation_chaophraya/coastal_protection_weir_PC_chaophraya.geojson,
-                    merge: false }
-    pumps:         {discharge: 1395,
-                    locations: adaptation_chaophraya/pump_river_mouth_chaophraya.geojson }
+# protect_closed_09:
+#   measures:
+#     coastal_levee: {elevation: 5.1,
+#                     locations: adaptation_chaophraya/coastal_protection_weir_PC_chaophraya.geojson,
+#                     merge: false }
+#     pumps:         {discharge: 1395,
+#                     locations: adaptation_chaophraya/pump_river_mouth_chaophraya.geojson }
 
-protect_closed_1:
-  measures:
-    coastal_levee: {elevation: 5.7,
-                    locations: adaptation_chaophraya/coastal_protection_weir_PC_chaophraya.geojson,
-                    merge: false }
-    pumps:         {discharge: 1550,
-                    locations: adaptation_chaophraya/pump_river_mouth_chaophraya.geojson }
+# protect_closed_1:
+#   measures:
+#     coastal_levee: {elevation: 5.7,
+#                     locations: adaptation_chaophraya/coastal_protection_weir_PC_chaophraya.geojson,
+#                     merge: false }
+#     pumps:         {discharge: 1550,
+#                     locations: adaptation_chaophraya/pump_river_mouth_chaophraya.geojson }
 
 # -----------------------------------------------------------------------------------------------
 # ACCOMMODATE

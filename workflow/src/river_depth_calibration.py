@@ -1,8 +1,6 @@
 """
 river_depth_calibration.py -- SFINCS-based river channel depth calibration
-(rule modelled_depth_estimation, river_processing.depth_method ==
-"modelled"), an alternative to the empirical hydraulic-geometry depth
-estimate (rule empirical_depth_estimation).
+(rule modelled_depth_estimation).
 
 Design: run a minimal SFINCS model with the river network (and coast)
 confined by artificially high (1000 m) walls, forced with a steady

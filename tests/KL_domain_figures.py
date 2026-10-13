@@ -27,6 +27,7 @@ Outputs (all in OUT_DIR = results/2433835/runs/):
   fig_domain_input_data.png  combined elevation | land-use, 1x2
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -46,7 +47,11 @@ from src.plots import (  # noqa: E402
 )
 
 BASIN_ID = "3279946"
-BASIN_ROOT = Path(r"D:\GCFM_UU\results") / BASIN_ID
+# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+BASIN_ROOT = Path(os.environ["GCFM_RESULTS_DIR"]) / BASIN_ID
 RUNS_DIR = BASIN_ROOT / "runs"
 OUT_DIR = RUNS_DIR
 DOMAIN_DIR = BASIN_ROOT / "preprocessing_inputs" / "domain"

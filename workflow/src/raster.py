@@ -148,8 +148,16 @@ def merge_tiled_raster(
     # and triggers a spurious "cannot safely be represented" warning even though the
     # value itself round-trips exactly.
     merge_nodata = np.dtype(dtype).type(src_nodata) if src_nodata is not None else None
+    # target_aligned_pixels: keep the tiles on their OWN pixel lattice. With
+    # bare bounds, rasterio starts the output grid at the bounds' corner and
+    # resamples (nearest) onto it, shifting the data by up to half a pixel
+    # depending on where the clipping box happens to start.
     merged, transform = rio_merge(
-        open_ds, bounds=bounds, dtype=dtype, nodata=merge_nodata
+        open_ds,
+        bounds=bounds,
+        dtype=dtype,
+        nodata=merge_nodata,
+        target_aligned_pixels=True,
     )
     meta = open_ds[0].meta.copy()
     meta.update(
@@ -372,7 +380,7 @@ def clip_ocean_from_topo(
     wgs84_bounds: tuple[float, float, float, float],
     ref_meta: dict,
     ocean_value: int = 1,
-) -> tuple[np.ndarray, int]:
+) -> tuple[np.ndarray, int, np.ndarray]:
     """
     Set FathomDEM pixels to NaN wherever the DeltaDTM validity mask marks
     them as ocean.
@@ -400,16 +408,91 @@ def clip_ocean_from_topo(
         ocean_value: Mask value that means "ocean" (default 1).
 
     Returns:
-        (topo_clipped, n_clipped): the modified array and the number of
+        (topo_clipped, n_clipped, ocean): the modified array, the number of
         previously-valid FathomDEM pixels that were set to NaN (for
-        logging).
+        logging), and the boolean ocean mask itself on the working grid.
     """
     mask_utm, _ = reproject_to_reference_grid(mask_path, wgs84_bounds, ref_meta)
     ocean = mask_utm == ocean_value
     topo_clipped = topo_utm.copy()
     n_clipped = int((ocean & ~np.isnan(topo_clipped)).sum())
     topo_clipped[ocean] = np.nan
-    return topo_clipped, n_clipped
+    return topo_clipped, n_clipped, ocean
+
+
+def open_water_mask(
+    water: np.ndarray, pixel_size_m: float, min_half_width_m: float
+) -> np.ndarray:
+    """
+    The part of ``water`` that is at least ``2 * min_half_width_m`` wide --
+    open sea, bays, wide estuaries -- as opposed to creeks and channels.
+
+    A morphological opening with a disc of radius ``min_half_width_m``, done
+    with two Euclidean distance transforms (cheap at any radius): keep the
+    water lying within the radius of a water pixel that is itself at least
+    the radius away from the nearest non-water pixel. The raster's own edge
+    does not count as a bank, so sea running off the edge stays open water.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    if min_half_width_m <= 0 or not water.any():
+        return water.copy()
+    padded = np.pad(water, 1, mode="edge")
+    core = distance_transform_edt(padded, sampling=pixel_size_m) >= min_half_width_m
+    if not core.any():
+        return np.zeros_like(water)
+    near_core = distance_transform_edt(~core, sampling=pixel_size_m) <= min_half_width_m
+    return (padded & near_core)[1:-1, 1:-1]
+
+
+def blend_coast(
+    merged: np.ndarray,
+    land: np.ndarray,
+    sea_bed: np.ndarray,
+    pixel_size_m: float,
+    blend_m: float,
+    where: np.ndarray | None = None,
+) -> tuple[np.ndarray, int]:
+    """
+    Smooth the land/sea seam of a hard-merged elevation raster.
+
+    In the band of non-land pixels within ``blend_m`` of the nearest land
+    pixel, the bed is interpolated linearly with distance: the nearest land
+    pixel's own elevation at the coast, ``sea_bed`` (GEBCO) at ``blend_m``.
+    Land pixels are never changed -- the DEM is the better product there
+    (dikes, beach ridges), and its values over water are not trusted at all.
+
+    Distances are measured on the pixel lattice (scipy's Euclidean distance
+    transform with ``pixel_size_m`` spacing), so the result does not depend
+    on the raster's orientation.
+
+    Args:
+        merged:       hard-merged elevation (land where ``land``, sea bed elsewhere).
+        land:         boolean, True where the DEM is valid.
+        sea_bed:      the bathymetry on the same grid (NaN where it has no data).
+        pixel_size_m: pixel size of the grid (m).
+        blend_m:      band width (m); <= 0 returns ``merged`` unchanged.
+        where:        optional boolean mask; only pixels where it is True are
+                      blended (e.g. open water, leaving narrow creeks alone).
+
+    Returns:
+        (blended, n_blended): a new array and the number of pixels changed.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    if blend_m <= 0 or not land.any() or land.all():
+        return merged, 0
+    dist, (near_row, near_col) = distance_transform_edt(
+        ~land, sampling=pixel_size_m, return_indices=True
+    )
+    band = ~land & (dist < blend_m) & np.isfinite(sea_bed)
+    if where is not None:
+        band &= where
+    weight_land = 1.0 - dist[band] / blend_m
+    land_value = merged[near_row[band], near_col[band]]
+    blended = merged.copy()
+    blended[band] = weight_land * land_value + (1.0 - weight_land) * sea_bed[band]
+    return blended, int(band.sum())
 
 
 def _tile_intersects(fp: Path, bbox) -> bool:

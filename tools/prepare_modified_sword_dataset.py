@@ -42,6 +42,7 @@ Usage:
     conda run -n hmt_sfincs_dev python prepare_modified_sword_dataset.py
 """
 
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -59,7 +60,11 @@ if not OGRINFO.exists():
         )
     OGRINFO = Path(_which)
 
-SWORD_DIR = Path("D:/GCFM_UU/raw_data/SWORD")
+# Machine-specific path, read from the GCFM_RAW_DATA_ROOT environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+SWORD_DIR = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "SWORD"
 ORIGINAL_PATH = SWORD_DIR / "SWORD_global_v17c_unpublished.gpkg"
 MODIFIED_PATH = SWORD_DIR / "SWORD_global_v17c_unpublished_modified.gpkg"
 TABLE = "global_edges"

@@ -16,8 +16,7 @@ initial-conditions section, 13_build_sfincs.py).
 zsini_sea_cells_on_grid.tif is the ONLY sea/land classification zsini is
 ever built from, and it is already rasterized directly onto THIS model's
 own grid (zero further reprojection here -- see rule modelled_depth_
-estimation/empirical_depth_estimation, whichever ran, for where that
-raster is produced). There used to be a second, native-resolution
+estimation for where that raster is produced). There used to be a second, native-resolution
 construction path here that read sea_mask_corrected.tif and let HydroMT's
 own reproject_like resample it a SECOND time onto this grid -- removed
 2026-08-07: two independent nearest-neighbor passes don't invert each
@@ -62,12 +61,17 @@ import geopandas as gpd
 import numpy as np
 import xarray as xr
 import yaml
+from rasterio.transform import Affine
 from scipy.ndimage import label as _ndimage_label
 from shapely.geometry import Polygon
 from hydromt_sfincs import SfincsModel
 
-from src.plots import add_land_background_to_geoaxes
+from src.grid import create_model_grid, load_grid_def
+from src.sfincs_run import write_weir_file
+from src.plots import add_land_background_to_geoaxes, imshow_on_grid
+from src.protection_weir import GridArrays, LANDUSE_SEA
 from src.raster import restrict_waterlevel_boundary_to_sea
+from src.river_burn import build_channel_mask_regular
 from src.surge import read_baseline_m
 
 plt.ioff()
@@ -104,28 +108,23 @@ land_mask_path        = Path(snakemake.input.land_mask_on_grid)
 river_network_path    = Path(snakemake.input.river_network)
 delta_outflow_points_path = Path(snakemake.input.delta_outflow_points)
 # The ONLY sea/land classification zsini is built from -- already
-# rasterized directly onto this model's own grid by whichever of rule
-# modelled_depth_estimation/empirical_depth_estimation ran (see this
-# script's own module docstring).
+# rasterized directly onto this model's own grid by rule
+# modelled_depth_estimation (see this script's own module docstring).
 zsini_sea_cells_path = Path(snakemake.input.zsini_sea_cells)
 surge_forcing_path    = Path(snakemake.input.surge_forcing)
 river_forcing_path    = Path(snakemake.input.river_forcing)
-river_burned_dem_path = Path(snakemake.input.river_burned_dem)
+river_burned_subgrid_path = Path(snakemake.input.river_burned_subgrid)
 river_burned_dem_sfincs_grid_path = Path(snakemake.input.river_burned_dem_sfincs_grid)
 elevation_conditioned_sfincs_grid_path = Path(snakemake.input.elevation_conditioned_sfincs_grid)
 river_elevation_max_path = Path(snakemake.input.river_elevation_max)
-coastal_protection_weir_path = (
-    Path(snakemake.input.coastal_protection_weir) if snakemake.input.coastal_protection_weir else None
-)
+coastal_protection_weir_path = Path(snakemake.input.coastal_protection_weir)
 
 inputs_dir        = Path(snakemake.params.inputs_dir)
 skeleton_root     = Path(snakemake.params.skeleton_root)
 resolution        = snakemake.params.resolution
-include_subgrid   = snakemake.params.include_subgrid
 nr_subgrid_pixels = snakemake.params.nr_subgrid_pixels
 nr_levels         = snakemake.params.nr_levels
 nrmax             = snakemake.params.nrmax
-depth_method      = snakemake.params.depth_method
 active_mask_enabled = snakemake.params.active_mask_enabled
 active_mask_elevation_buffer_m = float(snakemake.params.active_mask_elevation_buffer_m)
 outflow_buffer_m   = snakemake.params.outflow_buffer_m
@@ -139,15 +138,14 @@ skeleton_root.mkdir(parents=True, exist_ok=True)
 # baseline_m/coastal_protection_crest_m are basin-level fixed fields (mean
 # vertical correction, FLOPROS coastal standard) -- NOT derived from any
 # scenario's own design RP. See 07_get_boundary_forcings.py. baseline_m is
-# rounded UP to the next 0.1 m (read_baseline_m), like every coastal water
-# level the model sees.
+# read through read_baseline_m (rounded to 1 cm).
 with xr.open_dataset(surge_forcing_path, decode_times=False) as _ds:
     baseline_m = read_baseline_m(_ds)
     coastal_protection_crest_m = (
         float(_ds["coastal_protection_crest_m"].values)
         if "coastal_protection_crest_m" in _ds else 0.0
     )
-log.info(f"Surge boundary baseline read from surge_forcing.nc: {baseline_m:+.4f} m (rounded up to 0.1 m)")
+log.info(f"Surge boundary baseline read from surge_forcing.nc: {baseline_m:+.2f} m (rounded to 1 cm)")
 
 # zsini.tif (sea cells = baseline_m, land = nodata) is built once, directly
 # on this model's own grid, from zsini_sea_cells_on_grid.tif -- see the
@@ -169,9 +167,9 @@ local_catalog = {
         "uri": str(elevation_conditioned_path),
         "driver": "rasterio",
     },
-    "local_river_burned": {
+    "local_river_burned_subgrid": {
         "data_type": "RasterDataset",
-        "uri": str(river_burned_dem_path),
+        "uri": str(river_burned_subgrid_path),
         "driver": "rasterio",
     },
     "local_river_burned_sfincs_grid": {
@@ -217,31 +215,28 @@ log.info(f"Data catalog written: {local_catalog_path}")
 # source wins, later sources fill gaps) -- so ocean/floodplain/gap cells
 # transparently fall back to the conditioned DEM.
 #
-# TWO different burned-channel sources, for two different consumers, both
-# falling back to the SAME conditioned (post-monotonicity) DEM -- just at
-# each consumer's own native resolution, so neither needs HydroMT to
+# TWO burned-channel rasters, for two different consumers, both from rule
+# modelled_depth_estimation's ONE burn on this model's own subgrid pixel
+# grid, and both falling back to the SAME conditioned (post-monotonicity)
+# DEM -- at each consumer's own resolution, so neither needs HydroMT to
 # reproject its background on the fly:
 # - elevation_list_main (sf.elevation.create(), the main "dep" grid) uses
-#   'local_river_burned_sfincs_grid' (burned directly at the SFINCS grid's
-#   own resolution -- a perfect pixel-for-pixel match, no reprojection),
-#   falling back to 'local_elevation_conditioned_sfincs_grid' (rule 09's
-#   own SFINCS-grid-resolution output) -- the SAME background rule
-#   modelled_depth_estimation's own calibration uses for its round 0.
-# - elevation_list_subgrid (sf.subgrid.create()) keeps the NATIVE-resolution
-#   'local_river_burned' -- subgrid needs real sub-cell (finer-than-grid-cell)
-#   detail, the SFINCS-grid version would just duplicate one flat value
-#   across every sub-cell -- falling back to 'local_elevation_conditioned'
-#   (native resolution). This is the SAME catalog value (elevation_conditioned.tif)
-#   rule modelled_depth_estimation's own subgrid step reads under its own
-#   'local_elevation_conditioned' key -- confirmed identical 2026-08-04
-#   after finding this rule's own copy was, until then, mislabeled
-#   "elevation_merged" (a stale name from before rule
-#   enforce_river_monotonicity existed) even though it always pointed at
-#   elevation_conditioned.tif, never the actual raw elevation_merged.tif.
+#   'local_river_burned_sfincs_grid' (the per-cell MEAN of the subgrid
+#   pixels with the burn in place, already on this grid -- a perfect
+#   pixel-for-pixel match, no reprojection), falling back to
+#   'local_elevation_conditioned_sfincs_grid' (rule 09's own
+#   SFINCS-grid-resolution output) -- the SAME "dep" rule
+#   modelled_depth_estimation's own calibration rounds 1-2 ran on.
+# - elevation_list_subgrid (sf.subgrid.create()) uses
+#   'local_river_burned_subgrid' -- the exact raster calibration rounds 1-2
+#   built their own subgrid tables from, on this model's own subgrid pixel
+#   grid (checked below), so it is read with NO resampling -- falling back
+#   to 'local_elevation_conditioned' (native resolution), the SAME catalog
+#   value rule modelled_depth_estimation's own subgrid step reads.
 elevation_list_main = [
     {"elevation": "local_river_burned_sfincs_grid"}, {"elevation": "local_elevation_conditioned_sfincs_grid"},
 ]
-elevation_list_subgrid = [{"elevation": "local_river_burned"}, {"elevation": "local_elevation_conditioned"}]
+elevation_list_subgrid = [{"elevation": "local_river_burned_subgrid"}, {"elevation": "local_elevation_conditioned"}]
 
 # ── load domain boundary ────────────────────────────────────────────────────────
 delta_domain = gpd.read_file(domain_path)
@@ -257,13 +252,11 @@ sf = SfincsModel(
 log.info("SfincsModel initialised")
 
 # ── 1. Grid ───────────────────────────────────────────────────────────────────
-sf.grid.create_from_region(
-    region={"geom": delta_domain},
-    res=resolution,
-    crs="utm",
-    rotated=False,
+create_model_grid(sf, load_grid_def(snakemake.input.sfincs_grid))
+log.info(
+    f"Grid created from the shared grid definition: {resolution} m, "
+    f"rotation {sf.config.get('rotation')} deg"
 )
-log.info(f"Grid created: {resolution} m, auto-UTM")
 
 # ── 2. Elevation ──────────────────────────────────────────────────────────────
 elevation_component = sf.elevation
@@ -271,6 +264,22 @@ elevation_component.create(
     elevation_list=elevation_list_main,
 )
 log.info(f"Elevation set from {[e['elevation'] for e in elevation_list_main]}")
+
+# river_burned_subgrid.tif must be EXACTLY this model's own subgrid pixel
+# grid (main grid subdivided by nr_subgrid_pixels) -- that is what lets
+# sf.subgrid.create() read it without resampling, i.e. what makes
+# production's channel identical to the calibrated one.
+_expected_transform = sf.grid.data["dep"].raster.transform * Affine.scale(1.0 / nr_subgrid_pixels)
+_expected_shape = tuple(int(n) * int(nr_subgrid_pixels) for n in sf.grid.data["dep"].shape)
+with rasterio.open(river_burned_subgrid_path) as _src:
+    _burn_transform, _burn_shape = _src.transform, (_src.height, _src.width)
+if _burn_shape != _expected_shape or not _burn_transform.almost_equals(_expected_transform, precision=1e-6):
+    raise ValueError(
+        f"{river_burned_subgrid_path.name} is not on this model's own subgrid pixel grid: "
+        f"shape {_burn_shape} vs expected {_expected_shape}, transform {tuple(_burn_transform)[:6]} "
+        f"vs expected {tuple(_expected_transform)[:6]} -- rerun rule modelled_depth_estimation "
+        f"(same grid resolution and nr_subgrid_pixels as this rule)"
+    )
 
 # ── 3. Mask: active cells ─────────────────────────────────────────────────────
 active_mask_kwargs = {}
@@ -337,31 +346,23 @@ rivers_utm = rivers.to_crs(sf.crs)
 weir_gdf = gpd.GeoDataFrame({"elevation": [], "par1": []}, geometry=[], crs=sf.crs)
 weir_grid = None
 
-if depth_method == "modelled" and coastal_protection_weir_path is not None:
-    from src.protection_weir import GridArrays, LANDUSE_SEA
-    from src.river_burn import build_channel_mask_regular
-
-    weir_grid = GridArrays.from_regular(sf.grid.data["dep"], sf.grid.data["mask"], sf.crs)
-    weir_gdf = gpd.read_file(coastal_protection_weir_path)
-    if not weir_gdf.empty:
-        sf.weirs.set(weir_gdf, merge=False)
-        log.info(f"Coastal protection weir imported directly from rule 9b: {len(weir_gdf)} segment(s)")
-    else:
-        log.info("Coastal protection weir: 9b's own file has no segments -- sf.weirs left empty")
-    with rasterio.open(landuse_on_grid_path) as _lu_src:
-        landuse_on_grid = _lu_src.read(1)
-    river_channel_mask = build_channel_mask_regular(rivers_utm, "width", weir_grid.shape, weir_grid.transform)
-    weir_diagnostics = {
-        "applicable": True,
-        "ocean_mask": landuse_on_grid == LANDUSE_SEA,
-        "river_channel_mask": river_channel_mask,
-        "weir_lines": list(weir_gdf.geometry),
-        "crest_elevation_m": coastal_protection_crest_m,
-    }
-
+weir_grid = GridArrays.from_regular(sf.grid.data["dep"], sf.grid.data["mask"], sf.crs)
+weir_gdf = gpd.read_file(coastal_protection_weir_path)
+if not weir_gdf.empty:
+    sf.weirs.set(weir_gdf, merge=False)
+    log.info(f"Coastal protection weir imported directly from rule 10: {len(weir_gdf)} segment(s)")
 else:
-    log.info(f"Coastal protection weir: none built -- depth_method={depth_method!r} has no calibrated crest data")
-    weir_diagnostics = {"applicable": False}
+    log.info("Coastal protection weir: rule 10's own file has no segments -- sf.weirs left empty")
+with rasterio.open(landuse_on_grid_path) as _lu_src:
+    landuse_on_grid = _lu_src.read(1)
+river_channel_mask = build_channel_mask_regular(rivers_utm, "width", weir_grid.shape, weir_grid.transform)
+weir_diagnostics = {
+    "applicable": True,
+    "ocean_mask": landuse_on_grid == LANDUSE_SEA,
+    "river_channel_mask": river_channel_mask,
+    "weir_lines": list(weir_gdf.geometry),
+    "crest_elevation_m": coastal_protection_crest_m,
+}
 
 Path(snakemake.output.weir_gpkg).parent.mkdir(parents=True, exist_ok=True)
 if not weir_gdf.empty:
@@ -395,8 +396,8 @@ else:
 # than anything changing here.
 #
 # Built directly from zsini_sea_cells_on_grid.tif -- already rasterized onto
-# THIS model's own grid by whichever of rule modelled_depth_estimation/
-# empirical_depth_estimation ran (zero further reprojection here: passing an
+# THIS model's own grid by rule modelled_depth_estimation
+# (zero further reprojection here: passing an
 # in-memory DataArray built on sf.grid.data["dep"]'s own coords makes
 # .create()'s internal reproject_like a confirmed true no-op, verified
 # 0/263907 cells differ from the input array in a real basin's own
@@ -416,7 +417,7 @@ if _sea_cells_on_grid.shape != sf.grid.data["dep"].shape:
     raise ValueError(
         f"zsini_sea_cells_on_grid.tif shape {_sea_cells_on_grid.shape} does not match "
         f"this model's own grid {sf.grid.data['dep'].shape} -- expected pixel-identical "
-        f"grids (same domain_gpkg + grid_resolution.json fed to both rules)."
+        f"grids (same domain_gpkg + grid resolution fed to both rules)."
     )
 # Dry cells are real np.nan from the start (not a -9999 sentinel) -- avoids
 # relying on xarray operations (e.g. .where()) to preserve rio/nodata attrs
@@ -478,7 +479,7 @@ _da_ini_coarse = xr.DataArray(
     _ini_coarse, dims=sf.grid.data["dep"].dims, coords=sf.grid.data["dep"].coords,
 )
 _da_ini_coarse = _da_ini_coarse.rio.write_crs(sf.grid.data["dep"].rio.crs)
-_da_ini_coarse = _da_ini_coarse.rio.write_transform(sf.grid.data["dep"].rio.transform())
+_da_ini_coarse = _da_ini_coarse.rio.write_transform(sf.grid.data["dep"].raster.transform)
 _da_ini_coarse.raster.set_nodata(np.nan)
 
 initial_conditions_component.create(ini=_da_ini_coarse, reproj_method="nearest")
@@ -495,7 +496,7 @@ log.info(
 _zsini_meta_coarse = {
     "driver": "GTiff", "dtype": "float32", "count": 1,
     "height": _ini_coarse.shape[0], "width": _ini_coarse.shape[1],
-    "transform": sf.grid.data["dep"].rio.transform(), "crs": sf.grid.data["dep"].rio.crs,
+    "transform": sf.grid.data["dep"].raster.transform, "crs": sf.grid.data["dep"].rio.crs,
     "nodata": np.float32(-9999.0), "compress": "deflate",
 }
 with rasterio.open(_zsini_out, "w", **_zsini_meta_coarse) as _dst:
@@ -519,29 +520,26 @@ if subgrid_dir.exists():
     for _stale in subgrid_dir.glob("*subgrid*.tif"):
         _stale.unlink()
 
-if include_subgrid:
-    log.info(
-        f"River network for subgrid: {len(rivers)} reaches, "
-        f"rivwth [{rivers['rivwth'].min():.1f}–{rivers['rivwth'].max():.1f} m], "
-        f"rivdph [{rivers['rivdph'].min():.2f}–{rivers['rivdph'].max():.2f} m]"
-    )
-    subgrid_component = sf.subgrid
-    subgrid_component.create(
-        elevation_list=elevation_list_subgrid,
-        roughness_list=[{"manning": "local_roughness_native"}],
-        river_list=river_list,
-        nr_subgrid_pixels=nr_subgrid_pixels,
-        nr_levels=nr_levels,
-        write_dep_tif=True,
-        write_man_tif=True,
-        nrmax=nrmax,
-    )
-    log.info(
-        f"Subgrid table created: {nr_subgrid_pixels} px/cell → "
-        f"{resolution / nr_subgrid_pixels:.0f} m effective resolution"
-    )
-else:
-    log.info("Subgrid skipped (include_subgrid=false in config)")
+log.info(
+    f"River network for subgrid: {len(rivers)} reaches, "
+    f"rivwth [{rivers['rivwth'].min():.1f}–{rivers['rivwth'].max():.1f} m], "
+    f"rivdph [{rivers['rivdph'].min():.2f}–{rivers['rivdph'].max():.2f} m]"
+)
+subgrid_component = sf.subgrid
+subgrid_component.create(
+    elevation_list=elevation_list_subgrid,
+    roughness_list=[{"manning": "local_roughness_native"}],
+    river_list=river_list,
+    nr_subgrid_pixels=nr_subgrid_pixels,
+    nr_levels=nr_levels,
+    write_dep_tif=True,
+    write_man_tif=True,
+    nrmax=nrmax,
+)
+log.info(
+    f"Subgrid table created: {nr_subgrid_pixels} px/cell → "
+    f"{resolution / nr_subgrid_pixels:.0f} m effective resolution"
+)
 
 # ── 7. Observation points ────────────────────────────────────────────────────
 # For each of the N_TOP_CROSSINGS boundary crossings with the highest bankfull
@@ -640,6 +638,7 @@ else:
 # writes populated components) -- this model is deliberately not runnable
 # on its own (no tref/tstart/tstop/forcing config at all).
 sf.write()
+write_weir_file(sf)  # crests at 1 cm, not hydromt_sfincs' 0.1 m
 log.info(f"Skeleton written to {skeleton_root}")
 
 subgrid_path = Path(snakemake.output.sfincs_subgrid)
@@ -697,7 +696,7 @@ _save_with_buffer(fig, ax, "04_roughness.png")
 with rasterio.open(_zsini_out) as _src:
     _zsini_arr = _src.read(1).astype(np.float32)
     _nodata_val = _src.nodata
-    _bounds = _src.bounds
+    _zsini_transform = _src.transform
 
 if _nodata_val is not None:
     _zsini_arr = np.where(
@@ -705,13 +704,7 @@ if _nodata_val is not None:
     )
 
 fig, ax = plt.subplots(figsize=(8, 6))
-im = ax.imshow(
-    _zsini_arr,
-    extent=[_bounds.left, _bounds.right, _bounds.bottom, _bounds.top],
-    origin="upper",
-    cmap="Blues",
-    aspect="auto",
-)
+im = imshow_on_grid(ax, _zsini_arr, _zsini_transform, cmap="Blues")
 plt.colorbar(im, ax=ax, label="Initial water level (m)")
 ax.set_title(
     f"Initial conditions (zsini)\n"

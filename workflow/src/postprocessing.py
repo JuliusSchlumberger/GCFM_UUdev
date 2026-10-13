@@ -18,6 +18,7 @@ import pandas as pd
 import rioxarray  # noqa: F401 -- registers the .rio accessor used below
 import xarray as xr
 import geopandas as gpd
+from affine import Affine
 
 from hydromt_sfincs import SfincsModel
 from hydromt_sfincs import utils as sfincs_utils
@@ -31,7 +32,7 @@ from hydromt_sfincs import utils as sfincs_utils
 # weir protects a grid-resolution-mismatch fringe -- see
 # src.protection_weir.build_coastal_protection_weir's own
 # protected_pocket_mask docstring). Sea_mask.tif/zsini_sea_cells_on_grid.tif
-# (rule get_landuse / modelled_depth_estimation / empirical_depth_estimation)
+# (rule get_landuse / modelled_depth_estimation)
 # already encode EXACTLY this same "is this genuinely open sea" boolean
 # (sea_mask itself is built as landuse==200, nothing else) -- checking it
 # directly here is equivalent, and avoids maintaining a second, duplicate
@@ -81,23 +82,23 @@ def load_sfincs_output(run_dir: str | Path) -> SfincsModel:
 def get_bed_level(
     mod: SfincsModel,
     sfincs_root: str | Path,
-    include_subgrid: bool = True,
-) -> xr.DataArray | None:
+) -> xr.DataArray:
     """
-    Bed level (dep) used to convert water levels to inundation depths.
+    Bed level (dep) used to convert water levels to inundation depths: the
+    subgrid reference raster (``subgrid/dep_subgrid.tif``), the elevation on
+    the subgrid pixels the model's subgrid tables were built from.
 
-    Prefers the subgrid reference raster (``subgrid/dep_subgrid.tif``) --
-    the resolution SFINCS uses internally for subgrid runs -- and falls
-    back to the coarser model-grid ``zb`` written to the run output.
-    Returns None when neither is available.
+    Raises FileNotFoundError when it is missing -- every model this pipeline
+    builds has a subgrid, and the run output's own ``zb`` (the LOWEST subgrid
+    pixel of each cell) is not a substitute.
     """
-    subgrid_dir = Path(sfincs_root) / "subgrid"
-    dep_subgrid_path = subgrid_dir / "dep_subgrid.tif"
-    if include_subgrid and dep_subgrid_path.exists():
-        return mod.data_catalog.get_rasterdataset(str(dep_subgrid_path))
-    if "zb" in mod.output.data:
-        return mod.output.data["zb"].squeeze()
-    return None
+    dep_subgrid_path = Path(sfincs_root) / "subgrid" / "dep_subgrid.tif"
+    if not dep_subgrid_path.exists():
+        raise FileNotFoundError(
+            f"{dep_subgrid_path} not found -- the model's subgrid reference raster "
+            f"(written by sf.subgrid.create(write_dep_tif=True)) is required"
+        )
+    return mod.data_catalog.get_rasterdataset(str(dep_subgrid_path))
 
 
 def _coarsen_for_memory(da_ref: xr.DataArray, max_bytes: float = 5e8) -> xr.DataArray:
@@ -137,6 +138,13 @@ def _coarsen_for_memory(da_ref: xr.DataArray, max_bytes: float = 5e8) -> xr.Data
     # avoids write_crs's default full-array deep copy, which matters at this
     # array size.
     da_coarse.rio.write_crs(da_ref.rio.crs, inplace=True)
+    # Same for the transform: on a ROTATED raster rioxarray keeps the stored
+    # (fine-pixel) GeoTransform instead of deriving one from the coordinates,
+    # so the coarsened array would otherwise be georeferenced at the wrong
+    # scale. boundary="trim" keeps the origin, so the pixel just grows.
+    da_coarse.rio.write_transform(
+        da_ref.raster.transform * Affine.scale(factor), inplace=True
+    )
     return da_coarse
 
 
@@ -145,7 +153,6 @@ def compute_max_inundation(
     sfincs_root: str | Path,
     sea_mask_path: str | Path,
     hmin: float = 0.05,
-    include_subgrid: bool = True,
     max_bytes: float = STATS_MAX_BYTES,
 ) -> tuple[xr.DataArray, xr.DataArray] | tuple[None, None]:
     """
@@ -153,13 +160,13 @@ def compute_max_inundation(
     (sub)grid resolution and masked to the land domain.
 
     Takes the max of ``zsmax`` over the ``timemax`` dimension, determines the
-    bed level via ``get_bed_level`` (subgrid-aware), derives the flood depth
+    bed level via ``get_bed_level``, derives the flood depth
     via ``hydromt_sfincs.utils.downscale_floodmap``, and masks both the flood
     depth and the bed-level reference grid to pixels where ``sea_mask_path``
     reads 1.0 (genuinely open sea) — so open sea is excluded from both the
     flooded count and the land-domain denominator. Pass the CORRECTED
     sea/land classification (``zsini_sea_cells_on_grid.tif``, rule
-    modelled_depth_estimation/empirical_depth_estimation) so fringe cells
+    modelled_depth_estimation) so fringe cells
     the coastal weir protects count as land, not sea.
 
     Returns:
@@ -167,7 +174,7 @@ def compute_max_inundation(
         bed-level raster used as the land-domain reference grid — its non-null
         pixel count gives the total number of land-domain pixels, e.g. for a
         flooded-area fraction (see 15_sanity_checks.py).  Both are None when
-        ``zsmax`` or the bed level is unavailable.
+        ``zsmax`` is unavailable.
     """
     mod = load_sfincs_output(run_dir)
     if "zsmax" not in mod.output.data:
@@ -177,9 +184,7 @@ def compute_max_inundation(
     if "timemax" in da_zsmax.dims:
         da_zsmax = da_zsmax.max(dim="timemax")
 
-    da_dep = get_bed_level(mod, sfincs_root, include_subgrid)
-    if da_dep is None:
-        return None, None
+    da_dep = get_bed_level(mod, sfincs_root)
     # Bound da_dep's memory -- a large enough full-extent subgrid reference
     # raster (get_bed_level's dep_subgrid.tif) can exceed max_bytes;
     # _coarsen_for_memory is already a no-op below its own threshold.
@@ -217,8 +222,7 @@ def compute_flood_progression(
     for the downscaled, subgrid-aware version used for area/volume
     statistics). ``h`` is additionally masked to exclude open sea via
     ``sea_mask_path`` (pass the CORRECTED sea/land classification,
-    ``zsini_sea_cells_on_grid.tif`` from rule modelled_depth_estimation/
-    empirical_depth_estimation, so weir-protected fringe cells count as
+    ``zsini_sea_cells_on_grid.tif`` from rule modelled_depth_estimation, so weir-protected fringe cells count as
     land) reprojected onto the model grid -- a no-op reproject in practice,
     since this file is already built on the same coarse SFINCS grid ``zb``
     lives on.
@@ -260,7 +264,6 @@ def compute_flood_timeseries_stats(
     sfincs_root: str | Path,
     sea_mask_path: str | Path,
     threshold_m: float,
-    include_subgrid: bool = True,
     max_bytes: float = STATS_MAX_BYTES,
 ) -> pd.DataFrame | None:
     """
@@ -289,7 +292,7 @@ def compute_flood_timeseries_stats(
     frame, and can afford a more generous, more accurate resolution
     (``STATS_MAX_BYTES``) than an animation's per-frame budget would.
 
-    Returns None when ``zs`` or the bed level is unavailable.
+    Returns None when ``zs`` is unavailable.
     """
     import pandas as pd
 
@@ -299,9 +302,7 @@ def compute_flood_timeseries_stats(
 
     da_zs_native = mod.output.data["zs"]
 
-    da_dep = get_bed_level(mod, sfincs_root, include_subgrid)
-    if da_dep is None:
-        return None
+    da_dep = get_bed_level(mod, sfincs_root)
     # See compute_max_inundation's identical fix: bound da_dep -- a large
     # full-extent subgrid reference raster needs this protection.
     da_dep = _coarsen_for_memory(da_dep, max_bytes=max_bytes)
@@ -311,7 +312,7 @@ def compute_flood_timeseries_stats(
     water_mask = da_sea_grid == 1.0
 
     try:
-        res_x, res_y = da_dep.rio.resolution()
+        res_x, res_y = da_dep.raster.res  # rotation-aware, unlike rio.resolution()
         pixel_area_m2 = abs(res_x * res_y)
     except Exception:
         pixel_area_m2 = np.nan

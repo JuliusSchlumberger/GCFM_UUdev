@@ -33,6 +33,7 @@ Edit the CONFIG block below and run directly:
     python workflow/src/waterlevel_animation.py
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -46,7 +47,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
 from src.postprocessing import load_sfincs_output
 
 # ── CONFIG -- edit these before each run ─────────────────────────────────────
-RESULTS_DIR = "D:/GCFM_UU/results"
+# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+RESULTS_DIR = os.environ["GCFM_RESULTS_DIR"]
 BASIN_ID = "2433835"
 SCENARIO = "coast_500"
 STRATEGY = "protect_closed_1"  # any already-run `pre` strategy folder

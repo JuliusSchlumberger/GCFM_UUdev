@@ -27,7 +27,6 @@ rule sanity_checks:
         spin_up_root               = lambda wildcards: results_path(f"{wildcards.basin_id}/spin_up"),
         skeleton_root              = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         min_inundation_depth_m     = config["sfincs"]["sanity_checks"]["min_inundation_depth_m"],
-        include_subgrid            = config["sfincs"]["subgrid"]["enabled"],
         animation_fps              = config["sfincs"]["sanity_checks"]["animation_fps"],
     log:
         "logs/{basin_id}/15_sanity_checks.log"

@@ -1,14 +1,17 @@
 meta:
   version: '1'
   name: data_catalog_v1
-  root: D:/GCFM_UU/raw_data
+  # root (raw-data directory all file_path entries below are relative to) is
+  # machine-specific and NOT set here -- it comes from the GCFM_RAW_DATA_ROOT
+  # environment variable. Set it once in PowerShell, then restart your terminal:
+  #   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
 
 datasets:
   - name: delta_polygons
     description: Dataset of manually drawn polygons representing the delta areas globally based on earth-observation data. The polygons are drawn using five defined points as a first approximation of the geomorphologically active deltaic zone.
     source: Edmonds, D.A., Caldwell, R.L., Brondizio, E.S. et al. Coastal flooding will disproportionately impact people on river deltas. Nat Commun 11, 4741 (2020). https://doi.org/10.1038/s41467-020-18531-4
     file_format: gpkg
-    file_path: DeltaWebs/modified/9_polygons.gpkg  # options: TestDelta_small.gpkg, TestPolygon.gpkg (Mississippi), 9_polygons.json (Mississippi, Zambezi, Ebro, Calvert, Mangoky, Vijose, Taiwan, Rhine-Meuse, Chao Phraya)
+    file_path: DeltaWebs/modified/8_polygons.gpkg  # options: TestDelta_small.gpkg, TestPolygon.gpkg (Mississippi), 9_polygons.json (Mississippi, Zambezi, Ebro, Calvert, Mangoky, Vijose, Taiwan, Rhine-Meuse, Chao Phraya)
     # file_path: DeltaWebs/chao_phraya_reprojected.gpkg
     crs:
       epsg: 4326
@@ -114,6 +117,8 @@ datasets:
       see the description's centimeters-unit caveat.
 
   - name: deltadtm_mask
+    # NOT USED by the pipeline since 2026-10-09: rule 05a now takes sea/land
+    # from the land use (200 = sea) instead. Entry kept for reference.
     # DeltaDTM's own validity/classification mask, used ONLY to identify
     # ocean pixels so FathomDEM's known-bad seaward extension (it is a
     # terrestrial DEM, not bathymetry, and reports spurious near-zero/
@@ -576,17 +581,28 @@ datasets:
       Data are provided at discrete GTSM stations along the coast.
 
 
-  - name: storm_tide_hydrographs
+  - name: gtsm_total_water_level
     description: >
-      Per-station storm tide hydrograph components for the GTSM output locations near the
-      study deltas: average tide signal (high water at t=0) and normalised average surge
-      hydrograph (peak=1 at t=0), 10-min, -74.5..+74.3 h, plus COAST-RP storm tide levels.
-      Built with the HGRAPHER method from the hourly GTSMv3 reanalysis 1950-2024, mean sea
-      level trend removed (1-yr running mean), so levels refer to a fixed local MSL like COAST-RP.
-    source: "Method: Dullaart et al. (2023), NHESS 23:1847 (HGRAPHER). Data: Copernicus CDS sis-water-level-change-timeseries-cmip6 (GTSMv3 reanalysis, hourly). Produced by tests/KL_gtsm_storm_tide.py"
+      Hourly total water level (tide + surge + mean sea level) of the GTSMv3 reanalysis
+      1950-2024 at ~43,000 output stations worldwide, one NetCDF per month holding every
+      station (reanalysis_waterlevel_hourly_YYYY_MM_v3.nc, variable `waterlevel`). Read by
+      rule extract_gtsm_series at each basin's own surge stations (COAST-RP's coastal
+      stations are GTSM output stations) to derive the storm-tide hydrograph components
+      (rule storm_tide_hydrographs). The folder holds the yearly CDS archives unzipped.
+    source: "Copernicus CDS sis-water-level-change-timeseries-cmip6 (GTSMv3 reanalysis, hourly). Downloaded with tools/download_cds_waterlevel.py"
     provider: xarray
     file_format: NetCDF
-    file_path: GTSM_storm_tide_hourly/GTSM_storm_tide_rp_hg.nc
+    file_path: GTSM_storm_tide_hourly/total_water_level/
+
+  - name: gtsm_surge_residual
+    description: >
+      Hourly storm surge residual (storm tide minus tide-only run) of the GTSMv3 reanalysis
+      1950-2024, same stations and layout as gtsm_total_water_level
+      (reanalysis_surge_hourly_YYYY_MM_v3.nc, variable `surge`).
+    source: "Copernicus CDS sis-water-level-change-timeseries-cmip6 (GTSMv3 reanalysis, hourly). Downloaded with tools/download_cds_waterlevel.py"
+    provider: xarray
+    file_format: NetCDF
+    file_path: GTSM_storm_tide_hourly/storm_surge_residual/
 
 
   - name: river_discharge
@@ -911,73 +927,3 @@ datasets:
       e.g. medium_confidence/ssp245/total_ssp245_medium_confidence_values.nc.
       Used by src/surge.py (load_slr_fingerprint, compute_global_mean_slr,
       apply_slr_fingerprint) in rule get_boundary_forcings.
-
-  - name: nienhuis_delta_characteristics
-    description: >
-      Tidal and morphological characteristics of 72 global river deltas:
-      tidal prism, estuary length, tidal amplitude, tidal frequency, mean
-      annual river discharge, mouth widths, and hindcast/predicted tidal
-      discharge. Used by rule add_estuarine_depth to determine which basins
-      overlap a known delta and to parameterise the Leuven et al. (2018)
-      estuarine depth profile for reaches within L_e of the coast.
-    source: >
-      Nienhuis, J.H., Ashton, A.D., Roos, P.C., Hulscher, S.J.M.H., Giosan, L.
-      (2018). Future Change to Tide-Influenced Deltas. Geophysical Research
-      Letters, 45, 3499-3507. https://doi.org/10.1029/2018GL077638
-    provider: openpyxl
-    file_format: xlsx
-    file_path: Nienhuis_prisms/delta_characteristics_72_deltas.xlsx
-    primary_key: "#"
-    fields_of_interest:
-      "#":
-        type: string
-        description: Delta identifier (integer, sometimes with letter suffix e.g. '6a').
-      Name:
-        type: string
-        description: Delta name (e.g. 'Amazon', 'Mississippi').
-      Lat:
-        type: Real
-        units: degrees_north
-        description: Representative latitude of the delta centre.
-      Lon:
-        type: Real
-        units: degrees_east
-        description: Representative longitude of the delta centre.
-      Q_river (m3s-1):
-        type: Real
-        units: m3 s-1
-        description: Mean annual river discharge at the delta apex.
-      L (m):
-        type: Real
-        units: m
-        description: >
-          Estuary length L_e (m) -- distance from the mouth to the tidal
-          limit. Reaches with dist_out <= L_e are treated as estuarine
-          by the Leuven et al. (2018) depth model.
-      a (m):
-        type: Real
-        units: m
-        description: Tidal amplitude at the mouth (m).
-      w (s-1):
-        type: Real
-        units: rad s-1
-        description: Tidal angular frequency (omega, radians per second).
-      P (m3):
-        type: Real
-        units: m3
-        description: >
-          Tidal prism (m3) -- volume of water exchanged per tidal cycle.
-          Used in the O'Brien (1969) relation A0 = C * P^alpha to compute
-          the cross-sectional area at the estuary mouth.
-      w_mouth_obs (m):
-        type: Real
-        units: m
-        description: Observed total mouth width summed across all distributaries (m).
-    notes: >
-      Used exclusively by src/estuarine_depth.py (load_nienhuis,
-      match_basin_to_delta) in rule add_estuarine_depth. Matching is by
-      spatial proximity: the Nienhuis delta Lat/Lon must fall within the
-      basin's delta_polygon bbox or within a configurable buffer distance
-      (river_processing.empirical_estimation.estuarine_depth.max_match_dist_km). If no match
-      is found, the rule falls back silently to the existing power-law
-      rivdph for all reaches.

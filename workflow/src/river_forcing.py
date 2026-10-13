@@ -781,17 +781,149 @@ def interpolate_discharge_at_rp(
     )
 
 
+def real_flood_event_matrix(
+    river_ds: xr.Dataset,
+    active: np.ndarray,
+    design_rp_yr: float,
+    separation_days: int,
+    n_largest: int,
+    min_ramp_hours: float,
+    max_rise_per_hr: float,
+) -> tuple[np.ndarray, dict]:
+    """
+    River discharge for one return period from REAL GloFAS flood events
+    (river_forcing.nc's discharge_daily: the daily series the return periods
+    were fitted on, bias-corrected where rule 07 corrected it).
+
+    The event is defined by the basin's MAIN inflow -- the active crossing
+    with the largest bankfull discharge:
+
+      * its independent flood peaks are the daily maxima at least
+        separation_days apart;
+      * the event whose peak is nearest the return level is taken and scaled
+        so the peak equals it. A return level above every recorded peak
+        ("above_record") instead uses the n_largest events, each scaled to
+        the return level and averaged day by day -- an average flood shape;
+      * every other inflow carries its OWN discharge on the same date(s),
+        times the same scale factor: one coherent real event for the whole
+        basin, in which only the main inflow is exactly at the return level.
+
+    The peak day sits on the river peak hour (lead_days * 24 + period_hr / 2,
+    the centre of the synthetic wave it replaces -- the surge peak in
+    storm-tide hydrograph mode); daily means are placed 24 h apart around it
+    and interpolated linearly. A real flood is already well above the mean
+    discharge the spin-up ends at when the event run starts
+    (attrs["event_start_hr"]), so the discharge blends linearly from the mean
+    into the event over a ramp at the start of the event run; before that it
+    holds the mean. The ramp length follows from the gap it has to close:
+
+        ramp = max(min_ramp_hours, gap / (max_rise_per_hr x peak))
+
+    with gap = the main inflow's event discharge at the event start minus
+    its mean, and peak = its return level -- i.e. the main inflow closes the
+    gap no faster than max_rise_per_hr of its own peak per hour. A relative
+    limit, so one value suits a 1,000 and a 100,000 m3/s river alike. (No
+    such ramp is realistic: the fastest day-to-day rises in the GloFAS
+    record are ~1 % of the 100-yr peak per hour, which would need a ramp
+    longer than the event's lead-up. It only keeps the model from being
+    hit by a step.) All inflows share that ramp; it is capped at the time
+    between the event start and the peak.
+
+    Returns:
+        ((n_active, n_time) discharge in m3 s-1, info dict: mode, the event
+        date(s) and scale factor(s), the main crossing's position in
+        `active` order and its return level, the ramp length used).
+    """
+    import scipy.signal as ss
+
+    times = river_ds["time"].values.astype(float)
+    q = river_ds["discharge_daily"].values[active].astype(float)  # (n_active, n_day)
+    days = np.datetime64("1970-01-01") + river_ds["day"].values.astype("timedelta64[D]")
+    mean_q = river_ds["mean_discharge"].values[active]
+    main = int(np.nanargmax(river_ds["bankfull_discharge"].values[active]))
+    target = float(
+        interpolate_discharge_at_rp(
+            river_ds["discharge_rp_table"].values[active][[main]],
+            river_ds["return_period"].values,
+            design_rp_yr,
+        )[0]
+    )
+
+    peak_hr = (
+        float(river_ds.attrs["lead_days"]) * 24.0
+        + float(river_ds.attrs["period_hr"]) / 2.0
+    )
+    start_hr = float(river_ds.attrs.get("event_start_hr", 0.0))
+    off_lo = int(np.floor((times[0] - peak_hr) / 24.0)) - 1
+    off_hi = int(np.ceil((times[-1] - peak_hr) / 24.0)) + 1
+    offsets = np.arange(off_lo, off_hi + 1)
+
+    q_main = q[main]
+    peaks, _ = ss.find_peaks(
+        np.nan_to_num(q_main, nan=-np.inf), distance=int(separation_days)
+    )
+    peaks = peaks[(peaks + off_lo >= 0) & (peaks + off_hi < q.shape[1])]
+    if peaks.size == 0:
+        raise ValueError(
+            "real_flood_event_matrix: no flood peak with a full event window in discharge_daily"
+        )
+    peak_q = q_main[peaks]
+    if target > peak_q.max():
+        chosen = peaks[np.argsort(peak_q)[-int(n_largest) :]]
+        mode = "above_record"
+    else:
+        chosen = peaks[[int(np.argmin(np.abs(peak_q - target)))]]
+        mode = "event"
+    scales = target / q_main[chosen]
+    daily = np.nanmean(
+        np.stack([q[:, p + offsets] * s for p, s in zip(chosen, scales)]), axis=0
+    )  # (n_active, n_offsets)
+
+    event = np.stack(
+        [
+            np.interp(times, peak_hr + 24.0 * offsets, daily[i])
+            for i in range(q.shape[0])
+        ]
+    )
+    start_q = float(np.interp(start_hr, times, event[main]))
+    gap = max(start_q - float(mean_q[main]), 0.0)
+    ramp_hours = max(float(min_ramp_hours), gap / (float(max_rise_per_hr) * target))
+    lead_up = max(peak_hr - start_hr, 0.0)
+    if ramp_hours > lead_up:
+        log.warning(
+            f"river event ramp of {ramp_hours:.1f} h (gap {gap:,.0f} m3/s) exceeds the {lead_up:.0f} h "
+            f"between the event start and the peak -- capped; raise max_rise_per_hr or the event window"
+        )
+        ramp_hours = lead_up
+    w = (
+        np.clip((times - start_hr) / ramp_hours, 0.0, 1.0)
+        if ramp_hours > 0
+        else (times >= start_hr).astype(float)
+    )
+    matrix = (1.0 - w) * mean_q[:, None] + w * event
+    info = {
+        "mode": mode,
+        "dates": [str(days[p]) for p in chosen],
+        "scales": [float(s) for s in scales],
+        "main": main,
+        "target": target,
+        "start_fraction": start_q / target,
+        "ramp_hours": ramp_hours,
+    }
+    return matrix, info
+
+
 def build_design_discharge_matrix(
     river_ds: xr.Dataset,
     active: np.ndarray,
     design_rp_yr: float | None | str,
-    apply_protection_floor: bool = True,
     discharge_multiplier: float = 1.0,
+    event: dict | None = None,
 ) -> np.ndarray:
     """
     Build the discharge timeseries actually fed to SFINCS for the given
-    design return period, from river_forcing.nc's stored bankfull_discharge +
-    discharge_rp_table (+ protection_discharge, if present). Changing
+    design return period, from river_forcing.nc's stored mean_discharge +
+    discharge_rp_table. Changing
     design_rp_yr only requires re-running the build (rule 13), not
     re-running EVA (rule 07).
 
@@ -801,17 +933,12 @@ def build_design_discharge_matrix(
          table entries (standard flood-frequency convention; linear
          interpolation in raw RP-space would be badly skewed given the
          table's four-orders-of-magnitude span).
-      2. If protection_discharge (Q_p, existing-protection-level correction)
-         is present: floor Q_f at bankfull -- protection contains discharge
-         up to Q_p without modifying the DEM/floodplain, but the channel
-         always carries at least its own bankfull flow (Q_b): Q_f > Q_p ->
-         Q_b + (Q_f - Q_p) (overtopped, excess rides on top of bankfull);
-         Q_b < Q_f <= Q_p -> Q_b (contained, no flood signal); Q_f <= Q_b ->
-         Q_f unchanged.
-      3. Build the hydrograph via sinusoidal_wave(bankfull_q, Q_f,
+      2. Build the hydrograph via sinusoidal_wave(mean_q, Q_f,
          river_ds.time.values, river_ds.attrs["lead_days"],
-         river_ds.attrs["period_hr"]).
-      4. Scale the entire built hydrograph (bankfull lead-in AND event peak
+         river_ds.attrs["period_hr"]). Existing riverine protection is NOT
+         subtracted from the discharge: the calibrated riverbank weirs
+         (rule modelled_depth_estimation) represent it in the model itself.
+      3. Scale the entire built hydrograph (bankfull lead-in AND event peak
          alike) by discharge_multiplier -- applied HERE, at build time, not
          baked into river_forcing.nc (mirrors src.surge's deferred SLR
          fingerprint: keeps river_forcing.nc, rule 10's weir/depth
@@ -836,21 +963,20 @@ def build_design_discharge_matrix(
                   mean_discharge -- the record's own grand-mean discharge --
                   for a scenario that wants a realistic ambient river
                   present (not absent) while the other driver is tested.
-        apply_protection_floor: Whether to apply step 2 (the protection-
-                  discharge floor) when protection_discharge is present.
-                  Only meaningful in "empirical" depth_method: in "modelled"
-                  mode a real calibrated riverbank weir already represents
-                  protection infrastructure, so flooring the discharge too
-                  would double-count it -- pass False there even if rule 07
-                  wrote protection_discharge into river_forcing.nc.
         discharge_multiplier: Uniform scaling factor applied to the built
-                  hydrograph (default 1.0 = no-op). See step 4 above.
+                  hydrograph (default 1.0 = no-op). See step 3 above.
+        event:    boundary_forcings.river.event_hydrograph. With
+                  source "glofas_event" a numeric design_rp_yr is built
+                  from real GloFAS flood events instead of steps 1-2's
+                  synthetic wave (real_flood_event_matrix; needs
+                  river_forcing.nc's discharge_daily). None or source
+                  "cosine": the synthetic wave. "mean"/None return periods
+                  are unaffected either way.
 
     Returns:
         (n_active, n_time) np.ndarray, discharge (m3 s-1) per active crossing.
     """
     times = river_ds["time"].values
-    bankfull_q = river_ds["bankfull_discharge"].values[active]
     table = river_ds["discharge_rp_table"].values[active]  # (n_active, n_rp)
     table_rps = river_ds["return_period"].values
     lead_days = float(river_ds.attrs["lead_days"])
@@ -872,17 +998,32 @@ def build_design_discharge_matrix(
         design_q = np.zeros(n_active, dtype=float)
         lead_q = design_q
     else:
-        design_q = interpolate_discharge_at_rp(table, table_rps, design_rp_yr)
-
-        if apply_protection_floor and "protection_discharge" in river_ds:
-            prot_q = river_ds["protection_discharge"].values[active]
-            overtopped = design_q > prot_q
-            contained = (~overtopped) & (design_q > bankfull_q)
-            design_q = np.where(
-                overtopped,
-                bankfull_q + (design_q - prot_q),
-                np.where(contained, bankfull_q, design_q),
+        if event is not None and event.get("source") == "glofas_event" and n_active > 0:
+            if "discharge_daily" not in river_ds:
+                raise ValueError(
+                    "river event_hydrograph.source 'glofas_event' needs discharge_daily in "
+                    "river_forcing.nc -- rerun rule get_boundary_forcings"
+                )
+            discharge_matrix, info = real_flood_event_matrix(
+                river_ds,
+                active,
+                float(design_rp_yr),
+                separation_days=int(event["separation_days"]),
+                n_largest=int(event["n_largest"]),
+                min_ramp_hours=float(event["min_ramp_hours"]),
+                max_rise_per_hr=float(event["max_rise_per_hr"]),
             )
+            log.info(
+                f"River event RP {float(design_rp_yr):g}: real GloFAS flood(s) {info['dates']} "
+                f"({info['mode']}), main inflow scaled x{[round(s, 3) for s in info['scales']]} to "
+                f"{info['target']:,.0f} m3/s; at the event start it is at "
+                f"{100 * info['start_fraction']:.0f}% of the peak, ramped in from the mean over "
+                f"{info['ramp_hours']:.1f} h"
+            )
+            if discharge_multiplier != 1.0:
+                discharge_matrix = discharge_matrix * discharge_multiplier
+            return discharge_matrix
+        design_q = interpolate_discharge_at_rp(table, table_rps, design_rp_yr)
 
     discharge_matrix = np.full((n_active, len(times)), np.nan)
     for i in range(n_active):

@@ -19,6 +19,7 @@ from __future__ import (
     annotations,
 )  # must be the first statement; section 3 below needs it
 
+import os
 import sys
 from pathlib import Path
 
@@ -33,7 +34,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
 from src.plots import read_raster_reprojected_for_plot  # noqa: E402
 
 BASIN_ID = "2433835"
-BASIN_ROOT = Path(r"D:\GCFM_UU\results") / BASIN_ID
+# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+BASIN_ROOT = Path(os.environ["GCFM_RESULTS_DIR"]) / BASIN_ID
 RUNS_DIR = BASIN_ROOT / "runs"
 OUT_DIR = RUNS_DIR
 DOMAIN_DIR = BASIN_ROOT / "preprocessing_inputs" / "domain"

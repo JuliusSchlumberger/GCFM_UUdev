@@ -7,6 +7,7 @@ Step 3: agreement diagnostics (figures in results section)
 
 """
 
+import os
 from pathlib import Path
 import numpy as np
 import xarray as xr
@@ -20,7 +21,11 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-OUT_DIR = Path(r"D:\GCFM_UU\results\2433835_V2_paper\runs")
+# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+OUT_DIR = Path(os.environ["GCFM_RESULTS_DIR"]) / "2433835/runs"
 CSV = OUT_DIR / "metrics_comparison.csv"
 METRICS = ["flooded_area_km2", "urban_exposed_km2", "mean_depth_m", "volume_m3"]
 SCALES = ["04", "09", "1"]  # raw strategy-name suffix, low -> high implementation scale
@@ -107,7 +112,7 @@ for (e, a), g in d.groupby(["event", "approach"]):
 # )
 
 # ------------------------------------------------------------------ 4. figures
-EVENT_ORDER = ["coast_100", "river_500", "compound_100c_500r"]
+EVENT_ORDER = ["coast_500", "river_500"]  # , "compound_100c_500r"]
 events = sorted(d.event.unique(), key=EVENT_ORDER.index)
 # case-insensitive: plain sorted() puts "NbS_..." before "grey_..." (uppercase
 # N sorts before lowercase g in ASCII), not the intended alphabetical order
@@ -263,7 +268,7 @@ plt.close(fig)
 # bottom, y-axis shared within each row so magnitudes are directly
 # comparable across scenarios (coast_500's surge peak vs. compound_500's,
 # river_500's discharge peak vs. compound_500's, etc.)
-SCENARIOS = ["coast_100", "river_500", "compound_100c_500r"]
+SCENARIOS = ["coast_500", "river_500"]  # , "compound_100c_500r"]
 SCENARIO_COLOR = "#14b5dd"
 # if these scenarios' own slr_m (config/scenarios.yml, per-scenario) is 0.0,
 # the plotted water level IS the actual built forcing, with no SLR -- shown

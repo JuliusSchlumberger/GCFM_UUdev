@@ -13,15 +13,12 @@ include: "rules/00_common.smk"
 # Included in true DAG/topological order -- see each rule's own docstring
 # for its actual predecessors/successors. Rule enforce_river_monotonicity
 # (09, conditioning) depends only on rule 08's cleaned network
-# (topology/width, no depth), so it runs before both depth-estimation
-# rules and produces the conditioned elevation they both consume. Rules
-# empirical_depth_estimation and modelled_depth_estimation (both numbered
-# 10) are sibling ALTERNATIVES selected by river_processing.depth_method --
-# exactly one ever runs, both writing the same unified
-# river_network_depth_estimated.gpkg AND the same unified burned-river-DEM
-# filenames (river_burned_dem.tif, river_burned_dem_sfincs_grid.tif) --
-# not a sequential chain. Each burns its own channel directly (never
-# hydromt's own gdf_zb/burn_river_rect).
+# (topology/width, no depth), so it runs before rule
+# modelled_depth_estimation (10) and produces the conditioned elevation it
+# consumes. Rule 10 writes river_network_depth_estimated.gpkg and the
+# burned river channel (river_burned_subgrid.tif on the subgrid pixel grid,
+# river_burned_dem_sfincs_grid.tif on the main grid), burning its own
+# channel directly (never hydromt's own gdf_zb/burn_river_rect).
 include: "rules/01_separate_deltas.smk"
 include: "rules/02_modeldomain.smk"
 # 06 (the river-network CLIP) before 02b/03: the clipped network is the
@@ -34,13 +31,12 @@ include: "rules/02b_prepare_landuse.smk"
 include: "rules/03_land_polygons.smk"
 include: "rules/04_protection_levels.smk"
 include: "rules/05_static_terrain_data.smk"
+include: "rules/07a_storm_tide_hydrographs.smk"
 include: "rules/07_boundary_forcings.smk"
 include: "rules/08_clean_river_network.smk"
-include: "rules/08b_optimize_grid_resolution.smk"
 include: "rules/08c_build_sfincs_grid.smk"
 include: "rules/09_condition_elevation.smk"
 include: "rules/09b_grid_align_landuse.smk"
-include: "rules/10_depth_estimation_empirical.smk"
 include: "rules/10_depth_estimation_modelled.smk"
 include: "rules/11_testing.smk"
 include: "rules/13_build_sfincs_skeleton.smk"
@@ -74,6 +70,9 @@ _PREPROCESS_OUTPUTS = [
     expand(results_path("{basin_id}/preprocessing_inputs/visuals/05c_roughness.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network.gpkg"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/visuals/06_river_network.png"), basin_id=BASINS),
+    *(expand(results_path("{basin_id}/preprocessing_inputs/forcing/storm_tide_hydrographs.nc"), basin_id=BASINS)
+      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/07c_storm_tide_hydrographs.png"), basin_id=BASINS)
+      if config["boundary_forcings"]["surge"]["hydrograph"]["enabled"] else []),
     expand(results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/forcing/glofas_clip.nc"), basin_id=BASINS),
@@ -89,29 +88,17 @@ _PREPROCESS_OUTPUTS = [
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/visuals/09_condition_elevation.png"), basin_id=BASINS),
-    # river_network_depth_estimated.gpkg + river_burned_dem* -- the unified
-    # outputs of whichever depth-estimation rule ran (empirical_depth_estimation
-    # or modelled_depth_estimation, both numbered 10, sibling alternatives
-    # selected by river_processing.depth_method); every downstream consumer
-    # (11/13) reads these same unconditional filenames regardless of which
-    # mode produced them. Both rules burn their own channel directly --
-    # every basin always gets a conditioned DEM and a directly-burned river
-    # channel.
-    *(expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem.tif"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_river_depth.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_river_width_q.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_river_hydraulics.png"), basin_id=BASINS)
-      if config["river_processing"]["depth_method"] == "empirical" else
-      expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem.tif"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/river_depth.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/water_level_timeseries.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/max_inundation.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/flood_animation.mp4"), basin_id=BASINS)),
+    # Rule modelled_depth_estimation (10): river_network_depth_estimated.gpkg,
+    # the burned river channel on the subgrid pixel grid and its main-grid
+    # mean, and the calibrated coastal protection weir.
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_subgrid.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/river_depth.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/water_level_timeseries.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/max_inundation.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/flood_animation.mp4"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/visuals/11_upstream_boundary_check.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/visuals/11b_bifurcation_calibration_options"), basin_id=BASINS),
 ]
@@ -133,8 +120,7 @@ _BUILD_OUTPUTS_BASIN = [
     expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/03_mask.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/04_roughness.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/07_coastal_protection_weir.png"), basin_id=BASINS),
-    *(expand(results_path("{basin_id}/sfincs_skeleton/sfincs_subgrid.nc"), basin_id=BASINS)
-      if config["sfincs"]["subgrid"]["enabled"] else []),
+    expand(results_path("{basin_id}/sfincs_skeleton/sfincs_subgrid.nc"), basin_id=BASINS),
     *(expand(results_path("{basin_id}/spin_up/" + RST_FNAME), basin_id=BASINS)
       + expand(results_path("{basin_id}/spin_up/sfincs_map.nc"), basin_id=BASINS)
       + expand(results_path("{basin_id}/spin_up/validation_spinup.png"), basin_id=BASINS)
@@ -215,7 +201,7 @@ rule preprocess:
     Run only the preprocessing pipeline (rules 01–12):
     basin separation, domain, land polygons, protection levels, terrain &
     bathymetry, land use, roughness, river network, boundary forcings,
-    network cleaning, depth, estuarine depth / river conditioning / preburn,
+    network cleaning, river conditioning, depth and dike-crest calibration,
     and the upstream-boundary validation check.
 
     Usage:  snakemake preprocess --cores N

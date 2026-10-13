@@ -12,6 +12,8 @@ import geopandas as gpd
 from shapely.ops import polygonize, unary_union
 from rasterio.features import geometry_mask
 
+from src.grid import cell_area_m2
+
 # Types of flooding attribution classes (used in the attribution mask)
 # 1 = river-only
 # 2 = coastal-only
@@ -26,9 +28,9 @@ def apply_offshore_barrier(
     Post-processing offshore barrier rule.
     Logic:
       - Read the max coastal water level from the scenario model.
-      - If barrier height > max water level = all coastal flooding removed.
+      - If barrier height >= max water level = all coastal flooding removed.
         Remove all flooding in attribution classes 2 and 3 (coastal and compound).
-      - If barrier height <= max water level = full risk from coastal flooding.
+      - If barrier height < max water level = full risk from coastal flooding.
     """
 
     out_path = Path(output_dir) / "max_flood_depth.tif"
@@ -49,7 +51,7 @@ def apply_offshore_barrier(
     if not mask_path.exists():
         raise FileNotFoundError(f"Attribution mask not found at {mask_path}")
 
-    if elevation > max_wl:
+    if elevation >= max_wl:
         with rasterio.open(
             mask_path
         ) as attr_src:  # opens attribution mask which labels each pixel by flood source
@@ -57,11 +59,11 @@ def apply_offshore_barrier(
                 np.isin(attr_src.read(1), [2, 3]), prof["nodata"], flood
             )  # if barrier height exceeds surge, the pixels in 2 are replaced with nodata
         print(
-            f"  Barrier sufficient (H={elevation}m > Surge={max_wl:.2f}m) = all coastal flooding removed"
+            f"  Barrier sufficient (H={elevation}m >= Surge={max_wl:.2f}m) = all coastal flooding removed"
         )
     else:  # if the barrier is overtopped, we keep all flooding
         print(
-            f"  Barrier overtopped (H={elevation}m <= Surge={max_wl:.2f}m) = full risk"
+            f"  Barrier overtopped (H={elevation}m < Surge={max_wl:.2f}m) = full risk"
         )
 
     # Save modified raster with updated metadata
@@ -107,7 +109,7 @@ def apply_river_levee(
     riv_wl.read()
     max_river_wl = float(riv_wl.data["point_zs"].max())
 
-    river_holds = elevation > max_river_wl
+    river_holds = elevation >= max_river_wl
 
     coastal_measure = (strategy_measures or {}).get("coastal_levee")
     if coastal_measure is not None:
@@ -115,7 +117,7 @@ def apply_river_levee(
         wl = mod.get_component("water_level")
         wl.read()
         max_coastal_wl = float(wl.data["bzs"].max())
-        coastal_holds = coastal_elevation > max_coastal_wl
+        coastal_holds = coastal_elevation >= max_coastal_wl
         compound_holds = river_holds and coastal_holds
         print(
             f"  Joint compound check: river {'holds' if river_holds else 'overtopped'} "
@@ -148,11 +150,11 @@ def apply_river_levee(
                 np.isin(attr_src.read(1), classes_to_clear), prof["nodata"], flood
             )
         print(
-            f"  Levee sufficient (H={elevation}m > river water level ={max_river_wl:.2f}m) = all river flooding removed"
+            f"  Levee sufficient (H={elevation}m >= river water level ={max_river_wl:.2f}m) = all river flooding removed"
         )
     else:  # if the levee is overtopped, we keep all flooding
         print(
-            f"  Levee overtopped (H={elevation}m <= river water level={max_river_wl:.2f}m) = full risk"
+            f"  Levee overtopped (H={elevation}m < river water level={max_river_wl:.2f}m) = full risk"
         )
 
     # Save modified raster with updated metadata
@@ -341,7 +343,7 @@ def apply_water_retention(
 
     with rasterio.open(flood_map_path) as src:
         flood, prof = src.read(1), src.profile
-        cell_area = abs(src.transform.a * src.transform.e)
+        cell_area = cell_area_m2(src.transform)
 
     mask_path = Path(scenario_root).parent / "attribution_mask.tif"
     if not mask_path.exists():
@@ -414,10 +416,10 @@ def apply_coastal_levee(
     Post-processing coastal levee rule.
     Logic:
       - Read the max coastal water level from the scenario model.
-      - If levee height > max water level = all coastal flooding removed.
+      - If levee height >= max water level = all coastal flooding removed.
         Remove all flooding in attribution classes 2 and (usually) 3
         (coastal and compound) -- see strategy_measures note below.
-      - If levee height <= max water level = full risk from coastal flooding.
+      - If levee height < max water level = full risk from coastal flooding.
 
     strategy_measures: this strategy's full measures dict (see dispatch_rules'
     own docstring). When a sibling "river_levee" measure is ALSO part of the
@@ -453,7 +455,7 @@ def apply_coastal_levee(
     )
     classes_to_clear = [2] if has_sibling_river_levee else [2, 3]
 
-    if elevation > max_wl:
+    if elevation >= max_wl:
         with rasterio.open(
             mask_path
         ) as attr_src:  # opens attribution mask which labels each pixel by flood source
@@ -466,11 +468,11 @@ def apply_coastal_levee(
             else ""
         )
         print(
-            f"  Levee sufficient (H={elevation}m > Surge={max_wl:.2f}m) = all coastal flooding removed"
+            f"  Levee sufficient (H={elevation}m >= Surge={max_wl:.2f}m) = all coastal flooding removed"
             f"{compound_note}"
         )
     else:  # if the levee is overtopped, we keep all flooding
-        print(f"  Levee overtopped (H={elevation}m <= Surge={max_wl:.2f}m) = full risk")
+        print(f"  Levee overtopped (H={elevation}m < Surge={max_wl:.2f}m) = full risk")
 
     # Save modified raster with updated metadata
     prof.update(dtype="float32")
@@ -597,7 +599,7 @@ def apply_pumps(
 
     with rasterio.open(flood_map_path) as src:
         flood, prof = src.read(1), src.profile
-        cell_area = abs(src.transform.a * src.transform.e)
+        cell_area = cell_area_m2(src.transform)
 
     mask_path = Path(scenario_root).parent / "attribution_mask.tif"
     if not mask_path.exists():

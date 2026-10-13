@@ -33,6 +33,7 @@ Method: HGRAPHER, Dullaart et al. (2023), NHESS 23:1847, https://doi.org/10.5194
 Stage 1 is cached per variable-year, so the script can be rerun while the download is running.
 """
 
+import os
 import tempfile
 import zipfile
 from pathlib import Path
@@ -46,12 +47,19 @@ import xarray as xr
 from pyextremes import EVA
 
 # ── settings ──────────────────────────────────────────────────────────────────
-ZIP_DIR = Path(r"D:\GCFM_UU\raw_data\GTSM_storm_tide_hourly")
-CACHE_DIR = Path(r"D:\GCFM_UU\raw_data\GTSM_storm_tide_hourly\cache")
-OUT_NC = Path(r"D:\GCFM_UU\raw_data\GTSM_storm_tide_hourly\GTSM_storm_tide_rp_hg.nc")
-DELTAS = Path(r"D:\GCFM_UU\raw_data\DeltaWebs\modified\9_polygons.gpkg")
-COAST_RP = Path(
-    r"D:\GCFM_UU\raw_data\CoastRP\COAST-RP.nc"
+# Machine-specific path, read from the GCFM_RAW_DATA_ROOT environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+ZIP_DIR = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "GTSM_storm_tide_hourly"
+CACHE_DIR = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "GTSM_storm_tide_hourly/cache"
+OUT_NC = (
+    Path(os.environ["GCFM_RAW_DATA_ROOT"])
+    / "GTSM_storm_tide_hourly/GTSM_storm_tide_rp_hg.nc"
+)
+DELTAS = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "DeltaWebs/modified/9_polygons.gpkg"
+COAST_RP = (
+    Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "CoastRP/COAST-RP.nc"
 )  # data_catalogue: storm_tide_return_periods
 
 RP_SOURCE = "coast_rp"  # "coast_rp" (as HGRAPHER; includes STORM tropical cyclones) or "pot" (own fit)

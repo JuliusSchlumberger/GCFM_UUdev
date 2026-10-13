@@ -35,23 +35,19 @@ from src.surge import (
     build_design_surge_matrix,
     build_surge_dataset,
     build_time_axis,
-    compute_distances_to_bbox,
     compute_global_mean_slr,
     extract_hydrograph_components,
     interpolate_protection_level,
-    load_coastrp_stations,
     load_mdt,
     load_slr_fingerprint,
-    select_nearest_stations,
+    select_surge_stations,
 )
 from src.profiling import ScriptProfiler
 
 log = setup_logging(snakemake.log[0])
 
 profiler = ScriptProfiler(snakemake)
-load_coastrp_stations         = profiler.wrap(load_coastrp_stations)
-compute_distances_to_bbox     = profiler.wrap(compute_distances_to_bbox)
-select_nearest_stations       = profiler.wrap(select_nearest_stations)
+select_surge_stations         = profiler.wrap(select_surge_stations)
 load_mdt                       = profiler.wrap(load_mdt)
 apply_mdt_correction           = profiler.wrap(apply_mdt_correction)
 load_slr_fingerprint           = profiler.wrap(load_slr_fingerprint)
@@ -85,26 +81,18 @@ log.info(f"Domain WGS84 bounds: {wgs84_bounds}, CRS: {domain_crs}")
 # coastal_rp_yr is ALWAYS used (see "surge forcing" section below) to
 # compute the GOCO06s-referenced protection CREST elevation
 # (coastal_protection_crest_m, saved unconditionally) that feeds the
-# coastal_protection_weir baked into the model in rule 13 -- that always
-# runs regardless of modify_hydrograph. riverine_rp_yr is a
-# SEPARATE, unrelated mechanism (a discharge-side correction applied in the
-# "river forcing" section below) and stays gated behind
-# modify_hydrograph/None when disabled.
-modify_hydrograph = bool(snakemake.params.modify_hydrograph)
+# coastal_protection_weir baked into the model in rule 13. riverine_rp_yr
+# is not used here: riverine protection is represented by the calibrated
+# riverbank weirs (rule modelled_depth_estimation), not by a discharge-side
+# correction.
 with open(snakemake.input.protection_levels) as f:
     protection_summary = json.load(f)
 coastal_rp_yr = float(protection_summary["coastal_rp_yr"])
-riverine_rp_yr = float(protection_summary["riverine_rp_yr"]) if modify_hydrograph else None
 log.info(
     f"Coastal protection RP={coastal_rp_yr:.1f} yr ({protection_summary['coastal_source']}), "
     f"dominant unit={protection_summary['dominant_iso']} (id={protection_summary['dominant_geounit_id']}) "
     f"-- feeds the coastal protection weir crest (always computed below)"
 )
-if modify_hydrograph:
-    log.info(
-        f"Riverine protection-level correction enabled: riverine RP={riverine_rp_yr:.1f} yr "
-        f"({protection_summary['riverine_source']})"
-    )
 
 # ── surge forcing ─────────────────────────────────────────────────────────────
 
@@ -121,16 +109,17 @@ surge_dt      = snakemake.params.dt_hr
 # surge_rp via src.surge.build_design_surge_matrix, never this value.
 return_period = snakemake.params.surge_return_period
 
-stations = load_coastrp_stations(snakemake.input.surge_data, return_period)
-log.info(f"CoastRP stations loaded: {len(stations)}")
-stations = compute_distances_to_bbox(stations, domain_utm, domain_crs)
-stations = select_nearest_stations(
-    stations,
-    snakemake.params.min_surge_stations,
-    snakemake.params.max_surge_stations,
-    snakemake.params.search_radii_km,
-    snakemake.params.surge_dedupe_radius_km,
+# The same selection rule select_surge_stations (07a) made for the GTSM
+# extraction -- one shared function, same config values.
+stations = select_surge_stations(
+    snakemake.input.surge_data,
+    domain_utm,
     domain_crs,
+    min_stations=snakemake.params.min_surge_stations,
+    max_stations=snakemake.params.max_surge_stations,
+    search_radii_km=snakemake.params.search_radii_km,
+    dedupe_radius_km=snakemake.params.surge_dedupe_radius_km,
+    return_period=return_period,
 )
 log.info(f"Most distant selected station: {stations['dist_m'].max() / 1000:.1f} km")
 
@@ -203,7 +192,7 @@ river_dt     = surge_dt
 # river wave's own lead is set so its peak lands on the surge peak.
 hg_cfg = snakemake.params.surge_hydrograph
 if hg_cfg["enabled"]:
-    hg_window_hr = float(hg_cfg["window_hr"])
+    hg_window_hr = float(snakemake.params.hydrograph_window_hr)
     if river_period / 2.0 > hg_window_hr:
         raise ValueError(
             f"river period_hr/2 ({river_period / 2:g} h) exceeds the hydrograph window "
@@ -247,9 +236,9 @@ surge_ds = build_surge_dataset(
     baseline_m=baseline_m, station_baselines=station_baselines,
 )
 
-# Existing flood-protection level -- computed UNCONDITIONALLY (independent
-# of modify_hydrograph): the coastal_protection_weir baked into the
-# model at rule 13 always runs and always needs a crest elevation. A weir
+# Existing flood-protection level -- computed UNCONDITIONALLY: the
+# coastal_protection_weir baked into the model at rule 13 always runs and
+# always needs a crest elevation. A weir
 # provides a real barrier (unlike subtracting a scalar protection height
 # directly from the water_level boundary forcing, which assumes the whole
 # coast sits behind a uniform wall while SFINCS enforces no actual barrier,
@@ -309,7 +298,7 @@ log.info(
 # Used by build_design_surge_matrix for every surge scenario (an RP and
 # "Tide") -- see src.surge._hydrograph_surge_matrix.
 if hg_cfg["enabled"]:
-    hg_time_hr, hg_tide, hg_shape, hg_match_km = extract_hydrograph_components(
+    hg_time_hr, hg_tide, hg_shape, hg_rps, hg_match_km = extract_hydrograph_components(
         snakemake.input.storm_tide_hydrographs,
         stations.geometry.x.to_numpy(), stations.geometry.y.to_numpy(), hg_window_hr,
     )
@@ -317,18 +306,20 @@ if hg_cfg["enabled"]:
     if np.nanmax(hg_match_km) > max_match_km:
         raise ValueError(
             f"selected surge station(s) lie up to {np.nanmax(hg_match_km):.1f} km from the nearest "
-            f"storm-tide hydrograph location (max_match_km={max_match_km:g}) -- the hydrograph file "
-            f"does not cover this basin; rerun tests/KL_gtsm_storm_tide.py including it"
+            f"storm-tide hydrograph location (max_match_km={max_match_km:g}) -- storm_tide_hydrographs.nc "
+            f"was built for other stations; rerun rules select_surge_stations/extract_gtsm_series/"
+            f"storm_tide_hydrographs for this basin"
         )
-    surge_ds = surge_ds.assign_coords(hg_time_hr=("hg_time_hr", hg_time_hr))
+    surge_ds = surge_ds.assign_coords(hg_time_hr=("hg_time_hr", hg_time_hr), hg_rp=("hg_rp", hg_rps))
+    surge_ds["hg_rp"].attrs = {"units": "yr", "long_name": "return period each surge shape was derived for"}
     surge_ds["hg_time_hr"].attrs = {"units": "hours", "long_name": "hours relative to the surge peak / tidal high water"}
     surge_ds["hg_tide_m"] = (
         ["station", "hg_time_hr"], hg_tide,
         {"units": "m", "long_name": "average tide signal (HGRAPHER), local MSL, high water at hg_time_hr=0"},
     )
     surge_ds["hg_surge_shape"] = (
-        ["station", "hg_time_hr"], hg_shape,
-        {"units": "1", "long_name": "normalised average surge hydrograph (HGRAPHER), peak=1 at hg_time_hr=0"},
+        ["station", "hg_rp", "hg_time_hr"], hg_shape,
+        {"units": "1", "long_name": "normalised surge hydrograph per return period (HGRAPHER), peak=1 at hg_time_hr=0"},
     )
     surge_ds["hg_match_km"] = (
         ["station"], hg_match_km,
@@ -417,7 +408,6 @@ if crossings.empty:
     bankfull_q = np.array([])
     mean_q = np.array([])
     flood_q = np.array([])
-    protection_q = np.array([])
     results: list = []
     bias_corrected_arr    = np.zeros(0, dtype=np.int8)
     grdc_station_id_arr   = np.full(0, -1, dtype=np.int64)
@@ -538,7 +528,6 @@ else:
     bankfull_q   = np.full(n, np.nan)
     mean_q       = np.full(n, np.nan)
     discharge_rp_table = np.full((n, len(STANDARD_RETURN_PERIODS_YR)), np.nan)
-    protection_q = np.full(n, np.nan)
     results      = [None] * n
 
     bias_corrected_arr    = np.zeros(n, dtype=np.int8)
@@ -614,10 +603,7 @@ else:
             bias_cache[(i_lat, i_lon)] = bc_diag
             ts_cache[(i_lat, i_lon)] = ts
 
-            eva = analyse_cell(
-                times_arr, ts, eva_cfg, label=label,
-                protection_rp=riverine_rp_yr if modify_hydrograph else None,
-            )
+            eva = analyse_cell(times_arr, ts, eva_cfg, label=label)
             eva_cache[(i_lat, i_lon)] = eva
 
         results[i] = eva
@@ -645,8 +631,6 @@ else:
         discharge_rp_table[i] = gpd_return_value_table(
             eva.pot_threshold, eva.pot_scale, eva.pot_shape, eva.pot_peaks_per_year,
         )
-        if modify_hydrograph:
-            protection_q[i] = eva.q_protection if np.isfinite(eva.q_protection) else 0.0
         log.info(
             f"  {label}: GloFAS ({lat_arr[i_lat]:.3f}°N, {lon_arr[i_lon]:.3f}°E)  "
             f"Q_bankfull = {bankfull_q[i]:.1f} m³/s  "
@@ -678,36 +662,26 @@ river_ds = build_river_dataset(
     grdc_overlap_days=grdc_overlap_days_arr,
 )
 
-# protection_discharge/protection_rp_yr stay simple per-crossing scalars --
-# the actual protection-floor CORRECTION (applying them against the design
-# discharge) happens at SFINCS-build time (rule 13), on the scalar design
-# discharge looked up from discharge_rp_table, not on a full timeseries
-# here -- see src.river_forcing.build_design_discharge_matrix.
-if modify_hydrograph:
-    river_ds["protection_discharge"] = (
-        ["crossing"],
-        protection_q,
-        {
-            "units": "m3 s-1",
-            "long_name": f"existing flood-protection discharge (RP{riverine_rp_yr:g} yr, FLOPROS riverine, POT/GPD fit)",
-        },
+# Daily discharge series per crossing -- the SAME (bias-corrected where
+# applicable) series the return periods above were fitted on -- so rule 13
+# can build a scenario's river event from real floods
+# (src.river_forcing.real_flood_event_matrix). 'day' counts days since
+# 1970-01-01 (the file is read with decode_times=False everywhere).
+if int(has_glofas.sum()) > 0:
+    daily = np.full((len(crossings), len(times_arr)), np.nan, dtype=np.float32)
+    for i in np.flatnonzero(has_glofas):
+        daily[i] = ts_cache[(cell_i_lat[i], cell_i_lon[i])]
+    river_ds = river_ds.assign_coords(
+        day=("day", (times_arr.astype("datetime64[D]") - np.datetime64("1970-01-01")).astype(np.int64),
+             {"long_name": "day of the daily discharge series, days since 1970-01-01"})
     )
-    river_ds["protection_rp_yr"] = (
-        [],
-        float(riverine_rp_yr),
-        {"units": "yr", "long_name": "FLOPROS riverine protection return period used"},
+    river_ds["discharge_daily"] = (
+        ["crossing", "day"], daily,
+        {"units": "m3 s-1", "long_name": "daily mean discharge (GloFAS, bias-corrected where bias_corrected)"},
     )
-    if protection_q.size > 0 and np.isfinite(protection_q).any():
-        log.info(
-            f"Protection discharge (RP{riverine_rp_yr:g} yr) stored: range "
-            f"[{np.nanmin(protection_q):.1f}, {np.nanmax(protection_q):.1f}] m³/s "
-            f"-- correction itself applied at SFINCS-build time"
-        )
-    else:
-        log.info(
-            f"Protection-level correction enabled (RP{riverine_rp_yr:g} yr) but no "
-            f"active crossings to apply it to"
-        )
+# Hour the event run starts at (= end of the lead-in / spin-up): where a real
+# flood event's discharge starts blending in from the mean.
+river_ds.attrs["event_start_hr"] = float(surge_lead) * 24.0
 
 Path(snakemake.output.river_forcing).parent.mkdir(parents=True, exist_ok=True)
 river_ds.to_netcdf(snakemake.output.river_forcing)
@@ -720,12 +694,11 @@ log.info(
 # summary timeseries plot only -- NOT written to river_forcing.nc (the file
 # above is already saved). Illustrative only: rule 13 builds its own actual
 # forcing at each scenario's own real design_rp_river_yr (config/scenarios.yml),
-# which generally differs from this fixed preview RP -- but uses the SAME
-# protection-discharge floor logic shown here.
+# which generally differs from this fixed preview RP.
 if int(has_glofas.sum()) > 0:
     preview_matrix = np.full((len(crossings), len(t_river)), np.nan)
     preview_matrix[has_glofas] = build_design_discharge_matrix(
-        river_ds, has_glofas, eva_cfg["rp_fl"]
+        river_ds, has_glofas, eva_cfg["rp_fl"], event=snakemake.params.river_event,
     )
     river_ds["discharge"] = (["crossing", "time"], preview_matrix)
 

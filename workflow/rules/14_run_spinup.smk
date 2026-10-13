@@ -16,8 +16,8 @@ rule run_spinup:
     input:
         skeleton_inp         = results_path("{basin_id}/sfincs_skeleton/sfincs.inp"),
         land_mask_on_grid    = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
-        # Corrected sea/land classification (rule modelled_depth_estimation/
-        # empirical_depth_estimation, whichever ran) -- cells the final weir
+        # Corrected sea/land classification (rule modelled_depth_estimation)
+        # -- cells the final weir
         # protects are cleared to "land" so they aren't masked as open sea in
         # this rule's own flood-diagnostic plot. Coarse, grid-aligned (rule
         # 09b's landuse_on_grid.tif is this file's own source) -- the SAME
@@ -29,7 +29,6 @@ rule run_spinup:
         clean_river_network  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
         surge_forcing        = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         river_forcing        = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
-        grid_resolution      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_grid_resolution.json"),
     output:
         rstart              = results_path("{basin_id}/spin_up/" + RST_FNAME),
         sfincs_map_nc       = results_path("{basin_id}/spin_up/sfincs_map.nc"),
@@ -38,14 +37,13 @@ rule run_spinup:
     params:
         skeleton_root             = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         spin_up_root              = lambda wildcards: results_path(f"{wildcards.basin_id}/spin_up"),
-        resolution                = lambda wildcards, input: json.load(open(input.grid_resolution))["resolution"],
+        resolution                = lambda wildcards: grid_resolution_m(wildcards.basin_id),
         tref                      = config["sfincs"]["simulation"]["tref"],
         spinup_days               = config["sfincs"]["spinup"]["spinup_days"],
-        sfincs_exe                = config["sfincs"]["simulation"]["sfincs_exe"],
+        sfincs_exe                = sfincs_exe_path,
         rst_fname                 = RST_FNAME,
         dtmapout_s                = config["sfincs"]["spinup"]["dtmapout_s"],
         dthisout_s                = config["sfincs"]["spinup"]["dthisout_s"],
-        include_subgrid           = config["sfincs"]["subgrid"]["enabled"],
         timeout_s                 = config["sfincs"]["simulation"]["timeout_s"],
         waterlevel_buffer_m       = config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
         boundary_ramp_hours       = config["sfincs"]["spinup"]["boundary_ramp_hours"],

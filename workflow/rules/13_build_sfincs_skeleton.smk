@@ -4,7 +4,7 @@
 # per basin, not once per scenario (no {scenario} wildcard) -- none of these
 # sections depend on forcing_mode/design_rp_river_yr/design_rp_surge_yr
 # (confirmed by tracing every one of their own inputs back to basin-level,
-# RP-independent sources: grid_resolution.json, the conditioned/burned DEM
+# RP-independent sources: the basin's fixed grid resolution, the conditioned/burned DEM
 # rasters, river_network_depth_estimated.gpkg's own bankfull_discharge/
 # has_glofas columns, etc.).
 #
@@ -24,19 +24,14 @@
 # forcing_mode (see build_sfincs's own initial-conditions section) --
 # computing it once here and letting every consumer reference the same
 # layer is simpler than recomputing an identical raster per scenario.
-# ONE path, same for both depth_method modes: zsini_sea_cells_on_grid.tif
-# (rule modelled_depth_estimation/empirical_depth_estimation, whichever
-# ran) is written directly at THIS rule's own grid resolution (confirmed
-# pixel-identical: both "auto-UTM"-fit from the same domain_gpkg +
-# grid_resolution.json) and read directly into an in-memory DataArray with
-# ZERO further reprojection. There used to be a depth_method-conditional
-# split here -- empirical mode read native-resolution sea_mask_corrected.tif
-# through HydroMT's own reproject_like instead -- removed 2026-08-07 so
+# zsini_sea_cells_on_grid.tif (rule modelled_depth_estimation) is written
+# directly at THIS rule's own grid resolution (pixel-identical: both models
+# are created from the shared grid definition, sfincs_grid.json) and read
+# directly into an in-memory DataArray with ZERO further reprojection, so
 # every raster the landuse/sea/roughness classification chain touches gets
 # resampled onto the SFINCS grid exactly once, upstream (rule
-# grid_align_landuse, 09b), regardless of which depth_method ran. A
-# native-resolution round-trip was separately confirmed (in "modelled" mode,
-# before this classification chain existed) to leave roughly half of the
+# grid_align_landuse, 09b). A native-resolution round-trip was separately
+# confirmed (before this classification chain existed) to leave roughly half of the
 # corrected fringe cells still wet (two independent nearest-neighbor
 # implementations don't invert each other cleanly, even on a confirmed
 # pixel-identical grid) -- the same risk this now avoids everywhere, not
@@ -45,6 +40,9 @@
 rule build_sfincs_skeleton:
     input:
         domain_gpkg       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
+        # THE grid definition (rule build_sfincs_grid, 08c) this model is
+        # created from -- see src/grid.py.
+        sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sfincs_grid.json"),
         # Native-resolution CONDITIONED (post-monotonicity, rule
         # enforce_river_monotonicity) elevation -- NOT the raw merged DEM
         # (rule 05a's own {basin_id}_elevation_merged.tif). Named
@@ -53,15 +51,15 @@ rule build_sfincs_skeleton:
         # name left over from before rule 09 existed, fixed for clarity
         # (no behavior change: this was already the conditioned file).
         elevation_conditioned = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned.tif"),
-        river_burned_dem  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem.tif"),
+        # The burned river channel (rule modelled_depth_estimation, 10): on
+        # the subgrid pixel grid for sf.subgrid.create() (no resampling --
+        # the script raises if it is not exactly this model's own subgrid
+        # pixel grid), and its per-cell mean for the main-grid "dep".
+        river_burned_subgrid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_subgrid.tif"),
         river_burned_dem_sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"),
         elevation_conditioned_sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"),
         river_elevation_max = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_elevation_max.json"),
-        coastal_protection_weir = lambda wildcards: (
-            results_path(f"{wildcards.basin_id}/preprocessing_inputs/domain/{wildcards.basin_id}_coastal_protection_weir.gpkg")
-            if config["river_processing"]["depth_method"] == "modelled"
-            else []
-        ),
+        coastal_protection_weir = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"),
         # Native resolution -- subgrid table only (needs sub-cell detail,
         # same as elevation). The main regular-grid "manning" field uses
         # roughness_on_grid below instead.
@@ -77,13 +75,11 @@ rule build_sfincs_skeleton:
         # for the main "manning" field and the weir diagnostics section.
         landuse_on_grid   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_on_grid.tif"),
         roughness_on_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness_on_grid.tif"),
-        # zsini's ONLY source (both depth_method modes now produce this
-        # unconditionally -- see rule modelled_depth_estimation/
-        # empirical_depth_estimation, 10) -- written directly at this
-        # rule's OWN grid resolution (confirmed pixel-identical: same
-        # domain_gpkg + grid_resolution.json feed both), read directly into
-        # an in-memory zsini DataArray with ZERO further reprojection. There
-        # used to be a depth_method-conditional native-resolution path here
+        # zsini's ONLY source (rule modelled_depth_estimation, 10) --
+        # written directly at this rule's OWN grid resolution (confirmed
+        # pixel-identical: same domain_gpkg + grid resolution feed both),
+        # read directly into an in-memory zsini DataArray with ZERO further
+        # reprojection. There used to be a native-resolution path here
         # (sea_mask_corrected.tif + HydroMT's own reproject_like) -- removed
         # 2026-08-07: a second independent nearest-neighbor pass over an
         # already-resampled coarse mask does not invert cleanly even on a
@@ -97,7 +93,6 @@ rule build_sfincs_skeleton:
         # run_spinup.
         surge_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         river_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
-        grid_resolution   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_grid_resolution.json"),
     output:
         sfincs_inp     = results_path("{basin_id}/sfincs_skeleton/sfincs.inp"),
         sfincs_subgrid = results_path("{basin_id}/sfincs_skeleton/sfincs_subgrid.nc"),
@@ -110,9 +105,7 @@ rule build_sfincs_skeleton:
         plot_roughness = results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/04_roughness.png"),
         plot_coastal_protection_weir = results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/07_coastal_protection_weir.png"),
     params:
-        depth_method       = config["river_processing"]["depth_method"],
-        resolution         = lambda wildcards, input: json.load(open(input.grid_resolution))["resolution"],
-        include_subgrid    = config["sfincs"]["subgrid"]["enabled"],
+        resolution         = lambda wildcards: grid_resolution_m(wildcards.basin_id),
         nr_subgrid_pixels  = config["sfincs"]["subgrid"]["nr_subgrid_pixels"],
         nr_levels          = config["sfincs"]["subgrid"]["nr_levels"],
         nrmax              = config["sfincs"]["subgrid"]["nrmax"],

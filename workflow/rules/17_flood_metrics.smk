@@ -21,7 +21,6 @@ rule compute_flood_metrics:
         skeleton_root   = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         hmin          = config["metrics"]["hmin"],
         urban_code      = config["metrics"]["urban_landuse_code"],
-        include_subgrid = config["sfincs"]["subgrid"]["enabled"],
     log:
         "logs/{basin_id}/{scenario}/17_flood_metrics.log"
     script:

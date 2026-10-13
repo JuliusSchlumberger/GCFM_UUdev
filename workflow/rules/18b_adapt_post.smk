@@ -1,4 +1,12 @@
 # post processing rule for adaptation
+# NOT YET TESTED ON A ROTATED GRID (2026-10-09): sfincs.grid.rotated is now
+# true by default, and the post-adaptation rule below has not been run on a rotated model grid yet --
+# only the baseline chain (rules 02-17) was validated, on basin 620947. On a
+# rotated grid the model rasters (dep_subgrid.tif, max_flood_depth.tif,
+# attribution_mask.tif) are rotated GeoTIFFs: check the first run's numbers
+# and figures, or keep a basin axis-aligned with
+# sfincs.grid.rotated_overrides: {<basin_id>: false}. See src/grid.py and
+# CHANGELOG.md 2026-10-09.
 
 rule adapt_metrics_post:
     input:
@@ -27,6 +35,5 @@ rule adapt_metrics_post:
         skeleton_root        = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         hmin                 = config["metrics"]["hmin"],
         urban_code           = config["metrics"]["urban_landuse_code"],
-        include_subgrid      = config["sfincs"]["subgrid"]["enabled"],
     log: "logs/{basin_id}/runs/{scenario}/adaptation/post/{strategy}/18b_adapt_post.log"
     script: "../scripts/18b_adapt_post.py"

@@ -34,6 +34,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import logging
 import sys
 from pathlib import Path
@@ -59,7 +60,11 @@ FIGS_DIR.mkdir(parents=True, exist_ok=True)
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
-RESULTS_DIR = Path(config["results_dir"])
+# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+RESULTS_DIR = Path(os.environ["GCFM_RESULTS_DIR"])
 # Rounds after round 0 -- fixed by 10_depth_estimation_modelled.py's own
 # design (N_ROUNDS_AFTER_0/ROUND_TITLES there).
 N_ROUNDS = 2

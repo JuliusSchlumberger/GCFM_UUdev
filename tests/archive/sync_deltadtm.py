@@ -15,6 +15,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import argparse
 import csv
 import shutil
@@ -23,7 +24,11 @@ from urllib.parse import urlparse
 from urllib.request import urlopen, Request
 
 SOURCE = Path(r"D:\GFM\inputs\DeltaDTM")
-TARGET = Path(r"D:\GCFM_UU\raw_data\DeltaDTM")
+# Machine-specific path, read from the GCFM_RAW_DATA_ROOT environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+TARGET = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "DeltaDTM"
 
 _CHUNK = 1 << 20  # 1 MiB download chunk size
 

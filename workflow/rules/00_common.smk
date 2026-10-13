@@ -1,7 +1,7 @@
 import json
 import os
 
-from src.io import load_catalogue, catalogue_entry,read_geometry, raw_input_path
+from src.io import load_catalogue, catalogue_entry,read_geometry, raw_input_path, local_path
 from src.io import general_path as _gen_path
 from src.river_forcing import derive_forcing_mode
 import geopandas as gpd
@@ -11,21 +11,27 @@ import yaml as _yaml
 
 CATALOGUE = load_catalogue(config["data_catalogue"])
 
-# ── local machine overrides ──────────────────────────────────────────────────
+# ── local machine paths ──────────────────────────────────────────────────────
 # results_dir, the raw-data catalogue root, and the SFINCS executable path
-# are inherently machine-specific -- hand-editing them in config.yml /
-# data_catalogue.yml (both git-tracked, shared files) means every `git pull`
-# either overwrites your own local paths with whoever committed last, or
-# creates a merge conflict. Setting these three environment variables once
-# (see CONTRIBUTING.md "Local machine paths") overrides the committed values
-# without ever touching a tracked file again; unset, the committed defaults
-# below are used as before.
-if os.environ.get("GCFM_RESULTS_DIR"):
-    config["results_dir"] = os.environ["GCFM_RESULTS_DIR"]
-if os.environ.get("GCFM_RAW_DATA_ROOT"):
-    CATALOGUE["meta"]["root"] = os.environ["GCFM_RAW_DATA_ROOT"]
-if os.environ.get("GCFM_SFINCS_EXE"):
-    config["sfincs"]["simulation"]["sfincs_exe"] = os.environ["GCFM_SFINCS_EXE"]
+# are inherently machine-specific, so none of them is committed in config.yml
+# / data_catalogue.yml (both git-tracked, shared files) -- they are read from
+# three environment variables instead. Set them once in PowerShell (see
+# CONTRIBUTING.md "Local machine paths"), then restart your terminal:
+#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+#   [Environment]::SetEnvironmentVariable("GCFM_SFINCS_EXE", "C:\path\to\sfincs.exe", "User")
+# GCFM_RAW_DATA_ROOT is applied inside load_catalogue() itself (above), so
+# scripts that load the catalogue on their own get the same root.
+# Forward slashes: results_path() joins with "/", and a Windows-style value
+# ("D:\results") would give mixed separators that Snakemake does not always
+# match between one rule's output and another rule's input.
+config["results_dir"] = Path(local_path("GCFM_RESULTS_DIR")).as_posix()
+
+def sfincs_exe_path(wildcards=None):
+    """SFINCS executable (GCFM_SFINCS_EXE) -- resolved lazily as a rule param
+    so only the rules that actually run the solver require it; everything up
+    to and including build_sfincs works without a SFINCS binary."""
+    return local_path("GCFM_SFINCS_EXE")
 
 def catalogue_path(name):
     return raw_input_path(CATALOGUE, name)
@@ -62,6 +68,75 @@ RESULTS_DIR = config["results_dir"]
 
 def results_path(pattern):
     return f"{RESULTS_DIR}/{pattern}"
+
+
+# ── SFINCS main-grid resolution ───────────────────────────────────────────────
+# One fixed dx (m) for every basin (sfincs.grid.resolution_m), optionally
+# overridden per basin id (sfincs.grid.resolution_overrides_m) -- e.g. to
+# keep a very large delta within the memory of the machine it is built on.
+# The subgrid pixel size is dx / sfincs.subgrid.nr_subgrid_pixels.
+_GRID_CFG = config["sfincs"]["grid"]
+_GRID_RES_OVERRIDES = {
+    int(_b): _r for _b, _r in (_GRID_CFG.get("resolution_overrides_m") or {}).items()
+}
+for _label, _r in [("resolution_m", _GRID_CFG["resolution_m"])] + [
+    (f"resolution_overrides_m[{_b}]", _r) for _b, _r in _GRID_RES_OVERRIDES.items()
+]:
+    if isinstance(_r, bool) or not isinstance(_r, (int, float)) or not _r > 0:
+        raise ValueError(f"sfincs.grid.{_label} must be a positive number (m), got {_r!r}")
+
+def grid_resolution_m(basin_id):
+    """-> main-grid dx (m) for one basin: its own override, else the default."""
+    return float(_GRID_RES_OVERRIDES.get(int(basin_id), _GRID_CFG["resolution_m"]))
+
+# Grid orientation: axis-aligned, or the minimum rotated rectangle around the
+# delta polygon (sfincs.grid.rotated), optionally per basin
+# (sfincs.grid.rotated_overrides). See src/grid.py.
+_GRID_ROTATED_OVERRIDES = {
+    int(_b): _r for _b, _r in (_GRID_CFG.get("rotated_overrides") or {}).items()
+}
+for _label, _r in [("rotated", _GRID_CFG.get("rotated", False))] + [
+    (f"rotated_overrides[{_b}]", _r) for _b, _r in _GRID_ROTATED_OVERRIDES.items()
+]:
+    if not isinstance(_r, bool):
+        raise ValueError(f"sfincs.grid.{_label} must be true or false, got {_r!r}")
+
+def grid_rotated(basin_id):
+    """-> whether one basin's grid is rotated: its own override, else the default."""
+    return bool(_GRID_ROTATED_OVERRIDES.get(int(basin_id), _GRID_CFG.get("rotated", False)))
+
+
+# ── storm-tide event window ───────────────────────────────────────────────────
+# Half-length (h) of the storm-tide event around its peak
+# (boundary_forcings.surge.hydrograph.window_hr): the length of the surge
+# shapes (rule storm_tide_hydrographs) and of the event the boundary carries
+# (rule get_boundary_forcings). One default, optionally overridden per basin
+# id (window_overrides_hr) -- surges last hours on some coasts and days on
+# others.
+_HG_CFG = config["boundary_forcings"]["surge"]["hydrograph"]
+_HG_WINDOW_OVERRIDES = {
+    int(_b): _w for _b, _w in (_HG_CFG.get("window_overrides_hr") or {}).items()
+}
+for _label, _w in [("window_hr", _HG_CFG["window_hr"])] + [
+    (f"window_overrides_hr[{_b}]", _w) for _b, _w in _HG_WINDOW_OVERRIDES.items()
+]:
+    if isinstance(_w, bool) or not isinstance(_w, (int, float)) or not _w > 0:
+        raise ValueError(
+            f"boundary_forcings.surge.hydrograph.{_label} must be a positive number (h), got {_w!r}"
+        )
+    # The surge and river peaks sit at lead_days * 24 + window: off the
+    # forcing time step, neither peak would be sampled and both would be
+    # clipped below their design values.
+    _dt = float(config["boundary_forcings"]["dt_hr"])
+    if abs(_w / _dt - round(_w / _dt)) > 1e-9:
+        raise ValueError(
+            f"boundary_forcings.surge.hydrograph.{_label} = {_w!r} h must be a multiple of "
+            f"boundary_forcings.dt_hr ({_dt:g} h), or the event peak falls between forcing time steps"
+        )
+
+def hydrograph_window_hr(basin_id):
+    """-> storm-tide event half-window (h) for one basin: its own override, else the default."""
+    return float(_HG_WINDOW_OVERRIDES.get(int(basin_id), _HG_CFG["window_hr"]))
 
 
 # ── scenario axis ─────────────────────────────────────────────────────────────
@@ -185,7 +260,9 @@ RST_FNAME   = f"sfincs.{_spinup_end.strftime('%Y%m%d.%H%M%S')}.rst"
 with open(config["adaptation"]["strategies_file"]) as _f:
     STRATEGY_DEFS_RAW = _yaml.safe_load(_f) or {}
 
-ADAPT_CATALOGUE_ROOT = STRATEGY_DEFS_RAW.get("meta", {}).get("root", ".")
+# Strategy measure files live under the same raw-data root as the catalogue
+# (GCFM_RAW_DATA_ROOT) -- adaptation_strategies.yml carries no root of its own.
+ADAPT_CATALOGUE_ROOT = CATALOGUE["meta"]["root"]
 STRATEGY_DEFS = {k: v for k, v in STRATEGY_DEFS_RAW.items() if k != "meta"}
 if not STRATEGY_DEFS:
     raise ValueError(f"{config['adaptation']['strategies_file']} defines no strategies (besides 'meta')")
@@ -199,7 +276,7 @@ with open(config["adaptation"]["measures_file"]) as _f:
 
 def adaptation_input_path(rel):
     """Resolve a strategy measure's locations/dep_subgrid string param
-    against adaptation_strategies.yml's own meta.root."""
+    against the raw-data root (GCFM_RAW_DATA_ROOT)."""
     return str(Path(ADAPT_CATALOGUE_ROOT) / rel)
 
 def strategy_measure_input_paths(strategy):

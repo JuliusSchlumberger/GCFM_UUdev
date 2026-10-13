@@ -9,18 +9,22 @@ rule get_elevation:
 
     Pipeline inside 05a_get_elevation.py:
       1. Merge FathomDEM tiles.
-      1b. Clip FathomDEM to ocean=NaN using the DeltaDTM validity mask
-          (src.raster.clip_ocean_from_topo) — FathomDEM is terrestrial and
-          reports spurious shallow "elevation" over open water instead of
+      1b. Clip FathomDEM to NaN on sea cells (land use 200, the
+          pipeline's one sea/land criterion) — FathomDEM is terrestrial and
+          reports spurious shallow "elevation" over water instead of
           nodata; this lets step 4's merge fall back to GEBCO there.
       2. DEM EGM2008 → GOCO06s (mandatory).
       3. Clip GEBCO to domain UTM grid; re-reference MSL -> GOCO06s by
          adding the MDT (mandatory; H_GOCO06s = H_MSL + MDT).
-      3b. Clamp GEBCO depths to terrain.gebco_max_depth_m below sea level --
-          mitigates SFINCS's CFL-driven time step shrinking in genuinely
-          deep offshore water it isn't modelling open-ocean dynamics for.
-      4. Hard merge: FathomDEM wherever valid, GEBCO everywhere else (no
-         land-polygon mask, no gradient blend).
+      3b. Clamp GEBCO between terrain.gebco_max_depth_m (SFINCS's CFL-driven
+          time step shrinks in genuinely deep offshore water it isn't
+          modelling open-ocean dynamics for) and, on sea cells,
+          terrain.gebco_min_depth_m (too-shallow coastal artefacts; the
+          depth of creeks and estuaries GEBCO cannot resolve) below local
+          mean sea level.
+      4. Merge: FathomDEM wherever valid, GEBCO everywhere else, with a
+         linear blend from FathomDEM to GEBCO over terrain.coast_blend_m
+         seaward of the coastline (open water only, not narrow creeks).
       5. Write elevation_merged.tif.
       6. Diagnostic elevation + datum-correction maps.
 
@@ -34,7 +38,10 @@ rule get_elevation:
         domain_gpkg             = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         global_topography_tiles = catalogue_path("fathomdem"),
         global_bathymetry       = catalogue_path("coastal_bathymetry"),
-        deltadtm_mask           = catalogue_path("deltadtm_mask"),
+        # Sea/land: the pipeline's own land-use classification (rule
+        # prepare_landuse, 02b; 200 = sea) -- the same criterion zsini, the
+        # weir tracing and the water-level boundary use.
+        landuse_source          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"),
         land_polygons           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
         # Datum-correction inputs (mandatory — FathomDEM's native EGM2008 datum
         # must not be blended with GEBCO/COAST-RP/MDT, which share GOCO06s).
@@ -47,6 +54,8 @@ rule get_elevation:
     params:
         mdt_load_margin_deg = config["datum_correction"]["mdt_load_margin_deg"],
         gebco_max_depth_m   = config["terrain"]["gebco_max_depth_m"],
+        gebco_min_depth_m   = config["terrain"]["gebco_min_depth_m"],
+        coast_blend_m       = config["terrain"]["coast_blend_m"],
     log:
         "logs/{basin_id}/05a_elevation.log"
     script:

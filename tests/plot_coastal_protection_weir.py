@@ -1,7 +1,7 @@
 """
 plot_coastal_protection_weir.py — Read an already-produced
 {basin_id}_coastal_protection_weir.gpkg (rule modelled_depth_estimation's
-own output, river_processing.depth_method == "modelled" only) for one
+own output) for one
 basin and plot it: a full-domain overview plus one zoomed inset per seed
 reach (is_seed=True, from river_network_clean.gpkg), so a seed's own weir
 closure can actually be inspected up close -- e.g. to check whether
@@ -15,6 +15,7 @@ Usage:
     python tests/plot_coastal_protection_weir.py <basin_id>
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -30,15 +31,18 @@ basin_id = sys.argv[1]
 
 with open(REPO_ROOT / "config" / "config.yml") as f:
     config = yaml.safe_load(f)
-results_dir = Path(config["results_dir"])
+# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+results_dir = Path(os.environ["GCFM_RESULTS_DIR"])
 domain_dir = results_dir / str(basin_id) / "preprocessing_inputs" / "domain"
 
 weir_path = domain_dir / f"{basin_id}_coastal_protection_weir.gpkg"
 if not weir_path.exists():
     raise FileNotFoundError(
-        f"{weir_path} not found -- only produced by rule modelled_depth_estimation "
-        "(river_processing.depth_method == 'modelled'). Run that rule for this "
-        "basin_id first."
+        f"{weir_path} not found -- produced by rule modelled_depth_estimation. "
+        "Run that rule for this basin_id first."
     )
 
 weir_gdf = gpd.read_file(weir_path)

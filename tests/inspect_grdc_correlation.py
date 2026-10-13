@@ -17,6 +17,7 @@ Usage:
     python tests/inspect_grdc_correlation.py 4267691 ...  # only these basins
 """
 
+import os
 import logging
 import sys
 from pathlib import Path
@@ -39,7 +40,11 @@ from src.river_forcing import (
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-GRDC_PATH = Path("D:/GCFM_UU/raw_data/GRDC/GRDC-Daily.nc")
+# Machine-specific path, read from the GCFM_RAW_DATA_ROOT environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+GRDC_PATH = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "GRDC/GRDC-Daily.nc"
 
 with open(REPO_ROOT / "config" / "config.yml") as f:
     config = yaml.safe_load(f)
@@ -49,7 +54,11 @@ glofas_variable = (
 )
 grdc_radius_m = float(river_cfg["bias_correction"]["grdc_search_radius_km"]) * 1000.0
 min_overlap_days = int(river_cfg["bias_correction"]["min_overlap_days"])
-results_dir_root = Path(config["results_dir"])
+# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+results_dir_root = Path(os.environ["GCFM_RESULTS_DIR"])
 
 catalogue = load_catalogue(REPO_ROOT / "config" / "data_catalogue.yml")
 delta_attr = catalogue_entry(catalogue, "delta_polygons")["attributes"][0]["name"]

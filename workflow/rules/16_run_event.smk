@@ -34,10 +34,9 @@ rule run_event:
         # this scenario's own model only references it via a relative path
         # in its own sfincs.inp (see 13_build_sfincs.py).
         skeleton_root              = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
-        sfincs_exe                 = config["sfincs"]["simulation"]["sfincs_exe"],
+        sfincs_exe                 = sfincs_exe_path,
         timeout_s                  = config["sfincs"]["simulation"]["timeout_s"],
         min_inundation_depth_m     = config["sfincs"]["sanity_checks"]["min_inundation_depth_m"],
-        include_subgrid            = config["sfincs"]["subgrid"]["enabled"],
         animation_fps              = config["sfincs"]["sanity_checks"]["animation_fps"],
     # Claims the whole --cores budget -- see rule run_spinup's (14) threads
     # comment for the full rationale (SFINCS itself can multi-thread, but

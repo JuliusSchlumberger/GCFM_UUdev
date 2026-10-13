@@ -39,7 +39,7 @@ out_folder.mkdir(parents=True, exist_ok=True)
 
 da_hmax_spinup, _ = compute_max_inundation(
     spin_up_root, skeleton_root, snakemake.input.sea_mask,
-    hmin=threshold, include_subgrid=bool(snakemake.params.include_subgrid),
+    hmin=threshold,
 )
 if da_hmax_spinup is None:
     raise RuntimeError(

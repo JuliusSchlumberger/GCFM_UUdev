@@ -35,7 +35,6 @@ baseline_sfincs_root = Path(snakemake.params.baseline_sfincs_root)
 skeleton_root        = Path(snakemake.params.skeleton_root)
 hmin                 = float(snakemake.params.hmin)
 urban_code           = int(snakemake.params.urban_code)
-include_subgrid      = snakemake.params.include_subgrid
 
 # snakemake.input.baseline_sfincs_map_nc / .attribution_mask_tif / .measure_data
 # are Snakemake-only dependency tracking -- read implicitly by
@@ -92,7 +91,6 @@ _, da_dep = compute_max_inundation(
     skeleton_root,
     snakemake.input.sea_mask,
     hmin=hmin,
-    include_subgrid=include_subgrid,
 )
 if da_dep is None:
     raise RuntimeError("bed level unavailable — did the baseline event run (rule 16) finish?")

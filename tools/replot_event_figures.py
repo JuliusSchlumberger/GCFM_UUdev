@@ -22,6 +22,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import logging
 import sys
 from pathlib import Path
@@ -44,7 +45,11 @@ for _name in ("hydromt", "hydromt_sfincs"):
 
 
 def replot(basin_id: str, scenario: str, config: dict) -> None:
-    results = Path(config["results_dir"]) / basin_id
+    # Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
+    # Set it once in PowerShell, then restart your terminal (see
+    # CONTRIBUTING.md "Local machine paths"):
+    #   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+    results = Path(os.environ["GCFM_RESULTS_DIR"]) / basin_id
     domain = results / "preprocessing_inputs" / "domain"
     sfincs_root = results / "runs" / scenario / "sfincs"
     skeleton_root = results / "sfincs_skeleton"
@@ -61,7 +66,6 @@ def replot(basin_id: str, scenario: str, config: dict) -> None:
         return
 
     hmin = float(config["sfincs"]["sanity_checks"]["min_inundation_depth_m"])
-    include_subgrid = bool(config["sfincs"]["subgrid"]["enabled"])
     fps = int(config["sfincs"]["sanity_checks"]["animation_fps"])
 
     # Same domain polygon handling as 16_run_event.py.
@@ -79,7 +83,6 @@ def replot(basin_id: str, scenario: str, config: dict) -> None:
         skeleton_root,
         sea_mask_path,
         hmin=hmin,
-        include_subgrid=include_subgrid,
     )
     if da_hmax is None or da_dep is None:
         log.warning(

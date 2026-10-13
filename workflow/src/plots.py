@@ -39,7 +39,6 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from shapely.geometry import Polygon
 
-from src.geometry import pick_utm_crs
 
 matplotlib.use("Agg")
 
@@ -129,6 +128,42 @@ _LC_COLORS: dict[int, str] = {
 # ── shared helpers ────────────────────────────────────────────────────────────
 
 
+def raster_envelope(transform, shape) -> tuple[float, float, float, float]:
+    """(left, bottom, right, top) of a raster's footprint for ANY affine
+    transform -- rotated, south-up or north-up -- from its four corners.
+    """
+    rows, cols = shape
+    xs, ys = zip(*(transform * c for c in [(0, 0), (cols, 0), (cols, rows), (0, rows)]))
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def imshow_on_grid(ax, data: np.ndarray, transform, **kwargs):
+    """
+    ``ax.imshow`` of a raster in its own CRS, at its true position for ANY
+    affine transform. The model grid is south-up and may be rotated
+    (sfincs.grid.rotated), which a plain ``imshow(extent=...)`` cannot show:
+    it always draws an upright, axis-aligned rectangle. Here the image is
+    laid out in pixel space and the raster's own affine transform is handed
+    to matplotlib, so vector overlays in the same CRS line up with it. The
+    axes limits are set to the raster's footprint.
+    """
+    from matplotlib.transforms import Affine2D
+
+    rows, cols = data.shape[:2]
+    kwargs.setdefault("interpolation", "nearest")
+    im = ax.imshow(data, extent=(0, cols, rows, 0), origin="upper", **kwargs)
+    im.set_transform(
+        Affine2D.from_values(
+            transform.a, transform.d, transform.b, transform.e, transform.c, transform.f
+        )
+        + ax.transData
+    )
+    left, bottom, right, top = raster_envelope(transform, (rows, cols))
+    ax.set_xlim(left, right)
+    ax.set_ylim(bottom, top)
+    return im
+
+
 def _to_wgs84_grid(
     data: np.ndarray,
     transform,
@@ -159,7 +194,7 @@ def _to_wgs84_grid(
     from rasterio.transform import array_bounds, from_bounds as rio_from_bounds
 
     h, w = data.shape
-    src_bounds = array_bounds(h, w, transform)
+    src_bounds = raster_envelope(transform, (h, w))
     # Always derive pixel count from calculate_default_transform so the output
     # resolution is appropriate for the source data.
     default_transform, dst_w, dst_h = calculate_default_transform(
@@ -957,9 +992,10 @@ def plot_forcing_timeseries(
     protection level (see src.surge.build_design_surge_matrix's own
     docstring: a weir is a real, SFINCS-modelled barrier, subtracting a
     scalar from the boundary is not). The river (right) panel shows three
-    layers per crossing instead of one when river_processing.
-    modify_hydrograph is enabled (river_ds then carries
-    'discharge_uncorrected'/'protection_discharge'): the original
+    layers per crossing instead of one when river_ds carries
+    'discharge_uncorrected'/'protection_discharge' (rule 07 no longer
+    writes them since the discharge-side protection correction was removed,
+    2026-10-08b): the original
     (undefended) hydrograph, the constant protection discharge netted out,
     and the resulting effective (modelled) hydrograph -- so the size of
     that correction is visible directly, not just its end result. Falls
@@ -1430,7 +1466,7 @@ def plot_clean_network_discharge(
     _save(fig, output_path)
 
 
-# ── rule 10 plots (empirical_depth_estimation, modelled_depth_estimation) ──
+# ── rule 10 plots (modelled_depth_estimation) ──────────────────────────────
 
 
 def plot_river_depth(
@@ -1477,401 +1513,6 @@ def plot_river_depth(
     ax.set_title("River network — hydraulic depth")
     ax.grid(True, alpha=0.3, linewidth=0.5)
     _save(fig, output_path)
-
-
-def plot_hydraulic_relations(
-    rivers_wgs: gpd.GeoDataFrame,
-    output_path: str,
-) -> None:
-    """
-    Two log-log scatter plots of channel width vs hydraulic depth.
-
-    Left panel:  coloured by accumulated discharge (log₁₀, plasma colormap).
-    Right panel: coloured by distance from outlet (dist_out, viridis colormap).
-                 Omitted if 'dist_out' is not present in the GeoDataFrame.
-    """
-    cols = ["width", "bankfull_discharge_acc", "rivdph"]
-    has_dist = "dist_out" in rivers_wgs.columns
-    if has_dist:
-        cols.append("dist_out")
-
-    df = (
-        rivers_wgs[cols]
-        .copy()
-        .dropna(subset=["width", "bankfull_discharge_acc", "rivdph"])
-    )
-    df = df[(df["width"] > 0) & (df["bankfull_discharge_acc"] > 0) & (df["rivdph"] > 0)]
-
-    n_panels = 2 if has_dist else 1
-    fig, axes = plt.subplots(1, n_panels, figsize=(7 * n_panels, 5))
-    if n_panels == 1:
-        axes = [axes]
-
-    def _log_scatter(ax, color_col, cmap, cbar_label, title):
-        if df.empty:
-            ax.text(
-                0.5,
-                0.5,
-                "No data",
-                ha="center",
-                va="center",
-                transform=ax.transAxes,
-                color="grey",
-            )
-            ax.set_title(title + " — no data")
-            return
-        c_vals = df[color_col] if color_col == "dist_out" else np.log10(df[color_col])
-        sc = ax.scatter(
-            df["width"],
-            df["rivdph"],
-            c=c_vals,
-            cmap=cmap,
-            alpha=0.5,
-            s=7,
-            rasterized=True,
-        )
-        fig.colorbar(sc, ax=ax, label=cbar_label, shrink=0.85)
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        ax.set_xlabel("Channel width (m)")
-        ax.set_ylabel("Hydraulic depth (m)")
-        ax.set_title(f"{title}  ({len(df)} reaches)")
-        ax.grid(True, which="both", alpha=0.3, linewidth=0.5)
-
-    _log_scatter(
-        axes[0],
-        "bankfull_discharge_acc",
-        "plasma",
-        "log₁₀ discharge (m³ s⁻¹)",
-        "Width vs depth — coloured by discharge",
-    )
-    if has_dist:
-        _log_scatter(
-            axes[1],
-            "dist_out",
-            "viridis_r",
-            "Distance from outlet (m)",
-            "Width vs depth — coloured by dist_out",
-        )
-
-    fig.tight_layout()
-    _save(fig, output_path)
-
-
-def plot_hydraulic_relations_with_estuarine(
-    rivers_wgs: gpd.GeoDataFrame,
-    output_path: str,
-    L_e_m: float | None = None,
-) -> None:
-    """
-    Two-panel hydraulic-relations plot that distinguishes depth-calculation origin.
-
-    Left panel (log-log scatter, width vs depth):
-        - Blue circles  — power-law only (rivdph_estuarine=False or no estuarine data)
-        - Orange triangles — fully estuarine (Leuven 2018, blend_alpha=0)
-        - Green squares — blend zone (linear mix, coloured by blend_alpha)
-
-    Right panel (correlation, power-law depth vs final depth):
-        Scatter for all estuarine/blend reaches showing rivdph_powerlaw (x)
-        against the final rivdph (y), coloured by rivdph_blend_alpha
-        (0=orange/estuarine, 1=blue/fluvial-end of blend). A 1:1 reference
-        line is drawn. Only plotted when estuarine data are present.
-
-    Falls back gracefully to the original two-panel discharge/dist_out layout
-    when no estuarine columns are present (i.e. estuarine_depth.enabled=false),
-    so the same function can serve both enabled and disabled modes.
-
-    Args:
-        rivers_wgs:  GeoDataFrame in EPSG:4326 from river_network_depth_estimated.gpkg.
-        output_path: Destination PNG path.
-        L_e_m:       Estuary length in metres (optional; if supplied, written as
-                     an annotation in the correlation panel -- the tidal zone
-                     dist_out <= L_e is where estuarine depths apply).
-    """
-
-    has_estuarine_cols = all(
-        c in rivers_wgs.columns
-        for c in ("rivdph_estuarine", "rivdph_powerlaw", "rivdph_blend_alpha")
-    )
-    estuarine_applied = has_estuarine_cols and rivers_wgs["rivdph_estuarine"].any()
-
-    if not estuarine_applied:
-        # Fallback: reproduce the original two-panel layout
-        plot_hydraulic_relations(rivers_wgs=rivers_wgs, output_path=output_path)
-        return
-
-    cols_needed = [
-        "width",
-        "rivdph",
-        "rivdph_powerlaw",
-        "rivdph_estuarine",
-        "rivdph_blend_alpha",
-    ]
-    df = rivers_wgs[cols_needed].copy().dropna(subset=["width", "rivdph"])
-    df = df[(df["width"] > 0) & (df["rivdph"] > 0)]
-
-    is_fluvial = ~df["rivdph_estuarine"].astype(bool)
-    is_estuarine = df["rivdph_estuarine"].astype(bool) & (
-        df["rivdph_blend_alpha"].fillna(0) == 0
-    )
-    is_blend = df["rivdph_estuarine"].astype(bool) & (
-        df["rivdph_blend_alpha"].fillna(0) > 0
-    )
-
-    fig, (ax_width, ax_corr) = plt.subplots(1, 2, figsize=(14, 5))
-
-    # ── left: width vs depth ─────────────────────────────────────────────
-    kw = dict(s=18, linewidths=0.3, edgecolors="k")
-
-    if is_fluvial.any():
-        ax_width.scatter(
-            df.loc[is_fluvial, "width"],
-            df.loc[is_fluvial, "rivdph"],
-            marker="o",
-            color="steelblue",
-            alpha=0.55,
-            label="Power-law",
-            **kw,
-        )
-    if is_estuarine.any():
-        ax_width.scatter(
-            df.loc[is_estuarine, "width"],
-            df.loc[is_estuarine, "rivdph"],
-            marker="^",
-            color="darkorange",
-            alpha=0.65,
-            label="Estuarine (Leuven 2018)",
-            **kw,
-        )
-    if is_blend.any():
-        sc = ax_width.scatter(
-            df.loc[is_blend, "width"],
-            df.loc[is_blend, "rivdph"],
-            marker="s",
-            c=df.loc[is_blend, "rivdph_blend_alpha"],
-            cmap="RdYlBu",
-            vmin=0,
-            vmax=1,
-            alpha=0.75,
-            label="Blend zone",
-            **kw,
-        )
-        cb = fig.colorbar(sc, ax=ax_width, shrink=0.8)
-        cb.set_label("Blend α  (0=estuarine, 1=fluvial)", fontsize=8)
-
-    ax_width.set_xscale("log")
-    ax_width.set_yscale("log")
-    ax_width.set_xlabel("Channel width (m)")
-    ax_width.set_ylabel("Hydraulic depth (m)")
-    ax_width.set_title(f"Width vs depth by depth-model origin  ({len(df)} reaches)")
-    ax_width.legend(fontsize=8, framealpha=0.9)
-    ax_width.grid(True, which="both", alpha=0.3, linewidth=0.5)
-
-    # ── right: correlation power-law vs final depth ──────────────────────
-    df_est = df[df["rivdph_estuarine"].astype(bool)].dropna(subset=["rivdph_powerlaw"])
-    df_est = df_est[df_est["rivdph_powerlaw"] > 0]
-
-    if df_est.empty:
-        ax_corr.text(
-            0.5,
-            0.5,
-            "No estuarine reaches",
-            ha="center",
-            va="center",
-            transform=ax_corr.transAxes,
-            color="grey",
-        )
-    else:
-        sc2 = ax_corr.scatter(
-            df_est["rivdph_powerlaw"],
-            df_est["rivdph"],
-            c=df_est["rivdph_blend_alpha"].fillna(0),
-            cmap="RdYlBu",
-            vmin=0,
-            vmax=1,
-            s=22,
-            alpha=0.7,
-            linewidths=0.3,
-            edgecolors="k",
-        )
-        cb2 = fig.colorbar(sc2, ax=ax_corr, shrink=0.8)
-        cb2.set_label("Blend α  (0=estuarine, 1=fluvial)", fontsize=8)
-
-        lims = [
-            min(df_est["rivdph_powerlaw"].min(), df_est["rivdph"].min()) * 0.8,
-            max(df_est["rivdph_powerlaw"].max(), df_est["rivdph"].max()) * 1.2,
-        ]
-        ax_corr.plot(lims, lims, "k--", linewidth=0.8, label="1 : 1")
-        ax_corr.set_xlim(lims)
-        ax_corr.set_ylim(lims)
-        ax_corr.set_xscale("log")
-        ax_corr.set_yscale("log")
-        ax_corr.set_xlabel("Power-law depth (m)")
-        ax_corr.set_ylabel("Final depth — estuarine / blend (m)")
-        ax_corr.set_title(f"Power-law vs estuarine depth  ({len(df_est)} reaches)")
-        ax_corr.legend(fontsize=8, framealpha=0.9, loc="upper left")
-        ax_corr.grid(True, which="both", alpha=0.3, linewidth=0.5)
-
-    if L_e_m is not None and np.isfinite(L_e_m):
-        ax_corr.text(
-            0.98,
-            0.02,
-            f"Estuary length L_e = {L_e_m / 1000:.1f} km\n(tidal zone: dist_out ≤ L_e)",
-            ha="right",
-            va="bottom",
-            fontsize=8,
-            transform=ax_corr.transAxes,
-            bbox=dict(
-                boxstyle="round,pad=0.3", facecolor="white", edgecolor="grey", alpha=0.9
-            ),
-        )
-
-    fig.tight_layout()
-    _save(fig, output_path)
-
-
-def plot_river_network_width_discharge(
-    rivers_wgs: gpd.GeoDataFrame,
-    bbox_poly: Polygon,
-    land_polygons_path: str,
-    output_path: str,
-    seed_reach_ids: set[str] | None = None,
-) -> None:
-    """
-    River network map with line thickness proportional to channel width (four
-    quartile bins).  Reaches are coloured by hydraulic depth.  Boundary entry
-    reaches are shown as circle markers whose area scales with discharge.
-    """
-    lon_min, lat_min, lon_max, lat_max = bbox_poly.bounds
-    margin = max(lon_max - lon_min, lat_max - lat_min) * 0.3
-    map_bounds = (
-        lon_min - margin,
-        lat_min - margin,
-        lon_max + margin,
-        lat_max + margin,
-    )
-
-    land = gpd.read_file(land_polygons_path, bbox=map_bounds)
-
-    # Shared depth colormap across all width bins
-    depth_col = "rivdph"
-    vmin = float(rivers_wgs[depth_col].min())
-    vmax = float(rivers_wgs[depth_col].max())
-    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-    cmap = plt.get_cmap("Blues")
-
-    # Width quartile bins → linewidth mapping
-    w = rivers_wgs["width"].fillna(1.0)
-    q25, q50, q75 = (
-        float(w.quantile(0.25)),
-        float(w.quantile(0.5)),
-        float(w.quantile(0.75)),
-    )
-    lw_bins = [
-        (rivers_wgs[w <= q25], 0.4, f"≤ {q25:.0f} m"),
-        (rivers_wgs[(w > q25) & (w <= q50)], 0.9, f"{q25:.0f}–{q50:.0f} m"),
-        (rivers_wgs[(w > q50) & (w <= q75)], 1.7, f"{q50:.0f}–{q75:.0f} m"),
-        (rivers_wgs[w > q75], 2.8, f"> {q75:.0f} m"),
-    ]
-
-    fig, ax = plt.subplots(figsize=(9, 7))
-    if not land.empty:
-        land.plot(ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
-
-    for gdf_bin, lw, _ in lw_bins:
-        if not gdf_bin.empty:
-            gdf_bin.plot(
-                ax=ax,
-                column=depth_col,
-                cmap=cmap,
-                norm=norm,
-                linewidth=lw,
-                zorder=3,
-                legend=False,
-            )
-
-    # Manual depth colorbar
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    fig.colorbar(sm, ax=ax, shrink=0.55, pad=0.02, label="Hydraulic depth (m)")
-
-    # Width legend (placed first so marker legend can be appended via ax.legend())
-    width_handles = [
-        Line2D([0], [0], color="steelblue", linewidth=lw, label=label)
-        for _, lw, label in lw_bins
-    ]
-    ax.add_artist(
-        ax.legend(
-            handles=width_handles,
-            title="Channel width",
-            loc="lower left",
-            framealpha=0.9,
-            fontsize=8,
-        )
-    )
-
-    # Boundary entry markers — circle area proportional to discharge
-    if seed_reach_ids is not None and "bankfull_discharge_acc" in rivers_wgs.columns:
-        seed_gdf = rivers_wgs[
-            rivers_wgs["reach_id"].astype(str).isin(seed_reach_ids)
-        ].copy()
-        if not seed_gdf.empty:
-            # Centroids must be computed in a projected CRS, then reprojected
-            # back to WGS84 for plotting on `rivers_wgs` axes — geopandas warns
-            # that geographic-CRS centroids are inaccurate.
-            pts = seed_gdf.geometry.to_crs(pick_utm_crs(seed_gdf)).centroid.to_crs(
-                "EPSG:4326"
-            )
-            q_vals = seed_gdf["bankfull_discharge_acc"].fillna(0).to_numpy(dtype=float)
-            q_max = float(q_vals.max()) if q_vals.max() > 0 else 1.0
-            marker_sizes = 30 + 250 * (q_vals / q_max)
-            ax.scatter(
-                pts.x,
-                pts.y,
-                s=marker_sizes,
-                c="darkorange",
-                zorder=9,
-                alpha=0.85,
-                edgecolors="white",
-                linewidths=0.5,
-            )
-            # Size-scaled legend entries
-            for frac in [0.2, 0.6, 1.0]:
-                ax.scatter(
-                    [],
-                    [],
-                    s=30 + 250 * frac,
-                    c="darkorange",
-                    alpha=0.85,
-                    edgecolors="white",
-                    linewidths=0.5,
-                    label=f"Q = {frac * q_max:.0f} m³/s",
-                )
-
-    # Discharge marker legend (only when seed markers were drawn)
-    handles, _ = ax.get_legend_handles_labels()
-    if handles:
-        ax.legend(
-            handles=handles,
-            title="Entry discharge",
-            loc="lower right",
-            framealpha=0.9,
-            fontsize=8,
-        )
-
-    bx, by = bbox_poly.exterior.xy
-    ax.plot(bx, by, color="black", linewidth=1.5, zorder=5)
-    ax.set_xlim(map_bounds[0], map_bounds[2])
-    ax.set_ylim(map_bounds[1], map_bounds[3])
-    ax.set_aspect("equal")
-    ax.set_xlabel("Longitude (°)")
-    ax.set_ylabel("Latitude (°)")
-    ax.set_title("River network — width (line thickness) & discharge (markers)")
-    ax.grid(True, alpha=0.3, linewidth=0.5)
-    _save(fig, output_path)
-
-
-# ── output analysis plots (postprocessing of scenario runs) ──────────────────
 
 
 def _overlay_layers(
@@ -1979,8 +1620,7 @@ def plot_coastal_protection_weir(
                             given, the weir line is colour-coded by its own
                             per-segment crest elevation instead of drawn as a
                             single flat colour, so a smoothed/varying crest
-                            (river_processing.depth_method == "modelled") is
-                            actually visible. Falls back to a flat black line
+                            is actually visible. Falls back to a flat black line
                             (diagnostics['weir_lines']) when omitted or empty.
     """
     if not diagnostics.get("applicable", True):
@@ -1996,11 +1636,7 @@ def plot_coastal_protection_weir(
     crest_elevation_m = diagnostics["crest_elevation_m"]
 
     transform = grid.transform
-    nrows, ncols = grid.shape
-    x0, y0 = transform * (0, 0)
-    x1, y1 = transform * (ncols, nrows)
-    bounds = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
-    origin = "lower" if transform.e > 0 else "upper"
+    bounds = raster_envelope(transform, grid.shape)
 
     land, rivers, domain_gdf = _overlay_layers(
         grid.crs, bounds, domain_poly, land_polygons_path, river_network_path
@@ -2009,22 +1645,21 @@ def plot_coastal_protection_weir(
     fig, ax = plt.subplots(figsize=(10, 10))
     _draw_overlays(ax, land, rivers, domain_gdf, zorder=0)
 
-    extent = (bounds[0], bounds[2], bounds[1], bounds[3])
     ocean_plot = np.where(ocean_mask, 1.0, np.nan)
-    ax.imshow(
+    imshow_on_grid(
+        ax,
         ocean_plot,
-        extent=extent,
-        origin=origin,
+        transform,
         cmap=mcolors.ListedColormap(["steelblue"]),
         vmin=0,
         vmax=1,
         zorder=1,
     )
     channel_plot = np.where(channel_mask & ~ocean_mask, 1.0, np.nan)
-    ax.imshow(
+    imshow_on_grid(
+        ax,
         channel_plot,
-        extent=extent,
-        origin=origin,
+        transform,
         cmap=mcolors.ListedColormap(["cornflowerblue"]),
         vmin=0,
         vmax=1,
@@ -2107,29 +1742,78 @@ def reproject_max_for_plot(
     or reprojected) and is used only to estimate the "natural" 1:1 output
     resolution, which is then coarsened (if needed) to hit the max_px budget.
 
-    Non-spatial dimensions (e.g. ``time``) are reprojected slice-by-slice by
-    rioxarray automatically and need no special handling here.
+    The source georeferencing is taken from hydromt's ``.raster`` accessor
+    and the warp is done with ``rasterio.warp.reproject`` directly:
+    rioxarray's own ``rio.bounds()`` / ``rio.reproject`` assume an
+    axis-aligned raster and crop (or raise on) a ROTATED one, which is what
+    a run on a rotated model grid (sfincs.grid.rotated) produces.
+
+    Returns a north-up DataArray with 1-D ``x``/``y`` pixel-centre
+    coordinates (``y`` descending); non-spatial dimensions (e.g. ``time``)
+    are kept and reprojected slice by slice.
     """
-    dst_transform, dst_width, dst_height = calculate_default_transform(
-        da.rio.crs, dst_crs, da.rio.width, da.rio.height, *da.rio.bounds()
+    import hydromt  # noqa: F401 -- registers the .raster accessor
+    from affine import Affine
+    from rasterio.warp import reproject as rio_reproject
+
+    y_dim, x_dim = da.raster.y_dim, da.raster.x_dim
+    extra_dims = [d for d in da.dims if d not in (y_dim, x_dim)]
+    da = da.transpose(*extra_dims, y_dim, x_dim)
+    src_transform, src_crs = da.raster.transform, da.raster.crs
+    height, width = da.sizes[y_dim], da.sizes[x_dim]
+
+    natural_transform, natural_width, natural_height = calculate_default_transform(
+        src_crs,
+        dst_crs,
+        width,
+        height,
+        *raster_envelope(src_transform, (height, width)),
     )
-    total_px = dst_width * dst_height
+    total_px = natural_width * natural_height
     factor = math.sqrt(total_px / max_px) if total_px > max_px else 1.0
-    # dst_transform.a = the "natural" (1:1) pixel size in dst_crs units that
-    # calculate_default_transform picked; scale it up by `factor` to hit the
-    # max_px budget.
-    target_res = dst_transform.a * factor
-    result = da.rio.reproject(dst_crs, resolution=target_res, resampling=resampling)
+    # natural_transform.a = the "natural" (1:1) pixel size in dst_crs units
+    # that calculate_default_transform picked; scale it up by `factor` to hit
+    # the max_px budget.
+    target_res = natural_transform.a * factor
+    left, top = natural_transform.c, natural_transform.f
+    dst_width = max(1, math.ceil(natural_width * natural_transform.a / target_res))
+    dst_height = max(
+        1, math.ceil(natural_height * abs(natural_transform.e) / target_res)
+    )
+    dst_transform = Affine(target_res, 0.0, left, 0.0, -target_res, top)
+
+    src = np.asarray(da.values, dtype=np.float32)
+    flat = src.reshape((-1, height, width))
+    out = np.full((flat.shape[0], dst_height, dst_width), np.nan, dtype=np.float32)
+    for i in range(flat.shape[0]):
+        rio_reproject(
+            source=flat[i],
+            destination=out[i],
+            src_transform=src_transform,
+            src_crs=src_crs,
+            src_nodata=np.nan,
+            dst_transform=dst_transform,
+            dst_crs=dst_crs,
+            dst_nodata=np.nan,
+            resampling=resampling,
+        )
     # A NaN-nodata source warped with Resampling.max can leave stray +/-inf
     # behind: the max-reduction's identity element for a destination pixel
     # whose only contributing source pixels were themselves NaN never gets
     # replaced back with nodata, which can silently poison any min/max or
     # percentile computed downstream without ever showing up as NaN.
-    # rio.reproject does not reliably carry "spatial_ref" through .where()
-    # either -- restore it explicitly.
-    crs = result.rio.crs
-    result = result.where(np.isfinite(result))
-    result.rio.write_crs(crs, inplace=True)
+    out[~np.isfinite(out)] = np.nan
+
+    coords = {d: da[d] for d in extra_dims if d in da.coords}
+    coords["y"] = top - (np.arange(dst_height) + 0.5) * target_res
+    coords["x"] = left + (np.arange(dst_width) + 0.5) * target_res
+    result = xr.DataArray(
+        out.reshape(src.shape[:-2] + (dst_height, dst_width)),
+        dims=(*extra_dims, "y", "x"),
+        coords=coords,
+        name=da.name,
+    )
+    result.rio.write_crs(dst_crs, inplace=True)
     return result
 
 
@@ -2259,15 +1943,6 @@ def plot_crest_gap_map(
     gap_grid = np.full(out_shape, np.nan, dtype=np.float32)
     gap_grid[rows, cols] = crest_on_grid[rows, cols] - zs_at_raster_cells
 
-    def _imshow_extent_and_origin(transform, nrows, ncols):
-        x0, y0 = transform * (0, 0)
-        x1, y1 = transform * (ncols, nrows)
-        orientation = "upper" if y0 > y1 else "lower"
-        img_extent = (min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1))
-        return img_extent, orientation
-
-    extent, origin = _imshow_extent_and_origin(grid_transform, *out_shape)
-
     overtopped_rows, overtopped_cols = np.where(gap_grid < 0)
     overtopped_x, overtopped_y = rasterio.transform.xy(
         grid_transform, overtopped_rows, overtopped_cols
@@ -2310,13 +1985,13 @@ def plot_crest_gap_map(
 
     fig, axes = plt.subplots(1, 2, figsize=(18, 9))
     ax = axes[0]
-    im = ax.imshow(
+    im = imshow_on_grid(
+        ax,
         gap_grid,
+        grid_transform,
         cmap="RdBu",
         vmin=-vmax,
         vmax=vmax,
-        extent=extent,
-        origin=origin,
         zorder=1,
     )
     plt.colorbar(
@@ -2330,20 +2005,19 @@ def plot_crest_gap_map(
     ax.set_aspect("equal")
 
     ax2 = axes[1]
-    im2 = ax2.imshow(
+    im2 = imshow_on_grid(
+        ax2,
         gap_grid,
+        grid_transform,
         cmap="RdBu",
         vmin=-vmax,
         vmax=vmax,
-        extent=extent,
-        origin=origin,
         zorder=1,
     )
     plt.colorbar(im2, ax=ax2, label="gap (m)")
     _plot_overlay(ax2)
     if len(overtopped_rows):
-        cell_size_m = abs(grid_transform.a)
-        pad_m = 15 * cell_size_m
+        pad_m = 15 * math.hypot(grid_transform.a, grid_transform.d)
         ax2.set_xlim(min(overtopped_x) - pad_m, max(overtopped_x) + pad_m)
         ax2.set_ylim(min(overtopped_y) - pad_m, max(overtopped_y) + pad_m)
         for x, y, r, c in zip(
@@ -2409,11 +2083,6 @@ def plot_wetland_dike_positions(
     class_colors = ["#e8e4d8", "#9ecae1", "#c7e9c0", "#31a354"]
     cmap = mcolors.ListedColormap(class_colors)
 
-    x0, y0 = grid_transform * (0, 0)
-    x1, y1 = grid_transform * (shape[1], shape[0])
-    extent = (min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1))
-    origin = "upper" if y0 > y1 else "lower"
-
     def _midpoints(gdf: gpd.GeoDataFrame) -> np.ndarray:
         if gdf.empty:
             return np.zeros((0, 2))
@@ -2441,15 +2110,7 @@ def plot_wetland_dike_positions(
 
     used_on, used_off = ("  <- used", "") if active_on else ("", "  <- used")
     for ax in axes:
-        ax.imshow(
-            classes,
-            cmap=cmap,
-            vmin=0,
-            vmax=3,
-            extent=extent,
-            origin=origin,
-            interpolation="nearest",
-        )
+        imshow_on_grid(ax, classes, grid_transform, cmap=cmap, vmin=0, vmax=3)
         for gdf, color, width in (
             (shared, "dimgray", 1.0),
             (off_only, "red", 1.8),
@@ -2469,9 +2130,7 @@ def plot_wetland_dike_positions(
         axes[1].set_ylim(np.min(ys) - pad, np.max(ys) + pad)
         axes[1].set_title("Zoom: largest ocean-linked wetland patch")
 
-    area_km2 = (
-        float(ocean_wetland_mask.sum()) * abs(grid_transform.a * grid_transform.e) / 1e6
-    )
+    area_km2 = float(ocean_wetland_mask.sum()) * abs(grid_transform.determinant) / 1e6
     title_bits = [
         f"Basin {basin_id}" if basin_id else "",
         "coastal dike position, unprotected_ocean_wetlands off vs on",

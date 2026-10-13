@@ -21,7 +21,6 @@ rule build_sfincs:
         river_network     = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
         surge_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         river_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
-        grid_resolution   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_grid_resolution.json"),
         # Only present when spin-up is enabled -- see include_rstart param.
         rstart = lambda wildcards: (
             results_path(f"{wildcards.basin_id}/spin_up/" + RST_FNAME)
@@ -30,8 +29,7 @@ rule build_sfincs:
     output:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs.inp"),
     params:
-        depth_method       = config["river_processing"]["depth_method"],
-        resolution         = lambda wildcards, input: json.load(open(input.grid_resolution))["resolution"],
+        resolution         = lambda wildcards: grid_resolution_m(wildcards.basin_id),
         tref               = config["sfincs"]["simulation"]["tref"],
         dtmapout           = config["sfincs"]["simulation"]["dtmapout"],
         dtmaxout           = config["sfincs"]["simulation"]["dtmaxout"],
@@ -69,6 +67,11 @@ rule build_sfincs:
         # coast_500's own small RP=2 river component. See
         # src.river_forcing.build_design_discharge_matrix.
         discharge_multiplier = lambda wildcards: scenario_params(wildcards.scenario)["discharge_multiplier"],
+        # How a river return period becomes a hydrograph: a real GloFAS flood
+        # event or the synthetic wave (src.river_forcing.
+        # build_design_discharge_matrix). A param of THIS rule, so changing
+        # it only rebuilds the scenarios.
+        river_event        = config["boundary_forcings"]["river"]["event_hydrograph"],
         # Target global-mean SLR (m), applied HERE against surge_forcing.nc's
         # own dimensionless slr_fingerprint -- deliberately NOT a param of
         # rule get_boundary_forcings (07), so changing slr_m only reruns this

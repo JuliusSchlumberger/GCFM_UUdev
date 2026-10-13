@@ -17,6 +17,7 @@ Usage
 
 from __future__ import annotations
 
+import os
 import json
 import sys
 import urllib.request
@@ -35,7 +36,11 @@ _CATALOGUE = Path(__file__).parent.parent / "config" / "data_catalogue.yml"
 def _load_paths() -> tuple[Path, Path, Path]:
     with open(_CATALOGUE) as f:
         cat = yaml.safe_load(f)
-    root = Path(cat["meta"]["root"])
+    # Machine-specific path, read from the GCFM_RAW_DATA_ROOT environment variable.
+    # Set it once in PowerShell, then restart your terminal (see
+    # CONTRIBUTING.md "Local machine paths"):
+    #   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+    root = Path(os.environ["GCFM_RAW_DATA_ROOT"])
     ds = {d["name"]: d for d in cat["datasets"]}
     tiles_dir = root / ds["diluvium_dem"]["file_path"]
     diluvium_root = tiles_dir.parent

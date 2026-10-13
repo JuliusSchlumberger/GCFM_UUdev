@@ -1,8 +1,6 @@
 """
 10_depth_estimation_modelled.py -- SFINCS-based river depth and riverbank
-weir crest calibration (river_processing.depth_method == "modelled"), an
-alternative to the empirical hydraulic-geometry depth estimate (rule
-empirical_depth_estimation, 10_depth_estimation_empirical.py).
+weir crest calibration, the only way river depth and dike crests are set.
 
 Three fixed-duration runs of one minimal, disposable SFINCS model (regular
 grid only, but otherwise matching the production model's own subgrid setup
@@ -38,8 +36,10 @@ then the mouth rules below.
 Round 1 -- confined, excavated, with the coastal protection storm tide. The
 channel is burned to round 0's rivdph, still behind the same 1000 m walls,
 and the sea boundary now carries a storm tide at the coastal protection RP
-(FLOPROS; production's own half-cosine wave shape, starting once the river
-is at full discharge). With no overbank relief anywhere, this round's water
+(FLOPROS; production's own wave shape -- the average tide plus the surge
+shape, peaking on tidal high water once the river is at full discharge; a
+half-cosine if surge_forcing.nc has no storm-tide hydrograph components).
+With no overbank relief anywhere, this round's water
 level is the highest the calibration discharge and the protection-level
 storm tide reach, including the coast's own amplification of the boundary
 level (shoaling, reflection off the dike) -- so it IS the crest that
@@ -47,13 +47,14 @@ contains them, with no iteration needed. Every production weir edge gets its
 own crest from the water level on its own water side (the channel or ocean
 cell it borders):
 
-    crest(edge) = ceil_0.1( max(zsmax(water-side cell),
+    crest(edge) = ceil_cm( max(zsmax(water-side cell),
                                 coastal_protection_crest_m) + freeboard_m )
 
 (zsmax: SFINCS's own maximum over every computational timestep of the
-run -- see _read_period_max_zs_field. ceil_0.1: rounded UP to the next
-0.1 m, src.surge.ceil_water_level -- sfincs.weir stores crests at 0.1 m
-with round-to-nearest, which would otherwise lower up to half the edges.)
+run -- see _read_period_max_zs_field. ceil_cm: rounded UP to the next
+centimetre, src.surge.ceil_crest, the precision sfincs.weir is written at,
+src.sfincs_run.write_weir_file -- so a crest is never below the zsmax it
+came from.)
 
 One rule for riverbanks, the mouth, discharge-injection cells and the open
 coast alike (a coastal edge's crest is the storm-tide level SFINCS reaches
@@ -145,9 +146,8 @@ round 1 above; the calm-sea boundary is kept if no coastal protection RP is
 known). The river is a steady calibration discharge throughout.
 
 Rounds 1 and 2 burn using each CELL's own rivdph directly as a
-burn_river_channel anchor (rivbed = dem_at_cell - rivdph), rather than
-routing a per-reach scalar through src.river_preburn.compute_river_bed_points'
-DEM-following constant-offset convention -- every cell already carries its
+burn_river_channel anchor (rivbed = dem_at_cell - rivdph), rather than a
+per-reach scalar -- every cell already carries its
 own calibrated value, so burn_river_channel's existing per-reach interp1d
 does the along-reach (and, via its neighbour-anchor-borrowing, cross-reach-
 junction) smoothing directly from real calibration data, not DEM shape
@@ -155,12 +155,8 @@ alone.
 
 See src.river_depth_calibration's module docstring. This model is
 intermediate/disposable -- rule 13 builds the production model separately
-from this rule's outputs: the burned river DEM and the traced weir (the
+from this rule's outputs: the burned river channel and the traced weir (the
 exact weir round 2 verified, imported as-is -- rule 13 never re-traces it).
-
-Sibling alternative to rule empirical_depth_estimation -- exactly one
-of the two ever runs (river_processing.depth_method), both writing the
-same unified output filename (river_network_depth_estimated.gpkg).
 
 Elevation: uses the SAME two conditioned-DEM layers rule 13's production
 build does -- the shared SFINCS-grid-resolution raster (rule
@@ -173,17 +169,20 @@ Using the SAME coarse raster rule 13 uses (rather than each independently
 letting HydroMT resample from the native file) guarantees calibration and
 production sit on the identical background elevation. Rounds 1 and 2
 excavate this same background within the shared channel_mask corridor,
-using burn_river_channel; the same excavation, burned once more at native
-resolution, becomes the production river_burned_dem file rule 13 imports
-directly, without re-burning it itself.
+using burn_river_channel ONCE, on the model's own subgrid pixel grid (main
+grid subdivided by nr_subgrid_pixels): that raster is the subgrid table's
+channel source, and the main-grid "dep" of the channel cells is its
+per-cell mean (src.river_burn.mean_elevation_on_coarse_grid). Rule 13
+imports both files directly, without re-burning anything itself, so
+production runs on exactly the channel the crests were calibrated with.
 
 Inputs
 ------
 elevation_conditioned              Native-resolution conditioned DEM (rule
                                     enforce_river_monotonicity, 09) --
                                     subgrid's own fine source, and the
-                                    native resolution/CRS reference for the
-                                    excavation's own native burn.
+                                    terrain the excavation is floored
+                                    against.
 elevation_conditioned_sfincs_grid  SFINCS-grid-resolution conditioned DEM
                                     (rule enforce_river_monotonicity's
                                     second output) -- this model's own
@@ -205,12 +204,11 @@ river_network_depth_estimated  Same reach set, rivdph replaced with the
                           reach median of max(round 1's cross-section water
                           level, coastal crest) + freeboard_m) -- a summary
                           for inspection only: production uses the traced
-                          weir file, whose crests are per edge. The same
-                          unified filename rule empirical_depth_estimation
-                          also writes.
-river_burned_dem, river_burned_dem_sfincs_grid
-                          Round 0's excavation, burned at native and SFINCS-
-                          grid resolution (rule 13 imports both directly).
+                          weir file, whose crests are per edge.
+river_burned_subgrid, river_burned_dem_sfincs_grid
+                          Round 0's excavation, burned on the subgrid pixel
+                          grid, and its per-cell mean on the SFINCS grid
+                          (rule 13 imports both directly).
 coastal_protection_weir   The traced production weir, per-edge crests (see
                           round 1 above).
 zsini_sea_cells           Real open-sea cells on this rule's own grid,
@@ -261,6 +259,7 @@ from scipy.spatial import cKDTree
 from src.protection_weir import LANDUSE_SEA, GridArrays, build_coastal_protection_weir, ocean_linked_wetland_mask
 from src.domain import load_domain
 from src.geometry import snap_points_into_region
+from src.grid import create_model_grid, load_grid_def
 from src.log import setup_logging
 from src.plots import (
     animate_flood_progression,
@@ -273,16 +272,23 @@ from src.plots import (
 )
 from src.postprocessing import compute_flood_progression, compute_max_inundation
 from src.raster import restrict_waterlevel_boundary_to_sea
-from src.river_burn import build_centerline_cells_regular, build_channel_mask_regular, burn_river_channel, constrain_to_coarse_channel_mask, snap_points_to_centerline_cells
+from src.river_burn import (
+    build_centerline_cells_regular,
+    build_channel_mask_regular,
+    burn_river_channel,
+    constrain_to_coarse_channel_mask,
+    mean_elevation_on_coarse_grid,
+    snap_points_to_centerline_cells,
+)
 from src.river_depth_calibration import (
     build_calibration_seed_discharge,
     compute_excavation_depth,
     compute_period_max_zs,
     gather_calibration_round_profile,
 )
-from src.river_network import accumulate_discharge, build_downstream_adjacency, compute_hydraulic_depth, normalize_reach_id
-from src.sfincs_run import run_sfincs_subprocess
-from src.surge import ceil_water_level, read_baseline_m, sinusoidal_wave, storm_tide_at_rp_interpolated
+from src.river_network import accumulate_discharge, build_downstream_adjacency, normalize_reach_id
+from src.sfincs_run import run_sfincs_subprocess, write_weir_file
+from src.surge import ceil_crest, read_baseline_m, sinusoidal_wave, storm_tide_at_rp_interpolated, storm_tide_event
 
 log = setup_logging(snakemake.log[0])
 
@@ -293,7 +299,6 @@ river_elevation_max_path = Path(snakemake.input.river_elevation_max)
 river_network_path   = Path(snakemake.input.clean_river_network)
 river_forcing_path   = Path(snakemake.input.river_forcing)
 protection_levels_path = Path(snakemake.input.protection_levels)
-grid_resolution_path = Path(snakemake.input.grid_resolution)
 # Grid-aligned land mask (rule grid_align_landuse) -- plot background only.
 land_mask_path       = Path(snakemake.input.land_mask_on_grid)
 domain_gpkg_path     = Path(snakemake.input.domain_gpkg)
@@ -317,8 +322,6 @@ calib_root  = Path(snakemake.params.calib_root)
 sfincs_exe  = Path(snakemake.params.sfincs_exe)
 timeout_s   = int(snakemake.params.timeout_s)
 flow_accumulation_iterations = int(snakemake.params.flow_accumulation_iterations)
-hg_c = float(snakemake.params.hg_c)
-hg_f = float(snakemake.params.hg_f)
 
 calibration_days   = float(snakemake.params.calibration_days)
 discharge_ramp_hours = float(snakemake.params.discharge_ramp_hours)
@@ -334,7 +337,6 @@ weir_freeboard_m = float(snakemake.params.weir_freeboard_m)
 # src.protection_weir.build_coastal_protection_weir).
 unprotected_ocean_wetlands = bool(snakemake.params.unprotected_ocean_wetlands)
 min_component_cells = int(snakemake.params.min_component_cells)
-include_subgrid    = bool(snakemake.params.include_subgrid)
 nr_subgrid_pixels  = int(snakemake.params.nr_subgrid_pixels)
 nr_levels          = int(snakemake.params.nr_levels)
 nrmax              = int(snakemake.params.nrmax)
@@ -348,13 +350,6 @@ calib_root.mkdir(parents=True, exist_ok=True)
 
 # ── river network + calibration discharge ────────────────────────────────────
 rivers = gpd.read_file(river_network_path)
-# Power-law comparison column (rivdph_powerlaw) -- computed inline:
-# empirical_depth_estimation and modelled_depth_estimation are sibling
-# alternatives off the same river_network_clean.gpkg, not a sequential
-# chain, so this rule cannot read it from empirical_depth_estimation's output.
-rivers["rivdph_powerlaw"] = compute_hydraulic_depth(
-    rivers["bankfull_discharge_acc"].values, c=hg_c, f=hg_f,
-)
 
 protection_rp_yr = None
 with open(protection_levels_path) as f:
@@ -393,8 +388,8 @@ log.info(
 # docstring). Rounds 0 and 1 use the uniform weir_crest_m confinement
 # instead.
 with xr.open_dataset(surge_forcing_path, decode_times=False) as _surge_ds:
-    # Rounded UP to the next 0.1 m (read_baseline_m) -- the same calm-sea
-    # level production's own skeleton zsini and event lead-in use.
+    # The same calm-sea level (read_baseline_m, rounded to 1 cm) production's
+    # own skeleton zsini uses.
     baseline_m = read_baseline_m(_surge_ds)
     coastal_protection_crest_m = (
         float(_surge_ds["coastal_protection_crest_m"].values)
@@ -414,22 +409,12 @@ log.info(
 # own edge-margin needs, rule enforce_river_monotonicity/09, so its shape
 # does not match landuse_on_grid.tif's exact grid shape).
 
-# Native resolution/CRS reference for the exported native-resolution burn
-# (river_burned_dem) -- same role elevation_merged plays for rule 11b.
-with rasterio.open(elevation_path) as _native_src:
-    native_resolution_m = abs(_native_src.transform.a)
-
 # ── minimal SFINCS model (regular grid) ──────────────────────────────────────
-with open(grid_resolution_path) as f:
-    resolution = float(json.load(f)["resolution"])
+resolution = float(snakemake.params.resolution)
 
-# sf.grid.create_from_region(region={"geom": ...}) needs a GeoDataFrame
-# (matching 13_build_sfincs.py's delta_domain = gpd.read_file(domain_path)),
-# not a raw shapely geometry -- hydromt's parse_region_geom doesn't accept
-# a bare Polygon/MultiPolygon here. create_from_region is deterministic
-# given the same domain polygon + resolution + "utm" CRS rule, so calling it
-# here (as rule 13's production build also does, separately) reproduces the
-# identical grid rule 08c (build_sfincs_grid) already built once.
+# The grid itself comes from the shared grid definition (rule
+# build_sfincs_grid, 08c -- src.grid.create_model_grid below), the same one
+# rule 13's production build is created from.
 delta_domain = gpd.read_file(domain_gpkg_path)
 
 # Delta-outline outflow points (rule clean_river_network's own
@@ -448,14 +433,15 @@ delta_outflow_enabled = not delta_outflow_gdf.empty
 log.info(f"Delta-outline outflow points: {len(delta_outflow_gdf)}")
 
 # The excavated channel burned at subgrid resolution (rounds 1 and 2's own
-# subgrid source) gets its catalog entry registered upfront -- the FILE
+# subgrid source, and production's -- this rule's own river_burned_subgrid
+# output) gets its catalog entry registered upfront -- the FILE
 # doesn't exist yet at this point (written after round 0, before round 1's
 # own subgrid.create() call reads it), but the catalog only needs the URI
 # declared once, at model construction time, matching every other script in
 # this codebase (none of them add catalog sources mid-run). The main "dep"
 # grid's own excavation is patched directly into sf.grid.data["dep"]'s numpy
 # array instead -- no catalog entry needed for that.
-river_burned_subgrid_path = calib_root / "river_burned_subgrid.tif"
+river_burned_subgrid_path = Path(snakemake.output.river_burned_subgrid)
 local_catalog_path = calib_root / "data_catalog_local.yml"
 local_catalog = {
     "meta": {"root": str(elevation_path.parent)},
@@ -503,8 +489,11 @@ sf = SfincsModel(
     mode="w+",
     write_gis=False,
 )
-sf.grid.create_from_region(region={"geom": delta_domain}, res=resolution, crs="utm", rotated=False)
-log.info(f"Calibration grid created: {resolution} m, auto-UTM")
+create_model_grid(sf, load_grid_def(snakemake.input.sfincs_grid))
+log.info(
+    f"Calibration grid created from the shared grid definition: {resolution} m, "
+    f"rotation {sf.config.get('rotation')} deg"
+)
 
 # tref/tstart/tstop set NOW (Phase 1, matching 13_build_sfincs.py) so the
 # forcing sections below (discharge points, water level) build against the
@@ -591,8 +580,8 @@ if delta_outflow_enabled:
 # Built directly from landuse_on_grid.tif (rule grid_align_landuse, 09b),
 # read here (not earlier) so the connected-component dry-out check below can
 # compare against sf.grid.data["dep"] -- THIS model's own grid, guaranteed
-# the same exact shape landuse_on_grid.tif was built on (both "auto-UTM"-fit
-# from the same domain_gpkg + grid_resolution.json/sfincs_grid.json).
+# the same exact shape landuse_on_grid.tif was built on (both come from the
+# shared grid definition, rule build_sfincs_grid/08c).
 # elevation_conditioned_sfincs_grid.tif (rule enforce_river_monotonicity/09)
 # is NOT usable for this comparison despite being on the same coarse grid's
 # transform/phase -- it's deliberately EXTENDED beyond the exact SFINCS grid
@@ -644,7 +633,7 @@ _da_zsini = xr.DataArray(
     _zsini_arr, dims=sf.grid.data["dep"].dims, coords=sf.grid.data["dep"].coords,
 )
 _da_zsini = _da_zsini.rio.write_crs(sf.grid.data["dep"].rio.crs)
-_da_zsini = _da_zsini.rio.write_transform(sf.grid.data["dep"].rio.transform())
+_da_zsini = _da_zsini.rio.write_transform(sf.grid.data["dep"].raster.transform)
 _da_zsini.raster.set_nodata(np.nan)
 sf.initial_conditions.create(ini=_da_zsini, reproj_method="nearest")
 log.info("Initial conditions: spatially-varying zsini (sea cells start at baseline_m, land dry)")
@@ -668,9 +657,8 @@ rivers_utm = rivers.to_crs(sf.crs)
 grid = GridArrays.from_regular(sf.grid.data["dep"], sf.grid.data["mask"], sf.crs)
 channel_mask = build_channel_mask_regular(rivers_utm, "width", grid.shape, grid.transform)
 # landuse_on_grid.tif (rule grid_align_landuse, 09b) -- already rasterized
-# directly onto this rule's own grid (confirmed pixel-identical to
-# sfincs_grid.json, both "auto-UTM"-fit from the same domain_gpkg +
-# grid_resolution.json), read here with zero further reprojection, rather
+# directly onto this rule's own grid (both come from the shared grid
+# definition, sfincs_grid.json), read here with zero further reprojection, rather
 # than this rule independently resampling native landuse.tif a second time
 # (the previous GridArrays.sample_landuse call -- removed 2026-08-07, see
 # 09b_grid_align_landuse.py's own module docstring for why every consumer
@@ -1052,6 +1040,7 @@ def _run_calibration_round(round_label: str, round_root: Path):
         "dtmaxout": trstout_sec, "zsini": -9999.0,
     })
     sf.write()
+    write_weir_file(sf)  # crests at 1 cm, not hydromt_sfincs' 0.1 m
     log.info(f"Running SFINCS calibration ({round_label}, {calibration_days:.0f} days)")
     run_sfincs_subprocess(
         sfincs_exe, round_root, timeout_s, log,
@@ -1131,8 +1120,6 @@ def _create_subgrid(elevation_list: list[dict], round_label: str) -> None:
     rebuilt every round, even when the geometry is unchanged (round 2 vs
     round 1), since each round's own diagnostics read the dep_subgrid.tif
     written next to that round's own sfincs_map.nc."""
-    if not include_subgrid:
-        return
     sf.subgrid.create(
         elevation_list=elevation_list,
         roughness_list=[{"manning": "local_roughness_native"}],
@@ -1205,7 +1192,7 @@ def _round_diagnostics(
     # round_root doubles as both run_dir and sfincs_root for THIS round's
     # own disposable model.
     da_hmax, _da_dep = compute_max_inundation(
-        round_root, round_root, _round_ocean_mask_path, hmin=0.0, include_subgrid=include_subgrid,
+        round_root, round_root, _round_ocean_mask_path, hmin=0.0,
     )
     if da_hmax is None:
         log.warning(f"[{round_label}] No max inundation data available -- creating empty plot sentinel")
@@ -1378,78 +1365,80 @@ _round_diagnostics(0, round_root, final_zs, final_times_s, confinement_weir_gdf)
 # cell.
 zbed_anchors = cell_gdf.assign(rivbed=dem_at_cell - rivdph_current)
 
-# SFINCS-grid resolution: constrained to channel_mask (same shared mask used
-# for the weir corridor), so excavated cells == the corridor's own cells,
-# exactly -- same invariant production (rule 11b/13) relies on. Patched
-# directly into sf.grid.data["dep"]'s own array rather than routed through
-# the data catalog/elevation_list mechanism -- sf.write() writes whatever
-# ends up in sf.grid.data["dep"] regardless of how it got there.
-# natural_dem_path floors the burn against the real conditioned DEM (never
-# shallower than it) -- see burn_river_channel's own docstring for why this
-# is needed even with terrain-following anchors (interpolation/junction-
-# blending between anchors can still locally overshoot). Also written as
-# this rule's own river_burned_dem_sfincs_grid output below -- the identical
-# burn, not re-run.
-burned_arr_sfincs, burned_transform_sfincs, _nd, _stats_sfincs = burn_river_channel(
+# ONE burn, directly on the subgrid's own phase-locked fine-pixel grid
+# (coarse grid transform subdivided by nr_subgrid_pixels) instead of an
+# independently-bounded native-resolution grid -- otherwise hydromt_
+# sfincs's own subgrid.create() has to reproject/resample this file onto
+# its internal fine grid itself (different resolution AND phase/origin),
+# and THAT resampling step introduces new leakage across the
+# channel_mask boundary even when the source burn file itself has 0
+# pixels outside channel_mask -- hydromt's own dep_subgrid.tif can still
+# show excavated pixels bleeding into a coarse cell channel_mask
+# excludes, and since SFINCS reports a subgrid cell's own "zb" as
+# (effectively) the MINIMUM sub-pixel elevation within it, even a
+# handful of leaked sub-pixels at one corner makes the WHOLE coarse cell
+# read as deeply excavated relative to its own true (unexcavated)
+# surrounding terrain. Burning directly at the subgrid's own
+# resolution/phase eliminates the resampling step (and its leak)
+# entirely, rather than trying to out-guess hydromt's own internal
+# resampling afterward. natural_dem_path floors the burn against the real
+# conditioned DEM (never shallower than it) -- see burn_river_channel's own
+# docstring for why this is needed even with terrain-following anchors
+# (interpolation/junction-blending between anchors can still locally
+# overshoot). This file is also this rule's own river_burned_subgrid
+# output: rule 13's production subgrid table is built from the SAME raster,
+# with no resampling, so production runs on exactly this channel.
+NODATA = np.float32(-9999.0)
+subgrid_transform = grid.transform * Affine.scale(1.0 / nr_subgrid_pixels)
+subgrid_shape = (grid.shape[0] * nr_subgrid_pixels, grid.shape[1] * nr_subgrid_pixels)
+burned_arr_subgrid, transform_subgrid, terrain_subgrid, stats_subgrid = burn_river_channel(
     rivers=rivers_utm, zbed_anchors=zbed_anchors,
     natural_dem_path=elevation_path,
-    utm_crs=sf.crs, resolution_m=grid.cell_size_m,
-    out_transform=grid.transform, out_shape=grid.shape,
-    channel_mask=channel_mask,
+    utm_crs=sf.crs, resolution_m=grid.cell_size_m / nr_subgrid_pixels,
+    out_transform=subgrid_transform, out_shape=subgrid_shape,
 )
+# Constrained to channel_mask (same shared mask used for the weir corridor),
+# so excavated cells are always a subset of the corridor's own cells -- a
+# reach's own buf_poly can rasterize a handful of edge pixels slightly
+# differently than channel_mask's own independent rasterization.
+burned_arr_subgrid = constrain_to_coarse_channel_mask(
+    burned_arr_subgrid, transform_subgrid, sf.crs, channel_mask, grid.transform,
+)
+river_burned_subgrid_path.parent.mkdir(parents=True, exist_ok=True)
+with rasterio.open(
+    river_burned_subgrid_path, "w", driver="GTiff", dtype="float32",
+    width=burned_arr_subgrid.shape[1], height=burned_arr_subgrid.shape[0],
+    count=1, crs=sf.crs, transform=transform_subgrid,
+    nodata=float(NODATA), compress="deflate", tiled=True,
+) as dst:
+    dst.write(np.where(np.isnan(burned_arr_subgrid), NODATA, burned_arr_subgrid).astype(np.float32), 1)
+log.info(
+    f"Written: {river_burned_subgrid_path} ({stats_subgrid['n_reaches_burned']} reach(es) burned, "
+    f"{int(np.isfinite(burned_arr_subgrid).sum()):,} subgrid pixel(s) @ "
+    f"{grid.cell_size_m / nr_subgrid_pixels:g} m)"
+)
+
+# Main-grid "dep" of the channel cells: the per-cell MEAN of the subgrid
+# pixels with the burn in place, so a channel narrower than a cell lowers
+# that cell only in proportion to the area it occupies (rather than setting
+# every cell the channel touches to bed level). Patched directly into
+# sf.grid.data["dep"]'s own array rather than routed through the data
+# catalog/elevation_list mechanism -- sf.write() writes whatever ends up in
+# sf.grid.data["dep"] regardless of how it got there. Also written as this
+# rule's own river_burned_dem_sfincs_grid output below, which rule 13 layers
+# onto the same background -- calibration and production share this "dep".
+burned_arr_sfincs = mean_elevation_on_coarse_grid(
+    burned_arr_subgrid, terrain_subgrid, nr_subgrid_pixels,
+)
+del terrain_subgrid
 valid_burn = np.isfinite(burned_arr_sfincs)
 sf.grid.data["dep"].values[valid_burn] = burned_arr_sfincs[valid_burn]
 log.info(
-    f"Excavated {int(valid_burn.sum()):,} cell(s) into the main grid "
-    f"({_stats_sfincs['n_reaches_burned']} reach(es) burned, {_stats_sfincs['n_reaches_skipped']} skipped)"
+    f"Excavated {int(valid_burn.sum()):,} cell(s) on the main grid "
+    f"(per-cell mean of the subgrid burn)"
 )
+del burned_arr_subgrid
 
-NODATA = np.float32(-9999.0)
-if include_subgrid:
-    # Burn DIRECTLY onto the subgrid's own phase-locked fine-pixel grid
-    # (coarse grid transform subdivided by nr_subgrid_pixels) instead of an
-    # independently-bounded native-resolution grid -- otherwise hydromt_
-    # sfincs's own subgrid.create() has to reproject/resample this file onto
-    # its internal fine grid itself (different resolution AND phase/origin),
-    # and THAT resampling step introduces new leakage across the
-    # channel_mask boundary even when the source burn file itself has 0
-    # pixels outside channel_mask -- hydromt's own dep_subgrid.tif can still
-    # show excavated pixels bleeding into a coarse cell channel_mask
-    # excludes, and since SFINCS reports a subgrid cell's own "zb" as
-    # (effectively) the MINIMUM sub-pixel elevation within it, even a
-    # handful of leaked sub-pixels at one corner makes the WHOLE coarse cell
-    # read as deeply excavated relative to its own true (unexcavated)
-    # surrounding terrain. Burning directly at the subgrid's own
-    # resolution/phase eliminates the resampling step (and its leak)
-    # entirely, rather than trying to out-guess hydromt's own internal
-    # resampling afterward.
-    subgrid_transform = grid.transform * Affine.scale(1.0 / nr_subgrid_pixels)
-    subgrid_shape = (grid.shape[0] * nr_subgrid_pixels, grid.shape[1] * nr_subgrid_pixels)
-    burned_arr_subgrid, transform_subgrid, _nd_subgrid, stats_subgrid = burn_river_channel(
-        rivers=rivers_utm, zbed_anchors=zbed_anchors,
-        natural_dem_path=elevation_path,
-        utm_crs=sf.crs, resolution_m=grid.cell_size_m / nr_subgrid_pixels,
-        out_transform=subgrid_transform, out_shape=subgrid_shape,
-    )
-    # Belt-and-braces: still constrain to channel_mask even though the burn
-    # is phase-locked -- a reach's own buf_poly can still rasterize a
-    # handful of edge pixels slightly differently than channel_mask's own
-    # independent rasterization (same reason the coarse burn always passes
-    # channel_mask=... too).
-    burned_arr_subgrid = constrain_to_coarse_channel_mask(
-        burned_arr_subgrid, transform_subgrid, sf.crs, channel_mask, grid.transform,
-    )
-    with rasterio.open(
-        river_burned_subgrid_path, "w", driver="GTiff", dtype="float32",
-        width=burned_arr_subgrid.shape[1], height=burned_arr_subgrid.shape[0],
-        count=1, crs=sf.crs, transform=transform_subgrid,
-        nodata=float(NODATA), compress="deflate", tiled=True,
-    ) as dst:
-        dst.write(np.where(np.isnan(burned_arr_subgrid), NODATA, burned_arr_subgrid).astype(np.float32), 1)
-    log.info(
-        f"Subgrid-resolution burn: {stats_subgrid['n_reaches_burned']} reach(es) burned, "
-        f"{stats_subgrid['n_pixels_burned']:,} pixel(s)"
-    )
 excavated_subgrid_elevation_list = [
     {"elevation": "local_river_burned_subgrid"},
     {"elevation": "local_elevation_conditioned"},
@@ -1459,21 +1448,34 @@ excavated_subgrid_elevation_list = [
 # Round 0 keeps its steady calm-sea boundary (the excavation depth is a river
 # question). Rounds 1 and 2 are forced at the surge stations production uses
 # with a storm tide at the coastal protection RP (FLOPROS), in production's
-# own wave shape (half-cosine over surge period_hr): SFINCS's water level at
+# own wave shape: SFINCS's water level at
 # the coast can rise well above the level imposed at the boundary (shoaling,
 # reflection off the dike, bays), so a crest equal to the offshore COAST-RP
 # level does not hold that RP inside the model (basin 2433835: sea levels up
 # to ~0.8 m at the dike under a 0.4 m boundary). With the storm tide in round
 # 1, every coastal edge's crest comes from the simulated level at the dike
 # itself -- the same per-edge rule as the river banks -- and round 2 verifies
-# it. The wave starts once the river is at its full calibration discharge
-# (after discharge_ramp_hours) and rises from baseline_m, the level the sea
-# starts at (zsini), so there is no step. Peaks: per station, linear in RP
+# it. Peaks: per station, linear in RP
 # between COAST-RP's tabulated RPs (as the crest's own RP-41 level), MDT-
-# corrected and rounded up to 0.1 m like all forcing. River and surge at
+# corrected, rounded to 1 cm. River and surge at
 # their protection RPs together is conservative near the mouth, where the
 # two interact.
+#
+# Wave shape = production's (src.surge.storm_tide_event, the builder rule 13's
+# boundary uses): the AVERAGE TIDE plus the surge shape for the protection
+# RP, scaled so the peak, surge on tidal high water, equals the
+# protection-level storm tide -- when
+# surge_forcing.nc carries the storm-tide hydrograph components
+# (boundary_forcings.surge.hydrograph.enabled). The peak sits midway between
+# the end of the discharge ramp and the end of the run, so the river is at
+# its full calibration discharge when it arrives; the run is shorter than
+# production's event window, so only that part of the hydrograph is seen.
+# Over the discharge ramp the boundary blends linearly from baseline_m, the
+# level the sea starts at (zsini), into the wave, so there is no step.
+# Without the components: a half-cosine over surge period_hr, starting once
+# the river is at its full discharge.
 if coastal_rp_yr is not None:
+    _surge_hours = np.arange(0.0, calibration_days * 24.0 + 1e-9, 0.25)
     with xr.open_dataset(surge_forcing_path, decode_times=False) as _sds:
         coastal_design_peaks = storm_tide_at_rp_interpolated(_sds, coastal_rp_yr)
         surge_period_hr = float(_sds.attrs["period_hr"])
@@ -1482,17 +1484,37 @@ if coastal_rp_yr is not None:
             geometry=gpd.points_from_xy(_sds["longitude"].values, _sds["latitude"].values),
             crs="EPSG:4326",
         )
-    if discharge_ramp_hours + surge_period_hr > calibration_days * 24.0:
-        raise ValueError(
-            f"calibration run ({calibration_days * 24.0:.0f} h) too short for the storm tide: "
-            f"discharge ramp {discharge_ramp_hours:.0f} h + surge period {surge_period_hr:.0f} h -- "
-            f"increase river_depth_modelling.calibration_days"
+        _tidal = "hg_tide_m" in _sds
+        if _tidal:
+            _surge_peak_hr = discharge_ramp_hours + (calibration_days * 24.0 - discharge_ramp_hours) / 2.0
+            _event = storm_tide_event(
+                _sds, _surge_hours - _surge_peak_hr, coastal_design_peaks, rp_yr=coastal_rp_yr
+            )
+    if _tidal:
+        _w = (
+            np.clip(_surge_hours / discharge_ramp_hours, 0.0, 1.0)
+            if discharge_ramp_hours > 0 else np.ones_like(_surge_hours)
         )
-    _surge_hours = np.arange(0.0, calibration_days * 24.0 + 1e-9, 0.25)
-    _surge_wl = np.stack([
-        sinusoidal_wave(baseline_m, float(peak), _surge_hours, discharge_ramp_hours / 24.0, surge_period_hr)
-        for peak in coastal_design_peaks
-    ], axis=1)
+        _surge_wl = ((1.0 - _w) * baseline_m + _w * _event).T
+        _wave_desc = (
+            f"average tide + surge, peak at {_surge_peak_hr:.1f} h "
+            f"(blended in from {baseline_m:+.2f} m over the first {discharge_ramp_hours:.1f} h)"
+        )
+    else:
+        if discharge_ramp_hours + surge_period_hr > calibration_days * 24.0:
+            raise ValueError(
+                f"calibration run ({calibration_days * 24.0:.0f} h) too short for the storm tide: "
+                f"discharge ramp {discharge_ramp_hours:.0f} h + surge period {surge_period_hr:.0f} h -- "
+                f"increase river_depth_modelling.calibration_days"
+            )
+        _surge_wl = np.stack([
+            sinusoidal_wave(baseline_m, float(peak), _surge_hours, discharge_ramp_hours / 24.0, surge_period_hr)
+            for peak in coastal_design_peaks
+        ], axis=1)
+        _wave_desc = (
+            f"{surge_period_hr:.0f} h half-cosine from {baseline_m:+.2f} m starting at {discharge_ramp_hours:.1f} h "
+            f"(no storm-tide hydrograph components in surge_forcing.nc)"
+        )
     sf.water_level.create(
         timeseries=pd.DataFrame(
             _surge_wl, index=pd.DatetimeIndex([tref + timedelta(hours=float(h)) for h in _surge_hours]),
@@ -1502,8 +1524,8 @@ if coastal_rp_yr is not None:
     )
     log.info(
         f"Rounds 1-2 coastal forcing: RP {coastal_rp_yr:.1f} storm tide at {len(_surge_stations)} station(s), "
-        f"peak {coastal_design_peaks.min():+.2f}..{coastal_design_peaks.max():+.2f} m (from {baseline_m:+.2f} m), "
-        f"{surge_period_hr:.0f} h wave starting at {discharge_ramp_hours:.1f} h"
+        f"peak {coastal_design_peaks.min():+.2f}..{coastal_design_peaks.max():+.2f} m "
+        f"(boundary series {_surge_wl.min():+.2f}..{_surge_wl.max():+.2f} m), {_wave_desc}"
     )
 else:
     log.warning("No coastal protection RP -- rounds 1-2 keep the steady calm-sea boundary")
@@ -1529,7 +1551,7 @@ weir_gdf, final_weir_diagnostics = build_coastal_protection_weir(
 # Per-centerline-cell summary of the same rule (cross-section water level in
 # place of each edge's own water-side cell) -- reporting only
 # (calibration_state.csv, round profiles, weir_crest_calibrated).
-weir_crest_cell = ceil_water_level(np.fmax(period_max_zs_1, coastal_protection_crest_m) + weir_freeboard_m)
+weir_crest_cell = ceil_crest(np.fmax(period_max_zs_1, coastal_protection_crest_m) + weir_freeboard_m)
 log.info(
     f"[{round_label}] Crest (centerline summary): min={np.nanmin(weir_crest_cell):.3f} m, "
     f"max={np.nanmax(weir_crest_cell):.3f} m, median={np.nanmedian(weir_crest_cell):.3f} m "
@@ -1568,41 +1590,20 @@ if final_weir_diagnostics.get("edge_water_side_mask") is not None:
 _write_calibration_state(round_root, rivdph=rivdph_current, weir_crest=weir_crest_cell, zs=period_max_zs_2)
 _round_diagnostics(2, round_root, final_zs, final_times_s, weir_gdf, crest_gap_crest_on_grid=edge_crest_on_grid)
 
-# ── canonical production outputs: burned river DEM + weir ────────────────────
-# Same filenames rule empirical_depth_estimation writes -- see this rule's own
-# module docstring. The native-resolution file is burned once more here on
-# the native DEM's own grid (not the subgrid-phase-locked grid rounds 1-2
-# used); the SFINCS-grid file is the exact burn rounds 1-2 simulated with.
-_final_burned_native, _final_transform_native, _nd, _stats = burn_river_channel(
-    rivers=rivers_utm, zbed_anchors=zbed_anchors,
-    natural_dem_path=elevation_path,
-    utm_crs=sf.crs, resolution_m=native_resolution_m,
-)
-_final_burned_native = constrain_to_coarse_channel_mask(
-    _final_burned_native, _final_transform_native, sf.crs, channel_mask, grid.transform,
-)
-with rasterio.open(
-    snakemake.output.river_burned_dem, "w", driver="GTiff", dtype="float32",
-    width=_final_burned_native.shape[1], height=_final_burned_native.shape[0],
-    count=1, crs=sf.crs, transform=_final_transform_native,
-    nodata=float(NODATA), compress="deflate", tiled=True,
-) as dst:
-    dst.write(np.where(np.isnan(_final_burned_native), NODATA, _final_burned_native).astype(np.float32), 1)
-log.info(
-    f"Written: {snakemake.output.river_burned_dem} ({_stats['n_reaches_burned']} reach(es) burned, "
-    f"{_stats['n_pixels_burned']:,} pixel(s))"
-)
-
+# ── canonical production outputs: burned river channel + weir ────────────────
+# river_burned_subgrid.tif was written above (the exact burn rounds 1-2
+# simulated with); this is its per-cell mean on the SFINCS grid, the "dep"
+# those rounds ran on.
 with rasterio.open(
     snakemake.output.river_burned_dem_sfincs_grid, "w", driver="GTiff", dtype="float32",
     width=burned_arr_sfincs.shape[1], height=burned_arr_sfincs.shape[0],
-    count=1, crs=sf.crs, transform=burned_transform_sfincs,
+    count=1, crs=sf.crs, transform=grid.transform,
     nodata=float(NODATA), compress="deflate",
 ) as dst:
     dst.write(np.where(np.isnan(burned_arr_sfincs), NODATA, burned_arr_sfincs).astype(np.float32), 1)
 log.info(
     f"Written: {snakemake.output.river_burned_dem_sfincs_grid} "
-    f"({_stats_sfincs['n_reaches_burned']} reach(es) burned, {_stats_sfincs['n_pixels_burned']:,} pixel(s))"
+    f"({int(np.isfinite(burned_arr_sfincs).sum()):,} channel cell(s))"
 )
 
 Path(snakemake.output.coastal_protection_weir).parent.mkdir(parents=True, exist_ok=True)

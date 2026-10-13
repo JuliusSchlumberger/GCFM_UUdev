@@ -3,36 +3,19 @@
 native FathomDEM resolution) onto the shared SFINCS regular grid EXACTLY
 ONCE, then derive roughness directly from that single coarse raster.
 
-Builds its own grid via hydromt.model.processes.create_grid_from_region
-(region=domain_gpkg, res=grid_resolution.json) -- the SAME deterministic
-call rule build_sfincs_grid (08c) uses for sfincs_grid.json -- rather than
-reading sfincs_grid.json's own transform directly. This matters: rule 08c
-deliberately calls the standalone function directly (not via a SfincsModel)
-to avoid leaving behind an empty scratch model directory, but that means
-sfincs_grid.json is stored in the function's own RAW orientation (y
-DESCENDING, row 0 = north, standard GDAL convention). Every actual
-SfincsModel built in this pipeline (rule modelled_depth_estimation's
-calibration model, rule build_sfincs_skeleton, rule build_sfincs) goes
-through SfincsModel.grid.create_from_region(), which explicitly flips to y
-ASCENDING (row 0 = south) right after calling that same function --
-required by SFINCS's own m/n indexing convention (row index increases
-northward). Reading sfincs_grid.json's raw (unflipped) transform and then
-directly assigning an actual SfincsModel's own sf.grid.data["dep"] coords
-onto it -- exactly what every downstream consumer of this rule's own
-landuse_on_grid.tif/roughness_on_grid.tif does, by design, for zero-
-reprojection reuse -- silently mismatches row order otherwise: same pixel
-grid, same shape, but row 0 means opposite geographic edges. 2026-08-07e:
-replicate the SAME create_grid_from_region + flipud check
-SfincsModel.grid.create_from_region() does internally (see hydromt_sfincs's
-own regulargrid.py), so this rule's own outputs land in the identical,
-SfincsModel-native (y-ascending) orientation every consumer already
-assumes -- without needing to instantiate an actual SfincsModel (which
-would leave behind its own empty scratch directory, the exact thing rule
-08c's own design avoids).
+The grid is the shared grid definition written by rule build_sfincs_grid
+(08c, {basin_id}_sfincs_grid.json -- see src/grid.py): axis-aligned or
+rotated, stored in SfincsModel's own orientation (row 0 on the origin side,
+row index = SFINCS n). Every SfincsModel in this pipeline (rule
+modelled_depth_estimation's calibration model, rule build_sfincs_skeleton,
+rule build_sfincs) is created from that same definition, so every
+downstream consumer can assign this rule's landuse_on_grid.tif /
+roughness_on_grid.tif onto its own sf.grid.data cell for cell, with zero
+reprojection.
 
 landuse_on_grid.tif becomes the ONLY sea/land/roughness classification any
 downstream consumer resamples from ever again -- coastal protection weir
-tracing (rule modelled_depth_estimation/empirical_depth_estimation, 10),
+tracing (rule modelled_depth_estimation, 10),
 zsini's sea-cell classification (same rules), 13_build_sfincs_skeleton.py's
 own roughness section and weir diagnostics. Previously each of those
 consumers independently reprojected native landuse.tif/roughness.tif a
@@ -59,16 +42,14 @@ detail); only the categorical landuse/roughness/sea classification chain
 is coarse-grid-aligned here.
 """
 
-import json
 from pathlib import Path
 
-import geopandas as gpd
 import numpy as np
 import rasterio
-from hydromt.model.processes.grid import create_grid_from_region
 from rasterio.warp import Resampling, reproject
 
 from src.domain import load_domain
+from src.grid import load_grid_def
 from src.landuse import write_roughness_raster
 from src.log import setup_logging
 from src.plots import plot_landuse, plot_roughness
@@ -80,24 +61,17 @@ wgs84_bounds, domain_crs, domain_poly = load_domain(
     snakemake.input.spec_basins_meta, snakemake.input.domain_gpkg
 )
 
-with open(snakemake.input.grid_resolution) as f:
-    resolution = float(json.load(f)["resolution"])
-delta_domain = gpd.read_file(snakemake.input.domain_gpkg)
+resolution = float(snakemake.params.resolution)
 
-_grid_ds = create_grid_from_region(
-    region={"geom": delta_domain}, res=resolution, crs="utm", region_crs=4326,
-    rotated=False, add_mask=False, align=True,
-)
-# SfincsModel.grid.create_from_region()'s own flip check (regulargrid.py) --
-# SFINCS's own m/n indexing needs y ascending (row 0 = south), opposite of
-# create_grid_from_region's own raw (GDAL-standard, row 0 = north) output.
-if _grid_ds.raster.res[1] < 0:
-    _grid_ds = _grid_ds.raster.flipud()
-grid_transform = _grid_ds.raster.transform
-grid_shape = _grid_ds.raster.shape
+# The shared grid definition (rule build_sfincs_grid, 08c) -- already in
+# SfincsModel's own orientation (row 0 on the origin side), so these rasters
+# line up cell for cell with every model's sf.grid.data.
+grid_def = load_grid_def(snakemake.input.sfincs_grid)
+grid_transform = grid_def["transform"]
+grid_shape = grid_def["shape"]
 log.info(
-    f"Grid built via create_grid_from_region + SfincsModel-native y-ascending flip: "
-    f"{grid_shape[0]}x{grid_shape[1]} cells @ {resolution} m"
+    f"Shared SFINCS grid: {grid_shape[0]}x{grid_shape[1]} cells @ {resolution} m, "
+    f"rotation {grid_def['rotation']:.3f} deg"
 )
 
 with rasterio.open(snakemake.input.landuse) as src:

@@ -18,6 +18,7 @@ A strategy is compared only if it has a max_flood_depth.tif under both
 <event>/adaptation/pre/<strategy>/ and <event>/adaptation/post/<strategy>/.
 """
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +29,11 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import BoundaryNorm, ListedColormap
 import matplotlib as mpl
 
-BASIN = Path(r"D:\GCFM_UU\results\2433835")
+# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
+# Set it once in PowerShell, then restart your terminal (see
+# CONTRIBUTING.md "Local machine paths"):
+#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+BASIN = Path(os.environ["GCFM_RESULTS_DIR"]) / "2433835"
 RUNS = BASIN / "runs"
 EVENTS = ["coast_100", "river_500", "compound_100c_500r"]
 SCALES = ["04", "09", "1"]  # low -> high implementation scale

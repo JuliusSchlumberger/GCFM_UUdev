@@ -17,22 +17,16 @@ rule test_upstream_boundary:
     with no usable calculated depth or velocity is skipped.
 
     Diagnostic-only side branch: only needs the depth-estimated network
-    (rule empirical_depth_estimation or modelled_depth_estimation, both
-    numbered 10, whichever river_processing.depth_method selects) and
+    (rule modelled_depth_estimation, 10) and
     rule 07's (get_boundary_forcings) outputs, and nothing downstream
     depends on this rule's output -- it does NOT gate build_sfincs (13).
 
-    Uses river_network_depth_estimated.gpkg -- the unified output of
-    whichever depth-estimation rule ran, matching whatever network
-    13_build_sfincs.py actually uses.
+    Uses river_network_depth_estimated.gpkg -- the same network
+    13_build_sfincs.py uses.
     """
     input:
         spec_basins_meta        = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
         domain_gpkg             = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
-        # Empirical or SFINCS-modelled (rule 10, whichever alternative ran),
-        # per river_processing.depth_method -- both write the same unified
-        # filename, so this input needs no mode conditional (same as
-        # build_sfincs/13).
         river_network_depth_estimated = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
         river_forcing           = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
         surge_forcing           = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
