@@ -16,23 +16,23 @@
 advance_04:
   measures:
     offshore_barrier: {elevation: 0.41,
-                      locations: adaptation/offshore_island.geojson }
+                      locations: adaptation_ebro/offshore_island.geojson }
     pumps: {discharge: 116,
-            locations: adaptation/advance_pumps.geojson }
+            locations: adaptation_ebro/advance_pumps.geojson }
 
 advance_09:
   measures:
     offshore_barrier: {elevation: 0.91,
-                      locations: adaptation/offshore_island.geojson }
+                      locations: adaptation_ebro/offshore_island.geojson }
     pumps: {discharge: 260,
-            locations: adaptation/advance_pumps.geojson }
+            locations: adaptation_ebro/advance_pumps.geojson }
 
 advance_1:
   measures:
     offshore_barrier: {elevation: 1.02,
-                      locations: adaptation/offshore_island.geojson }
+                      locations: adaptation_ebro/offshore_island.geojson }
     pumps: {discharge: 289,
-            locations: adaptation/advance_pumps.geojson }
+            locations: adaptation_ebro/advance_pumps.geojson }
 
 # # River flood
 # advance_04:
@@ -82,60 +82,60 @@ advance_1:
 # -----------------------------------------------------------------------------------------------
 # GREY PROTECT-OPEN
 # Coastal flood
+grey_protect_open_04:
+  measures:
+    coastal_levee: {elevation: 0.41,
+                    locations: adaptation_ebro/coast_protection_weir_PO.geojson,
+                    merge: false }
+    river_levee: {elevation: 0.46,
+                    locations: adaptation_ebro/river_protection_weir_PO.geojson,
+                    merge: false }
+
+grey_protect_open_09:
+  measures:
+    coastal_levee: {elevation: 0.91,
+                    locations: adaptation_ebro/coast_protection_weir_PO.geojson,
+                    merge: false }
+    river_levee: {elevation: 1.04,
+                    locations: adaptation_ebro/river_protection_weir_PO.geojson,
+                    merge: false }
+
+grey_protect_open_1:
+  measures:
+    coastal_levee: {elevation: 1.02,
+                    locations: adaptation_ebro/coast_protection_weir_PO.geojson,
+                    merge: false }
+    river_levee: {elevation: 1.15,
+                    locations: adaptation_ebro/river_protection_weir_PO.geojson,
+                    merge: false }
+
+# # River flood
 # grey_protect_open_04:
 #   measures:
-#     coastal_levee: {elevation: 0.4,
+#     coastal_levee: {elevation: 0.1,
 #                     locations: adaptation/coast_protection_weir_PO.geojson,
 #                     merge: false }
-#     river_levee: {elevation: 0.94,
+#     river_levee: {elevation: 3.824,
 #                     locations: adaptation/river_protection_weir_PO.geojson,
 #                     merge: false }
 
 # grey_protect_open_09:
 #   measures:
-#     coastal_levee: {elevation: 1,
+#     coastal_levee: {elevation: 0.1,
 #                     locations: adaptation/coast_protection_weir_PO.geojson,
 #                     merge: false }
-#     river_levee: {elevation: 2.124,
+#     river_levee: {elevation: 8.604,
 #                     locations: adaptation/river_protection_weir_PO.geojson,
 #                     merge: false }
 
 # grey_protect_open_1:
 #   measures:
-#     coastal_levee: {elevation: 1.2,
+#     coastal_levee: {elevation: 0.1,
 #                     locations: adaptation/coast_protection_weir_PO.geojson,
 #                     merge: false }
-#     river_levee: {elevation: 2.36,
+#     river_levee: {elevation: 9.56,
 #                     locations: adaptation/river_protection_weir_PO.geojson,
 #                     merge: false }
-
-# River flood
-grey_protect_open_04:
-  measures:
-    coastal_levee: {elevation: 0.1,
-                    locations: adaptation/coast_protection_weir_PO.geojson,
-                    merge: false }
-    river_levee: {elevation: 3.824,
-                    locations: adaptation/river_protection_weir_PO.geojson,
-                    merge: false }
-
-grey_protect_open_09:
-  measures:
-    coastal_levee: {elevation: 0.1,
-                    locations: adaptation/coast_protection_weir_PO.geojson,
-                    merge: false }
-    river_levee: {elevation: 8.604,
-                    locations: adaptation/river_protection_weir_PO.geojson,
-                    merge: false }
-
-grey_protect_open_1:
-  measures:
-    coastal_levee: {elevation: 0.1,
-                    locations: adaptation/coast_protection_weir_PO.geojson,
-                    merge: false }
-    river_levee: {elevation: 9.56,
-                    locations: adaptation/river_protection_weir_PO.geojson,
-                    merge: false }
 
 # # Compound flood
 # grey_protect_open_04:
@@ -172,13 +172,13 @@ grey_protect_open_1:
 NbS_protect_open_1:
   measures:
     nbs_land_reclamation: {attenuation_rate: 0.25, # Wamsley: The relationship indicates that storm surge was reduced by 1 m for every 14.5 km inland
-                           distance: 1000,
-                           locations: adaptation/land_reclamation.geojson,
+                           distance: 2000,
+                           locations: adaptation_ebro/land_reclamation.geojson,
                            target_code: 90, # wetlands
                            min_elevation: 0.2, # floor [m above datum] so foreshore fronted by low mudflats still emerges as land, not just barely-submerged
                            }
     water_retention: {storage_fraction: 1,
-                      locations: adaptation/water_retention_area_river_coast.geojson}
+                      locations: adaptation_ebro/water_retention_area_river_coast.geojson}
 
     # exclude_geom_path: optional path to a polygon file to exclude from the metrics
     # exclude_geom_path: adaptation/exclude_zone.geojson
@@ -196,25 +196,25 @@ NbS_protect_open_1:
 
 NbS_protect_open_09:
   measures:
-    nbs_land_reclamation: {attenuation_rate: 0.22, # Wamsley: The relationship indicates that storm surge was reduced by 1 m for every 14.5 km inland
-                           distance: 900,
-                           locations: adaptation/land_reclamation.geojson,
+    nbs_land_reclamation: {attenuation_rate: 0.25, # Wamsley: The relationship indicates that storm surge was reduced by 1 m for every 14.5 km inland
+                           distance: 1800,
+                           locations: adaptation_ebro/land_reclamation.geojson,
                            target_code: 90, # wetlands
                            min_elevation: 0.2, # floor [m above datum] so foreshore fronted by low mudflats still emerges as land, not just barely-submerged
                            }
     water_retention: {storage_fraction: 0.9,
-                      locations: adaptation/water_retention_area_river_coast.geojson}
+                      locations: adaptation_ebro/water_retention_area_river_coast.geojson}
 
 NbS_protect_open_04:
   measures:
-    nbs_land_reclamation: {attenuation_rate: 0.1, # Wamsley: The relationship indicates that storm surge was reduced by 1 m for every 14.5 km inland
-                           distance: 400,
-                           locations: adaptation/land_reclamation.geojson,
+    nbs_land_reclamation: {attenuation_rate: 0.25, # Wamsley: The relationship indicates that storm surge was reduced by 1 m for every 14.5 km inland
+                           distance: 800,
+                           locations: adaptation_ebro/land_reclamation.geojson,
                            target_code: 90, # wetlands
                            min_elevation: 0.2, # floor [m above datum] so foreshore fronted by low mudflats still emerges as land, not just barely-submerged
                            }
     water_retention: {storage_fraction: 0.4,
-                      locations: adaptation/water_retention_area_river_coast.geojson}
+                      locations: adaptation_ebro/water_retention_area_river_coast.geojson}
 
 
 # -----------------------------------------------------------------------------------------------
@@ -224,26 +224,26 @@ NbS_protect_open_04:
 protect_closed_04:
   measures:
     coastal_levee: {elevation: 0.41,
-                    locations: adaptation_ebro/coastal_protection_weir_PC.geojson,
+                    locations: adaptation_ebro/auto/coastal_protection_weir_PC.geojson,
                     merge: false }
     pumps:         {discharge: 116,
-                    locations: adaptation_ebro/pump_river_mouth.geojson }
+                    locations: adaptation_ebro/auto/pump_river_mouth.geojson }
 
 protect_closed_09:
   measures:
     coastal_levee: {elevation: 0.91,
-                    locations: adaptation_ebro/coastal_protection_weir_PC.geojson,
+                    locations: adaptation_ebro/auto/coastal_protection_weir_PC.geojson,
                     merge: false }
-    pumps:         {discharge: 1184,
-                    locations: adaptation_ebro/pump_river_mouth.geojson }
+    pumps:         {discharge: 260,
+                    locations: adaptation_ebro/auto/pump_river_mouth.geojson }
 
 protect_closed_1:
   measures:
     coastal_levee: {elevation: 1.02,
-                    locations: adaptation_ebro/coastal_protection_weir_PC.geojson,
+                    locations: adaptation_ebro/auto/coastal_protection_weir_PC.geojson,
                     merge: false }
     pumps:         {discharge: 289,
-                    locations: adaptation_ebro/pump_river_mouth.geojson }
+                    locations: adaptation_ebro/auto/pump_river_mouth.geojson }
 
 # River flood
 # protect_closed_04:
