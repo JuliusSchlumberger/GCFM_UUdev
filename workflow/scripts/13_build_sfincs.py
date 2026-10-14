@@ -538,6 +538,17 @@ ax5b.set_ylabel("Discharge (m³/s)")
 ax5b.set_title(f"River discharge ({_n_cross} active GloFAS crossing(s))")
 ax5b.grid(True, alpha=0.3)
 
+# Peak-value boxes: max over all stations/crossings and the full timeseries.
+# The river boundary is a discharge (not water-level) boundary, so its box
+# reports max Q.
+_max_box = dict(boxstyle="round,pad=0.3", fc="white", ec="grey", alpha=0.85)
+if _wl.size:
+    ax5a.text(0.01, 0.97, f"Max WL = {np.nanmax(_wl):.2f} m", transform=ax5a.transAxes,
+              fontsize=9, va="top", ha="left", bbox=_max_box)
+if _dis_active.size:
+    ax5b.text(0.01, 0.97, f"Max Q river = {np.nanmax(_dis_active):,.0f} m³/s",
+              transform=ax5b.transAxes, fontsize=9, va="top", ha="left", bbox=_max_box)
+
 if _tstart_event is not None:
     for _ax in (ax5a, ax5b):
         _ax.axvline(_tstart_event, color="black", linewidth=1.2,

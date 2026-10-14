@@ -21,6 +21,7 @@ from its baseline_excess_volume.json output -- apply_water_retention below
 never touches attribution_mask.tif itself.
 """
 
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -766,10 +767,31 @@ def apply_water_retention(
         raise ValueError("apply_water_retention needs roughness_native_path")
     if not (0.0 <= storage_fraction <= 1.0):
         raise ValueError(f"storage_fraction must be in [0, 1], got {storage_fraction}")
-    if baseline_excess_volume <= 0:
+    if baseline_excess_volume < 0:
         raise ValueError(
-            f"baseline_excess_volume must be > 0, got {baseline_excess_volume}"
+            f"baseline_excess_volume must be >= 0, got {baseline_excess_volume}"
         )
+    if baseline_excess_volume == 0:
+        # No river/compound flooding in this scenario (e.g. a coastal-only
+        # one): this measure stores river water only, so there is nothing to
+        # size the pit against. Leave the model unchanged -- carrying on would
+        # dig nothing (lowering = 0) but still build the weir ring around the
+        # zone, which would keep coastal water out of it. 18a_adapt_pre.py
+        # skips the measure before it gets here; this keeps a direct call
+        # safe too, including the restart copy callers expect at out_rst_path.
+        print(
+            "  WARNING: baseline_excess_volume is 0 (no river/compound flooding in this "
+            "scenario) -- water retention has nothing to store, model left unchanged."
+        )
+        if rst_path is not None:
+            dst = (
+                Path(out_rst_path)
+                if out_rst_path is not None
+                else Path(mod.root.path) / Path(rst_path).name
+            )
+            if Path(rst_path).resolve() != dst.resolve():
+                shutil.copy2(rst_path, dst)
+        return mod
 
     target_volume = storage_fraction * baseline_excess_volume
 

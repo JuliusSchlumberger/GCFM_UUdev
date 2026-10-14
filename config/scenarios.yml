@@ -50,17 +50,6 @@ river_only:
   discharge_multiplier: 1.0
   slr_m: 0
 
-coast_500:
-  surge_rp: 500
-  river_rp: Mean
-  discharge_multiplier: 1
-  slr_m: 0.5
-
-coast_only_500:
-  surge_rp: 500
-  river_rp: Null # No discharge forcing
-  discharge_multiplier: 1
-  slr_m: 0.5
 
 # Coastal flood
 coast_100:
@@ -75,8 +64,31 @@ coast_only_100: # needed? because Null will mean that the dynamics change
   discharge_multiplier: 1.0
   slr_m: 0.5
 
+coast_500:
+  surge_rp: 500
+  river_rp: Mean
+  discharge_multiplier: 1
+  slr_m: 0.5
+
+coast_only_500:
+  surge_rp: 500
+  river_rp: Null # No discharge forcing
+  discharge_multiplier: 1
+  slr_m: 0.5
 
 # River flood
+river_100:
+  surge_rp: Tide
+  river_rp: 100
+  discharge_multiplier: 1.0
+  slr_m: 0
+
+river_only_100: # needed? because Null will mean that the dynamics change
+  surge_rp: Null
+  river_rp: 100
+  discharge_multiplier: 1.0
+  slr_m: 0
+
 river_500:
   surge_rp: Tide
   river_rp: 500
@@ -91,8 +103,14 @@ river_only_500: # needed? because Null will mean that the dynamics change
 
 
 # Compound
-compound_100c_500r:
+compound_100:
   surge_rp: 100
+  river_rp: 100
+  discharge_multiplier: 1.0
+  slr_m: 0.5
+
+compound_500:
+  surge_rp: 500
   river_rp: 500
   discharge_multiplier: 1.0
   slr_m: 0.5

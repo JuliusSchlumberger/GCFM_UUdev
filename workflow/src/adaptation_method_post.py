@@ -333,13 +333,25 @@ def apply_water_retention(
     """
     if not (0.0 <= storage_fraction <= 1.0):
         raise ValueError(f"storage_fraction must be in [0, 1], got {storage_fraction}")
-    if baseline_excess_volume <= 0:
+    if baseline_excess_volume < 0:
         raise ValueError(
-            f"baseline_excess_volume must be > 0, got {baseline_excess_volume}"
+            f"baseline_excess_volume must be >= 0, got {baseline_excess_volume}"
         )
 
     out_path = Path(output_dir) / "max_flood_depth.tif"
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if baseline_excess_volume == 0:
+        # No river/compound flooding in this scenario (e.g. a coastal-only
+        # one): nothing to store -- pass the flood map through unchanged, same
+        # as the preprocessing sibling leaves its model unchanged.
+        print(
+            "  WARNING: baseline_excess_volume is 0 (no river/compound flooding in this "
+            "scenario) -- water retention has nothing to store, flood map left unchanged."
+        )
+        if Path(flood_map_path).resolve() != out_path.resolve():
+            shutil.copy2(flood_map_path, out_path)
+        return {"method": "flood_map", "out_raster": str(out_path)}
 
     with rasterio.open(flood_map_path) as src:
         flood, prof = src.read(1), src.profile

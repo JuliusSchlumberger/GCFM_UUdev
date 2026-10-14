@@ -71,6 +71,7 @@ COMPONENT_OF_MEASURE = {
 
 # 3. Apply each measure in the strategy in the order given in adaptation_strategies.yml 
 touched = set()
+applied = set()  # measures actually applied -- a measure can skip itself (see water_retention)
 for measure_type, raw_params in strategy_def["measures"].items():
     measure_def = measures_def[measure_type]
     resolved = {
@@ -94,6 +95,17 @@ for measure_type, raw_params in strategy_def["measures"].items():
         # only place that reads the resulting JSON. 
         with open(snakemake.input.baseline_excess_volume) as fh:
             resolved["baseline_excess_volume"] = json.load(fh)["baseline_excess_volume"]
+        if resolved["baseline_excess_volume"] == 0:
+            # No river/compound flooding in this scenario (e.g. coastal-only):
+            # nothing to store, so the measure is skipped entirely -- applying
+            # it would dig nothing but still add its weir ring around the zone.
+            # Not counted in `applied`, so the restart/subgrid/weirs below are
+            # handled as if the measure weren't in the strategy.
+            log.warning(
+                "Skipping water_retention: baseline_excess_volume is 0 (no river/compound "
+                "flooding in this scenario) -- nothing to store"
+            )
+            continue
 
     if measure_type == "water_retention":
         # rst_path/ind_path are never strategy-configured -- apply_water_retention
@@ -145,6 +157,7 @@ for measure_type, raw_params in strategy_def["measures"].items():
                         method = "preprocessing", 
                         **resolved)
     touched.update(COMPONENT_OF_MEASURE[measure_type])
+    applied.add(measure_type)
 
 # 3b. apply_retreat writes a reclassified adapted_root/retreat_landuse.tif
 # (urban cells it retreats relabeled to target_code) -- adapt_flood_metrics_pre
@@ -154,7 +167,7 @@ for measure_type, raw_params in strategy_def["measures"].items():
 # landuse through unchanged so the output is always present either way. #TODO: this copies to all paths, see if i can change
 LANDUSE_WRITING_MEASURES = {"retreat", "nbs_land_reclamation"}
 retreat_landuse_path = adapted_root / "retreat_landuse.tif"
-if not (LANDUSE_WRITING_MEASURES & set(strategy_def["measures"])):
+if not (LANDUSE_WRITING_MEASURES & applied):
     shutil.copy2(snakemake.input.landuse, retreat_landuse_path)
 
 # 3c. same pattern for the sea mask: apply_NbS_land_reclamation writes an
@@ -164,7 +177,7 @@ if not (LANDUSE_WRITING_MEASURES & set(strategy_def["measures"])):
 # 18a_adapt_pre.smk is always present either way.
 SEA_MASK_WRITING_MEASURES = {"nbs_land_reclamation"}
 sea_mask_path = adapted_root / "sea_mask.tif"
-if not (SEA_MASK_WRITING_MEASURES & set(strategy_def["measures"])):
+if not (SEA_MASK_WRITING_MEASURES & applied):
     shutil.copy2(snakemake.input.sea_mask, sea_mask_path)
 
 # 3d. same pattern for the restart: apply_water_retention writes a patched
@@ -175,7 +188,7 @@ if not (SEA_MASK_WRITING_MEASURES & set(strategy_def["measures"])):
 # adapt_build_forcing_pre/adapt_run_event_pre below) is always present.
 RESTART_WRITING_MEASURES = {"water_retention"}
 rst_path_local = adapted_root / Path(snakemake.input.rstart).name
-if not (RESTART_WRITING_MEASURES & set(strategy_def["measures"])):
+if not (RESTART_WRITING_MEASURES & applied):
     shutil.copy2(snakemake.input.rstart, rst_path_local)
 
 # 4. Write only touched components - untocuhe ones stay forwarded by reference below, never duplicated

@@ -178,7 +178,7 @@ NbS_protect_open_1:
                            min_elevation: 0.2, # floor [m above datum] so foreshore fronted by low mudflats still emerges as land, not just barely-submerged
                            }
     water_retention: {storage_fraction: 1,
-                      locations: adaptation_ebro/water_retention_area_river_coast.geojson}
+                      locations: adaptation_ebro/water_retention_area_river.geojson}
 
     # exclude_geom_path: optional path to a polygon file to exclude from the metrics
     # exclude_geom_path: adaptation/exclude_zone.geojson
@@ -203,7 +203,7 @@ NbS_protect_open_09:
                            min_elevation: 0.2, # floor [m above datum] so foreshore fronted by low mudflats still emerges as land, not just barely-submerged
                            }
     water_retention: {storage_fraction: 0.9,
-                      locations: adaptation_ebro/water_retention_area_river_coast.geojson}
+                      locations: adaptation_ebro/water_retention_area_river.geojson}
 
 NbS_protect_open_04:
   measures:
@@ -214,7 +214,7 @@ NbS_protect_open_04:
                            min_elevation: 0.2, # floor [m above datum] so foreshore fronted by low mudflats still emerges as land, not just barely-submerged
                            }
     water_retention: {storage_fraction: 0.4,
-                      locations: adaptation_ebro/water_retention_area_river_coast.geojson}
+                      locations: adaptation_ebro/water_retention_area_river.geojson}
 
 
 # -----------------------------------------------------------------------------------------------
