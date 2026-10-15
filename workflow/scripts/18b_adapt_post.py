@@ -21,6 +21,7 @@ import pandas as pd
 import rioxarray as rxr
 
 from src.adaptation_method_post import dispatch_rules
+from src.adaptation_scaling import resolve_forcing_params
 from src.log import setup_logging
 from src.plots import plot_inundation_check
 from src.postprocessing import compute_max_inundation, compute_risk_metrics
@@ -28,13 +29,24 @@ from src.postprocessing import compute_max_inundation, compute_risk_metrics
 log = setup_logging(snakemake.log[0])
 
 # Params -----------------------------------------------------------------------
-strategy_def         = snakemake.params.strategy_def
 measures_def         = snakemake.params.measures_def
 adaptation_root      = Path(snakemake.params.adaptation_root)
 baseline_sfincs_root = Path(snakemake.params.baseline_sfincs_root)
 skeleton_root        = Path(snakemake.params.skeleton_root)
 hmin                 = float(snakemake.params.hmin)
 urban_code           = int(snakemake.params.urban_code)
+
+# Fill in the params adaptation_strategies.yml derives from this scenario's own
+# baseline run -- same resolver as 18a_adapt_pre.py, so pre and post always
+# see the same crest/discharge values. See src/adaptation_scaling.py.
+strategy_def = resolve_forcing_params(
+    snakemake.params.strategy_def,
+    baseline_sfincs_root=baseline_sfincs_root,
+    baseline_map_nc=snakemake.input.baseline_sfincs_map_nc,
+    skeleton_weir=snakemake.input.skeleton_weir,
+    adaptation_root=adaptation_root,
+    log=log,
+)
 
 # snakemake.input.baseline_sfincs_map_nc / .attribution_mask_tif / .measure_data
 # are Snakemake-only dependency tracking -- read implicitly by

@@ -35,14 +35,22 @@ rule adapt_apply_pre:
         # adapted_root -- so adapt_build_forcing_pre/adapt_run_event_pre
         # always read a strategy-local restart instead of the shared one.
         rstart = results_path("{basin_id}/spin_up/" + RST_FNAME),
+        # Run-time-derived strategy params (src.adaptation_scaling): this
+        # scenario's own baseline forcing (sfincs.bzs/.dis sit next to its
+        # sfincs.inp -- the only one of them rule build_sfincs declares),
+        # its own baseline zsmax, and the basin's current-protection weir.
+        baseline_sfincs_inp    = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs.inp"),
+        baseline_sfincs_map_nc = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"),
+        skeleton_weir          = results_path("{basin_id}/sfincs_skeleton/sfincs.weir"),
     output:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sfincs.inp"),
         retreat_landuse = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/retreat_landuse.tif"),
         sea_mask   = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sea_mask.tif"),
         rstart     = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/" + RST_FNAME),
     params:
-        strategy_def       = lambda wildcards: STRATEGY_DEFS[wildcards.strategy],
+        strategy_def       = lambda wildcards: strategy_def_for(wildcards.strategy, wildcards.scenario),
         measures_def       = MEASURES_DEFS,
+        baseline_sfincs_root = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),
         adaptation_root    = ADAPT_CATALOGUE_ROOT,
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         adapted_root       = lambda wildcards: results_path(
@@ -162,7 +170,7 @@ rule adapt_flood_metrics_pre:
         # these -- lets 17_flood_metrics.py optionally exclude a
         # water_retention/water_retention_greening measure's own retention
         # zone from its risk metrics (see that script's own comment).
-        strategy_def    = lambda wildcards: STRATEGY_DEFS[wildcards.strategy],
+        strategy_def    = lambda wildcards: strategy_def_for(wildcards.strategy, wildcards.scenario),
         adaptation_root = ADAPT_CATALOGUE_ROOT,
     log: "logs/{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/17_flood_metrics.log"
     script: "../scripts/17_flood_metrics.py"         # reused, with two extra optional params

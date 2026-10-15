@@ -20,6 +20,22 @@ from src.grid import cell_area_m2
 # 3 = compound
 
 
+def _is_current_protection(elevation) -> bool:
+    """True for the {"current": True, "fill_crest": ...} elevation that
+    src.adaptation_scaling resolves `current_protection` to. A levee kept at
+    current protection changes nothing here: the baseline flood map already
+    contains today's levees, so it never clears any flood class -- it never
+    "holds" in the joint compound check either.
+    """
+    return isinstance(elevation, dict) and bool(elevation.get("current"))
+
+
+def _crest_label(elevation) -> str:
+    return (
+        "current protection" if _is_current_protection(elevation) else f"{elevation}m"
+    )
+
+
 # Advance
 def apply_offshore_barrier(
     flood_map_path: str, scenario_root: str, output_dir: str, elevation: float, **kwargs
@@ -109,21 +125,24 @@ def apply_river_levee(
     riv_wl.read()
     max_river_wl = float(riv_wl.data["point_zs"].max())
 
-    river_holds = elevation >= max_river_wl
+    river_current = _is_current_protection(elevation)
+    river_holds = (not river_current) and elevation >= max_river_wl
 
     coastal_measure = (strategy_measures or {}).get("coastal_levee")
     if coastal_measure is not None:
-        coastal_elevation = float(coastal_measure["elevation"])
+        coastal_elevation = coastal_measure["elevation"]
         wl = mod.get_component("water_level")
         wl.read()
         max_coastal_wl = float(wl.data["bzs"].max())
-        coastal_holds = coastal_elevation >= max_coastal_wl
+        coastal_holds = (not _is_current_protection(coastal_elevation)) and float(
+            coastal_elevation
+        ) >= max_coastal_wl
         compound_holds = river_holds and coastal_holds
         print(
             f"  Joint compound check: river {'holds' if river_holds else 'overtopped'} "
-            f"(H={elevation}m vs river WL={max_river_wl:.2f}m), coastal "
+            f"(H={_crest_label(elevation)} vs river WL={max_river_wl:.2f}m), coastal "
             f"{'holds' if coastal_holds else 'overtopped'} "
-            f"(H={coastal_elevation}m vs surge={max_coastal_wl:.2f}m) "
+            f"(H={_crest_label(coastal_elevation)} vs surge={max_coastal_wl:.2f}m) "
             f"-> compound flooding {'removed' if compound_holds else 'kept at risk'}"
         )
     else:
@@ -151,6 +170,10 @@ def apply_river_levee(
             )
         print(
             f"  Levee sufficient (H={elevation}m >= river water level ={max_river_wl:.2f}m) = all river flooding removed"
+        )
+    elif river_current:  # today's levee is already in the baseline flood map
+        print(
+            "  River levee at current protection = no change to the baseline flooding"
         )
     else:  # if the levee is overtopped, we keep all flooding
         print(
@@ -467,7 +490,13 @@ def apply_coastal_levee(
     )
     classes_to_clear = [2] if has_sibling_river_levee else [2, 3]
 
-    if elevation >= max_wl:
+    if _is_current_protection(
+        elevation
+    ):  # today's levee is already in the baseline flood map
+        print(
+            "  Coastal levee at current protection = no change to the baseline flooding"
+        )
+    elif elevation >= max_wl:
         with rasterio.open(
             mask_path
         ) as attr_src:  # opens attribution mask which labels each pixel by flood source

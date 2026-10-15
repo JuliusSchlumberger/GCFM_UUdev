@@ -29,77 +29,92 @@
 # Mean = mean river discharge
 # Tide = mean tidal conditions for surge (average tide from the basin's storm_tide_hydrographs.nc, same window as the storm runs)
 
+# event (required for adaptation runs): coastal | river | compound -- selects which
+# per-event scale-1 values in adaptation_strategies.yml apply to this scenario.
+
+
 default:                  # what plain `snakemake build` runs (no target_scenarios given)
   surge_rp: 250
   river_rp: 50
   discharge_multiplier: 1.0
   slr_m: 0.5
-
+  event: compound
 
 # Attribution runs (also uses spinup for the "always flooded" class)
-# Maybe only one is needed as baseline? for mean and tide for both drivers?
 coast_only:
   surge_rp: Tide
   river_rp: Null # No discharge forcing
   discharge_multiplier: 1.0
   slr_m: 0
+  event: coastal
 
 river_only:
   surge_rp: Null # No surge forcing
   river_rp: Mean
   discharge_multiplier: 1.0
   slr_m: 0
+  event: river
 
-
+# ------------------------------------------------------------------------------------------
 # Coastal flood
 coast_100:
   surge_rp: 100
   river_rp: Mean
   discharge_multiplier: 1.0
   slr_m: 0.5
+  event: coastal
 
 coast_only_100: # needed? because Null will mean that the dynamics change
   surge_rp: 100
   river_rp: Null # No discharge forcing
   discharge_multiplier: 1.0
   slr_m: 0.5
+  event: coastal
 
 coast_500:
   surge_rp: 500
   river_rp: Mean
   discharge_multiplier: 1
   slr_m: 0.5
+  event: coastal
 
 coast_only_500:
   surge_rp: 500
   river_rp: Null # No discharge forcing
   discharge_multiplier: 1
   slr_m: 0.5
+  event: coastal
 
+
+# ----------------------------------------------------------------------------------------
 # River flood
 river_100:
   surge_rp: Tide
   river_rp: 100
   discharge_multiplier: 1.0
   slr_m: 0
+  event: river
 
 river_only_100: # needed? because Null will mean that the dynamics change
   surge_rp: Null
   river_rp: 100
   discharge_multiplier: 1.0
   slr_m: 0
+  event: river
 
 river_500:
   surge_rp: Tide
   river_rp: 500
   discharge_multiplier: 1.0
   slr_m: 0
+  event: river
 
 river_only_500: # needed? because Null will mean that the dynamics change
   surge_rp: Null
   river_rp: 500
   discharge_multiplier: 1.0
   slr_m: 0
+  event: river
 
 
 # Compound
@@ -108,9 +123,11 @@ compound_100:
   river_rp: 100
   discharge_multiplier: 1.0
   slr_m: 0.5
+  event: compound
 
 compound_500:
   surge_rp: 500
   river_rp: 500
   discharge_multiplier: 1.0
   slr_m: 0.5
+  event: compound

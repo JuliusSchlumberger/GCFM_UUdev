@@ -21,6 +21,7 @@ from pathlib import Path
 from hydromt_sfincs import SfincsModel
 
 from src.adaptation_method_pre import dispatch_rules
+from src.adaptation_scaling import resolve_forcing_params
 from src.log import setup_logging
 from src.sfincs_run import parse_sfincs_inp, forward_geometry_files, write_weir_file
 
@@ -30,11 +31,22 @@ log = setup_logging(snakemake.log[0])
 skeleton_inp_path = Path(snakemake.input.skeleton_inp)
 baseline_flood_map_path = Path(snakemake.input.baseline_flood_map)
 
-strategy_def = snakemake.params.strategy_def
 measures_def = snakemake.params.measures_def
 adaptation_root = Path(snakemake.params.adaptation_root)
 skeleton_root = Path(snakemake.params.skeleton_root)
 adapted_root = Path(snakemake.params.adapted_root)
+
+# Fill in the params adaptation_strategies.yml derives from this scenario's own
+# baseline run (max_coastal_waterlevel, max_discharge, max_river_waterlevel,
+# current_protection) -- see src/adaptation_scaling.py.
+strategy_def = resolve_forcing_params(
+    snakemake.params.strategy_def,
+    baseline_sfincs_root=snakemake.params.baseline_sfincs_root,
+    baseline_map_nc=snakemake.input.baseline_sfincs_map_nc,
+    skeleton_weir=snakemake.input.skeleton_weir,
+    adaptation_root=adaptation_root,
+    log=log,
+)
 
 # 1. Read original skeleton sfincs model
 adapted_root.mkdir(parents=True, exist_ok=True)
