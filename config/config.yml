@@ -104,8 +104,10 @@ boundary_forcings:
       enabled: true
       window_hr: 60          # event = -60..+60 h around the peak -> 120 h event window; also the length of the surge shapes
       window_overrides_hr:   # optional per-basin window (h), keyed by basin id -- surges last hours on
-        2433835: 70          # some coasts and days on others. Changing a basin's window reruns its
+        2433835: 168          # some coasts and days on others. Changing a basin's window reruns its
                              # storm_tide_hydrographs and rule 07 onward, not the GTSM extraction.
+      # KGL: Changed from 70 to 168 to ensure the whole falling limb is included in the timerseires
+
       ramp_hours: 6.0        # boundary blends from the calm lead-in level into the tide over the window's first hours (surge is still 0 there)
       max_match_km: 0.1      # coincidence tolerance: COAST-RP's coastal stations ARE GTSM output stations
       # One surge shape per return period, from the historic events whose peak is close to what
@@ -200,6 +202,13 @@ sfincs:
     flat_boundary_point_spacing_m: 5000   # boundary-point spacing along the waterlevel mask, used only when mode="river_only"
     compound:
       lag_hr: 0 # Shifts the river discharge timeseries relative to the surge timeseries
+    slr_ramp_hours: 24  # the spin-up is shared by all scenarios and has no SLR, so a scenario's
+                        # slr_m would otherwise hit the restart as a step at the event start (a 0.34 m
+                        # step overtopped ~1670 of 1789 coastal weir segments in basin 2433835 within
+                        # the first hour). The SLR term instead rises linearly from 0 over this many
+                        # hours after the event start; must end before the surge/river peak.
+                        # 0 = old behaviour (step). A param of rule 13 only: changing it rebuilds
+                        # the scenarios, never rule 07 or the spin-up.
   grid:
     resolution_m: 100            # main-grid cell size dx (m) for every basin. The subgrid pixel is
                                  # dx / subgrid.nr_subgrid_pixels (10 m at the defaults); channels

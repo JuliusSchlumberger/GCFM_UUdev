@@ -95,6 +95,7 @@ rule adapt_build_forcing_pre:
         river_event = config["boundary_forcings"]["river"]["event_hydrograph"],
         slr_enabled = config["boundary_forcings"]["surge"]["slr"]["enabled"],
         slr_m = lambda wildcards: scenario_params(wildcards.scenario)["slr_m"],
+        slr_ramp_hours = config["sfincs"]["boundary_setup"]["slr_ramp_hours"],
         flat_boundary_point_spacing_m = config["sfincs"]["boundary_setup"]["flat_boundary_point_spacing_m"],
         waterlevel_buffer_m = config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
         # only these two differ from build_sfincs's own params:

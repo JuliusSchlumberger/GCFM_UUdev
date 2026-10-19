@@ -46,7 +46,7 @@ NbS_protect_open:
                            distance: 2000,
                            locations: adaptation_ebro/land_reclamation.geojson,
                            target_code: 90, # wetlands
-                           min_elevation: 0.2, # floor [m above datum] so foreshore fronted by low mudflats still emerges as land, not just barely-submerged
+                           min_elevation: 0, # floor [m above datum] so foreshore fronted by low mudflats still emerges as land, not just barely-submerged
                            }
     water_retention: {storage_fraction: 1,
                       locations: adaptation_ebro/water_retention_area_river.geojson}

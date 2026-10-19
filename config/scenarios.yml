@@ -37,7 +37,7 @@ default:                  # what plain `snakemake build` runs (no target_scenari
   surge_rp: 250
   river_rp: 50
   discharge_multiplier: 1.0
-  slr_m: 0.5
+  slr_m: 0.3
   event: compound
 
 # Attribution runs (also uses spinup for the "always flooded" class)
@@ -57,63 +57,35 @@ river_only:
 
 # ------------------------------------------------------------------------------------------
 # Coastal flood
-coast_100:
+coast_100_03SLR:
   surge_rp: 100
   river_rp: Mean
   discharge_multiplier: 1.0
-  slr_m: 0.5
+  slr_m: 0.3
   event: coastal
 
 coast_only_100: # needed? because Null will mean that the dynamics change
   surge_rp: 100
   river_rp: Null # No discharge forcing
   discharge_multiplier: 1.0
-  slr_m: 0.5
-  event: coastal
-
-coast_500:
-  surge_rp: 500
-  river_rp: Mean
-  discharge_multiplier: 1
-  slr_m: 0.5
-  event: coastal
-
-coast_only_500:
-  surge_rp: 500
-  river_rp: Null # No discharge forcing
-  discharge_multiplier: 1
-  slr_m: 0.5
+  slr_m: 0.3
   event: coastal
 
 
 # ----------------------------------------------------------------------------------------
 # River flood
-river_100:
+river_100_03SLR:
   surge_rp: Tide
   river_rp: 100
   discharge_multiplier: 1.0
-  slr_m: 0
+  slr_m: 0.3
   event: river
 
 river_only_100: # needed? because Null will mean that the dynamics change
   surge_rp: Null
   river_rp: 100
   discharge_multiplier: 1.0
-  slr_m: 0
-  event: river
-
-river_500:
-  surge_rp: Tide
-  river_rp: 500
-  discharge_multiplier: 1.0
-  slr_m: 0
-  event: river
-
-river_only_500: # needed? because Null will mean that the dynamics change
-  surge_rp: Null
-  river_rp: 500
-  discharge_multiplier: 1.0
-  slr_m: 0
+  slr_m: 0.3
   event: river
 
 
@@ -122,12 +94,12 @@ compound_100:
   surge_rp: 100
   river_rp: 100
   discharge_multiplier: 1.0
-  slr_m: 0.5
+  slr_m: 0.3
   event: compound
 
 compound_500:
   surge_rp: 500
   river_rp: 500
   discharge_multiplier: 1.0
-  slr_m: 0.5
+  slr_m: 0.3
   event: compound
