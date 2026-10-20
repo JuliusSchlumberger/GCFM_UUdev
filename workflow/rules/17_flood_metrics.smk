@@ -1,16 +1,12 @@
-# Rule: analysis-ready flood products per scenario, from rule 16's finished
-# event run. Cheap postprocessing only -- never re-runs SFINCS. The GeoTIFF is
-# the input for flood-source attribution and adaptation measures later.
+# Rule: max flood depth GeoTIFF and risk metrics per scenario from rule 16's
+# event run; the GeoTIFF feeds attribution and adaptation.
 
 rule compute_flood_metrics:
     input:
         sfincs_map_nc = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"),
-        # Raw landuse -- compute_risk_metrics' own urban_code (50) check,
-        # unaffected by the weir's sea/land correction either way.
+        # Raw landuse for the urban_code (50) check.
         landuse       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
-        # Corrected sea/land classification (see rule run_spinup's own
-        # comment) -- cells the final weir protects are cleared to "land",
-        # not masked as open sea in these flood metrics.
+        # Corrected sea/land classification; weir-protected cells are land.
         sea_mask      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
         delta_polygon = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
     output:

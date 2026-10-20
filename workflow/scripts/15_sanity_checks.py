@@ -1,20 +1,9 @@
-"""
-15_sanity_checks.py — Sanity checks for the baseline (spinup) SFINCS condition.
+"""Run sanity checks on the spin-up SFINCS output.
 
-Check 1 — Inundation ratio
---------------------------
-Fraction of land-domain pixels with max inundation depth > `min_inundation_depth_m`.
-
-Method:
-  1. Compute the downscaled max inundation depth (`da_hmax`) and the bed-level
-     reference grid (`da_dep`), both masked to exclude open sea via the
-     corrected sea mask, via `src.postprocessing.compute_max_inundation` —
-     see that function's docstring for the full method (SfincsModel loading,
-     subgrid-aware bed level, `downscale_floodmap`, sea mask).
-  2. Denominator: non-null pixels in `da_dep` = total land-domain pixels.
-  3. Numerator:   non-null pixels in `da_hmax` = flooded land pixels above hmin.
-
-Additional checks can be appended below and wired to new outputs in the rule.
+Run by rule sanity_checks. Check 1, inundation ratio: fraction of land-domain
+pixels (non-null in the sea-masked, subgrid-downscaled bed level) whose max
+inundation depth exceeds min_inundation_depth_m. Also renders the spin-up
+flood-progression animation.
 """
 
 from pathlib import Path
@@ -31,10 +20,10 @@ from src.postprocessing import compute_flood_progression, compute_max_inundation
 
 log = setup_logging(snakemake.log[0])
 
-# ── inputs / params ───────────────────────────────────────────────────────────
+# ── inputs / params ──
 sfincs_map_nc_path = Path(snakemake.input.sfincs_map_nc)
 sea_mask_path      = Path(snakemake.input.sea_mask)
-land_polygons_path = Path(snakemake.input.land_mask_on_grid)  # grid-aligned land mask, plot background
+land_polygons_path = Path(snakemake.input.land_mask_on_grid)  # plot background
 river_network_path = Path(snakemake.input.clean_river_network)
 domain_gpkg_path   = Path(snakemake.input.domain_gpkg)
 plot_out_path      = Path(snakemake.output.plot_inundation_ratio)
@@ -44,7 +33,6 @@ skeleton_root           = Path(snakemake.params.skeleton_root)
 threshold_m             = float(snakemake.params.min_inundation_depth_m)
 animation_fps           = int(snakemake.params.animation_fps)
 
-# Load domain polygon in WGS84 for overlay plots.
 _domain_gdf = gpd.read_file(domain_gpkg_path)
 if _domain_gdf.crs is not None and _domain_gdf.crs.to_epsg() != 4326:
     _domain_gdf = _domain_gdf.to_crs("EPSG:4326")
@@ -55,15 +43,13 @@ plot_out_path.parent.mkdir(parents=True, exist_ok=True)
 basin_id   = spin_up_root.parent.name
 spinup_dir = spin_up_root
 
-# ── guard: empty sentinel from rule 14 ───────────────────────────────────────
+# ── guard: empty sentinel from rule 14 ──
 if sfincs_map_nc_path.stat().st_size == 0:
     log.warning(f"{sfincs_map_nc_path} is empty — SFINCS produced no map output; skipping")
     plot_out_path.touch()
 else:
-    # ── 1. compute max inundation depth & land-domain reference grid ─────────
-    # skeleton_root (NOT spinup_dir) is where the subgrid reference raster
-    # actually lives -- spin_up only references it via a relative path in
-    # its own sfincs.inp, it isn't physically present under spin_up_root.
+    # The subgrid reference raster lives in skeleton_root; spin_up only
+    # references it by relative path.
     da_hmax, da_dep = compute_max_inundation(
         spinup_dir, skeleton_root, sea_mask_path,
         hmin=threshold_m,
@@ -75,7 +61,6 @@ else:
     else:
         log.info(f"da_hmax shape: {da_hmax.shape}")
 
-        # ── 2. statistics ─────────────────────────────────────────────────────
         n_land    = int(da_dep.notnull().sum().item())
         n_flooded = int(da_hmax.notnull().sum().item())
         frac      = n_flooded / n_land if n_land > 0 else 0.0
@@ -93,10 +78,6 @@ else:
             f"area={flooded_km2:.1f}/{land_km2:.1f} km²"
         )
 
-        # ── 3. plot ───────────────────────────────────────────────────────────
-        # Pass the DataArray directly — plot_inundation_check uses
-        # da_hmax.plot() which reads coordinate metadata and handles
-        # north-up orientation automatically.
         plot_inundation_check(
             da_hmax, threshold_m, n_flooded, n_land,
             str(land_polygons_path), str(river_network_path),
@@ -104,10 +85,8 @@ else:
         )
         log.info(f"Inundation ratio plot written: {plot_out_path}")
 
-# ── animation: flood progression ─────────────────────────────────────────────
-# compute_flood_progression reads zs (instantaneous water level) from the
-# spinup sfincs_map.nc — available because dtmapout is now set to a finite
-# interval in the spinup inp.  Returns None when zs is absent (e.g. old runs).
+# ── animation: flood progression ──
+# Needs zs in sfincs_map.nc (finite dtmapout in the spin-up inp); None otherwise.
 animation_out_path.parent.mkdir(parents=True, exist_ok=True)
 if sfincs_map_nc_path.stat().st_size == 0:
     log.warning("sfincs_map.nc is empty — skipping flood animation")

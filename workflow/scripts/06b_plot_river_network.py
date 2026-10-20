@@ -1,11 +1,7 @@
-"""
-06b_plot_river_network.py -- the clipped river network's diagnostic map.
+"""Plot the clipped river network; run by rule plot_river_network.
 
-Split out of 06_get_river_network.py so that the clip itself can run BEFORE
-rule prepare_landuse (02b), which uses the network as a barrier when
-deriving open sea. This plot needs rule get_land_polygons' (03) land mask
-for its background, and 03 reads 02b's output -- so only the plot, not the
-clip, may sit downstream of 03.
+Separate from rule 06 because the background needs rule 03's land mask, which
+depends on rule 02b, which reads the clipped network.
 """
 
 from src.domain import load_domain

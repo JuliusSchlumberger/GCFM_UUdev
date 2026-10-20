@@ -1,19 +1,14 @@
-"""
-05c_get_roughness.py -- Manning's n on elevation_merged.tif's grid.
+"""Write Manning's n on the elevation grid; run by rule get_roughness.
 
-Area-averaged from the land-use SOURCE at its own resolution (rule
-prepare_landuse, 02b), never reclassified from the already-upscaled
-landuse.tif: n is a continuous quantity, and taking the dominant class'
-value hands a cell that is 60% water and 40% built-up water's 0.02.
+Area-averaged from the land-use source at its own resolution, not reclassified
+from the upscaled landuse.tif: n is continuous, and the dominant class would give
+a 60% water / 40% built-up cell water's 0.02.
 
-Written on the elevation grid SUBDIVIDED to about the source's own pixel
-size (refine_to_source): ~10 m under ESA WorldCover, the unchanged ~31 m
-elevation grid under LC100, whose 100 m pixels carry no finer detail to
-keep. hydromt samples this raster per SUBGRID pixel (7 m at
-nr_subgrid_pixels=10) and averages it by conveyance itself, so at 10 m
-those 100 samples per model cell see ~49 distinct values instead of ~5.
-Staying an exact subdivision of the elevation grid keeps CRS and alignment
-with elevation/subgrid. See src.landuse.write_roughness_raster.
+The grid is the elevation grid subdivided to about the source pixel size: ~10 m
+under ESA WorldCover, the unchanged ~31 m grid under LC100 (100 m pixels). hydromt
+samples it per subgrid pixel (7 m at nr_subgrid_pixels=10) and averages by
+conveyance, so at 10 m the 100 samples per cell see ~49 distinct values, not ~5.
+An exact subdivision keeps CRS and alignment with elevation/subgrid.
 """
 
 import rasterio

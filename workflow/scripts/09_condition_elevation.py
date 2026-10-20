@@ -1,3 +1,5 @@
+"""Enforce monotonic river elevations and resample to the SFINCS grid; rule enforce_river_monotonicity."""
+
 import json
 from pathlib import Path
 
@@ -18,10 +20,8 @@ log = setup_logging(snakemake.log[0])
 profiler = ScriptProfiler(snakemake)
 enforce_river_monotonicity = profiler.wrap(enforce_river_monotonicity)
 
-# ── run conditioning ──────────────────────────────────────────────────────────
-# river_network_clean.gpkg (rule 08) -- topology/width only (reach_id,
-# rch_id_dn, is_seed, width); enforce_river_monotonicity never reads
-# rivdph, so conditioning no longer waits on either depth-estimation branch.
+# Conditioning reads topology/width only (reach_id, rch_id_dn, is_seed, width),
+# never rivdph, so it does not depend on depth estimation.
 
 rivers = gpd.read_file(snakemake.input.river_network)
 log.info(f"Loaded {len(rivers)} reaches from river_network_clean.gpkg")
@@ -39,21 +39,14 @@ log.info(
 )
 log.info(f"Max conditioned centerline elevation: {centerline_max_m:.2f} m")
 
-# Used by rule modelled_depth_estimation (10)/13 to set an elevation ceiling on the active-cell mask
-# (sfincs.grid.active_mask.elevation_buffer_m added on top there) -- see
-# enforce_river_monotonicity's own docstring for why the network's own
-# seed reach(es) always attain this maximum.
+# Elevation ceiling for the active-cell mask in rules 10/13
+# (plus sfincs.grid.active_mask.elevation_buffer_m); seed reaches attain it.
 with open(snakemake.output.river_elevation_max, "w") as f:
     json.dump({"river_elevation_max_m": centerline_max_m}, f, indent=2)
 log.info(f"Written: {snakemake.output.river_elevation_max}")
 
-# ── resample onto the shared SFINCS grid ─────────────────────────────────────
-# Single shared coarse "background" elevation layer for rule
-# modelled_depth_estimation (10, modelled depth calibration) and rule 13
-# (production build)'s own
-# sf.elevation.create() base layer -- resampling ONCE, here, guarantees they
-# use the identical coarse raster, rather than each independently letting
-# HydroMT resample from elevation_conditioned.tif itself.
+# Resample once onto the shared SFINCS grid so rules 10 and 13 use the
+# identical coarse base layer for sf.elevation.create().
 grid_def = load_grid_def(snakemake.input.sfincs_grid)
 grid_transform = grid_def["transform"]
 dst_crs = RasterioCRS.from_string(grid_def["crs"])
@@ -65,17 +58,10 @@ with rasterio.open(snakemake.output.elevation_conditioned) as src:
     src_nodata = src.nodata if src.nodata is not None else -9999.0
     src_bounds = rasterio.transform.array_bounds(src.height, src.width, src_transform)
 
-# Extend the destination raster to cover the FULL native elevation extent
-# (not just the exact SFINCS grid bounds), snapped to the grid's own
-# resolution/phase -- HydroMT's elevation.create() reads its own RasterDataset
-# source with a margin beyond the model grid for safe reprojection/
-# interpolation at the edges; cropping tightly to the grid bounds would leave
-# that margin as nodata, which HydroMT has no valid data to fall back on
-# (triggers a "Dataset ... does not fully cover bbox ..." warning and
-# spurious flooding from the resulting gap).
-# elevation_merged.tif/elevation_conditioned.tif already carry a generous
-# buffer around the domain (rule 05a), far more than HydroMT's own margin
-# needs, so aligning to that full extent is a safe, simple fix.
+# Cover the full native elevation extent, snapped to the grid phase, not just
+# the grid bounds: HydroMT's elevation.create() reads a margin beyond the grid,
+# and a nodata margin triggers "Dataset ... does not fully cover bbox ..." and
+# spurious flooding. Rule 05a's buffer exceeds HydroMT's margin.
 inv_grid = ~grid_transform
 corners = [
     (src_bounds[0], src_bounds[1]), (src_bounds[2], src_bounds[1]),

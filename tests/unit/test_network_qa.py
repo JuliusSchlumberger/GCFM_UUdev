@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 import xarray as xr
 from shapely.geometry import LineString
-
 from src.river_network import (
     accumulate_discharge,
     build_downstream_adjacency,
@@ -21,9 +20,6 @@ def _with(net, **cols):
     for col, values in cols.items():
         net[col] = [values.get(r, 0) for r in net["reach_id"]]
     return net
-
-
-# ── width QA ──────────────────────────────────────────────────────────────
 
 
 def _widths(width, max_width):
@@ -49,9 +45,6 @@ def test_genuine_inverted_pair_is_still_swapped():
 def test_fill_check_can_be_disabled():
     out = fix_width_max_width_order(_widths(389.0, 30.0), max_width_fill_m=None)
     assert out["width"].iloc[0] == 30.0
-
-
-# ── canals ────────────────────────────────────────────────────────────────
 
 
 def test_canal_arm_gets_no_share_and_river_arm_takes_all(network):
@@ -101,9 +94,6 @@ def test_canal_on_a_confluence_downstream_does_not_count(network):
     )
     net = _with(net, lakeflag={"5": 2})
     assert canal_excluded_arms(net, build_downstream_adjacency(net)) == set()
-
-
-# ── seeds that flow out ───────────────────────────────────────────────────
 
 
 def test_seed_fed_from_upstream_is_outward(network):

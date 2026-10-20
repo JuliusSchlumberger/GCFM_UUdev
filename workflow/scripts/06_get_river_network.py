@@ -1,13 +1,8 @@
-"""
-06_get_river_network.py -- clip the global SWORD network to the domain.
+"""Clip the global SWORD river network to the domain; run by rule get_river_network.
 
-Clip only: the network's own diagnostic map is rule plot_river_network
-(06b). The split exists because this output is an INPUT of rule
-prepare_landuse (02b) -- which derives open sea by flood-filling
-WorldCover's water class from the domain border with the river network as a
-barrier -- while the plot needs rule get_land_polygons' (03) own mask for
-its background, and 03 in turn reads 02b's output. Keeping the clip free of
-that dependency is what breaks the cycle.
+Clip only, no plot: this output is the barrier for rule prepare_landuse's (02b)
+open-sea flood fill from the domain border, while the plot (06b) needs rule 03's
+mask, which reads 02b's output. Keeping the plot out breaks the cycle.
 """
 
 from pathlib import Path
@@ -30,7 +25,7 @@ wgs84_bounds, domain_crs, _domain_poly = load_domain(
 )
 log.info(f"Domain WGS84 bounds: {wgs84_bounds}")
 
-# ── 1. Load and clip river network ────────────────────────────────────────────
+# Load and clip river network
 
 clip_gdf = gpd.GeoDataFrame(geometry=[shapely_box(*wgs84_bounds)], crs="EPSG:4326")
 
@@ -48,7 +43,7 @@ clipped_rivers = gpd_clip(river_gdf, clip_src).copy()
 log.info(f"Clipped to {len(clipped_rivers)} reach(es)")
 
 
-# ── 2. Write output ───────────────────────────────────────────────────────────
+# Write output
 
 Path(snakemake.output.spec_river_network).parent.mkdir(parents=True, exist_ok=True)
 clipped_rivers.to_file(snakemake.output.spec_river_network, driver="GPKG")

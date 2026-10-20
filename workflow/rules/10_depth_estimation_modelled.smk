@@ -1,60 +1,36 @@
 # Rule: SFINCS-based river depth and dike-crest calibration -- the only way
 # river depth and weir crests are set.
 #
-# Runs after enforce_river_monotonicity (09): needs the *conditioned*
-# elevation as the (un-excavated) calibration channel bed -- both the
-# native-resolution version (subgrid's own fine sub-cell source, unchanged)
-# and the shared SFINCS-grid-resolution version (rule enforce_river_monotonicity's
-# second output, this rule's own sf.elevation.create() base layer, identical
-# to what rule 13's production build uses). See 10_depth_estimation_modelled.py's
-# module docstring for the full design.
+# The conditioned elevation (rule 09) is the un-excavated calibration bed: the
+# native version for the subgrid, the SFINCS-grid version as the
+# sf.elevation.create() base layer, identical to rule 13's.
 
 rule modelled_depth_estimation:
     input:
         elevation_conditioned = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned.tif"),
         elevation_conditioned_sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"),
-        # Max conditioned river centerline elevation (rule
-        # enforce_river_monotonicity, 09) -- used to set the active-cell
-        # mask's own elevation ceiling, matching rule 13's production
-        # build (see active_mask params below).
+        # Sets the active-cell elevation ceiling, as in rule 13.
         river_elevation_max = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_elevation_max.json"),
         clean_river_network      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
         river_forcing           = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
         protection_levels        = results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"),
-        # Native resolution -- subgrid table only (needs sub-cell
-        # detail, same as elevation). The main regular-grid "manning"
-        # field and this rule's own zsini/weir/ocean_mask sections all
-        # use roughness_on_grid/landuse_on_grid below instead (rule
-        # grid_align_landuse, 09b) -- see that rule's own module
-        # docstring for why every consumer of the landuse/roughness
-        # classification now shares one canonical coarse-grid resample.
+        # Native resolution, subgrid table only; the regular-grid manning field
+        # and the zsini/weir/ocean_mask sections use the grid-aligned rasters.
         roughness                = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"),
-        # Grid-aligned land mask (rule grid_align_landuse) -- plot
-        # background only; the water-level boundary uses landuse_on_grid
-        # itself (see src.raster.restrict_waterlevel_boundary_to_sea).
+        # Plot background only; the water-level boundary uses landuse_on_grid.
         land_mask_on_grid        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
         domain_gpkg              = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
-        # THE grid definition (rule build_sfincs_grid, 08c) this rule's own
-        # calibration model is created from -- see src/grid.py.
         sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sfincs_grid.json"),
         spec_basins_meta         = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
-        # Already rasterized directly onto this rule's own grid (rule
-        # grid_align_landuse, 09b) -- read with zero further
-        # reprojection for the weir/ocean_mask/zsini sections below.
+        # On this rule's grid; no reprojection.
         landuse_on_grid          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_on_grid.tif"),
         roughness_on_grid        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness_on_grid.tif"),
         # Real, steady coastal baseline (mean sea level + SLR/MDT
-        # correction) for the water-level boundary, see
-        # 10_depth_estimation_modelled.py.
+        # correction) for the water-level boundary.
         surge_forcing            = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
-        # Points where a non-seed, non-mouth, non-bifurcation reach
-        # crosses the delta polygon's own outline (rule clean_river_network) --
-        # a genuine place flow exits the modelled network without
-        # reaching a real coastal mouth (e.g. a distributary clipped by
-        # the domain boundary in a complex, multi-channel delta).
-        # Registered as a free outflow boundary below, matching rule
-        # 13's own production build exactly -- always present (possibly
-        # empty).
+        # Where a non-seed, non-mouth, non-bifurcation reach crosses the delta
+        # outline (flow leaves without reaching a coastal mouth): free outflow
+        # boundary, as in rule 13. Always present, possibly empty.
         delta_outflow_points     = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_outflow_points.gpkg"),
         # method gvf only: unconditioned DEM (bed floor of the burn, beds of
         # water bodies) and the geoid models that put SWORD's EGM2008 wse in
@@ -65,55 +41,24 @@ rule modelled_depth_estimation:
         egm2008_gfc              = catalogue_path("egm2008_geoid"),
     output:
         depth_estimated_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
-        # THE burned river channel, from round 0's own per-cell excavation
-        # depth (the exact excavation rounds 1 and 2 simulated with): rule 13
-        # imports both files, never re-derives its own burn from the
-        # flattened rivdph/weir_crest_calibrated columns.
-        # - river_burned_subgrid: on the model's own subgrid pixel grid
-        #   (main grid subdivided by nr_subgrid_pixels), read by
-        #   sf.subgrid.create() with no resampling.
-        # - river_burned_dem_sfincs_grid: the main-grid "dep" of the channel
-        #   cells, the per-cell MEAN of the subgrid pixels with that burn in
-        #   place.
+        # The burned channel from round 0's per-cell excavation (as simulated
+        # in rounds 1 and 2); rule 13 imports it rather than re-deriving it.
+        # - river_burned_subgrid: on the subgrid pixel grid (main grid / nr_subgrid_pixels).
+        # - river_burned_dem_sfincs_grid: per-cell mean of those subgrid pixels.
         river_burned_subgrid          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_subgrid.tif"),
         river_burned_dem_sfincs_grid  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"),
         # Channel Manning n on the subgrid pixel grid (method gvf: n under the
         # burned channel, nodata elsewhere; method modelled: all nodata).
         # Listed first in every subgrid roughness_list, so it wins where valid.
         river_roughness_subgrid       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_roughness_subgrid.tif"),
-        # The traced weir with
-        # every edge's own crest from round 1's water level on its own
-        # water side (the same weir round 2 verified), not re-derivable
-        # from any per-reach scalar. See rule 13's own import of this
-        # file.
+        # Traced weir; each edge's crest from round 1's water level on its
+        # water side (verified in round 2), not derivable from per-reach values.
         coastal_protection_weir       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"),
-        # THE single sea/land classification every downstream consumer
-        # reads directly, zero further reprojection: this rule's own
-        # zsini (13_build_sfincs_skeleton.py) AND flood-diagnostic
-        # consumers downstream (rules 14/15/16/17, via
-        # src.postprocessing's own sea_mask_path argument -- those
-        # reproject this coarse, grid-aligned raster onto their own
-        # subgrid-/cell-resolution output grid, which is well-defined
-        # since subgrid is an exact integer subdivision of THIS grid,
-        # sharing its origin/axes). Written directly at THIS RULE'S OWN
-        # GRID resolution (no reprojection at all -- grid.transform/
-        # grid.crs as-is): 13_build_sfincs_skeleton.py's own
-        # sf.grid.data["dep"] is confirmed pixel-identical to this
-        # rule's own calibration grid (same mmax/nmax/dx/dy/x0/y0/rotation,
-        # both created from the shared grid definition, sfincs_grid.json),
-        # so that script builds its ini DataArray in-memory
-        # directly on this file's own grid and passes it to
-        # sf.initial_conditions.create() with ZERO resampling
-        # (reproject_like on an identical grid is a confirmed true
-        # no-op). There used to be a SEPARATE, native-resolution
-        # sea_mask_corrected.tif just for the flood-diagnostic
-        # consumers -- removed 2026-08-07b as pure duplication of this
-        # same boolean (see this rule's own script for the full
-        # rationale).
+        # The sea/land classification for the skeleton's zsini, written on
+        # this rule's grid (pixel-identical to the skeleton's, both from
+        # sfincs_grid.json), so it is used with zero resampling.
         zsini_sea_cells               = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
-        # Canonical outputs -- copies of round 2's (verification) own
-        # numbered files below, for downstream consumers/convention that
-        # expect these fixed filenames.
+        # Fixed-name copies of round 2's (verification) files.
         plot_calibration             = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/river_depth.png"),
         # River network on land: colour = river depth (GVF: water depth at the
         # mean discharge; modelled: excavated depth), line width = channel width.
@@ -122,16 +67,11 @@ rule modelled_depth_estimation:
         plot_max_inundation          = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/max_inundation.png"),
         animation_flood_progress     = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/flood_animation.mp4"),
         plot_crest_gap_map           = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/crest_gap_map.png"),
-        # Coastal dike position with unprotected_ocean_wetlands off vs
-        # on, overlaid (whichever the config sets is the one simulated).
+        # Dike position with unprotected_ocean_wetlands off vs on; config picks the simulated one.
         plot_dike_positions          = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/dike_positions_wetland_switch.png"),
-        # Per-round diagnostics (round 0 = confined/un-excavated, round
-        # 1 = confined/excavated, round 2 = verification with the real
-        # crests) are not declared here (same convention as
-        # calibration_state.csv, written directly under calib_root) --
-        # 10_depth_estimation_modelled.py writes them to its own
-        # round_visuals_dir; round 2's files are what the canonical
-        # outputs above are copied from.
+        # Per-round diagnostics (round 0 = confined/un-excavated, round 1 =
+        # confined/excavated, round 2 = verification with the real crests) are
+        # written undeclared to round_visuals_dir.
     params:
         calib_root  = lambda wildcards: results_path(f"{wildcards.basin_id}/preprocessing_inputs/depth_crest_calibration"),
         resolution  = lambda wildcards: grid_resolution_m(wildcards.basin_id),
@@ -140,9 +80,8 @@ rule modelled_depth_estimation:
         active_mask_enabled = config["sfincs"]["grid"]["active_mask"]["enabled"],
         active_mask_elevation_buffer_m = config["sfincs"]["grid"]["active_mask"]["elevation_buffer_m"],
         outflow_buffer_m = config["sfincs"]["boundary_setup"]["outflow_buffer_m"],
-        # Same surge-station matching radius production uses (rule 13/14)
-        # -- rounds 1-2 force the coastal protection storm tide at those
-        # stations.
+        # Same station matching radius as rules 13/14; rounds 1-2 force the
+        # coastal protection storm tide there.
         waterlevel_buffer_m = config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
         depth_method                 = config["river_processing"]["river_depth_modelling"]["method"],
         gvf                          = config["river_processing"]["river_depth_modelling"]["gvf"],
@@ -158,16 +97,11 @@ rule modelled_depth_estimation:
         unprotected_ocean_wetlands    = config["river_processing"]["river_depth_modelling"]["unprotected_ocean_wetlands"],
         min_component_cells           = config["river_processing"]["river_depth_modelling"]["min_component_cells"],
         animation_fps                 = config["sfincs"]["sanity_checks"]["animation_fps"],
-        # Same subgrid setup as the production model (rule 13/14), so
-        # calibration measures depth against the same subgrid-resolved
-        # bathymetry the production model actually experiences.
+        # Same subgrid setup as rules 13/14, so calibration sees the production bathymetry.
         nr_subgrid_pixels  = config["sfincs"]["subgrid"]["nr_subgrid_pixels"],
         nr_levels          = config["sfincs"]["subgrid"]["nr_levels"],
         nrmax              = config["sfincs"]["subgrid"]["nrmax"],
-    # Claims the whole --cores budget -- see rule run_spinup's (14) threads
-    # comment for the full rationale (SFINCS itself can multi-thread, but
-    # Snakemake can't parallelize within one run, so give it the whole
-    # machine rather than let other jobs compete with it for CPU).
+    # Whole --cores budget: SFINCS multi-threads, so other jobs would only compete for CPU.
     threads: workflow.cores
     log:
         "logs/{basin_id}/10_depth_estimation_modelled.log"

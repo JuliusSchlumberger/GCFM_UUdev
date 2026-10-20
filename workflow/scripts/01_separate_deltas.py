@@ -1,3 +1,5 @@
+"""Extract one basin's delta polygon; run by rule split_delta_polygons."""
+
 from src.io import load_catalogue, catalogue_entry, read_geometry
 from src.log import setup_logging
 from src.profiling import ScriptProfiler

@@ -2356,30 +2356,6 @@ Standalone analysis / plotting tools (reusable, produce figures/CSVs):
   plot_global_protection_levels.py — Standalone global FLOPROS choropleth
                                    generator, uses plots.
                                    plot_global_protection_map().
-  plot_calibration_round_profiles.py — Diagnostic for rule 10-modelled: how
-                                   do the calibrated river bed, weir crest,
-                                   and period-max water level change
-                                   round-by-round? Thin CLI wrapper around
-                                   the same functions modelled_depth_
-                                   estimation calls automatically at the end
-                                   of its own round loop
-                                   (src.river_depth_calibration.
-                                   gather_calibration_round_profile,
-                                   src.plots.plot_calibration_round_profiles)
-                                   — reads each round's own real
-                                   calibration_state.csv, doesn't replay the
-                                   update formulas itself. Useful for
-                                   regenerating these plots without
-                                   re-running the whole (expensive) SFINCS
-                                   calibration.
-
-Deprecated (orphaned, not deleted; tests/archive/) utility scripts:
-  tests/archive/check_diluvium.py, sync_deltadtm.py — standalone downloader/
-  manifest-checker utilities for DiluviumDEM/DeltaDTM raw data, no imports
-  from workflow/src (so they don't crash), but they target data sources the
-  pipeline no longer uses (FathomDEM is the only source, see section 5).
-  tests/archive/_diag_lagoon_timeseries.py — zs/bed timeseries at a
-  hardcoded lagoon centroid from a specific past experiment run.
 
 Active utility / data-fetching scripts — MOVED to a new top-level tools/
 directory (not tests/ — these are one-off/manual data-fetch utilities, not
@@ -3236,8 +3212,8 @@ WEIR CRESTS AND COASTAL WATER LEVELS (2026-10-09):
 ELEVATION MERGE, RULE 05a (2026-10-09):
   Sea = land use 200 (landuse_source.tif warped onto the elevation grid as
   rule 05b does) -- the pipeline's one sea/land criterion; the DeltaDTM
-  mask is NO LONGER used (clip_ocean_from_topo, the deltadtm_mask catalogue
-  entry and tools/build_deltadtm_mask_vrt.py are leftovers). FathomDEM is
+  mask is NO LONGER used (clip_ocean_from_topo and the deltadtm_mask
+  catalogue entry are leftovers). FathomDEM is
   set to NaN on sea cells and GEBCO fills them. GEBCO is clamped to between
   terrain.gebco_max_depth_m (10) and, on sea cells, terrain.gebco_min_depth_m
   (2) BELOW LOCAL MSL (= the MDT surface, ~+1 m in the GOCO06s frame) -- so
@@ -3394,16 +3370,5 @@ chronological record of what happened.
 15. ARCHIVE / DEPRECATED
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-workflow/archive/datum_correction/ — a superseded, standalone datum-
-  correction implementation, kept for reference only. This directory is
-  explicitly frozen/inert: it is not maintained, may reference filenames or
-  concepts that no longer exist elsewhere in the pipeline, and should not be
-  treated as current documentation of anything outside itself.
-
-workflow/archive/ — other archived rule/script fragments, same caveat as above.
-
-figs/dag/build_dag.svg, figs/dag/build_rulegraph.svg — generated DAG
-  visualization artifacts; regenerate with Snakemake's --dag/--rulegraph
-  flags if an up-to-date visualization is needed (these are not
-  automatically kept in sync with rule changes).
+None: retired code is deleted (git keeps it).
 ================================================================================

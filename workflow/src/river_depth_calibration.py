@@ -1,22 +1,16 @@
-"""
-river_depth_calibration.py -- SFINCS-based river channel depth calibration
-(rule modelled_depth_estimation).
+"""SFINCS-based river channel depth calibration helpers (rule modelled_depth_estimation).
 
-Design: run a minimal SFINCS model with the river network (and coast)
-confined by artificially high (1000 m) walls, forced with a steady
-discharge equal to the basin's protection-level return period (bankfull as
-a fallback). On the *un-excavated* elevation_conditioned.tif, confining the
-design discharge to channel width forces water to pile up above natural
-ground level; a fraction of that rise becomes channel excavation
+A minimal SFINCS model, river and coast confined by 1000 m walls, is forced
+with the steady protection-level RP discharge (bankfull as fallback) on the
+un-excavated elevation_conditioned.tif. Water piles up above ground and a
+fraction of the rise is excavated
 (river_processing.river_depth_modelling.excavation_fraction):
 
     rise   = period_max_water_level - DEM_at_cell
     rivdph = excavation_fraction * max(rise, 0)
 
-A second confined run on the excavated channel then gives the water level
-the production weir crests are set to, and a third run verifies them --
-see 10_depth_estimation_modelled.py's own module docstring for the full
-three-round design.
+A second confined run on the excavated channel sets the weir crests; a third
+verifies them (see 10_depth_estimation_modelled.py).
 """
 
 from __future__ import annotations
@@ -27,7 +21,6 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-
 from src.river_forcing import interpolate_discharge_at_rp, snap_crossings_to_reaches
 from src.river_network import (
     compute_seed_path_offsets,
@@ -42,26 +35,12 @@ def build_calibration_seed_discharge(
     river_ds,
     protection_rp_yr: float | None,
 ) -> dict[str, float]:
-    """
-    Per-crossing steady calibration discharge -- protection-level RP
-    (log-RP interpolated from discharge_rp_table) when available, bankfull
-    discharge as the fallback -- snapped to seed reach IDs.
+    """Return the steady calibration discharge per seed reach ({reach_id: m3/s}).
 
-    Reuses src.river_forcing.snap_crossings_to_reaches unmodified: builds a
-    crossings GeoDataFrame with the same 'bankfull_q'/'inside_reach_id'
-    columns that function expects (holding calibration-discharge values,
-    not literal bankfull, despite the column name), rather than duplicating
-    its keep-largest-per-reach dedup logic.
-
-    Args:
-        river_ds: Opened river_forcing.nc (xr.Dataset).
-        protection_rp_yr: Basin's assigned riverine protection-level return
-            period (years), or None to use bankfull discharge everywhere
-            (no valid RP assigned by rule get_protection_levels).
-
-    Returns:
-        Dict {reach_id_str: calibration_discharge} -- same shape as
-        accumulate_discharge's seed_q argument (src.river_network).
+    Protection-level RP discharge (log-RP interpolated from
+    discharge_rp_table), or bankfull discharge when protection_rp_yr is None.
+    The 'bankfull_q' column passed to snap_crossings_to_reaches holds this
+    calibration discharge, not literal bankfull.
     """
     active = river_ds["has_glofas"].values.astype(bool)
     bankfull_q = river_ds["bankfull_discharge"].values[active]
@@ -94,18 +73,12 @@ def build_calibration_seed_discharge(
 
 
 def steady_state_metrics(zs: np.ndarray, window_steps: int = 3) -> dict[str, float]:
-    """
-    How much the water level still changes at the end of a run.
+    """Return how much the water level still changes at the end of a run.
 
-    Args:
-        zs: (n_time, n_points) water level, regular output interval.
-        window_steps: Number of output intervals to look back (3 hourly
-            outputs = the last 3 h).
-
-    Returns:
-        {"median": ..., "p95": ..., "frac_rising_1cm": ...} of
-        |zs[-1] - zs[-1 - window_steps]| over the points that are wet at
-        both times; all NaN when the run has too few outputs.
+    zs is (n_time, n_points) at a regular output interval; window_steps counts
+    output intervals (3 hourly outputs = the last 3 h). Returns median, p95 of
+    |zs[-1] - zs[-1 - window_steps]| and frac_rising_1cm over points wet at
+    both times; all NaN when the run has too few outputs.
     """
     if zs.shape[0] <= window_steps:
         return {"median": np.nan, "p95": np.nan, "frac_rising_1cm": np.nan}
@@ -121,7 +94,7 @@ def steady_state_metrics(zs: np.ndarray, window_steps: int = 3) -> dict[str, flo
 
 
 def is_steady(metrics: dict[str, float], median_tol_m: float, p95_tol_m: float) -> bool:
-    """True when both the median and the p95 change are within tolerance."""
+    """Return True when both the median and the p95 change are within tolerance."""
     return bool(
         np.isfinite(metrics["median"])
         and metrics["median"] < median_tol_m
@@ -130,11 +103,10 @@ def is_steady(metrics: dict[str, float], median_tol_m: float, p95_tol_m: float) 
 
 
 def compute_end_of_run_zs(zs: np.ndarray, n_last: int = 2) -> np.ndarray:
-    """
-    Per-point water level at the end of a run: the mean of the last
-    ``n_last`` outputs (NaN-aware). The steady-state alternative to
-    compute_period_max_zs, which takes the maximum over the whole run and
-    so picks up a run that is still filling or a start-up transient.
+    """Return per point the NaN-aware mean of the last ``n_last`` outputs.
+
+    Steady-state alternative to compute_period_max_zs, which also picks up a
+    run that is still filling or a start-up transient.
     """
     tail = zs[-max(1, int(n_last)) :]
     with np.errstate(all="ignore"):
@@ -142,33 +114,12 @@ def compute_end_of_run_zs(zs: np.ndarray, n_last: int = 2) -> np.ndarray:
 
 
 def compute_period_max_zs(zs: np.ndarray) -> np.ndarray:
-    """
-    Per-point maximum simulated water level over the ENTIRE calibration run.
+    """Return per point the maximum water level over the whole run (zs: n_time x n_points).
 
-    A fixed-duration steady-discharge run has no reason to "converge" to a
-    flat window in the strict sense check_convergence tests for -- a
-    persistent, non-damping oscillation at a discharge-injection (seed)
-    cell never satisfies a flatness/trend tolerance no matter how long the
-    run is extended. The calibration only needs the worst-case (peak)
-    forced water level at each cell to size channel depth/crest against,
-    and the maximum over the whole run captures that directly, oscillation
-    or not, without any tolerance/extension logic. Callers wanting a
-    shorter, trailing-window peak instead of the whole run should slice
-    `zs`/`times_s` themselves before calling this.
-
-    Uses nan-aware np.nanmax, not a plain np.max: SFINCS's own map output
-    carries NaN at a cell for any timestep it's still dry (e.g. universally
-    at t=0, before the steady discharge has propagated into the channel
-    yet) -- a plain np.max over an axis containing even one NaN returns NaN
-    for that whole reduction.
-
-    Args:
-        zs: (n_time, n_points) water level array.
-
-    Returns:
-        (n_points,) array of each point's own maximum water level over the
-        full time series. NaN only for a point that was NaN at every single
-        timestep (never wetted at all during the run).
+    A persistent oscillation at a seed cell never meets a flatness tolerance
+    (check_convergence), but the peak is what depth/crest are sized against.
+    nanmax because SFINCS map output is NaN while a cell is dry (e.g. at t=0);
+    NaN only for a point never wetted. Slice zs for a trailing-window peak.
     """
     return np.nanmax(zs, axis=0)
 
@@ -179,35 +130,14 @@ def gather_calibration_round_profile(
     seed: str,
     n_rounds: int,
 ) -> tuple[list[str], dict[int, pd.DataFrame]]:
-    """
-    Round-by-round per-cell calibration state along one seed-to-mouth path,
-    read directly from each round's own calibration_state.csv
-    (10_depth_estimation_modelled.py's own real per-cell ground truth --
-    dem, rivdph, weir_crest, zs (period-maximum water level)) rather
-    than reconstructed from sfincs_map.nc. rivdph is the excavation that
-    round actually ran with; weir_crest is NaN while the model was still
-    confined by its 1000 m walls (round 0), otherwise the production crest
-    derived from the confined, excavated round's own water level.
+    """Return per-round calibration state along one seed's widest path.
 
-    Args:
-        calib_root: Basin's own preprocessing_inputs/depth_crest_calibration
-            directory (round{i}/calibration_state.csv must exist for i in
-            0..n_rounds).
-        rivers_utm: River network (any CRS accepted; only 'reach_id',
-            'rch_id_dn', 'width' are used, via trace_widest_path/
-            compute_seed_path_offsets -- reprojection to a metric CRS for
-            the offset calculation happens internally there).
-        seed:       Seed reach_id (normalized string) to trace from.
-        n_rounds:   Number of rounds after round 0 (rounds 0..n_rounds are
-            read).
+    Reads round{i}/calibration_state.csv under calib_root for i in
+    0..n_rounds (dem, rivdph, weir_crest, zs = period-max water level).
+    weir_crest is NaN in round 0 (1000 m walls). rivers_utm may be in any CRS.
 
     Returns:
-        (path_rids, profiles_by_round) -- path_rids is the ordered list of
-        reach_id strings from trace_widest_path; profiles_by_round maps
-        round_idx -> DataFrame of that round's own calibration_state.csv
-        rows restricted to path_rids, with an added 'along_path_m' column
-        (cumulative along-path distance, via compute_seed_path_offsets +
-        each cell's own along_m), sorted by along_path_m.
+        (path_rids, {round_idx: rows on the path with 'along_path_m', sorted}).
     """
     path_rids = trace_widest_path(rivers_utm, seed)
     offsets = compute_seed_path_offsets(rivers_utm, path_rids)
@@ -226,29 +156,13 @@ def gather_calibration_round_profile(
 def compute_excavation_depth(
     period_max_zs: np.ndarray, dem_at_cell: np.ndarray, excavation_fraction: float
 ) -> np.ndarray:
-    """
-    Channel excavation depth from a confined, UN-excavated calibration run.
-    Confining the design discharge to channel width, with no channel yet
-    excavated, forces water to pile up ABOVE natural ground level (the
-    "rise"); ``excavation_fraction`` of that rise becomes excavation depth.
-    The rest is left to the riverbank weir, whose crest is measured
-    afterwards from a second confined run on the excavated channel rather
-    than derived from this rise.
+    """Return excavation depth (m) = excavation_fraction * max(zs - DEM, 0).
 
-    The rise is clipped at 0: with subgrid, a cell's water level can sit
-    below its own coarse DEM value (SFINCS's subgrid bed is the lowest
-    sub-pixel, not the cell mean), which must not turn into a negative
-    excavation (a raised bed).
-
-    Args:
-        period_max_zs: Per-cell period-max water level (m), same reference
-            datum as the DEM.
-        dem_at_cell: Per-cell DEM elevation (m) at the same cells.
-        excavation_fraction: Fraction of the rise excavated.
-
-    Returns:
-        Per-cell excavation depth (m), >= 0 (NaN where period_max_zs is
-        NaN, i.e. never wetted).
+    From a confined, un-excavated run; the rest of the rise is left to the
+    weir, measured from a later run. period_max_zs and dem_at_cell share a
+    datum. The rise is clipped at 0: with subgrid the water level can sit
+    below the coarse DEM (subgrid bed is the lowest sub-pixel), which must not
+    raise the bed. NaN where never wetted.
     """
     rise = period_max_zs - dem_at_cell
     return excavation_fraction * np.maximum(rise, 0.0)
@@ -257,17 +171,10 @@ def compute_excavation_depth(
 def cell_depth_segments(
     cell_gdf: gpd.GeoDataFrame, depth: np.ndarray, width_by_reach: dict[str, float]
 ) -> gpd.GeoDataFrame:
-    """Segments between consecutive centreline cells of each reach, for the river depth map.
+    """Return segments between consecutive centreline cells, for the river depth map.
 
-    Args:
-        cell_gdf: Centreline cells (src.river_burn.build_centerline_cells_regular)
-            with 'reach_id', 'along_m', 'x', 'y', in the model CRS.
-        depth: Per cell depth to show (same order as ``cell_gdf``).
-        width_by_reach: {reach_id: channel width (m)}.
-
-    Returns:
-        Line segments with 'reach_id', 'depth' (mean of the two cells) and
-        'width', in the CRS of ``cell_gdf``.
+    cell_gdf comes from src.river_burn.build_centerline_cells_regular; depth is
+    per cell in its order. Each segment's 'depth' is the mean of its two cells.
     """
     from shapely.geometry import LineString
 

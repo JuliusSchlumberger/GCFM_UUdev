@@ -10,20 +10,17 @@ import geopandas as gpd
 import numpy as np
 import xarray as xr
 from shapely.geometry import Point, Polygon
-
-from src.surge import sinusoidal_wave
 from src.extreme_values import EVAResult
+from src.surge import sinusoidal_wave
 
 log = logging.getLogger(__name__)
 
 
 def derive_forcing_mode(river_rp: float | None | str, surge_rp: float | None) -> str:
-    """
-    Derive SFINCS forcing mode from which design RPs a scenario sets: both
-    -> "compound"; river_rp only -> "river_only"; surge_rp only ->
-    "coastal_only"; neither -> ValueError (no forcing to drive the model
-    with). Shared by 00_common.smk's scenario_params and any standalone
-    script that needs to replicate a scenario's own mode outside Snakemake.
+    """Return the SFINCS forcing mode from which design RPs a scenario sets.
+
+    Both -> "compound"; river_rp only -> "river_only"; surge_rp only ->
+    "coastal_only"; neither -> ValueError. Used by 00_common.smk's scenario_params.
     """
     if river_rp is not None and surge_rp is not None:
         return "compound"
@@ -36,11 +33,7 @@ def derive_forcing_mode(river_rp: float | None | str, surge_rp: float | None) ->
     )
 
 
-# ── private helpers ───────────────────────────────────────────────────────────
-
-
 def _norm_reach_id(x) -> str | None:
-    """Normalise a nullable-integer reach or path ID to a plain int string."""
     s = str(x).strip()
     if s.lower() in ("nan", "none", "<na>", ""):
         return None
@@ -50,16 +43,11 @@ def _norm_reach_id(x) -> str | None:
         return s if s else None
 
 
-# ── filter helpers ────────────────────────────────────────────────────────────
-
-
 def has_downstream_in_domain(rch_id_dn_raw, domain_reach_ids: set[str]) -> bool:
     """Return True if any downstream reach ID in rch_id_dn is present in the domain.
 
-    rch_id_dn is a Python-list-repr string per SWORD v17c's convention
-    (e.g. "[id1, id2]"); re.split on comma-or-whitespace is deliberately
-    also robust to a plain whitespace-separated string (e.g. "id1 id2"),
-    in case a future source uses that convention instead.
+    rch_id_dn is a list-repr string per SWORD v17c (e.g. "[id1, id2]"); a
+    whitespace-separated string ("id1 id2") is also accepted.
     """
     s = str(rch_id_dn_raw).strip().strip("[]")
     if not s or s.lower() in ("nan", "none", "<na>"):
@@ -71,21 +59,8 @@ def has_downstream_in_domain(rch_id_dn_raw, domain_reach_ids: set[str]) -> bool:
     return False
 
 
-# ── inside-domain source location resolution ─────────────────────────────────
-
-
 def _domain_entry_point(line, domain_poly: Polygon) -> Point | None:
-    """
-    Return the point where `line` first enters `domain_poly`, walking from
-    the line's start coordinate towards its end. None if `line` never enters
-    the domain at all.
-
-    Clips `line` to `domain_poly` (interior, not just the exterior ring) and
-    picks whichever piece of the clipped geometry starts earliest along the
-    original line (via `line.project()`), so a reach that dips in and out of
-    the domain multiple times still resolves to its first entry, not an
-    arbitrary one.
-    """
+    # First entry along the line, even if it dips in and out several times.
     clipped = line.intersection(domain_poly)
     if clipped.is_empty:
         return None
@@ -111,32 +86,12 @@ def resolve_inside_domain_reaches(
     domain_poly: Polygon,
     max_hops: int = 30,
 ) -> gpd.GeoDataFrame:
-    """
-    Walk downstream from each crossing reach to find the point where the
-    river network first actually enters the domain polygon -- i.e. the
-    domain boundary clipped through the crossing reach's own geometry, not a
-    reach vertex somewhere further downstream. Returns a copy of `crossings`
-    with:
+    """Move each crossing to where the network first enters the domain polygon.
 
-    - geometry updated to that domain-entry point (crossing point used as
-      fallback when no reach within max_hops ever enters the domain)
-    - inside_reach_id: reach_id of the reach whose geometry the entry point
-      lies on (None on fallback)
-    - width, max_width: attributes of that reach (if present in river_gdf),
-      overwriting the corresponding attributes of the crossing reach
-
-    Most crossings resolve on the very first hop (the crossing reach itself
-    enters the domain at the same point find_boundary_crossings found).
-    Walking downstream is only needed for a reach that merely touches the
-    domain boundary without any of its length lying inside it (e.g. the
-    boundary crossing is its very last vertex) -- in that case, the next
-    downstream reach is checked instead.
-
-    Args:
-        crossings:   GeoDataFrame from find_boundary_crossings.
-        river_gdf:   Full clipped river network GeoDataFrame (EPSG:4326).
-        domain_poly: Shapely Polygon of the domain (EPSG:4326).
-        max_hops:    Maximum downstream hops before using crossing point as fallback.
+    Walks downstream (up to max_hops) past reaches that only touch the
+    boundary. Returns a copy of `crossings` with geometry at the entry point,
+    'inside_reach_id' of that reach and its 'width'/'max_width'; on failure the
+    crossing point is kept and inside_reach_id is None. All inputs EPSG:4326.
     """
     import pandas as pd
 
@@ -210,9 +165,6 @@ def resolve_inside_domain_reaches(
     return result
 
 
-# ── GloFAS cell selection ─────────────────────────────────────────────────────
-
-
 def find_best_glofas_cell(
     glofas_clip: xr.Dataset,
     variable: str,
@@ -222,27 +174,10 @@ def find_best_glofas_cell(
     min_mean_q: float,
     utm_crs: str,
 ) -> tuple[int, int] | None:
-    """
-    Find the GloFAS grid cell with the highest mean discharge within a search
-    radius, subject to a minimum mean-discharge threshold.
+    """Return (i_lat, i_lon) of the highest-mean-discharge GloFAS cell within radius_m.
 
-    The source point and all GloFAS cell centres are projected to the domain
-    UTM CRS (passed as utm_crs) so that distances are computed in metres via
-    plain Euclidean arithmetic — no degree approximation, no haversine.
-
-    Args:
-        glofas_clip: Clipped xr.Dataset from load_glofas_clip.
-        variable:    Discharge variable name (e.g. 'dis24').
-        pt_lon:      Longitude of the inside-domain source point (degrees_east).
-        pt_lat:      Latitude of the inside-domain source point (degrees_north).
-        radius_m:    Search radius in metres.
-        min_mean_q:  Minimum mean discharge to consider a cell (m³ s⁻¹).
-        utm_crs:     Projected CRS string (e.g. 'EPSG:32636') used for metric
-                     distance computation — typically the domain's auto_utm CRS.
-
-    Returns:
-        (i_lat, i_lon) index tuple of the selected cell, or None if no
-        qualifying cell is found within the radius.
+    Distances are Euclidean in utm_crs (e.g. 'EPSG:32636'). min_mean_q in
+    m3 s-1; pt_lon/pt_lat in degrees. None if no cell qualifies.
     """
     from pyproj import Transformer
 
@@ -252,7 +187,6 @@ def find_best_glofas_cell(
     lat_arr = glofas_clip[lat_dim].values  # (n_lat,)
     lon_arr = glofas_clip[lon_dim].values  # (n_lon,)
 
-    # Project source point and every cell centre to UTM for metric distances
     to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
     pt_x, pt_y = to_utm.transform(pt_lon, pt_lat)
 
@@ -267,7 +201,6 @@ def find_best_glofas_cell(
     if not within.any():
         return None
 
-    # Time-mean discharge; transpose to guaranteed (n_lat, n_lon) order
     mean_q = (
         glofas_clip[variable]
         .mean(dim=time_dim, skipna=True)
@@ -279,30 +212,17 @@ def find_best_glofas_cell(
     if not qualified.any():
         return None
 
-    # Pick cell with highest mean; argmax on flattened then convert to 2-D index
     flat_best = int(np.argmax(np.where(qualified, mean_q, -np.inf)))
     i_lat, i_lon = divmod(flat_best, len(lon_arr))
     return i_lat, i_lon
 
 
-# ── GRDC gauge matching ───────────────────────────────────────────────────────
-
-
 def load_grdc_stations(path: str | Path) -> gpd.GeoDataFrame:
-    """
-    Load GRDC station metadata as a point GeoDataFrame.
+    """Load GRDC-Daily.nc station metadata as points (EPSG:4326).
 
-    Only the station-dimensioned variables are read (not the (time, id)
-    ``runoff_mean`` array), so this is cheap regardless of the time
-    dimension's size.
-
-    Args:
-        path: Path to GRDC-Daily.nc.
-
-    Returns:
-        GeoDataFrame (EPSG:4326), one row per station, geometry =
-        Point(geo_x, geo_y). Includes an 'id' column plus whichever of
-        'river_name', 'station_name', 'area', 'country' are present.
+    Reads only station variables, not the (time, id) runoff_mean array.
+    Columns: 'id' plus whichever of 'river_name', 'station_name', 'area',
+    'country' exist.
     """
     with xr.open_dataset(path) as ds:
         ids = ds["id"].values
@@ -326,22 +246,9 @@ def find_nearest_grdc_station(
     radius_m: float,
     utm_crs: str,
 ) -> int | None:
-    """
-    Find the nearest GRDC station within radius_m of (pt_lon, pt_lat).
+    """Return the 'id' of the nearest GRDC station within radius_m, or None.
 
-    Mirrors find_best_glofas_cell's UTM-projection-distance pattern: both the
-    query point and all station locations are projected to utm_crs so
-    distance is plain Euclidean metres.
-
-    Args:
-        stations_gdf: GeoDataFrame from load_grdc_stations.
-        pt_lon, pt_lat: Inside-domain source point (degrees).
-        radius_m: Search radius in metres.
-        utm_crs: Domain UTM CRS (e.g. 'EPSG:32636').
-
-    Returns:
-        Station 'id' (int) of the nearest station within radius, or None if
-        stations_gdf is empty or no station is within radius_m.
+    Distances are Euclidean in utm_crs; pt_lon/pt_lat in degrees.
     """
     if stations_gdf.empty:
         return None
@@ -364,19 +271,9 @@ def find_nearest_grdc_station(
 def load_grdc_series(
     path: str | Path, station_id: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Load the full daily discharge series for one GRDC station.
+    """Return (times, values) of one GRDC station's daily discharge series.
 
-    The dataset's -999.0 missing-value sentinel is converted to NaN.
-
-    Args:
-        path: Path to GRDC-Daily.nc.
-        station_id: GRDC station 'id' (as returned by find_nearest_grdc_station).
-
-    Returns:
-        (times, values): times as np.ndarray[datetime64[ns]], values as
-        np.ndarray[float64] with -999 -> NaN. NaN-dropping is left to
-        downstream alignment (e.g. extreme_values._to_series).
+    The -999.0 missing-value sentinel becomes NaN; NaNs are not dropped.
     """
     with xr.open_dataset(path) as ds:
         times = ds["time"].values
@@ -384,8 +281,6 @@ def load_grdc_series(
 
     return times, np.where(values == -999.0, np.nan, values)
 
-
-# ── boundary crossings ────────────────────────────────────────────────────────
 
 _CROSSING_ATTRS = (
     "width",
@@ -401,20 +296,10 @@ def find_boundary_crossings(
     river_gdf: gpd.GeoDataFrame,
     bbox: Polygon,
 ) -> gpd.GeoDataFrame:
-    """
-    Find points where river reaches intersect the domain bounding-box boundary.
+    """Return points where river reaches cross the domain bbox boundary (EPSG:4326).
 
-    For each river reach that crosses the bbox exterior, the intersection
-    geometry is extracted.  Only Point intersections are retained; Line or
-    MultiPoint intersections (reaches running along the boundary) are discarded.
-
-    Args:
-        river_gdf: River network GeoDataFrame in EPSG:4326.
-        bbox:      Shapely Polygon of the domain bbox in EPSG:4326.
-
-    Returns:
-        GeoDataFrame of Point geometries (EPSG:4326) at bbox boundary crossings.
-        May be empty if no crossings are found.
+    Only Point intersections are kept; reaches running along the boundary
+    (line intersections) are dropped. May be empty.
     """
     bbox_exterior = bbox.exterior
     available = {col for col in _CROSSING_ATTRS if col in river_gdf.columns}
@@ -440,31 +325,17 @@ def find_boundary_crossings(
     return gpd.GeoDataFrame(crossings, crs="EPSG:4326")
 
 
-# ── GloFAS loading ────────────────────────────────────────────────────────────
-
-
 def load_glofas_clip(
     glofas_path: Path,
     variable: str,
     bounds_wgs84: tuple[float, float, float, float],
     buffer_deg: float,
 ) -> xr.Dataset:
-    """
-    Open GloFAS NetCDF file(s), clip spatially to the domain bbox, and load.
+    """Load `variable` from GloFAS NetCDF file(s), clipped to the domain bbox.
 
-    Handles both a single NetCDF file and a directory of files.  When multiple
-    files are found, they are combined along the time dimension (detected by
-    probing the first file for 'valid_time' or 'time').
-
-    Args:
-        glofas_path: Path to a .nc file or directory containing .nc files.
-        variable:    Name of the discharge variable to keep (e.g. 'dis24').
-        bounds_wgs84: (lon_min, lat_min, lon_max, lat_max) of the domain.
-        buffer_deg:  Extra buffer around the domain bbox when clipping (degrees),
-                     to ensure crossings near the boundary are covered.
-
-    Returns:
-        Clipped xr.Dataset containing only `variable`, loaded into memory.
+    glofas_path is a .nc file or a directory of them, concatenated along
+    'valid_time' or 'time'. buffer_deg (degrees) widens the clip so crossings
+    near the boundary are covered.
     """
     glofas_path = Path(glofas_path)
     nc_files = (
@@ -492,11 +363,8 @@ def load_glofas_clip(
             }
         )
 
-    # Slice each file to the small spatial window *before* loading/concatenating,
-    # rather than building one big lazy dask dataset via open_mfdataset and only
-    # then selecting+loading — for a small spatial window over a large multi-file
-    # time series, the latter forces dask to coordinate scattered chunk reads
-    # across every file and dominates runtime (profiled at ~95% of this function).
+    # Slice each file before concatenating: open_mfdataset then select makes
+    # dask coordinate scattered chunk reads (~95% of runtime when profiled).
     if len(nc_files) > 1:
         with xr.open_dataset(nc_files[0]) as probe:
             time_dim = "valid_time" if "valid_time" in probe.dims else "time"
@@ -510,9 +378,6 @@ def load_glofas_clip(
             clipped = _spatial_slice(ds).load()
 
     return clipped
-
-
-# ── river forcing dataset assembly ────────────────────────────────────────────
 
 
 def build_river_dataset(
@@ -534,41 +399,28 @@ def build_river_dataset(
     grdc_correlation: np.ndarray,
     grdc_overlap_days: np.ndarray,
 ) -> xr.Dataset:
-    """Assemble the river forcing dataset: bankfull discharge (AMAX/GEV),
-    a per-crossing return-period discharge table (POT/GPD), and EVA
-    diagnostic variables.
+    """Assemble river_forcing.nc: bankfull (AMAX/GEV), POT/GPD RP table, EVA diagnostics.
 
-    Does NOT build the actual discharge timeseries used to force SFINCS --
-    that's built at SFINCS-build time (rule 13, see
-    build_design_discharge_matrix below) from bankfull_discharge + a
-    build-time-configurable return period looked up in discharge_rp_table,
-    so changing the design return period does not require re-running EVA.
+    The SFINCS discharge series is built later (rule 13,
+    build_design_discharge_matrix) from bankfull_discharge + a design RP
+    looked up in discharge_rp_table, so changing the RP needs no EVA rerun.
 
     Args:
-        discharge_rp_table: (n_crossing, n_return_period) array -- discharge
-            at each of ``return_periods`` from the fitted POT/GPD curve (see
-            src.extreme_values.gpd_return_value_table), NaN row where GPD
-            didn't converge for that crossing.
-        return_periods: Return periods (years) matching discharge_rp_table's
-            second axis (src.extreme_values.STANDARD_RETURN_PERIODS_YR).
-        times, lead_days, period_hr: stored (not consumed here) so rule 13 can
-            reconstruct the same sinusoidal-wave shape at build time --
-            see build_design_discharge_matrix.
-        bias_corrected: int8 array, 1 if the GloFAS cell feeding this crossing
-            was bias-corrected against a GRDC gauge before EVA.
-        grdc_station_id: int64 array, matched GRDC station 'id', or -1 if none.
-        grdc_correlation: float array, Pearson r (raw GloFAS vs GRDC) over the
-            overlap period, or NaN if no correction was applied.
-        grdc_overlap_days: float array, number of overlapping valid days used
-            for bias correction, or NaN if no correction was applied.
-        mean_q: Grand-mean discharge over the full GloFAS record per crossing
-            (same, possibly bias-corrected, series the bankfull/EVA fit used).
-            Selected at SFINCS-build time via river_rp: "mean" in
-            config/scenarios.yml -- see build_design_discharge_matrix.
+        discharge_rp_table: (n_crossing, n_return_period) discharge from the
+            POT/GPD fit (src.extreme_values.gpd_return_value_table); NaN row
+            where GPD did not converge.
+        return_periods: Years, discharge_rp_table's second axis.
+        times, lead_days, period_hr: Stored for rule 13 to rebuild the
+            sinusoidal wave.
+        bias_corrected: int8, 1 if the GloFAS cell was GRDC bias-corrected before EVA.
+        grdc_station_id: int64, matched GRDC 'id', -1 if none.
+        grdc_correlation: Pearson r raw GloFAS vs GRDC over the overlap; NaN if uncorrected.
+        grdc_overlap_days: Overlapping valid days used; NaN if uncorrected.
+        mean_q: Grand-mean discharge of the (possibly bias-corrected) series;
+            used for river_rp: "mean" in config/scenarios.yml.
     """
     n_cross = len(crossings)
 
-    # Pull diagnostics into per-crossing arrays (NaN where no result).
     def _col(attr: str, default=np.nan):
         out = np.full(n_cross, default, dtype=float)
         for i, r in enumerate(results):
@@ -590,12 +442,8 @@ def build_river_dataset(
     cross_lons = crossings.geometry.x.values if n_cross > 0 else np.array([])
     cross_lats = crossings.geometry.y.values if n_cross > 0 else np.array([])
 
-    # Store inside_reach_id only for crossings that passed all filters.
-    # has_glofas=True encapsulates enters_domain AND EVA convergence
-    # (visible_on_grid is purely informational -- see
-    # 07_get_boundary_forcings.py Step 4 -- and does not gate this);
-    # filtered-out crossings get "" so rule 08 never accidentally seeds
-    # from them.
+    # has_glofas = enters_domain AND EVA converged (visible_on_grid does not
+    # gate it); other crossings get "" so rule 08 never seeds from them.
     if "inside_reach_id" in crossings.columns:
         inside_reach_ids_arr = np.array(
             [
@@ -647,7 +495,7 @@ def build_river_dataset(
                 inside_reach_ids_arr,
                 {"long_name": "SWORD reach_id of the inside-domain source reach"},
             ),
-            # ── EVA diagnostics ──
+            # EVA diagnostics
             "bankfull_ci_lower": (["crossing"], rp2_lo, {"units": "m3 s-1"}),
             "bankfull_ci_upper": (["crossing"], rp2_hi, {"units": "m3 s-1"}),
             "flood_ci_lower": (["crossing"], rp100_lo, {"units": "m3 s-1"}),
@@ -696,7 +544,7 @@ def build_river_dataset(
             ),
             "glofas_cell_lon": (["crossing"], cell_lon, {"units": "degrees_east"}),
             "glofas_cell_lat": (["crossing"], cell_lat, {"units": "degrees_north"}),
-            # ── GRDC bias-correction provenance ──
+            # GRDC bias-correction provenance
             "bias_corrected": (
                 ["crossing"],
                 bias_corrected.astype(np.int8),
@@ -739,9 +587,7 @@ def build_river_dataset(
             ),
         },
         attrs={
-            # Not consumed here -- stored so rule 13 can reconstruct the same
-            # sinusoidal-wave shape at build time (build_design_discharge_matrix)
-            # without needing its own copy of these as separate config params.
+            # For rule 13 to rebuild the same sinusoidal wave.
             "lead_days": lead_days,
             "period_hr": period_hr,
         },
@@ -753,25 +599,10 @@ def interpolate_discharge_at_rp(
     return_period_axis: np.ndarray,
     target_rp_yr: float,
 ) -> np.ndarray:
-    """
-    Look up discharge at an arbitrary return period from a per-crossing GPD
-    return-value table, log-RP interpolated (standard flood-frequency
-    convention -- linear interpolation in raw RP-space would be badly skewed
-    given the table's multi-order-of-magnitude span).
+    """Return per-crossing discharge (m^3 s^-1) at target_rp_yr, log-RP interpolated.
 
-    Factored out of build_design_discharge_matrix so callers that need a
-    single steady discharge value (e.g. river depth calibration, rule
-    modelled_depth_estimation)
-    don't have to build a full event hydrograph just to get this lookup.
-
-    Args:
-        discharge_rp_table: (n_crossings, n_rp) array.
-        return_period_axis: (n_rp,) return periods (years) the table's
-            second axis corresponds to.
-        target_rp_yr: Return period (years) to interpolate at.
-
-    Returns:
-        (n_crossings,) array of discharge (m^3 s^-1) at target_rp_yr.
+    Log-RP is the standard flood-frequency convention; raw-RP interpolation is
+    badly skewed over the table's multi-order-of-magnitude span.
     """
     log_rp = np.log(target_rp_yr)
     log_table_rps = np.log(return_period_axis)
@@ -790,10 +621,10 @@ def real_flood_event_matrix(
     min_ramp_hours: float,
     max_rise_per_hr: float,
 ) -> tuple[np.ndarray, dict]:
-    """
-    River discharge for one return period from REAL GloFAS flood events
-    (river_forcing.nc's discharge_daily: the daily series the return periods
-    were fitted on, bias-corrected where rule 07 corrected it).
+    """Return river discharge for one return period from real GloFAS flood events.
+
+    Uses river_forcing.nc's discharge_daily (the series the RPs were fitted on,
+    bias-corrected where rule 07 corrected it).
 
     The event is defined by the basin's MAIN inflow -- the active crossing
     with the largest bankfull discharge:
@@ -809,25 +640,19 @@ def real_flood_event_matrix(
         basin, in which only the main inflow is exactly at the return level.
 
     The peak day sits on the river peak hour (lead_days * 24 + period_hr / 2,
-    the centre of the synthetic wave it replaces -- the surge peak in
-    storm-tide hydrograph mode); daily means are placed 24 h apart around it
-    and interpolated linearly. A real flood is already well above the mean
-    discharge the spin-up ends at when the event run starts
-    (attrs["event_start_hr"]), so the discharge blends linearly from the mean
-    into the event over a ramp at the start of the event run; before that it
-    holds the mean. The ramp length follows from the gap it has to close:
+    the synthetic wave's centre; the surge peak in storm-tide mode); daily
+    means are placed 24 h apart and interpolated linearly. Before
+    attrs["event_start_hr"] the discharge holds the mean (where the spin-up
+    ends); it then blends linearly into the event over
 
         ramp = max(min_ramp_hours, gap / (max_rise_per_hr x peak))
 
-    with gap = the main inflow's event discharge at the event start minus
-    its mean, and peak = its return level -- i.e. the main inflow closes the
-    gap no faster than max_rise_per_hr of its own peak per hour. A relative
-    limit, so one value suits a 1,000 and a 100,000 m3/s river alike. (No
-    such ramp is realistic: the fastest day-to-day rises in the GloFAS
-    record are ~1 % of the 100-yr peak per hour, which would need a ramp
-    longer than the event's lead-up. It only keeps the model from being
-    hit by a step.) All inflows share that ramp; it is capped at the time
-    between the event start and the peak.
+    with gap = main inflow's event discharge at the start minus its mean and
+    peak = its return level: a relative limit, so one value suits a 1,000 and
+    a 100,000 m3/s river. The ramp is not realistic (the fastest GloFAS rises
+    are ~1 % of the 100-yr peak per hour, needing a ramp longer than the
+    lead-up); it only avoids a step. All inflows share it; it is capped at the
+    time from the event start to the peak.
 
     Returns:
         ((n_active, n_time) discharge in m3 s-1, info dict: mode, the event
@@ -920,61 +745,27 @@ def build_design_discharge_matrix(
     discharge_multiplier: float = 1.0,
     event: dict | None = None,
 ) -> np.ndarray:
-    """
-    Build the discharge timeseries actually fed to SFINCS for the given
-    design return period, from river_forcing.nc's stored mean_discharge +
-    discharge_rp_table. Changing
-    design_rp_yr only requires re-running the build (rule 13), not
-    re-running EVA (rule 07).
+    """Return the (n_active, n_time) SFINCS discharge (m3 s-1) for a design RP.
 
-    Per active crossing:
-      1. Look up the design discharge Q_f at design_rp_yr from
-         discharge_rp_table, log-RP-interpolated between the two bracketing
-         table entries (standard flood-frequency convention; linear
-         interpolation in raw RP-space would be badly skewed given the
-         table's four-orders-of-magnitude span).
-      2. Build the hydrograph via sinusoidal_wave(mean_q, Q_f,
-         river_ds.time.values, river_ds.attrs["lead_days"],
-         river_ds.attrs["period_hr"]). Existing riverine protection is NOT
-         subtracted from the discharge: the calibrated riverbank weirs
-         (rule modelled_depth_estimation) represent it in the model itself.
+    Built at rule 13 from river_forcing.nc's mean_discharge + discharge_rp_table,
+    so changing the RP needs no EVA rerun (rule 07). Per active crossing:
+      1. Q_f at design_rp_yr, log-RP interpolated (interpolate_discharge_at_rp).
+      2. sinusoidal_wave(mean_q, Q_f, time, lead_days, period_hr). Riverine
+         protection is NOT subtracted: the calibrated weirs represent it.
       3. Scale the entire built hydrograph (bankfull lead-in AND event peak
-         alike) by discharge_multiplier -- applied HERE, at build time, not
-         baked into river_forcing.nc (mirrors src.surge's deferred SLR
-         fingerprint: keeps river_forcing.nc, rule 10's weir/depth
-         calibration, and the skeleton build all independent of this
-         factor; changing it only reruns this per-scenario build and its
-         downstream event run). Multiplying the whole matrix uniformly is
-         equivalent to scaling bankfull_q and Q_f by the same factor before
-         building the hydrograph, since sinusoidal_wave is affine in its
-         two endpoints.
+         alike) by discharge_multiplier, at build time, so river_forcing.nc,
+         rule 10's calibration and the skeleton build are independent of it.
+         Equivalent to scaling bankfull_q and Q_f, as sinusoidal_wave is
+         affine in its two endpoints.
 
     Args:
-        river_ds: Opened river_forcing.nc (xr.Dataset).
-        active:   Boolean mask, len == river_ds.sizes["crossing"] -- which
-                  crossings to build (typically has_glofas).
-        design_rp_yr: Return period (years) to build the event at -- a
-                  scenario's own river_rp (config/scenarios.yml, see
-                  scenario_params in 00_common.smk). None means the river
-                  driver is fully excluded: zero discharge, flat hydrograph
-                  -- e.g. for coast_only scenarios that should be driven by
-                  the coastal boundary alone. The string "mean"
-                  (case-insensitive) instead builds a constant hydrograph at
-                  mean_discharge -- the record's own grand-mean discharge --
-                  for a scenario that wants a realistic ambient river
-                  present (not absent) while the other driver is tested.
-        discharge_multiplier: Uniform scaling factor applied to the built
-                  hydrograph (default 1.0 = no-op). See step 3 above.
-        event:    boundary_forcings.river.event_hydrograph. With
-                  source "glofas_event" a numeric design_rp_yr is built
-                  from real GloFAS flood events instead of steps 1-2's
-                  synthetic wave (real_flood_event_matrix; needs
-                  river_forcing.nc's discharge_daily). None or source
-                  "cosine": the synthetic wave. "mean"/None return periods
-                  are unaffected either way.
-
-    Returns:
-        (n_active, n_time) np.ndarray, discharge (m3 s-1) per active crossing.
+        active: Boolean mask over crossings (typically has_glofas).
+        design_rp_yr: Years (a scenario's river_rp). None: river excluded,
+            zero discharge. "mean" (case-insensitive): constant mean_discharge.
+        event: boundary_forcings.river.event_hydrograph. Source "glofas_event"
+            builds a numeric RP from real GloFAS events
+            (real_flood_event_matrix; needs discharge_daily); None or "cosine"
+            uses the synthetic wave.
     """
     times = river_ds["time"].values
     table = river_ds["discharge_rp_table"].values[active]  # (n_active, n_rp)
@@ -983,18 +774,13 @@ def build_design_discharge_matrix(
     period_hr = float(river_ds.attrs["period_hr"])
 
     n_active = int(active.sum())
-    # Base flow before/after the event = mean discharge for every scenario
-    # (also the spin-up's discharge), so a river RP scenario differs from a
-    # "mean" one only by its flood peak.
+    # Base flow = mean discharge (also the spin-up's), so an RP scenario
+    # differs from a "mean" one only by its flood peak.
     mean_q = river_ds["mean_discharge"].values[active]
     lead_q = mean_q
     if isinstance(design_rp_yr, str) and design_rp_yr.strip().lower() == "mean":
-        # Genuinely constant mean-discharge hydrograph: both the ramp-in
-        # level and the "design" level are mean_discharge -- a realistic
-        # ambient river, present but not driving an event.
         design_q = mean_q.copy()
     elif design_rp_yr is None:
-        # River driver fully excluded: zero discharge, flat hydrograph.
         design_q = np.zeros(n_active, dtype=float)
         lead_q = design_q
     else:
@@ -1035,31 +821,15 @@ def build_design_discharge_matrix(
     return discharge_matrix
 
 
-# ── reading from finished river_forcing.nc ────────────────────────────────────
-
-
 def load_forcing_crossings(
     forcing_path: str | Path,
     discharge_variable: str | None = None,
 ) -> gpd.GeoDataFrame:
-    """
-    Load active (has_glofas=1) crossing points from a finished river_forcing.nc.
+    """Load active (has_glofas=1) crossing points (EPSG:4326) from river_forcing.nc.
 
-    The file is opened with decode_times=False because the time coordinate uses
-    the non-standard unit string "hours since simulation start" which xarray
-    cannot parse as a CF datetime.
-
-    Args:
-        forcing_path:       Path to river_forcing.nc produced by rule 07.
-        discharge_variable: If provided (e.g. 'bankfull_discharge'), the
-                            corresponding values are included in the returned
-                            GeoDataFrame as the 'bankfull_q' column.  Pass
-                            None when only crossing locations are needed.
-
-    Returns:
-        GeoDataFrame with Point geometries (EPSG:4326).  Includes 'bankfull_q'
-        column when discharge_variable is supplied.  May be empty if no
-        crossings have GloFAS data.
+    decode_times=False: the time unit "hours since simulation start" is not
+    CF-parseable. discharge_variable (e.g. 'bankfull_discharge') is returned
+    as column 'bankfull_q'. May be empty.
     """
     with xr.open_dataset(forcing_path, decode_times=False) as ds:
         has_glofas = ds["has_glofas"].values.astype(bool)
@@ -1085,31 +855,14 @@ def load_forcing_crossings(
     )
 
 
-# ── crossing reach-id resolution ─────────────────────────────────────────────
-
-
 def snap_crossings_to_reaches(
     crossings: gpd.GeoDataFrame,
 ) -> dict[str, float]:
-    """
-    Build the seed-discharge dict from pre-computed inside_reach_ids.
+    """Return {reach_id: bankfull_q} per seed reach from crossings' inside_reach_id.
 
-    The inside_reach_id for each crossing was resolved in rule 07 by
-    resolve_inside_domain_reaches and stored in river_forcing.nc.  Only
-    crossings that passed all filters (enters_domain, EVA convergence --
-    visible_on_grid is purely informational and does not gate anything)
-    carry a non-empty inside_reach_id — they arrive here already filtered
-    via load_forcing_crossings.
-
-    When multiple crossings map to the same reach_id only the largest
-    bankfull_q is kept.
-
-    Args:
-        crossings: GeoDataFrame returned by load_forcing_crossings.  Must have
-                   'inside_reach_id' and 'bankfull_q' columns.
-
-    Returns:
-        Dict {reach_id_str: bankfull_discharge} with one entry per seed reach.
+    inside_reach_id is resolved in rule 07 and is empty for crossings that
+    failed enters_domain or EVA convergence. Several crossings on one reach
+    keep the largest bankfull_q.
     """
     if crossings.empty:
         return {}

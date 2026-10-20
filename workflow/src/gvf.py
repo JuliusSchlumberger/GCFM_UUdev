@@ -1,18 +1,9 @@
-"""Pipeline driver for the GVF river-bed estimate (``river_depth_modelling.method: gvf``).
+"""Run the GVF river-bed estimate for rule 10 (``river_depth_modelling.method: gvf``).
 
-Ties src.gvf_target (WP1) and src.gvf_solver (WP2) to the pipeline's inputs
-and outputs for rule 10 (WP3):
-
-- :func:`mean_seed_discharge`: GloFAS ``mean_discharge`` per crossing, snapped
-  to seed reaches the same way the calibration discharge is. SWORD ``wse`` is
-  paired with the mean discharge (the user's choice, 2026-10-12): SWORD v17c
-  levels are long-term means of SWOT/altimetry observations.
-- :func:`geoid_offset_at`: N_EGM2008 - N_GOCO06s at points, to put SWORD's
-  EGM2008 ``wse`` in the model datum, as rule 05a does for FathomDEM.
-- :func:`run_gvf`: target, network ends, inversion.
-- :func:`values_at_points`: interpolate per-slot beds (or levels) onto the
-  centreline cells by along-reach distance -> ``zbed_anchors`` for
-  src.river_burn.burn_river_channel.
+Ties src.gvf_target and src.gvf_solver to the pipeline. SWORD ``wse`` is
+paired with GloFAS mean discharge: SWORD v17c levels are long-term means of
+SWOT/altimetry observations. values_at_points yields ``zbed_anchors`` for
+src.river_burn.burn_river_channel.
 """
 
 from __future__ import annotations
@@ -25,7 +16,6 @@ import numpy as np
 import rasterio
 from shapely.geometry import LineString, Point
 from shapely.ops import substring
-
 from src.gvf_solver import GvfProblem, GvfResult, invert_bed, slot_diagnostics
 from src.gvf_target import NODE_INVERT, NODE_NO_FLOW, GvfTargets, build_gvf_targets
 from src.river_network import normalize_reach_id
@@ -36,10 +26,8 @@ log = logging.getLogger(__name__)
 def mean_seed_discharge(river_ds, active: np.ndarray) -> dict[str, float]:
     """Return the GloFAS mean discharge per seed reach ({reach_id: m3/s}).
 
-    Args:
-        river_ds: Opened river_forcing.nc.
-        active: Crossings that inject discharge (``has_glofas`` and not a seed
-            that flows out, see src.river_network.outflow_crossing_mask).
+    active: crossings that inject discharge (``has_glofas`` and not a seed that
+    flows out, see src.river_network.outflow_crossing_mask).
     """
     from src.river_forcing import snap_crossings_to_reaches
 
@@ -59,7 +47,10 @@ def mean_seed_discharge(river_ds, active: np.ndarray) -> dict[str, float]:
 def geoid_offset_at(
     goco_path, egm_path, lon: np.ndarray, lat: np.ndarray
 ) -> np.ndarray:
-    """N_EGM2008 - N_GOCO06s (m) at WGS84 points (nearest cell of the global field)."""
+    """Return N_EGM2008 - N_GOCO06s (m) at WGS84 points (nearest cell of the global field).
+
+    Puts SWORD's EGM2008 ``wse`` in the model datum, as rule 05a does for FathomDEM.
+    """
     from src.raster import compute_geoid_offset_arr
 
     off, transform, _ = compute_geoid_offset_arr(goco_path, egm_path)
@@ -71,7 +62,7 @@ def geoid_offset_at(
 
 @dataclass
 class GvfRun:
-    """Everything rule 10 needs from a GVF solve."""
+    """Hold everything rule 10 needs from a GVF solve."""
 
     targets: GvfTargets
     problem: GvfProblem
@@ -94,14 +85,12 @@ def run_gvf(
 
     Args:
         rivers_m: Cleaned network in the model CRS (metric).
-        reach_q: {reach_id: discharge paired with the target}.
         datum_offset_m: Per reach (``rivers_m`` order), N_EGM2008 - N_GOCO06s.
         sample_sea_fraction: Callable (x, y, width) -> sea-class fraction.
         sample_dem: Callable (x, y) -> merged (unconditioned) DEM.
         sea_level_m: Mean sea level in the model datum (``baseline_m``).
         gebco_floor_m: Lowest level of the clamped GEBCO bathymetry.
-        outflow_reaches: Reaches flagged ``is_delta_outflow`` (free outflow
-            through the delta outline: never a sea mouth).
+        outflow_reaches: Reaches flagged ``is_delta_outflow``; never a sea mouth.
         cfg: The ``river_depth_modelling.gvf`` config block.
 
     A network end is a sea mouth unless it is a free outflow, and only if its
@@ -195,12 +184,12 @@ def values_at_points(
 
 
 def slot_levels(run: GvfRun) -> np.ndarray:
-    """Per slot, the simulated level of its own reach."""
+    """Return per slot the simulated level of its own reach."""
     return run.problem.slot_eta(run.result.solve)
 
 
 def depth_segments(run: GvfRun, crs=None) -> gpd.GeoDataFrame:
-    """Reach pieces between consecutive GVF nodes, for the river depth map.
+    """Return reach pieces between consecutive GVF nodes, for the river depth map.
 
     Each piece is cut from the reach's own line (bends kept) and carries the
     mean water depth of its two end slots (``depth``: simulated level minus

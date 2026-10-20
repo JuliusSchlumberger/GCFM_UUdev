@@ -2,7 +2,7 @@
 
 Builds the node network the GVF solver (src.gvf_solver) runs on, plus the
 target level, discharge, width, slope scale and node class at every node.
-Implements WP1 of the GVF plan; the method follows Neal et al. (2021),
+The method follows Neal et al. (2021),
 *Estimating river channel bathymetry in large scale flood inundation models*,
 WRR 57, e2020WR028301.
 
@@ -51,7 +51,6 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import LineString, Point
 from shapely.ops import linemerge
-
 from src.river_network import normalize_reach_id
 
 log = logging.getLogger(__name__)
@@ -142,9 +141,6 @@ class GvfNetwork:
             for k in range(len(ids) - 1):
                 edges.append((int(ids[k]), int(ids[k + 1]), float(ch[k + 1] - ch[k])))
         return edges
-
-
-# ── topology and geometry ─────────────────────────────────────────────────
 
 
 def topological_order(
@@ -354,16 +350,13 @@ def build_node_network(
     )
 
 
-# ── target levels ─────────────────────────────────────────────────────────
-
-
 def reach_target_levels(
     rivers: gpd.GeoDataFrame,
     datum_offset_m: np.ndarray | float = 0.0,
     wse_column: str = "wse",
     min_valid_m: float = -1000.0,
 ) -> dict[str, float]:
-    """Per-reach target level in the model datum.
+    """Return the per-reach target level in the model datum.
 
     Args:
         rivers: Reaches with ``wse_column`` (SWORD: m above EGM2008).
@@ -624,7 +617,7 @@ def enforce_non_increasing(
 
 
 def node_slope(net: GvfNetwork, values: np.ndarray) -> np.ndarray:
-    """Downstream fall of ``values`` per metre at each node (central where possible)."""
+    """Return the downstream fall of ``values`` per metre at each node (central where possible)."""
     fall = np.zeros(net.n_nodes)
     dist = np.zeros(net.n_nodes)
     for a, b, d in net.node_edges():
@@ -644,7 +637,7 @@ def classify_nodes(
     min_width_m: float = 1000.0,
     sea_class_fraction: float = 0.5,
 ) -> np.ndarray:
-    """Class per node: water body, fixed bed or invert.
+    """Return the class per node: water body, fixed bed or invert.
 
     - ``water_body``: wider than ``min_width_m`` and either mostly sea class
       (> ``sea_class_fraction``) or with the DEM at the GEBCO floor (bed from
@@ -664,9 +657,6 @@ def classify_nodes(
     return cls
 
 
-# ── main entry ────────────────────────────────────────────────────────────
-
-
 @dataclass
 class GvfTargets:
     """Node network plus per-node and per-reach inputs for src.gvf_solver."""
@@ -683,7 +673,7 @@ class GvfTargets:
     rising_edges: list[tuple[str, str, float]]
 
     def to_frame(self) -> pd.DataFrame:
-        """One row per (reach, node) in downstream order: the WP1 node table."""
+        """Return one row per (reach, node) in downstream order."""
         rows = []
         net = self.net
         for r in net.reach_ids:
@@ -716,7 +706,7 @@ def build_gvf_targets(
     gebco_floor_m: float,
     cfg: dict,
 ) -> GvfTargets:
-    """Build the GVF node network and its target profile (WP1).
+    """Build the GVF node network and its target profile.
 
     Args:
         rivers: Cleaned network in a metric CRS, with 'reach_id', 'rch_id_dn',

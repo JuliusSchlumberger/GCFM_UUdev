@@ -1,31 +1,10 @@
-"""
-09b_grid_align_landuse.py -- resample landuse.tif (rule get_landuse, 05b,
-native FathomDEM resolution) onto the shared SFINCS regular grid EXACTLY
-ONCE, then derive roughness directly from that single coarse raster.
+"""Resample land use and roughness onto the shared SFINCS grid; run by rule grid_align_landuse.
 
-The grid is the shared grid definition written by rule build_sfincs_grid
-(08c, {basin_id}_sfincs_grid.json -- see src/grid.py): axis-aligned or
-rotated, stored in SfincsModel's own orientation (row 0 on the origin side,
-row index = SFINCS n). Every SfincsModel in this pipeline (rule
-modelled_depth_estimation's calibration model, rule build_sfincs_skeleton,
-rule build_sfincs) is created from that same definition, so every
-downstream consumer can assign this rule's landuse_on_grid.tif /
-roughness_on_grid.tif onto its own sf.grid.data cell for cell, with zero
-reprojection.
-
-landuse_on_grid.tif becomes the ONLY sea/land/roughness classification any
-downstream consumer resamples from ever again -- coastal protection weir
-tracing (rule modelled_depth_estimation, 10),
-zsini's sea-cell classification (same rules), 13_build_sfincs_skeleton.py's
-own roughness section and weir diagnostics. Previously each of those
-consumers independently reprojected native landuse.tif/roughness.tif a
-second time (src.protection_weir.GridArrays.sample_landuse, HydroMT's own
-roughness.create() reproject) -- several independent nearest-neighbor
-passes over the same source raster, at different points in the pipeline,
-each capable of disagreeing slightly with the others at the coastline
-fringe. One raster, one resampling pass, one source of truth from here on
--- matches the same principle already applied to zsini
-(zsini_sea_cells_on_grid.tif, rule modelled_depth_estimation).
+Grid from rule build_sfincs_grid (08c), in SfincsModel orientation (row 0 on the
+origin side, row index = SFINCS n), so every model assigns landuse_on_grid.tif /
+roughness_on_grid.tif to sf.grid.data cell for cell. landuse_on_grid.tif is the
+single sea/land/roughness classification downstream: weir tracing and zsini sea
+cells (rule 10), rule 13's roughness and weir diagnostics.
 
 Landuse is a categorical field (Copernicus LC100 codes) -- resampled with
 nearest-neighbor, never averaged (averaging two different land-use codes
@@ -36,10 +15,8 @@ continuous roughness raster with a DIFFERENT interpolation method -- so
 "this cell's roughness" and "this cell's land-use code" always agree by
 construction.
 
-DEM/subgrid resolution is unaffected by any of this -- elevation stays
-native resolution throughout (subgrid genuinely needs finer-than-grid-cell
-detail); only the categorical landuse/roughness/sea classification chain
-is coarse-grid-aligned here.
+Elevation stays at native resolution (the subgrid needs finer-than-cell
+detail); only the landuse/roughness/sea classification is grid-aligned.
 """
 
 from pathlib import Path
@@ -63,9 +40,6 @@ wgs84_bounds, domain_crs, domain_poly = load_domain(
 
 resolution = float(snakemake.params.resolution)
 
-# The shared grid definition (rule build_sfincs_grid, 08c) -- already in
-# SfincsModel's own orientation (row 0 on the origin side), so these rasters
-# line up cell for cell with every model's sf.grid.data.
 grid_def = load_grid_def(snakemake.input.sfincs_grid)
 grid_transform = grid_def["transform"]
 grid_shape = grid_def["shape"]
@@ -79,10 +53,8 @@ with rasterio.open(snakemake.input.landuse) as src:
     src_transform, src_crs, src_nodata = src.transform, src.crs, src.nodata
 
 lu_on_grid = np.full(grid_shape, src_nodata, dtype=lu_arr.dtype)
-# Resampling.mode: landuse.tif (~30 m) is finer than this grid (~70 m), so
-# nearest would keep one arbitrary source pixel per model cell. Classes are
-# categorical, so mode is the only meaningful upscaling; Manning's n, being
-# continuous, is area-averaged from the source instead (below).
+# Mode: landuse.tif (~30 m) is finer than this grid (~70 m), so nearest would
+# keep one arbitrary source pixel per cell; classes are categorical.
 reproject(
     source=lu_arr,
     destination=lu_on_grid,
@@ -109,10 +81,9 @@ log.info(
     f"{grid_shape[0]}x{grid_shape[1]} cells. Written: {snakemake.output.landuse_on_grid}"
 )
 
-# Manning's n area-averaged from the land-use SOURCE at its own resolution
-# onto this grid -- NOT reclassified from landuse_on_grid, whose dominant
-# class would hand a cell that is 60% water and 40% built-up water's own
-# 0.02 (see src.landuse.aggregate_manning / rule get_roughness).
+# Manning's n area-averaged from the land-use source, not reclassified from
+# landuse_on_grid: the dominant class would give a 60% water / 40% built-up
+# cell water's 0.02.
 _method = str(snakemake.params.roughness_aggregation)
 unmapped, _info = write_roughness_raster(
     snakemake.input.landuse_source,
@@ -125,8 +96,8 @@ unmapped, _info = write_roughness_raster(
     },
     snakemake.output.roughness_on_grid,
     method=_method,
-    # This raster IS the model's own "manning" field, so it stays exactly on
-    # the model grid -- unlike rule 05c's, which is subdivided for the subgrid.
+    # The model's own "manning" field: stays on the model grid, unlike rule
+    # 05c's, which is subdivided for the subgrid.
     refine_to_source=False,
 )
 if unmapped:
@@ -139,9 +110,8 @@ log.info(
     f"{snakemake.output.roughness_on_grid}"
 )
 
-# Land mask traced from landuse_on_grid (land use != 200), cell-aligned with
-# the model -- THE land background of every figure of model output from here
-# on (see src.plots' module docstring).
+# Land mask (landuse != 200), cell-aligned with the model: the background of
+# every figure of model output.
 land_mask = vectorize_land_mask_on_grid(snakemake.output.landuse_on_grid)
 land_mask.to_file(snakemake.output.land_mask_on_grid, driver="GPKG")
 log.info(f"Land mask on the SFINCS grid: {len(land_mask)} polygon(s). Written: {snakemake.output.land_mask_on_grid}")

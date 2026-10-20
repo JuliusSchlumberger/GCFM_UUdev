@@ -1,0 +1,67 @@
+# TODO
+
+- workflow/rules/18a_adapt_pre.smk:37, workflow/rules/18c_attribution_mask.smk:21: `adapt` still requires spin-up outputs (restart file, spin-up map); make it run with `sfincs.spinup.enabled: false` like `build`.
+- workflow/src/river_forcing.py:92: `_domain_entry_point` returns the touching Point when a reach only touches the domain boundary, so `resolve_inside_domain_reaches` keeps the outside reach instead of walking downstream as its docstring (:128-132) says; synthetic case gives inside_reach_id '1', expected '2'.
+- workflow/src/extreme_values.py:554,601,935: `analyse_cell` returns NaN return levels instead of failing when pyextremes' lmoments extra is missing (seen in a clean venv); narrow the excepts so a missing dependency fails loudly.
+- workflow/src/extreme_values.py:812,920: `n_boot=200` hard-coded; move to config. `q_protection` (pyextremes) differs ~1% from `gpd_return_value_table` on the same stored POT parameters (RP 5: 6004 vs 5954), so q_rp100 and discharge_rp_table may be slightly inconsistent.
+- workflow/src/sfincs_restart.py:82-86: `read_ind` docstring says it returns (rows, cols); it returns one array of 0-based flat Fortran-order indices. Duplicate `import numpy as np` at :38-39.
+- workflow/src/river_conditioning.py:73: return annotation `tuple[dict, int]`, function returns three values.
+- workflow/src/domain.py:74, workflow/src/geometry.py:12: deprecated `.unary_union` (use `union_all()`); workflow/src/protection_levels.py:79: deprecated `shapely.vectorized.contains` (use `shapely.contains_xy`).
+- tests/KL_check_adaptation_scaling.py:33: slices workflow/rules/00_common.smk by comment text ("# ---- Adding adaptation wildcard" to "def adaptation_input_path"); import the strategy expansion instead.
+
+## Docstrings and comments that contradict the code
+
+- workflow/src/postprocessing.py:4 | names `postprocess_sfincs_output` as dispatcher | no such function exists
+- workflow/src/adaptation_method_pre.py:233 | apply_river_levee: merge=False "the default here" | signature default is `merge=True`
+- workflow/src/adaptation_method_pre.py:3,6,1317 | caller is 18_adapt_apply.py | callers are 18a_adapt_pre.py / 18b_adapt_post.py
+- workflow/src/adaptation_method_pre.py:1323 | flood_map_path used only by apply_retreat | apply_urban_raising uses it too
+- workflow/src/adaptation_method_pre.py:1147 | file "read back by generate_risk_metrics()" | function does not exist
+- workflow/src/adaptation_method_pre.py:908 | cites "0.1 m ASCII round-trip truncation" of the weir | write_weir_file writes crests at 1 cm
+- workflow/src/adaptation_method_post.py:268,820 | caller is adaptation.py | caller is 18b_adapt_post.py
+- workflow/src/adaptation_method_post.py:826 | params come "from SimulationConfig" | no SimulationConfig in the repo
+- workflow/src/plots.py:699 | crossings green/red | code draws four classes (green, red, purple, orange)
+- workflow/src/plots.py:999 | "two sub-bars per station" | code draws three
+- workflow/src/plots.py:2607 | left panel uses `da_hmax.plot()` | code uses `ax1.imshow`
+- workflow/src/attribution_plot.py:111 | class 4 "plotted but not labelled" | :95 sets class 4 to NaN (not plotted)
+- workflow/src/profiling.py:19 | report suffix `_profile.txt` | writes `line_profiler_<stem>.txt`
+- workflow/src/raster.py:79 | uppercase N/E/S/W "also resolves on case-insensitive filesystems" | files are lowercase; match works only on case-insensitive filesystems
+- workflow/src/river_conditioning.py:15 | runs "before burn_river_rect (build_sfincs)" | burn_river_rect is not used (Snakefile:21)
+- workflow/src/river_conditioning.py:11 | flat burn is "rule 11b" | 11b is bifurcation_calibration_options
+- workflow/src/river_burn.py:86 | "see 11b_burn_river_dem.py" | no such script
+- workflow/src/river_burn.py:98 | stats has 3 keys | returns 4 (`n_boundaries_blended`)
+- workflow/src/river_network.py:22,37 | `_smoothed_weir_crest_profiles` in river_burn | does not exist
+- workflow/src/river_network.py:138 | connectivity "burn_river_rect relies on" | burn_river_rect not used
+- workflow/src/river_network.py:530 | run before `clip_anomalous_max_width` | function does not exist
+- workflow/src/river_network.py:707 | `tests/plot_width_max_width_heatmap.py` | file does not exist
+- workflow/src/river_network.py:731 | "rule boundary_forcings" | rule is `get_boundary_forcings`
+- workflow/src/river_depth_calibration.py:121 | refers to `check_convergence` | function does not exist
+- workflow/src/river_forcing.py:406 | hydrograph from bankfull_discharge | build_design_discharge_matrix uses mean_discharge
+- workflow/src/river_forcing.py:756 | "bankfull lead-in" | lead-in is mean_q
+- workflow/src/gvf_target.py:27 | per-reach isotonic regression repeated until junctions agree | enforce_non_increasing solves the whole graph in one pass (Hildreth)
+- workflow/src/protection_weir.py:553 | landuse resampled nearest-neighbour (09b) | 09b uses Resampling.mode
+- workflow/src/protection_weir.py:555,584 | names `correct_sea_mask_from_grid_mask`, `relabel_landuse_from_grid_mask` | neither exists
+- workflow/src/protection_weir.py:479 | `channel_mask_gap_free` caller is 13_build_sfincs.py | only 10_depth_estimation_modelled.py passes it
+- workflow/src/extreme_values.py:6,223 | config keys `boundary_forcings.eva` / `.bias_correction` | rule 07 passes `boundary_forcings.river.eva` / `.river.bias_correction`
+- workflow/scripts/09b_grid_align_landuse.py:10 | nearest-neighbour landuse, roughness from coarse grid | Resampling.mode; roughness area-averaged from source
+- workflow/scripts/05a_get_elevation.py:19 | zsini built in rule 05b | built in rule 13
+- workflow/scripts/05a_get_elevation.py:352 | "the subtraction" | code adds the MDT
+- workflow/scripts/05a_get_elevation.py:451 | "effectively unlimited max_search_distance" | capped at 100 px
+- workflow/scripts/07_get_boundary_forcings.py:432 | names rule `test_discharge_comparison` | no such rule
+- workflow/scripts/07_get_boundary_forcings.py:630 | crossing selected by flood_q | selected by `q_rp100`
+- workflow/scripts/10_depth_estimation_modelled.py:3,39,762 | "three fixed-duration runs", no restart/extension | round 0 continues until steady from restart files
+- workflow/scripts/10_depth_estimation_modelled.py:228; workflow/rules/10_depth_estimation_modelled.smk:28 | baseline includes SLR | baseline is MDT-only; SLR applied at build time
+- workflow/scripts/10_depth_estimation_modelled.py:1480 | landuse resampled nearest-neighbour | 09b uses mode
+- workflow/scripts/13_build_sfincs.py:318, workflow/Snakefile:91, workflow/rules/00_common.smk:220, 13_build_sfincs_skeleton.smk:4, 14_run_spinup.smk:2, 18c_attribution_mask.smk:12 | spin-up river at RP=1 | 14_run_spinup.py forces mean_discharge
+- workflow/scripts/13_build_sfincs.py:372 | plot shows exactly what was built | ignores outflow-crossing exclusion, coastal_only zeroing, compound lag
+- workflow/scripts/11_test_upstream_boundary.py:413 | forcing points plotted "outside first" | index order
+- workflow/scripts/18a_adapt_pre.py:3 | "dike rings" as example measure | dike_ring is commented out
+- workflow/rules/07_boundary_forcings.smk:67 | slr_m is a param of run_spinup | run_spinup applies no SLR
+- workflow/rules/05_static_terrain_data.smk:27,68 | zsini.tif built by build_sfincs from sea_mask | built by build_sfincs_skeleton from zsini_sea_cells_on_grid.tif
+- workflow/rules/03_land_polygons.smk:4 | every later step incl. river network takes land_polygons | rule 06 runs before 03 and does not
+- workflow/rules/09b_grid_align_landuse.smk:2 | roughness from coarse landuse_on_grid | area-averaged from native source
+- workflow/rules/18c_attribution_mask.smk:24 | classes (1,3) = everything but pure-coastal | class 4 (spin-up water) also excluded
+- workflow/rules/19_adapt_compare.smk:5 | covers SCENARIOS x STRATEGIES in play | script globs every flood_metrics.csv on disk
+- tests/KL_analysis_waterlevel_animation.py:10, tests/KL_check_adaptation_scaling.py:9 | usage names a different file path | wrong file names
+- tests/KL_domain_figures.py:8-11 | outputs in results/2433835 incl. elevation/landuse maps | BASIN_ID 3279946; those saves commented out
+- tests/KL_flood_maps.py:3,13 | scenarios coast_500/river_500/compound_500; "section 3 below" | coast_100/river_500/compound_100c_500r; no section 3
+- tests/KL_results_figures.py:255,261,340 | "2x3 grid"; SLR line on coastal scenarios; "hydrographs" | 2x2; SLR scenario not in SCENARIOS; plots RP curves

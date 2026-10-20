@@ -1,31 +1,19 @@
-"""
-attribution_plot.py -- Classify a basin x scenario's flood map by dominant
-source (river / coastal / compound / spin-up "permanent water"), from
-three already-computed max_flood_depth.tif rasters (no new SFINCS runs):
-- a river-only counterpart scenario's own flood map
-- a coastal-only counterpart scenario's own flood map
-- the basin-level spin-up's own flood depth (RP=1 river, calm sea -- the
-  permanent-water class, overrides the other three; catches cells like the
-  perennial river channel that stay wet from the SAME spin-up restart every
-  scenario's own event run picks up from, regardless of that scenario's own
-  driver)
+"""Classify a flood map by dominant source (river, coastal, compound, permanent water).
 
-Counterpart scenarios are resolved by 00_common.smk's attribution_counterparts
-(RP-matched against the target scenario's own river_rp/surge_rp) -- this
-module itself is result-path-agnostic, driven entirely by the paths it's
-given. Called once per basin x scenario by 18c_attribution_mask.py (rule
-attribution_mask, 18c_attribution_mask.smk).
+Uses existing max_flood_depth.tif rasters of the river-only and coastal-only
+counterpart scenarios (RP-matched by 00_common.smk attribution_counterparts) and
+the spin-up (RP=1 river, calm sea). Called by rule attribution_mask
+(18c_attribution_mask.py).
 """
 
 from pathlib import Path
 
+import matplotlib.patches as mpatches
 import numpy as np
 import rasterio
 import rioxarray as rxr
-import matplotlib.patches as mpatches
-from matplotlib.colors import ListedColormap, BoundaryNorm
 from hydromt_sfincs import SfincsModel
-
+from matplotlib.colors import BoundaryNorm, ListedColormap
 from src.plots import add_land_background_to_geoaxes, save_figure
 
 
@@ -43,25 +31,15 @@ def generate_attribution_maps(
     ],
     data_libs: list[str] | None = None,
 ) -> None:
-    """
-    Args:
-        base_root        : basin skeleton root, opened read-only purely for
-                            plot_basemap's own model geometry/basemap -- no
-                            data_catalog lookups happen here.
-        attribution_runs : list of (label, river_tif, coastal_tif, spinup_tif,
-                            out_folder) tuples -- one per basin x scenario being
-                            classified. spinup_tif is the basin-level spin-up's
-                            own flood depth (RP=1 river, calm sea) -- cells
-                            already wet there (e.g. the perennial river
-                            channel, kept wet by the SAME spin-up restart every
-                            scenario's own event run picks up from) are
-                            permanent water, not event-driven flooding, and
-                            override any river/coastal/compound classification.
-        land_mask_path   : grid-aligned land mask ({basin}_land_mask_on_grid.gpkg,
-                            rule grid_align_landuse) drawn as the map background
-                            (see src.plots' module docstring) -- no web map tiles.
-        threshold         : depth [m] above which a cell counts as flooded
-                            in each of the three input rasters.
+    """Write attribution_mask.tif and .png for each (label, river, coastal, spinup, out) run.
+
+    Classes: 1 river, 2 coastal, 3 compound, 4 permanent water. Cells wet in
+    the spin-up (e.g. the perennial channel, which every event run restarts
+    from) are class 4 and override the others. threshold is the depth (m)
+    above which a cell counts as flooded in each input raster. base_root is
+    opened read-only for the basemap only; land_mask_path
+    ({basin}_land_mask_on_grid.gpkg) is the background, no web tiles. Runs with
+    a missing input TIF are skipped.
     """
     cmap_attr = ListedColormap(colors_cat)
     norm_attr = BoundaryNorm([0.5, 1.5, 2.5, 3.5, 4.5], cmap_attr.N)
@@ -98,25 +76,21 @@ def generate_attribution_maps(
         s_flood = spinup > threshold
 
         attr_mask = np.zeros(river.shape, dtype=np.uint8)
-        attr_mask[r_flood & ~c_flood] = 1  # river-dominated
-        attr_mask[~r_flood & c_flood] = 2  # coastal-dominated
-        attr_mask[r_flood & c_flood] = 3  # compound
-        attr_mask[s_flood] = 4  # spin-up/permanent water -- overrides the above
+        attr_mask[r_flood & ~c_flood] = 1
+        attr_mask[~r_flood & c_flood] = 2
+        attr_mask[r_flood & c_flood] = 3
+        attr_mask[s_flood] = 4
 
         out_folder.mkdir(parents=True, exist_ok=True)
 
-        # Save GeoTIFF
         out_tif = out_folder / "attribution_mask.tif"
         profile.update(dtype=rasterio.uint8, count=1, compress="lzw", nodata=None)
         with rasterio.open(out_tif, "w", **profile) as dst:
             dst.write(attr_mask, 1)
         print(f"  Saved TIF: {out_tif}")
 
-        # Load back as georeferenced DataArray
         da_attr = rxr.open_rasterio(out_tif).squeeze(drop=True).astype(float)
-        # class 0 (no flooding) and class 4 (spin-up/permanent water -- not a
-        # real attribution outcome, see legend note above) -> NaN (transparent);
-        # attribution_mask.tif on disk still keeps class 4 for downstream use.
+        # Classes 0 and 4 are transparent on the map; the TIF keeps class 4.
         da_attr = da_attr.where((da_attr > 0) & (da_attr != 4))
         da_attr.name = "attribution"
 

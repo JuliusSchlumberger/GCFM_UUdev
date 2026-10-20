@@ -1,24 +1,19 @@
-"""Standalone inspection of GRDC-vs-GloFAS correlation across delta basins.
+"""Plot GRDC-vs-GloFAS correlation for every active river crossing per delta basin.
 
-For every active river crossing (has_glofas) in each basin's river_forcing.nc,
-independently finds the nearest GRDC station (regardless of whether
-boundary_forcings.bias_correction.enabled was set when the pipeline last ran)
-and computes the raw overlap correlation. Writes one overview PNG per matched
-crossing -- domain map, raw scatter, seasonal scatter, overlap time series --
-to figs/grdc_overview/<basin_id>/. Never writes to results/ and never applies
-the bias correction itself.
-
-Basins are taken from the delta_polygons dataset in the data catalogue (the
-same set as BASINS in the Snakemake workflow). Basins whose rule-04 outputs
-don't exist yet (river_forcing.nc missing) are skipped.
+Finds the nearest GRDC station for each has_glofas crossing in river_forcing.nc
+regardless of boundary_forcings.bias_correction.enabled, and writes one overview
+PNG per matched crossing to figs/grdc_overview/<basin_id>/. Never writes to
+results/ and never applies the bias correction. Basins come from the catalogue's
+delta_polygons (as BASINS in Snakemake); basins without river_forcing.nc
+(rule 04) are skipped.
 
 Usage:
     python tests/inspect_grdc_correlation.py              # all delta basins
     python tests/inspect_grdc_correlation.py 4267691 ...  # only these basins
 """
 
-import os
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -40,24 +35,18 @@ from src.river_forcing import (
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# Machine-specific path, read from the GCFM_RAW_DATA_ROOT environment variable.
-# Set it once in PowerShell, then restart your terminal (see
-# CONTRIBUTING.md "Local machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+# GCFM_RAW_DATA_ROOT is machine-specific; see CONTRIBUTING.md "Local machine paths".
 GRDC_PATH = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "GRDC/GRDC-Daily.nc"
 
 with open(REPO_ROOT / "config" / "config.yml") as f:
     config = yaml.safe_load(f)
 river_cfg = config["boundary_forcings"]["river"]
 glofas_variable = (
-    "dis24"  # sole variable in data_catalogue's river_discharge (GloFAS v4) source
+    "dis24"  # sole variable of the catalogue's river_discharge (GloFAS v4) source
 )
 grdc_radius_m = float(river_cfg["bias_correction"]["grdc_search_radius_km"]) * 1000.0
 min_overlap_days = int(river_cfg["bias_correction"]["min_overlap_days"])
-# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
-# Set it once in PowerShell, then restart your terminal (see
-# CONTRIBUTING.md "Local machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
 results_dir_root = Path(os.environ["GCFM_RESULTS_DIR"])
 
 catalogue = load_catalogue(REPO_ROOT / "config" / "data_catalogue.yml")

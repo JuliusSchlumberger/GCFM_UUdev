@@ -1,20 +1,13 @@
 # Rules 06/06b: the basin's SWORD river network, clipped, and its diagnostic map.
 #
-# Deliberately SPLIT (2026-09-14). The clipped network is an INPUT of rule
-# prepare_landuse (02b): ESA WorldCover has no open-sea class, and the sea
-# is derived by flood-filling its water class inward from the domain border
-# with the river network as a barrier, so that the sea stops at the river
-# mouths instead of running up every channel. The plot, on the other hand,
-# draws the network over rule get_land_polygons' (03) own land mask -- and
-# 03 vectorizes 02b's output. Clip and plot in one rule would therefore be
-# a cycle (02b -> 03 -> 06 -> 02b); with the clip free of the land mask the
-# order is simply 02 -> 06 -> 02b -> 03 -> 06b.
+# Split to avoid a cycle: the clipped network is the barrier for rule
+# prepare_landuse's (02b) sea flood fill, so the sea stops at river mouths
+# instead of running up every channel, while the plot needs rule 03's land
+# mask, built from 02b. Order: 02 -> 06 -> 02b -> 03 -> 06b.
 
 rule get_river_network:
     """
-    Clip the global (modified) SWORD network to the domain bbox and write it
-    straight out -- no topology/width processing, that is rule
-    clean_river_network (08).
+    Clip the global (modified) SWORD network to the domain bbox, unprocessed.
     """
     input:
         spec_basins_meta     = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
@@ -30,9 +23,7 @@ rule get_river_network:
 
 rule plot_river_network:
     """
-    Diagnostic map of the clipped network over rule get_land_polygons' (03)
-    land mask -- the only part of rule 06 that depends on the land mask, and
-    therefore the only part that has to run after rules 02b/03.
+    Plot the clipped network over rule get_land_polygons' (03) land mask.
     """
     input:
         spec_basins_meta   = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),

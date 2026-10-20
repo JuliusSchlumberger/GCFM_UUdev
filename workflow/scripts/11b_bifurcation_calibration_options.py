@@ -1,61 +1,20 @@
-"""
-11b_bifurcation_calibration_options.py — compares discharge partitioning at
-every bifurcation between the ORIGINAL and MODIFIED SWORD river networks, by
-rebuilding the cleaned river network FROM RAW SWORD (not reading the
-pre-built river_network_clean.gpkg) via the actual pipeline functions
-(mirrors rules get_river_network (06) + clean_river_network (08)), once per
-source:
+"""Plot discharge partitioning at each bifurcation for original vs modified SWORD.
 
-  1. Original SWORD (data catalogue "river_network_original",
-     SWORD/SWORD_global_v17c_unpublished.gpkg).
-  2. Modified SWORD (data catalogue "river_network" -- this is now the
-     pipeline's default source, SWORD/SWORD_global_v17c_unpublished_
-     modified.gpkg -- specific reaches manually corrected, e.g. width, based
-     on Google Earth imagery and expert knowledge).
+Run by rule test_bifurcation_calibration_options (diagnostic only). Rebuilds
+the cleaned network from raw SWORD for both sources (data catalogue
+"river_network_original" and "river_network", the modified file with manually
+corrected reach attributes) using the rule 06 + 08 cleaning functions and the
+production width-based bifurcation split.
 
-Both are cleaned the same way and discharge is split with the same current
-production rule (pure width-based bifurcation splitting) -- the ONLY thing
-that can differ between them is which reaches were manually corrected.
+Assumes both SWORD files share geometry and rch_id_up/rch_id_dn topology (only
+attribute values differ), so river_forcing.nc seed crossings, adjacency and
+bifurcations are taken once and reused for both.
 
-Rebuilding from raw SWORD requires every non-width-dependent cleaning step
-rule 08 performs (fix_tjunction_tails, downstream-reachability filtering
-from the basin's seed crossings, delta-outflow-point identification,
-missing-width handling) in addition to rule 06's domain-bbox clip -- see
-clip_and_preclean() below. river_forcing.nc (rule 07's output, needed for
-seed crossings/discharges) is REUSED UNCHANGED for both SWORD sources:
-crossing detection and GloFAS discharge matching depend only on reach
-geometry and location, which SWORD's product description confirms unchanged
-between the two files (same feature count, same schema; only specific
-reaches' attribute values were manually adjusted, not geometry or
-rch_id_up/rch_id_dn topology) -- this also means both sources share the same
-geometry/adjacency, so bifurcations are identified once (from the original
-network) and reused for both.
-
-For each bifurcation, the two sources' canonical 'width' is compared across
-every reach in the local neighborhood (see downstream_within_steps): if any
-differ, a 2-panel figure (original | modified) is produced so the actual
-effect of the correction is visible; if none differ, the two sources give
-an identical result there, so just ONE panel is produced instead of a
-redundant duplicate. In either case, each reach's line width is
-proportional to its accumulated discharge (a SHARED scale across panels
-when there are two); every downstream reach in the local neighborhood is
-annotated with up to two percentages:
-  - immediate-upstream %: Q(reach) / Q(its own immediate upstream reach),
-    recomputed at each hop -- shown only where the reach has exactly one
-    upstream neighbour (undefined at confluences).
-  - bifurcation-relative %: Q(reach) / Q(the bifurcation reach itself) --
-    a FIXED denominator for every reach downstream of that split, however
-    many hops away, so it stays comparable along the whole distributary
-    branch and is well-defined even at confluences (unlike the
-    immediate-upstream %).
-Format: "immediate% / bifurcation%" (e.g. "39% / 24%"), or just
-"bifurcation%" alone where the immediate-upstream % is undefined.
-
-Diagnostic-only side branch: only needs rule 06's raw river network sources
-(read directly from the data catalogue, not rule 06's own output) and rule
-07's river_forcing.nc -- nothing downstream depends on this rule's output.
-One figure per bifurcation, written to
-preprocessing_inputs/visuals/bifurcation_calibration_options/{upstream_reach_id}.png.
+Two panels where canonical 'width' differs in the neighbourhood, else one.
+Line width ∝ accumulated discharge (shared scale). Labels:
+"immediate% / bifurcation%" with immediate% = Q(reach)/Q(single upstream
+reach) and bifurcation% = Q(reach)/Q(bifurcation reach); bifurcation% alone
+at confluences.
 """
 
 import math
@@ -98,8 +57,7 @@ plot_dir.mkdir(parents=True, exist_ok=True)
 
 DISCHARGE_VARIABLE = snakemake.params.discharge_variable
 N_STEPS = 3
-WIDTH_DIFF_TOLERANCE_M = 0.01  # min |width_orig - width_mod| in a bifurcation's neighborhood
-                                # before it's considered "actually different" (vs. floating-point noise)
+WIDTH_DIFF_TOLERANCE_M = 0.01  # below this |width_orig - width_mod| is floating-point noise
 
 ORIGINAL_SWORD_PATH = snakemake.input.river_network_original
 MODIFIED_SWORD_PATH = snakemake.input.river_network
@@ -111,14 +69,11 @@ def clip_and_preclean(
     delta_polygon: gpd.GeoDataFrame,
     seed_q: dict[str, float],
 ) -> gpd.GeoDataFrame:
-    """Clip a raw global river network to the domain bbox and apply every
-    cleaning step that does NOT depend on which width column is chosen
-    (mirrors rule get_river_network (06) + the non-width part of rule
-    clean_river_network (08): fix_tjunction_tails, downstream-reachability
-    filtering from seed_q, is_seed marking, delta-outflow-point
-    identification, missing-width handling). Width normalisation, mouth-
-    width monotonicity, and discharge accumulation are scenario-specific
-    and applied by the caller afterward."""
+    """Clip a raw river network to the domain and apply the width-independent cleaning.
+
+    Mirrors rule 06 plus the non-width part of rule 08; width normalisation,
+    mouth-width monotonicity and discharge accumulation are left to the caller.
+    """
     clip_gdf = gpd.GeoDataFrame(geometry=[shapely_box(*wgs84_bounds)], crs="EPSG:4326")
     probe_crs = gpd.read_file(global_path, rows=0).crs
     bbox = (
@@ -151,8 +106,7 @@ def clip_and_preclean(
 
 
 def apply_base_width_rule(rivers_clean: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Production width treatment: normalize_channel_widths (fix swapped
-    width/max_width, canonical 'width') + enforce_mouth_width_monotonic."""
+    """Apply the production width treatment (normalised widths, monotonic mouth width)."""
     rivers = normalize_channel_widths(rivers_clean)
     return enforce_mouth_width_monotonic(rivers)
 
@@ -169,7 +123,7 @@ def compute_discharge(
 
 
 def downstream_within_steps(adjacency: dict, root: str, n_steps: int) -> list[str]:
-    """BFS downstream from root; returns reach_ids reachable within n_steps hops (incl. root)."""
+    """Return reach_ids within n_steps downstream hops of root, root included."""
     visited = {root}
     frontier = [root]
     for _ in range(n_steps):
@@ -186,16 +140,14 @@ def downstream_within_steps(adjacency: dict, root: str, n_steps: int) -> list[st
 
 
 def discharge_to_linewidth(q: float, q_max: float, min_lw: float = 1.0, max_lw: float = 10.0) -> float:
+    """Map discharge to a line width, scaling with sqrt(q / q_max)."""
     if not np.isfinite(q) or q <= 0 or not np.isfinite(q_max) or q_max <= 0:
         return min_lw
     return min_lw + (max_lw - min_lw) * np.sqrt(min(q, q_max) / q_max)
 
 
 def utm_epsg_to_cartopy_crs(utm_epsg: str) -> ccrs.CRS:
-    """Convert an 'EPSG:326xx'/'EPSG:327xx' UTM code (as returned by
-    src.geometry.pick_utm_crs) to the equivalent cartopy CRS, so the GeoAxes
-    projection matches the data (already reprojected to the same UTM CRS via
-    pyproj) and the land-mask background."""
+    """Convert an 'EPSG:326xx'/'EPSG:327xx' UTM code to a cartopy UTM CRS."""
     epsg = int(utm_epsg.split(":")[1])
     if 32601 <= epsg <= 32660:
         return ccrs.UTM(epsg - 32600, southern_hemisphere=False)
@@ -207,8 +159,7 @@ def utm_epsg_to_cartopy_crs(utm_epsg: str) -> ccrs.CRS:
 def annotation_label(
     rid: str, root_rid: str, q_series: pd.Series, upstream_adj: dict[str, list[str]]
 ) -> str | None:
-    """'immediate% / bifurcation%', or just 'bifurcation%' where the
-    immediate-upstream % is undefined (confluences, >1 upstream neighbour)."""
+    """Return 'immediate% / bifurcation%', or 'bifurcation%' at confluences; None if undefined."""
     q_root = float(q_series.get(root_rid, np.nan))
     q_rid = float(q_series.get(rid, np.nan))
     if not np.isfinite(q_root) or q_root <= 0 or not np.isfinite(q_rid):
@@ -236,24 +187,18 @@ if not seed_q:
 else:
     log.info(f"Basin {basin_id}: {len(seed_q)} seed reach(es), reused across both SWORD sources")
 
-    # ── Original SWORD ──────────────────────────────────────────────────────
     log.info(f"Basin {basin_id}: original SWORD")
     rivers_orig = clip_and_preclean(ORIGINAL_SWORD_PATH, wgs84_bounds, delta_polygon, seed_q)
     rivers_orig = apply_base_width_rule(rivers_orig)
     rivers_orig = compute_discharge(rivers_orig, seed_q)
 
-    # ── Modified SWORD (pipeline default) ───────────────────────────────────
     log.info(f"Basin {basin_id}: modified SWORD")
     rivers_mod = clip_and_preclean(MODIFIED_SWORD_PATH, wgs84_bounds, delta_polygon, seed_q)
     rivers_mod = apply_base_width_rule(rivers_mod)
     rivers_mod = compute_discharge(rivers_mod, seed_q)
 
-    # ── reproject to a shared UTM CRS; geometry/topology are identical
-    # between the two sources (only attribute values differ, per SWORD's
-    # own product description), so bifurcation detection, adjacency, and
-    # plotted geometry are all built once from the original network and
-    # reused for the modified one -- only 'width' and the discharge values
-    # can differ. ──
+    # Geometry and topology are shared, so adjacency, bifurcations and plotted
+    # geometry come from the original network only.
     utm_crs = pick_utm_crs(rivers_orig)
     cartopy_crs = utm_epsg_to_cartopy_crs(utm_crs)
     land_utm = gpd.read_file(snakemake.input.land_polygons).to_crs(utm_crs)
@@ -289,10 +234,8 @@ else:
             )
             continue
 
-        # Only show both panels if the correction actually touched something
-        # in this neighborhood -- comparing the canonical 'width' (the value
-        # that actually drives accumulate_discharge), not the raw SWORD
-        # attribute, so this reflects exactly what could visibly differ.
+        # Canonical 'width' drives accumulate_discharge, so compare that, not
+        # the raw SWORD attribute.
         width_differs = any(
             abs(float(rivers_orig_utm.loc[rid, "width"]) - float(rivers_mod_utm.loc[rid, "width"]))
             > WIDTH_DIFF_TOLERANCE_M
@@ -308,7 +251,6 @@ else:
         if not np.isfinite(q_max) or q_max <= 0:
             q_max = 1.0
 
-        # ── extent of this bifurcation's neighborhood ──
         neighborhood_geoms = [rivers_orig_utm.loc[rid].geometry for rid in neighborhood_ids]
         minx = min(g.bounds[0] for g in neighborhood_geoms)
         miny = min(g.bounds[1] for g in neighborhood_geoms)
@@ -323,9 +265,8 @@ else:
         for i, (label, q_series) in enumerate(panels.items()):
             ax = fig.add_subplot(1, n_panels, i + 1, projection=cartopy_crs)
             ax.set_extent(extent, crs=cartopy_crs)
-            # Land background: rule get_land_polygons' land mask (land use !=
-            # 200, native raster -- this rule runs before the SFINCS grid
-            # exists; see src.plots' module docstring), not web map tiles.
+            # Land mask from rule get_land_polygons (land use != 200, native
+            # raster): this rule runs before the SFINCS grid exists.
             if not land_utm.empty:
                 ax.add_geometries(
                     land_utm.geometry, crs=cartopy_crs,
@@ -349,13 +290,8 @@ else:
                 label_text = annotation_label(rid, root_rid, q_series, upstream_adj)
                 if label_text is not None:
                     mid = line.interpolate(0.5, normalized=True)
-                    # Push the label radially outward from the neighborhood's
-                    # centroid rather than placing it exactly on the line --
-                    # reaches on different branches sit on different sides of
-                    # the centroid, so this tends to separate their labels
-                    # even where the branches themselves run close together
-                    # (the raw on-line placement collided there). A thin
-                    # leader line ties the label back to its actual reach.
+                    # Offset radially from the neighbourhood centroid so labels
+                    # on close-running branches separate; a leader line links back.
                     dx, dy = mid.x - neighborhood_cx, mid.y - neighborhood_cy
                     dist = math.hypot(dx, dy)
                     offset_pts = (dx / dist * 22, dy / dist * 22) if dist > 0 else (0, 22)

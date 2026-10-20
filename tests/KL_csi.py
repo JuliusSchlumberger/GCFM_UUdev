@@ -1,7 +1,7 @@
-"""
-Agreement of the postprocessed (POST) flood map with the modelled (PRE, re-run) flood
-map, per flood event and strategy (measure x scale). PRE is the reference. Cells are
-only wet (depth > THRESHOLD) or dry; dry-in-both is counted on land cells (see land_mask).
+"""Score POST flood maps against modelled PRE maps per event and strategy.
+
+PRE (re-run SFINCS) is the reference. Cells are wet (depth > THRESHOLD) or dry;
+dry-in-both is counted on land cells only (see land_mask).
 
     hits          wet in PRE and in POST
     misses        wet in PRE, dry in POST  (POST under-credits the measure)
@@ -21,18 +21,15 @@ A strategy is compared only if it has a max_flood_depth.tif under both
 import os
 from pathlib import Path
 
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio
-from rasterio.warp import Resampling, reproject
-import matplotlib.pyplot as plt
 from matplotlib.colors import BoundaryNorm, ListedColormap
-import matplotlib as mpl
+from rasterio.warp import Resampling, reproject
 
-# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
-# Set it once in PowerShell, then restart your terminal (see
-# CONTRIBUTING.md "Local machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
 BASIN = Path(os.environ["GCFM_RESULTS_DIR"]) / "2433835"
 RUNS = BASIN / "runs"
 EVENTS = ["coast_100", "river_500", "compound_100c_500r"]
@@ -48,13 +45,14 @@ OUT_CSV = RUNS / "csi_pre_vs_post.csv"
 
 
 def wet_map(path):
+    """Return the wet mask (depth > THRESHOLD) and transform of a depth raster."""
     with rasterio.open(path) as src:
         # nodata (-9999) is below the threshold, so it counts as dry
         return src.read(1) > THRESHOLD, src.transform
 
 
 def land_mask(like_path):
-    """Land cells on the grid of the flood map at `like_path`."""
+    """Return the land cells on the grid of the flood map at `like_path`."""
     with rasterio.open(like_path) as like:
         shape, transform, crs = like.shape, like.transform, like.crs
 
@@ -76,7 +74,7 @@ def land_mask(like_path):
 
 
 def contingency(wet_pre, wet_post, land, transform):
-    """Hits / misses / false alarms / dry-in-both (km2) and the scores.
+    """Return hits, misses, false alarms, dry-in-both (km2) and the scores.
 
     Wet cells count wherever they are (also on land reclaimed from the sea by NbS, which
     the baseline sea mask still calls sea); dry-in-both counts baseline land cells only.
@@ -85,7 +83,7 @@ def contingency(wet_pre, wet_post, land, transform):
     m = int((wet_pre & ~wet_post).sum())
     f = int((~wet_pre & wet_post).sum())
     d = int((~wet_pre & ~wet_post & land).sum())
-    km2 = abs(transform.a * transform.e) / 1e6  # area of one cell
+    km2 = abs(transform.a * transform.e) / 1e6  # cell area
     denom = (h + m) * (m + d) + (h + f) * (f + d)
     return dict(
         hits_km2=h * km2,
@@ -145,7 +143,6 @@ if __name__ == "__main__":
     print(f"\nWrote {OUT_CSV}")
 
 
-# ------------------------------------------------------------------------------------------
 # Heat map with numbers
 df = pd.read_csv(OUT_CSV)
 df["bias"] = (df.hits_km2 + df.false_alarms_km2) / (df.hits_km2 + df.misses_km2)
@@ -234,8 +231,7 @@ fig.text(
 fig.savefig(RUNS / "fig_csi_heatmap_numbers.png", dpi=300, bbox_inches="tight")
 
 
-# ------------------------------------------------------------------------------------------
-# No numbers but same pot:
+# Heat map without numbers
 df = pd.read_csv(OUT_CSV)
 df["bias"] = (df.hits_km2 + df.false_alarms_km2) / (df.hits_km2 + df.misses_km2)
 

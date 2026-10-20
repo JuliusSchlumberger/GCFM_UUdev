@@ -1,13 +1,9 @@
-"""
-check_crest_calibration.py -- Independent check of rule modelled_depth_estimation's
-(10_depth_estimation_modelled.py) weir crests against its own round-2
-verification run: does ANY weir segment get overtopped?
+"""Check whether any calibrated weir segment is overtopped in the round-2 run.
 
-Deliberately does not reuse the rule's own bookkeeping (crest_surface /
-edge_water_side_mask): every segment of the exported weir gpkg is checked
-directly against round 2's SFINCS zsmax (max over every computational
-timestep) on BOTH sides of the segment -- SFINCS passes flow over a weir as
-soon as either side exceeds the crest.
+Independent of rule modelled_depth_estimation's own bookkeeping (crest_surface /
+edge_water_side_mask): each segment of the weir gpkg is compared with round 2's
+SFINCS zsmax (max over every computational timestep) on both sides, since
+SFINCS passes flow as soon as either side exceeds the crest.
 
 Checks / reports:
   1. Per-segment margin = crest - max(zsmax left, zsmax right); < 0 means
@@ -29,8 +25,8 @@ Usage:
 
 from __future__ import annotations
 
-import os
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -60,10 +56,7 @@ BASIN_ID = sys.argv[1] if len(sys.argv) > 1 else "2433835"
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
-# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
-# Set it once in PowerShell, then restart your terminal (see
-# CONTRIBUTING.md "Local machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
 RESULTS_DIR = Path(os.environ["GCFM_RESULTS_DIR"])
 FIGS_DIR = REPO_ROOT / "figs" / "crest_calibration_check"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -74,7 +67,7 @@ round2 = calib_root / "round2"
 weir_path = prep / "domain" / f"{BASIN_ID}_coastal_protection_weir.gpkg"
 landuse_path = prep / "domain" / f"{BASIN_ID}_landuse_on_grid.tif"
 
-# ── round 2's own grid + zsmax ────────────────────────────────────────────────
+# round 2 grid + zsmax
 inp = parse_sfincs_inp(round2 / "sfincs.inp")
 if float(inp.get("rotation", 0.0)) != 0.0:
     raise NotImplementedError("rotated grids are not supported by this check")
@@ -87,8 +80,7 @@ with xr.open_dataset(round2 / "sfincs_map.nc") as ds:
     zsmax = ds["zsmax"]
     zsmax = zsmax.max(dim=[d for d in zsmax.dims if d not in ("n", "m")]).values
     map_x, map_y = ds["x"].values, ds["y"].values
-# sfincs_map.nc's (n, m) must be this grid's (row, col) -- checked on real
-# coordinates rather than assumed.
+# sfincs_map.nc's (n, m) must be this grid's (row, col): checked, not assumed.
 _rows, _cols = np.indices((nmax, mmax))
 _cx, _cy = transform * (_cols + 0.5, _rows + 0.5)
 assert (
@@ -104,7 +96,7 @@ if landuse.shape != (nmax, mmax):
 ocean = landuse == LANDUSE_SEA
 wetland = np.isin(landuse, OCEAN_WETLAND_CLASSES)
 
-# ── per-segment: water level on both sides ───────────────────────────────────
+# per-segment water level on both sides
 weir = gpd.read_file(weir_path)
 crest = weir["elevation"].to_numpy(float)
 n_seg = len(weir)
@@ -134,10 +126,9 @@ for i, geom in enumerate(weir.geometry):
             zs_side[i, k] = zsmax[rc]
             is_coastal[i] |= bool(ocean[rc])
             touches_wetland[i] |= bool(wetland[rc])
-# Wetland-edge segments: a wetland/lagoon cell (OCEAN_WETLAND_CLASSES) on one
-# side and no open sea -- with unprotected_ocean_wetlands, the dike along the
-# landward edge of an ocean-linked wetland (a wetland cell can also sit on the
-# protected side, so this is a label, not proof of which side is seaward).
+# Wetland edge: a wetland/lagoon cell (OCEAN_WETLAND_CLASSES) on one side and no
+# open sea, i.e. the dike along an ocean-linked wetland under
+# unprotected_ocean_wetlands. A label only: it does not prove which side is seaward.
 is_wetland_edge = touches_wetland & ~is_coastal
 categories = (
     ("river-bank / other", ~is_coastal & ~is_wetland_edge, "steelblue"),
@@ -174,11 +165,9 @@ if overtopped.any():
 else:
     log.info("  -> no segment overtopped in round 2")
 
-# ── crests as SFINCS read them (round2/sfincs.weir) ──────────────────────────
-# hydromt drops segments outside the model's active region when the weir is
-# set, so sfincs.weir can hold fewer segments than the gpkg -- matched by
-# midpoint; every dropped one must have INACTIVE cells on both sides (no
-# flow is computed there anyway), otherwise the weir has a real gap.
+# crests as SFINCS read them (round2/sfincs.weir)
+# hydromt drops segments outside the active region, so segments are matched by
+# midpoint; a dropped one next to an active cell is a real gap in the weir.
 file_mid, file_z = [], []
 with open(round2 / "sfincs.weir") as fh:
     lines = [ln for ln in fh.read().splitlines() if ln.strip()]
@@ -225,7 +214,7 @@ log.info(
     f"gpkg crests on the 0.1 m grid: {np.allclose(crest * 10, np.round(crest * 10))}"
 )
 
-# ── centerline water level, round 1 vs round 2 ───────────────────────────────
+# centerline water level, round 1 vs round 2
 s1 = pd.read_csv(calib_root / "round1" / "calibration_state.csv")
 s2 = pd.read_csv(calib_root / "round2" / "calibration_state.csv")
 d = (s2["zs"] - s1["zs"]).to_numpy()
@@ -235,7 +224,7 @@ log.info(
     f"max {d.max():+.3f} m ({len(d)} cells)"
 )
 
-# ── figure ────────────────────────────────────────────────────────────────────
+# figure
 fig, (ax_map, ax_hist) = plt.subplots(
     1, 2, figsize=(16, 7), gridspec_kw={"width_ratios": [1.4, 1]}
 )

@@ -1,7 +1,6 @@
-"""Raster clipping, merging, tile lookup, and grid alignment.
+"""Raster clipping, merging, tile lookup, grid alignment and coastal blending.
 
-Land-use specifics (per-basin source preparation, the sea class, and
-Manning's n aggregation) live in src.landuse instead.
+Land-use preparation, the sea class and Manning's n live in src.landuse.
 """
 
 from __future__ import annotations
@@ -28,30 +27,17 @@ def reproject_nan_aware(
     dst_crs,
     resampling=None,
 ) -> np.ndarray:
+    """Reproject a NaN-as-nodata float32 array with coverage weighting.
+
+    Resamples ``value * valid`` and ``valid`` separately and divides, so a
+    pixel near a NaN region is reweighted from its valid neighbours instead of
+    picking up NaN from any one invalid source pixel (which erodes data at
+    domain edges, tile gaps and the land/sea split). Output is NaN only where
+    the destination pixel has no valid source coverage (weight <= 1e-6).
+    resampling defaults to bilinear.
     """
-    Coverage-weighted reproject of a NaN-as-nodata array.
-
-    Resamples ``value * valid`` and ``valid`` (a 0/1 mask) separately, then
-    divides, instead of relying on the warp backend's own nodata handling.
-    A destination pixel only comes out NaN when its entire receptive field
-    on the source grid is nodata; a pixel near the edge of a NaN region is
-    reweighted from its valid neighbours only, instead of plain bilinear/
-    cubic resampling propagating NaN in from any single invalid contributing
-    source pixel — which erodes/blurs real data right at nodata edges (a
-    domain-polygon boundary, a DEM tile gap, the land/sea split, etc).
-
-    Args:
-        source:                 float32 array, NaN = nodata.
-        src_transform, src_crs: source grid georeferencing.
-        dst_shape:              (height, width) of the destination grid.
-        dst_transform, dst_crs: destination grid georeferencing.
-        resampling:             rasterio.warp.Resampling enum; defaults to bilinear.
-
-    Returns:
-        float32 array, shape ``dst_shape``, NaN where the destination pixel
-        has no valid source coverage at all.
-    """
-    from rasterio.warp import reproject as _rp, Resampling as _RS
+    from rasterio.warp import Resampling as _RS
+    from rasterio.warp import reproject as _rp
 
     resampling = resampling if resampling is not None else _RS.bilinear
 
@@ -88,22 +74,12 @@ def find_fathomdem_tiles(
     topo_dir: str | Path,
     bounds: tuple[float, float, float, float],
 ) -> list[str]:
-    """
-    Return paths of existing FathomDEM tiles covering the given WGS84 bounds.
+    """Return paths of existing FathomDEM tiles covering (lon_min, lat_min, lon_max, lat_max).
 
-    FathomDEM tiles follow the (lowercase) naming convention
-    ``{n/s}{lat:02d}{e/w}{lon:03d}.tif`` (e.g. ``n00e010.tif``,
-    ``s01w090.tif``). Matched here with uppercase N/E/S/W, which also
-    resolves on case-insensitive filesystems (e.g. Windows/NTFS).
-    Tiles that do not exist on disk (e.g. ocean-only cells) are silently
-    skipped with a debug log entry.
-
-    Args:
-        topo_dir: Directory containing FathomDEM .tif tiles.
-        bounds:   (lon_min, lat_min, lon_max, lat_max) in WGS84.
-
-    Returns:
-        List of absolute file path strings for existing tiles.
+    Tiles are named ``{n/s}{lat:02d}{e/w}{lon:03d}.tif`` (e.g. ``n00e010.tif``)
+    and matched here with uppercase N/E/S/W, which also resolves on
+    case-insensitive filesystems (e.g. Windows/NTFS). Absent tiles (ocean-only
+    cells) are skipped.
     """
     lon_min, lat_min, lon_max, lat_max = bounds
     tiles: list[str] = []
@@ -125,16 +101,9 @@ def merge_tiled_raster(
     bounds: tuple[float, float, float, float],
     out_path: str | Path,
 ) -> None:
-    """
-    Merge a list of raster tiles, clip to bounds, and write to out_path.
+    """Merge raster tiles, clip to WGS84 bounds and write a GeoTIFF to out_path.
 
-    Args:
-        tile_paths: List of .tif file paths to merge.
-        bounds:     (lon_min, lat_min, lon_max, lat_max) clipping bounds in WGS84.
-        out_path:   Destination GeoTIFF path.
-
-    Raises:
-        FileNotFoundError: If tile_paths is empty.
+    Raises FileNotFoundError if tile_paths is empty.
     """
     if not tile_paths:
         raise FileNotFoundError("No raster tiles provided for merging")
@@ -142,16 +111,12 @@ def merge_tiled_raster(
     open_ds = [rasterio.open(p) for p in tile_paths]
     dtype = open_ds[0].dtypes[0]
     src_nodata = open_ds[0].nodata
-    # Cast to the source dtype before handing it to rio_merge: rasterio compares
-    # the (float64) Python nodata value against the destination dtype with
-    # np.can_cast(..., casting="safe"), which is always False for float64 -> float32
-    # and triggers a spurious "cannot safely be represented" warning even though the
-    # value itself round-trips exactly.
+    # rasterio checks nodata with np.can_cast(float64 -> dtype, "safe"), which
+    # warns spuriously for float32 even when the value round-trips exactly.
     merge_nodata = np.dtype(dtype).type(src_nodata) if src_nodata is not None else None
-    # target_aligned_pixels: keep the tiles on their OWN pixel lattice. With
-    # bare bounds, rasterio starts the output grid at the bounds' corner and
-    # resamples (nearest) onto it, shifting the data by up to half a pixel
-    # depending on where the clipping box happens to start.
+    # Keep the tiles' own pixel lattice; with bare bounds rasterio resamples
+    # onto a grid starting at the bounds' corner, shifting data by up to half
+    # a pixel.
     merged, transform = rio_merge(
         open_ds,
         bounds=bounds,
@@ -179,30 +144,13 @@ def vectorize_land_from_landuse(
     wgs84_bounds: tuple[float, float, float, float],
     max_pixels: int | None = 4_000_000,
 ):
-    """
-    Windowed-read a landuse raster clipped to wgs84_bounds and vectorize
-    landuse != 200 (i.e. not sea) into a "land" GeoDataFrame, native WGS84
-    (no reprojection -- both sources are already EPSG:4326).
+    """Vectorize landuse != 200 (not sea) within wgs84_bounds into land polygons.
 
-    Used by rule get_land_polygons (03, the per-basin land_polygons.gpkg
-    product, from this basin's own landuse_source.tif) and by rule
-    get_protection_levels (04, which deliberately depends only on the delta
-    polygon -- see that rule's own docstring -- so it vectorizes its own
-    wider window straight from the raw LC100 catalogue source instead).
-
-    Args:
-        landuse_path: Path to a landuse GeoTIFF in pipeline codes.
-        wgs84_bounds: (lon_min, lat_min, lon_max, lat_max) -- clip extent.
-        max_pixels:   Decimate (by MODE, so no class is invented) to at most
-                      this many pixels before tracing. These polygons are a
-                      figure background only, and a 10 m source (ESA
-                      WorldCover) puts 26M pixels in a delta-sized window --
-                      tracing that raw produces enormous speckle for no
-                      visible gain. None disables decimation.
-
-    Returns:
-        geopandas.GeoDataFrame of land polygons, CRS EPSG:4326 (matching the
-        source raster's own CRS).
+    No reprojection: the result keeps the source CRS (EPSG:4326). Used by rules
+    get_land_polygons (03) and get_protection_levels (04). The window is
+    decimated by mode (no class invented) to at most max_pixels before tracing;
+    the polygons are a figure background only, and a 10 m source (ESA
+    WorldCover) gives ~26M pixels per delta. None disables decimation.
     """
     import geopandas as gpd
     from affine import Affine
@@ -246,18 +194,11 @@ def vectorize_land_from_landuse(
 
 
 def vectorize_land_mask_on_grid(landuse_on_grid_path: str | Path):
-    """
-    Land mask (land use != 200 and != nodata) traced from the land use
-    resampled onto the SFINCS grid (landuse_on_grid.tif, rule
-    grid_align_landuse) -- polygon edges run exactly along model cell edges,
-    in the grid's own CRS, then reprojected to WGS84 for the plots. The land
-    background of every figure of model output, so it can't disagree with
-    the model's own land/sea classification (unlike a mask from the native
-    land-use raster, vectorize_land_from_landuse). Works for either row
-    order of the grid transform.
+    """Return land polygons (land use != 200, != nodata) traced on the SFINCS grid, in EPSG:4326.
 
-    Returns:
-        geopandas.GeoDataFrame of land polygons, CRS EPSG:4326.
+    Traced from landuse_on_grid.tif (rule grid_align_landuse), so edges follow
+    model cell edges and the figure background matches the model's own
+    land/sea split. Works for either row order of the grid transform.
     """
     import geopandas as gpd
     from rasterio.features import shapes as rio_shapes
@@ -281,19 +222,13 @@ def vectorize_land_mask_on_grid(landuse_on_grid_path: str | Path):
 def restrict_waterlevel_boundary_to_sea(
     mask: np.ndarray, landuse_on_grid: np.ndarray
 ) -> tuple[np.ndarray, int]:
-    """
-    Water-level boundary cells (SFINCS mask == 2) only on open sea: every
-    boundary cell whose land use ON THE MODEL GRID (landuse_on_grid.tif,
-    rule grid_align_landuse) isn't 200 goes back to a normal active cell
-    (1). Used right after hydromt's create_boundary(btype="waterlevel") by
-    rules modelled_depth_estimation (10) and build_sfincs_skeleton (13), in
-    place of its exclude_polygon=<land polygons> -- those polygons were
-    traced from the NATIVE land-use raster, a different geometry from the
-    model grid's own land/sea classification, so the two could disagree at
-    the domain edge.
+    """Turn water-level boundary cells (mask == 2) not on grid sea (200) into active cells (1).
 
-    Returns:
-        (new_mask, n_cells_moved_off_the_boundary)
+    Applied after hydromt create_boundary(btype="waterlevel") by rules
+    modelled_depth_estimation (10) and build_sfincs_skeleton (13) instead of
+    exclude_polygon=<land polygons>: those are traced from the native land-use
+    raster and can disagree with the grid's land/sea split at the domain edge.
+    Returns (new_mask, n_cells_moved_off_the_boundary).
     """
     if mask.shape != landuse_on_grid.shape:
         raise ValueError(
@@ -311,32 +246,16 @@ def reproject_to_reference_grid(
     ref_meta: dict,
     resampling=None,
 ) -> tuple[np.ndarray, dict]:
+    """Clip a global raster to wgs84_bounds and reproject it onto ref_meta's grid.
+
+    ref_meta needs 'height', 'width', 'transform', 'crs'. resampling defaults
+    to nearest, so categorical land-use codes are never blended. Aligning
+    landuse (and roughness) with elevation_merged.tif/sea_mask.tif keeps one
+    land/sea split (landuse == 200) for all consumers. Returns (data, out_meta)
+    with the source dtype/nodata and a GeoTIFF meta dict.
     """
-    Clip a global raster to wgs84_bounds, then reproject it onto the exact
-    grid described by ref_meta (height, width, transform, crs).
-
-    Used to put landuse.tif (and, by inheritance, roughness.tif -- reclassified
-    pixel-for-pixel from it) on the same UTM working grid as
-    elevation_merged.tif/sea_mask.tif, instead of each staying on its own
-    independent native-resolution WGS84 grid. Left unaligned, every downstream
-    consumer (hydromt's model build, compute_max_inundation's water-body mask)
-    would have to reproject landuse independently, risking a land/sea split
-    that disagrees with the one sea_mask.tif (landuse == 200) is built from.
-
-    Args:
-        src_path:     Path to the global source raster (single GeoTIFF).
-        wgs84_bounds: (lon_min, lat_min, lon_max, lat_max) -- clip extent.
-        ref_meta:     Reference grid spec (e.g. an opened elevation_merged.tif's
-                      .meta) -- must contain 'height', 'width', 'transform', 'crs'.
-        resampling:   rasterio.warp.Resampling enum; defaults to nearest
-                      (appropriate for categorical land-use codes -- avoids
-                      inventing fractional/blended class values).
-
-    Returns:
-        (data, out_meta): reprojected array (same dtype/nodata as the
-        source) and a GeoTIFF meta dict ready for rasterio.open(..., "w").
-    """
-    from rasterio.warp import reproject as _rp, Resampling as _RS
+    from rasterio.warp import Resampling as _RS
+    from rasterio.warp import reproject as _rp
 
     resampling = resampling if resampling is not None else _RS.nearest
 
@@ -381,36 +300,15 @@ def clip_ocean_from_topo(
     ref_meta: dict,
     ocean_value: int = 1,
 ) -> tuple[np.ndarray, int, np.ndarray]:
-    """
-    Set FathomDEM pixels to NaN wherever the DeltaDTM validity mask marks
-    them as ocean.
+    """Set FathomDEM pixels to NaN where the DeltaDTM mask marks ocean.
 
-    FathomDEM is a terrestrial DEM, not bathymetry, and reports spurious
-    near-zero/shallow "elevation" over open water instead of nodata --
-    extending seaward well past the coastline. NaN-ing those pixels here
-    lets the later FathomDEM/GEBCO hard merge fall back to GEBCO's real
-    bathymetry there, with no change needed to the merge step itself.
-
-    Only ``ocean_value`` (default 1) is treated as ocean, NOT the mask's
-    nodata value or its other land-related classes (0, 2, 3): those are all
-    land in some form, and nodata (no DeltaDTM tile coverage at all) is NOT
-    reliably ocean, since DeltaDTM's own tile footprint doesn't necessarily
-    reach as far inland as this pipeline's domains do -- see the
-    ``deltadtm_mask`` data_catalogue.yml entry for the full class breakdown.
-
-    Args:
-        topo_utm: FathomDEM array already reprojected to the UTM working
-            grid (NaN = no FathomDEM data). Not modified in place.
-        mask_path: Path to the DeltaDTM mask VRT/GeoTIFF.
-        wgs84_bounds: (lon_min, lat_min, lon_max, lat_max) of the domain.
-        ref_meta: UTM working grid spec (height, width, transform, crs) --
-            same dict used to write elevation_merged.tif.
-        ocean_value: Mask value that means "ocean" (default 1).
-
-    Returns:
-        (topo_clipped, n_clipped, ocean): the modified array, the number of
-        previously-valid FathomDEM pixels that were set to NaN (for
-        logging), and the boolean ocean mask itself on the working grid.
+    FathomDEM is terrestrial and reports spurious near-zero elevation over open
+    water well past the coastline; NaN there lets the FathomDEM/GEBCO merge fall
+    back to GEBCO bathymetry. Only ocean_value (default 1) is ocean: classes
+    0, 2, 3 are land, and mask nodata (no DeltaDTM coverage) is not reliably
+    ocean (see ``deltadtm_mask`` in data_catalogue.yml). topo_utm is on the UTM
+    working grid of ref_meta and is not modified in place. Returns
+    (topo_clipped, n_clipped, ocean) with n_clipped counting formerly valid pixels.
     """
     mask_utm, _ = reproject_to_reference_grid(mask_path, wgs84_bounds, ref_meta)
     ocean = mask_utm == ocean_value
@@ -423,15 +321,11 @@ def clip_ocean_from_topo(
 def open_water_mask(
     water: np.ndarray, pixel_size_m: float, min_half_width_m: float
 ) -> np.ndarray:
-    """
-    The part of ``water`` that is at least ``2 * min_half_width_m`` wide --
-    open sea, bays, wide estuaries -- as opposed to creeks and channels.
+    """Return the part of water at least 2 * min_half_width_m wide (sea, bays, estuaries).
 
-    A morphological opening with a disc of radius ``min_half_width_m``, done
-    with two Euclidean distance transforms (cheap at any radius): keep the
-    water lying within the radius of a water pixel that is itself at least
-    the radius away from the nearest non-water pixel. The raster's own edge
-    does not count as a bank, so sea running off the edge stays open water.
+    A morphological opening with a disc of radius min_half_width_m, done with
+    two Euclidean distance transforms. The raster edge does not count as a
+    bank, so sea running off the edge stays open water.
     """
     from scipy.ndimage import distance_transform_edt
 
@@ -453,30 +347,14 @@ def blend_coast(
     blend_m: float,
     where: np.ndarray | None = None,
 ) -> tuple[np.ndarray, int]:
-    """
-    Smooth the land/sea seam of a hard-merged elevation raster.
+    """Smooth the land/sea seam of a hard-merged elevation raster.
 
-    In the band of non-land pixels within ``blend_m`` of the nearest land
-    pixel, the bed is interpolated linearly with distance: the nearest land
-    pixel's own elevation at the coast, ``sea_bed`` (GEBCO) at ``blend_m``.
-    Land pixels are never changed -- the DEM is the better product there
-    (dikes, beach ridges), and its values over water are not trusted at all.
-
-    Distances are measured on the pixel lattice (scipy's Euclidean distance
-    transform with ``pixel_size_m`` spacing), so the result does not depend
-    on the raster's orientation.
-
-    Args:
-        merged:       hard-merged elevation (land where ``land``, sea bed elsewhere).
-        land:         boolean, True where the DEM is valid.
-        sea_bed:      the bathymetry on the same grid (NaN where it has no data).
-        pixel_size_m: pixel size of the grid (m).
-        blend_m:      band width (m); <= 0 returns ``merged`` unchanged.
-        where:        optional boolean mask; only pixels where it is True are
-                      blended (e.g. open water, leaving narrow creeks alone).
-
-    Returns:
-        (blended, n_blended): a new array and the number of pixels changed.
+    Non-land pixels within blend_m (m) of land are interpolated linearly with
+    distance from the nearest land pixel's elevation at the coast to sea_bed
+    (GEBCO, NaN = no data) at blend_m. Land pixels (True where the DEM is
+    valid) are never changed. Distances are on the pixel lattice, so the result
+    is orientation-independent. where limits blending (e.g. to open water);
+    blend_m <= 0 returns merged unchanged. Returns (blended, n_blended).
     """
     from scipy.ndimage import distance_transform_edt
 
@@ -496,7 +374,6 @@ def blend_coast(
 
 
 def _tile_intersects(fp: Path, bbox) -> bool:
-    """Return True if the raster at fp spatially overlaps bbox."""
     with rasterio.open(fp) as src:
         b = src.bounds
         return box(b.left, b.bottom, b.right, b.top).intersects(bbox)
@@ -506,8 +383,7 @@ def compute_geoid_offset_arr(
     goco_path,
     egm_path,
 ):
-    """
-    Compute the per-pixel geoid height offset N_EGM2008 − N_GOCO06s from .gfc files.
+    """Return the global geoid offset N_EGM2008 − N_GOCO06s (m) from ICGEM .gfc files.
 
     EGM2008 is truncated to GOCO06s's maximum degree (≈ 300) before synthesis so
     both grids share the same spectral bandwidth.  Adding this offset to a DEM that
@@ -515,16 +391,8 @@ def compute_geoid_offset_arr(
     with the MDT_CNES-CLS22 product (whose MDT is the mean sea surface height
     above the GOCO06s geoid).
 
-    Requires: conda install -c conda-forge pyshtools boule
-
-    Args:
-        goco_path: Path to GOCO06s.gfc (ICGEM format).
-        egm_path:  Path to EGM2008.gfc  (ICGEM format).
-
-    Returns:
-        offset_arr: float32 ndarray (nlat × nlon), global, north-up, lon in −180…180.
-        transform:  rasterio Affine for the array.
-        crs:        "EPSG:4326"
+    Returns (offset_arr, transform, "EPSG:4326"); offset_arr is float32, global,
+    north-up, lon in −180…180. Requires pyshtools and boule (conda-forge).
     """
     try:
         import pyshtools as pysh

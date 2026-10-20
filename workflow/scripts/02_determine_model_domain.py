@@ -1,3 +1,5 @@
+"""Pick the UTM CRS, grid frame and clipping bbox; run by rule determine_model_domain."""
+
 import json
 import geopandas as gpd
 
@@ -16,22 +18,18 @@ delta_buffer_m = snakemake.params.delta_buffer_m
 delta = gpd.read_file(snakemake.input.specific_delta)
 log.info(f"Delta polygon: {len(delta)} feature(s), CRS={delta.crs}")
 
-# ── resolve UTM CRS ───────────────────────────────────────────────────────────
+# UTM CRS
 target_crs = pick_utm_crs(delta)
 log.info(f"Target CRS: {target_crs}")
 
-# domain.gpkg = the delta polygon itself (reprojected to UTM)
 domain_geom = delta.to_crs(target_crs)[["geometry"]]
 
-# Rectangle the SFINCS grid lives in (src.grid): the minimum rotated
-# rectangle around the polygon when sfincs.grid.rotated, else left to rule
-# 08c (axis-aligned, snapped to the grid resolution).
+# Minimum rotated rectangle when sfincs.grid.rotated; else rule 08c snaps an
+# axis-aligned frame to the grid resolution.
 grid_frame = fit_grid_frame(domain_geom, rotated=bool(snakemake.params.rotated))
 
-# Clipping bbox = small buffer around the delta polygon for input data
-# clipping. A rotated grid's corners stick out of the polygon's own bbox, so
-# the bbox is then taken around the rotated rectangle instead -- every
-# preprocessing raster covers the whole model grid.
+# A rotated grid's corners stick out of the polygon's bbox, so the clipping
+# bbox is taken around the rotated rectangle to cover the whole model grid.
 if grid_frame["rotated"]:
     clip_geom = gpd.GeoDataFrame(geometry=[frame_footprint(grid_frame)], crs=target_crs)
     log.info(
@@ -49,7 +47,7 @@ _, bbox_bounds = buffered_bbox(
 )
 log.info(f"Clipping bbox buffer={delta_buffer_m} m")
 
-# ── write outputs ─────────────────────────────────────────────────────────────
+# Outputs
 domain_geom.to_file(snakemake.output.domain_gpkg, driver="GPKG")
 
 with open(snakemake.output.spec_basins_meta, "w") as f:

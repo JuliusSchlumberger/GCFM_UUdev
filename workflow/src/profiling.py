@@ -1,3 +1,5 @@
+"""Optional line-level and wall-clock profiling for Snakemake scripts."""
+
 import time
 from pathlib import Path
 
@@ -14,22 +16,8 @@ class ScriptProfiler:
 
     Reads config["profiling"]["enabled"]. When True, wraps registered
     functions with LineProfiler and writes a timing report next to the
-    script's log file (same name, suffix _profile.txt).
-
-    Usage
-    -----
-    profiler = ScriptProfiler(snakemake)
-
-    # Wrap each call you want to profile — the returned callable is the
-    # wrapped version; line_profiler sees its internal lines.
-    load_glofas_clip = profiler.wrap(load_glofas_clip)
-    find_boundary_crossings = profiler.wrap(find_boundary_crossings)
-
-    # ... rest of script unchanged; wrapped names shadow the originals ...
-
-    profiler.stop()
-
-    # When disabled, wrap() returns the original function unchanged — zero overhead.
+    script's log file (same name, suffix _profile.txt). When disabled, or
+    line_profiler is missing, wrap() returns the function unchanged.
     """
 
     def __init__(self, snakemake):
@@ -56,15 +44,10 @@ class ScriptProfiler:
         self._wall_times: dict[str, float] = {}
         self._wall_start: dict[str, float] = {}
 
-    # ── primary API ──────────────────────────────────────────────────────────────
-
     def wrap(self, func):
-        """Return a line-profiled wrapper for *func* (or *func* unchanged if disabled).
+        """Return a line-profiled wrapper for func (func itself if disabled).
 
-        Assign the return value back to the same name so the profiled
-        version is what actually gets called:
-
-            load_glofas_clip = profiler.wrap(load_glofas_clip)
+        Rebind the result to the same name so the profiled version is called.
         """
         if not self.enabled:
             return func
@@ -72,13 +55,7 @@ class ScriptProfiler:
         return wrapped
 
     def time(self, label: str):
-        """Context manager that records wall-clock time for an arbitrary block.
-
-        Usage::
-
-            with profiler.time("gpd.read_file"):
-                land = gpd.read_file(path, bbox=bounds)
-        """
+        """Return a context manager that adds the block's wall-clock time to label."""
         return _WallTimer(self, label)
 
     def stop(self):
@@ -87,10 +64,8 @@ class ScriptProfiler:
             return
 
         with open(self._output, "w") as f:
-            # line_profiler section
             self._lp.print_stats(stream=f, output_unit=1e-3)
 
-            # wall-clock section
             if self._wall_times:
                 f.write("\n\n" + "=" * 60 + "\n")
                 f.write("WALL-CLOCK TIMINGS (profiler.time() blocks)\n")

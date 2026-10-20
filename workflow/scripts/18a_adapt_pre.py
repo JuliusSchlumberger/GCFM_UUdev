@@ -1,18 +1,11 @@
-"""
-Apply a preprocessing adaptation strategy to a skeleton SFINCS model.
+"""Apply a preprocessing adaptation strategy to a basin's SFINCS skeleton.
 
-Loads the skeleton SFINCS model built for a basin, applies each measure
-defined in the given adaptation strategy (e.g. offshore barriers, dike
-rings, pumps, retreat) in the order specified in
-adaptation_strategies.yml, and writes out a new "adapted" SFINCS model
-under adapted_root. Only the components actually modified by the applied
-measures (weirs, drainage structures, subgrid) are re-written; all
-untouched geometry files are forwarded from the skeleton by relative
-reference to avoid duplicating unchanged data. Special-cased files that
-hydromt_sfincs always resolves relative to the model root (sfincs.msk,
-subgrid rasters used by postprocessing) are physically copied into
-adapted_root instead of forwarded, since reference-based forwarding is
-not respected when reading them.
+Run by rule adapt_apply_pre. Applies each measure (e.g. offshore barriers, dike
+rings, pumps, retreat) in adaptation_strategies.yml order and writes the
+adapted model to adapted_root. Only touched components (weirs, drainage
+structures, subgrid) are rewritten; other geometry files are forwarded by
+relative reference. sfincs.msk and the subgrid rasters read by postprocessing
+are copied instead, since those readers resolve paths against the model root.
 """
 
 import json
@@ -22,12 +15,14 @@ from hydromt_sfincs import SfincsModel
 
 from src.adaptation_method_pre import dispatch_rules
 from src.adaptation_scaling import resolve_forcing_params
+from src.hydromt_sfincs_patch import use_float32_subgrid_write
 from src.log import setup_logging
 from src.sfincs_run import parse_sfincs_inp, forward_geometry_files, write_weir_file
 
 log = setup_logging(snakemake.log[0])
+use_float32_subgrid_write()
 
-# 0. load in params and input
+# 0. params and inputs
 skeleton_inp_path = Path(snakemake.input.skeleton_inp)
 baseline_flood_map_path = Path(snakemake.input.baseline_flood_map)
 
@@ -36,9 +31,8 @@ adaptation_root = Path(snakemake.params.adaptation_root)
 skeleton_root = Path(snakemake.params.skeleton_root)
 adapted_root = Path(snakemake.params.adapted_root)
 
-# Fill in the params adaptation_strategies.yml derives from this scenario's own
-# baseline run (max_coastal_waterlevel, max_discharge, max_river_waterlevel,
-# current_protection) -- see src/adaptation_scaling.py.
+# Resolve params derived from this scenario's baseline run (max_coastal_waterlevel,
+# max_discharge, max_river_waterlevel, current_protection).
 strategy_def = resolve_forcing_params(
     snakemake.params.strategy_def,
     baseline_sfincs_root=snakemake.params.baseline_sfincs_root,
@@ -48,7 +42,7 @@ strategy_def = resolve_forcing_params(
     log=log,
 )
 
-# 1. Read original skeleton sfincs model
+# 1. Read skeleton model
 adapted_root.mkdir(parents=True, exist_ok=True)
 skeleton_cfg = parse_sfincs_inp(skeleton_root / "sfincs.inp")
 
@@ -60,7 +54,7 @@ sf.root.set(str(adapted_root), mode="w+")
 log.info(f"Skeleton loaded from {skeleton_root}, writes redirected to {adapted_root}")
 
 
-# 2. which sfincs.inp key each measure's component owns
+# 2. sfincs.inp key owned by each component
 COMPONENT_FILEKEY = {
     "weirs": "weirfile",
     "drainage_structures": "drnfile",
@@ -73,46 +67,38 @@ COMPONENT_OF_MEASURE = {
     "pumps": ("drainage_structures",),
     "nbs_land_reclamation": ("subgrid",),
     "water_retention": ("subgrid", "weirs"),
-    # "water_retention_greening": ("storage_volume",), # unused -- see adaptation_method_pre.py, replaced by water_retention
+    # "water_retention_greening": ("storage_volume",), # unused, see adaptation_method_pre.py
     "river_levee": ("weirs",),
     "coastal_levee": ("weirs",),
-    # "dike_ring" : ("weirs",),  # unused -- see adaptation_method_pre.py, replaced by urban_raising
+    # "dike_ring" : ("weirs",),  # unused, see adaptation_method_pre.py
     "retreat": ("subgrid",),
     "urban_raising": ("subgrid",),
 }
 
-# 3. Apply each measure in the strategy in the order given in adaptation_strategies.yml 
+# 3. Apply measures in adaptation_strategies.yml order
 touched = set()
-applied = set()  # measures actually applied -- a measure can skip itself (see water_retention)
+applied = set()  # a measure can skip itself (water_retention)
 for measure_type, raw_params in strategy_def["measures"].items():
     measure_def = measures_def[measure_type]
     resolved = {
         k: (str(adaptation_root /v) if k in ("locations", "dep_subgrid") and isinstance(v, str) else v)
         for k, v in raw_params.items()
     }
-    # NOTE: retreat/urban_raising specifically need the baseline flood map to determine which cells are eligible (retreated / raised)
+    # retreat/urban_raising pick eligible cells from the baseline flood map
     flood_map_path = str(baseline_flood_map_path) if measure_type in ("retreat", "urban_raising") else None
 
     if measure_type in ("retreat", "nbs_land_reclamation", "water_retention", "urban_raising"):
-        # dep_subgrid/roughness_native_path are never strategy-configured (see
-        # adaptation_strategies.yml's own comment) -- these measures always
-        # reuse this basin's own already-built elevation/roughness
+        # Never strategy-configured: always the basin's built elevation/roughness.
         resolved["dep_subgrid"] = str(skeleton_root / "subgrid" / "dep_subgrid.tif")
         resolved["roughness_native_path"] = str(snakemake.input.roughness_native)
 
     if measure_type in ("water_retention"): # also "water_retention_greening" here if used
-        # baseline_excess_volume is never strategy-con figured either -- rule
-        # attribution_mask (18c) computes it once per basin x scenario (see
-        # water_retention_excess_volume_input's own docstring) and this is the
-        # only place that reads the resulting JSON. 
+        # baseline_excess_volume comes from rule attribution_mask, per basin x scenario.
         with open(snakemake.input.baseline_excess_volume) as fh:
             resolved["baseline_excess_volume"] = json.load(fh)["baseline_excess_volume"]
         if resolved["baseline_excess_volume"] == 0:
-            # No river/compound flooding in this scenario (e.g. coastal-only):
-            # nothing to store, so the measure is skipped entirely -- applying
-            # it would dig nothing but still add its weir ring around the zone.
-            # Not counted in `applied`, so the restart/subgrid/weirs below are
-            # handled as if the measure weren't in the strategy.
+            # No river/compound flooding: applying would dig nothing but still
+            # add the weir ring. Not in `applied`, so handled as absent below.
             log.warning(
                 "Skipping water_retention: baseline_excess_volume is 0 (no river/compound "
                 "flooding in this scenario) -- nothing to store"
@@ -120,44 +106,24 @@ for measure_type, raw_params in strategy_def["measures"].items():
             continue
 
     if measure_type == "water_retention":
-        # rst_path/ind_path are never strategy-configured -- apply_water_retention
-        # patches a COPY of the basin's own spin-up restart so the excavated
-        # zone's initial water level matches the new (lower) bed instead of
-        # inheriting the original terrain's own absolute water level (see its
-        # own docstring). ind_path is basin-level (skeleton_root, not
-        # adapted_root) -- the active-cell layout/order is unaffected by any
-        # strategy's own elevation changes.
+        # apply_water_retention patches a copy of the spin-up restart so the
+        # excavated zone's water level follows the lowered bed. sfincs.ind is
+        # basin-level: elevation changes do not alter the active-cell order.
         resolved["rst_path"] = str(snakemake.input.rstart)
         resolved["ind_path"] = str(skeleton_root / "sfincs.ind")
 
     if measure_type in ("retreat", "nbs_land_reclamation", "urban_raising"):
-        # landuse_path is needed by anything that must identify which cells
-        # are urban (retreat, urban_raising) or reclassifies/samples land use
-        # (nbs_land_reclamation).
         resolved["landuse_path"] = str(snakemake.input.landuse)
 
     if measure_type in ("retreat", "nbs_land_reclamation"):
-        # lu_roughness_lookup_path is needed only by the measures that
-        # actually RECLASSIFY land use and must look up the new class's own
-        # Manning's n (water_retention never changes roughness at all;
-        # urban_raising changes elevation only -- the cell is still urban,
-        # so roughness is passed through unchanged, never looked up).
+        # Only land-use-reclassifying measures look up the new class's Manning's n.
         resolved["lu_roughness_lookup_path"] = str(snakemake.input.lu_roughness_lookup)
-        # apply_NbS_land_reclamation defaults out_path to "foreshore_landuse.tif",
-        # but adapt_flood_metrics_pre (17_flood_metrics.py) and the rule's own
-        # declared Snakemake output both expect "retreat_landuse.tif" -- override
-        # so the reclassed lulc lands where downstream actually looks for it.
-        # (apply_retreat already defaults to "retreat_landuse.tif" itself.)
+        # apply_NbS_land_reclamation defaults to "foreshore_landuse.tif"; the
+        # rule output and adapt_flood_metrics_pre expect "retreat_landuse.tif".
         if measure_type == "nbs_land_reclamation":
             resolved["out_path"] = "retreat_landuse.tif"
-            # basin's own corrected open-sea mask -- apply_NbS_land_reclamation
-            # writes an updated copy (reclaimed cells cleared to land) to
-            # sea_mask.tif under adapted_root, since compute_max_inundation
-            # (17_flood_metrics.py) and compute_flood_progression
-            # (16_run_event.py) both mask flood depth to NaN wherever this
-            # file reads "sea" -- without an update, they'd keep masking out
-            # the newly reclaimed land, even though SFINCS itself simulates
-            # it correctly.
+            # An updated sea_mask.tif (reclaimed cells cleared to land) is
+            # written so postprocessing does not mask the reclaimed land as sea.
             resolved["sea_mask_path"] = str(snakemake.input.sea_mask)
 
     log.info(f"Applying measure {measure_type} with params {resolved}")
@@ -171,67 +137,43 @@ for measure_type, raw_params in strategy_def["measures"].items():
     touched.update(COMPONENT_OF_MEASURE[measure_type])
     applied.add(measure_type)
 
-# 3b. apply_retreat writes a reclassified adapted_root/retreat_landuse.tif
-# (urban cells it retreats relabeled to target_code) -- adapt_flood_metrics_pre
-# reads THIS file (not the basin's own raw landuse.tif) so urban_exposed_km2/
-# urban_area_km2 reflect the retreat, not the pre-retreat urban footprint.
-# For strategies without retreat, no such file gets written -- copy the raw
-# landuse through unchanged so the output is always present either way. #TODO: this copies to all paths, see if i can change
+# 3b. adapt_flood_metrics_pre reads retreat_landuse.tif so urban metrics reflect
+# the reclassification; copy the raw landuse when no measure wrote it.
+# TODO: this copies to all paths, see if i can change
 LANDUSE_WRITING_MEASURES = {"retreat", "nbs_land_reclamation"}
 retreat_landuse_path = adapted_root / "retreat_landuse.tif"
 if not (LANDUSE_WRITING_MEASURES & applied):
     shutil.copy2(snakemake.input.landuse, retreat_landuse_path)
 
-# 3c. same pattern for the sea mask: apply_NbS_land_reclamation writes an
-# updated adapted_root/sea_mask.tif (reclaimed cells cleared to land). For
-# strategies that don't reclaim land, no such file gets written -- copy the
-# basin's own static sea mask through unchanged so the output declared in
-# 18a_adapt_pre.smk is always present either way.
+# 3c. Same for the sea mask.
 SEA_MASK_WRITING_MEASURES = {"nbs_land_reclamation"}
 sea_mask_path = adapted_root / "sea_mask.tif"
 if not (SEA_MASK_WRITING_MEASURES & applied):
     shutil.copy2(snakemake.input.sea_mask, sea_mask_path)
 
-# 3d. same pattern for the restart: apply_water_retention writes a patched
-# adapted_root/<rst filename> (zs shifted to match the excavated bed, see
-# its own docstring). For strategies that don't touch the DEM this way, no
-# such file gets written -- copy the basin's own spin-up restart through
-# unchanged so the output declared in 18a_adapt_pre.smk (and read by
-# adapt_build_forcing_pre/adapt_run_event_pre below) is always present.
+# 3d. Same for the spin-up restart.
 RESTART_WRITING_MEASURES = {"water_retention"}
 rst_path_local = adapted_root / Path(snakemake.input.rstart).name
 if not (RESTART_WRITING_MEASURES & applied):
     shutil.copy2(snakemake.input.rstart, rst_path_local)
 
-# 4. Write only touched components - untocuhe ones stay forwarded by reference below, never duplicated
+# 4. Write only touched components
 if "weirs" in touched:
     sf.weirs.write()
     write_weir_file(sf)  # crests at 1 cm, not hydromt_sfincs' 0.1 m
 if "drainage_structures" in touched:
     sf.drainage_structures.write()
 if "storage_volume" in touched:
-    # storage_volume lives on the coarse regular grid (mod.grid.data["vol"]),
-    # a component this script never wrote before -- restrict to data_vars=
-    # ["vol"] so this doesn't ALSO rewrite dep/mask/manning/ini (confirmed:
-    # an unrestricted sf.grid.write() call writes every grid map present,
-    # duplicating unchanged geometry this measure never touched). Also
-    # writes a local sfincs.ind (RegularGrid.write()'s own write_ind() call
-    # is unconditional) -- harmless, since mask is unchanged and the
-    # forwarded mskfile reference below still resolves to the identical mask
-    # this index was computed from.
+    # data_vars=["vol"]: an unrestricted sf.grid.write() rewrites every grid
+    # map. It also writes sfincs.ind unconditionally; harmless, the mask is
+    # unchanged.
     sf.grid.write(data_vars=["vol"])
 if "subgrid" in touched:
     sf.subgrid.write()
 else:
-    # subgrid untouched: the sfincs.inp sbgfile entry gets forwarded by
-    # relative reference below (SFINCS itself reads it fine from
-    # skeleton_root), but src.postprocessing.get_bed_level looks for
-    # dep_subgrid.tif as a REAL file directly under this run's own
-    # adapted_root/subgrid/ (it never resolves sfincs.inp's forwarded
-    # reference) -- so flood metrics for this strategy would otherwise
-    # silently fall back to the coarse zb grid. Physically copy the
-    # skeleton's own reference rasters through, same pattern as the
-    # sfincs.msk copy above.
+    # src.postprocessing.get_bed_level reads adapted_root/subgrid/dep_subgrid.tif
+    # directly, not the forwarded sbgfile; without a copy it silently falls
+    # back to the coarse zb grid.
     src_subgrid_dir = skeleton_root / "subgrid"
     dst_subgrid_dir = adapted_root / "subgrid"
     for fname in ("dep_subgrid.tif", "manning_subgrid.tif"):
@@ -240,13 +182,11 @@ else:
             dst_subgrid_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src_file, dst_subgrid_dir / fname)
 
-# 5. forward every untouched file entry from skeleton by relative path (like 13_build_sfincs.py), excluding the 
-# keys this run just wrote 
+# 5. Forward untouched file entries from the skeleton by relative path
 exclude_keys = {COMPONENT_FILEKEY[c] for c in touched}
 geometry_lines = forward_geometry_files(skeleton_cfg, skeleton_root, adapted_root, exclude=exclude_keys)
 scalar_ines = [f"{k:<20} = {v}" for k, v in skeleton_cfg.items() if not k.endswith("file")]
 
-# append the touched components own just-written filen names (same as 13_build_sfincs.py for the bndfile/bzsfile/etc.)
 for key in exclude_keys:
     val = sf.config.get(key)
     if val: 

@@ -1,18 +1,10 @@
-# Rule: subdivide the basin's grid frame into the SFINCS model's regular
-# grid and persist it ({basin_id}_sfincs_grid.json: x0/y0/dx/dy/mmax/nmax/
-# rotation/epsg plus the equivalent affine transform and shape).
+# Rule: write the SFINCS regular grid definition ({basin_id}_sfincs_grid.json:
+# x0/y0/dx/dy/mmax/nmax/rotation/epsg plus affine transform and shape).
 #
-# This file is THE grid definition: rule enforce_river_monotonicity (09),
-# rule grid_align_landuse (09b), rule modelled_depth_estimation (10) and
-# rule build_sfincs_skeleton (13) all read it -- the two SfincsModels are
-# created from it (src.grid.create_model_grid), nothing refits the grid.
-#
-# The grid frame comes from rule determine_model_domain (02,
-# domain_bbox.json's grid_frame): a rotated rectangle when
-# sfincs.grid.rotated, otherwise the axis-aligned grid is fitted here to the
-# domain polygon's bounds, snapped to the resolution. The resolution is the
-# basin's own fixed main-grid dx (sfincs.grid.resolution_m /
-# resolution_overrides_m, see grid_resolution_m in 00_common.smk).
+# The single grid definition read by rules 09, 09b, 10 and 13; every
+# SfincsModel is created from it and nothing refits the grid. The frame is
+# domain_bbox.json's grid_frame when sfincs.grid.rotated, else the domain
+# bounds snapped to the resolution.
 
 rule build_sfincs_grid:
     input:

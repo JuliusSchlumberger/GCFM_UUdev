@@ -1,22 +1,11 @@
-"""
-build_esa_worldcover_vrt.py — build the ESA WorldCover VRT from downloaded tiles.
+"""Build the ESA WorldCover VRT index over the downloaded 3x3 degree tiles.
 
-The `land_use_esa_worldcover` entry in config/data_catalogue.yml points at a
-single file:
-
-    <raw_data_root>/ESA_Worldcover/esa_worldcover_2021_v200.vrt
-
-That .vrt does not ship with the tiles: it is a small XML index listing every
-tile and its extent, so GDAL can treat the 3x3 degree GeoTIFFs as one seamless
-raster and open only the tiles overlapping the window being read. It stores
-paths to tiles on *this* machine, so it has to be generated locally -- exactly
-like tools/build_deltadtm_mask_vrt.py does for the DeltaDTM mask.
-
-Re-run this after downloading more tiles; the VRT is just an index, rebuilding
-is cheap. Only finished `*_Map.tif` tiles are picked up -- partial downloads
-(e.g. `..._Map.tif.a1B2c3`) are ignored.
-
-Used by rule prepare_landuse (02b) when config landuse.source == esa_worldcover.
+The `land_use_esa_worldcover` catalogue entry points at
+<raw_data_root>/ESA_Worldcover/esa_worldcover_2021_v200.vrt. The VRT stores
+machine-local tile paths, so it is built locally; rerun after downloading more
+tiles. Only finished `*_Map.tif` tiles are used; partial downloads
+(e.g. `..._Map.tif.a1B2c3`) are ignored. Rule prepare_landuse (02b) reads it
+when landuse.source == esa_worldcover.
 
 Usage:
     python tools/build_esa_worldcover_vrt.py                 # default paths
@@ -35,8 +24,7 @@ from pathlib import Path
 
 import yaml
 
-# Catalogue-declared properties of this dataset, kept here so the VRT we build
-# is guaranteed consistent with what data_catalogue.yml promises downstream.
+# Must match the data_catalogue.yml entry; validate() checks the built VRT.
 NODATA = 0  # raster_properties.nodata_value ("no data" class)
 EXPECTED_DTYPE = "uint8"  # Byte
 EXPECTED_EPSG = 4326
@@ -52,10 +40,7 @@ def catalogue_root_and_relpath(repo_root: Path, name: str) -> tuple[Path, str]:
     cat = yaml.safe_load(
         (repo_root / "config" / "data_catalogue.yml").read_text(encoding="utf-8")
     )
-    # Machine-specific path, read from the GCFM_RAW_DATA_ROOT environment variable.
-    # Set it once in PowerShell, then restart your terminal (see
-    # CONTRIBUTING.md "Local machine paths"):
-    #   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+    # Machine-specific; see CONTRIBUTING.md "Local machine paths".
     root = Path(os.environ["GCFM_RAW_DATA_ROOT"])
     for ds in cat["datasets"]:
         if ds["name"] == name:
@@ -64,6 +49,7 @@ def catalogue_root_and_relpath(repo_root: Path, name: str) -> tuple[Path, str]:
 
 
 def find_tiles(tile_dir: Path) -> list[Path]:
+    """Return the finished tiles in tile_dir, sorted; raise if there are none."""
     tiles = sorted(p for p in tile_dir.glob(TILE_GLOB) if p.is_file())
     if not tiles:
         raise FileNotFoundError(
@@ -74,7 +60,7 @@ def find_tiles(tile_dir: Path) -> list[Path]:
 
 
 def tile_name(lat: int, lon: int) -> str:
-    """SW-corner degrees -> tile file name (lat/lon snapped to the 3-degree grid)."""
+    """Return the tile file name for a SW corner on the 3-degree grid."""
     ns, ew = ("N" if lat >= 0 else "S"), ("E" if lon >= 0 else "W")
     return f"ESA_WorldCover_10m_2021_v200_{ns}{abs(lat):02d}{ew}{abs(lon):03d}_Map.tif"
 
@@ -82,7 +68,10 @@ def tile_name(lat: int, lon: int) -> str:
 def tiles_for_bounds(
     bounds: tuple[float, float, float, float],
 ) -> list[tuple[int, int]]:
-    """SW corners of every 3x3 degree tile overlapping (lon_min, lat_min, lon_max, lat_max)."""
+    """Return (lat, lon) SW corners of every tile overlapping bounds.
+
+    bounds is (lon_min, lat_min, lon_max, lat_max) in EPSG:4326 degrees.
+    """
     lon_min, lat_min, lon_max, lat_max = bounds
     out = []
     lat0 = int(math.floor(lat_min / TILE_DEG) * TILE_DEG)
@@ -136,10 +125,9 @@ def check_delta_coverage(
 
 
 def build_vrt(tiles: list[Path], out_vrt: Path) -> None:
-    """
-    Build the VRT with GDAL, falling back to the gdalbuildvrt CLI. Nearest
-    neighbour is implicit and correct: these are categorical class codes, which
-    must never be averaged or blended.
+    """Build the VRT with GDAL, falling back to the gdalbuildvrt CLI.
+
+    Nearest neighbour (implicit) is required: values are categorical class codes.
     """
     out_vrt.parent.mkdir(parents=True, exist_ok=True)
 
@@ -157,7 +145,7 @@ def build_vrt(tiles: list[Path], out_vrt: Path) -> None:
         if vrt is None:
             raise RuntimeError("gdal.BuildVRT returned None")
         vrt.FlushCache()
-        vrt = None  # closes and writes the file
+        vrt = None  # GDAL writes the file on dereference
         return
 
     import subprocess
@@ -212,6 +200,7 @@ def validate(out_vrt: Path) -> None:
 
 
 def main() -> int:
+    """Build and validate the VRT; return the process exit code."""
     repo_root = Path(__file__).resolve().parents[1]
     root, relpath = catalogue_root_and_relpath(repo_root, CATALOGUE_NAME)
     default_out = root / relpath
@@ -256,8 +245,7 @@ def main() -> int:
     if args.check_deltas:
         check_delta_coverage(repo_root, args.tile_dir)
 
-    # Keeping the VRT in the tile folder lets GDAL store RELATIVE paths, so the
-    # folder stays movable; elsewhere, absolute paths get baked in.
+    # A VRT inside the tile folder stores relative paths; elsewhere, absolute.
     if args.out.parent != args.tile_dir:
         print(
             "\n  NOTE: the .vrt is not in the tile folder, so GDAL will bake in "

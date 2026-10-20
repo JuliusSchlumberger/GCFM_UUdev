@@ -1,3 +1,4 @@
+# Shared setup included first: paths, basins, grid/scenario/strategy config, wildcards.
 import json
 import os
 
@@ -11,36 +12,30 @@ import yaml as _yaml
 
 CATALOGUE = load_catalogue(config["data_catalogue"])
 
-# ── local machine paths ──────────────────────────────────────────────────────
-# results_dir, the raw-data catalogue root, and the SFINCS executable path
-# are inherently machine-specific, so none of them is committed in config.yml
-# / data_catalogue.yml (both git-tracked, shared files) -- they are read from
-# three environment variables instead. Set them once in PowerShell (see
-# CONTRIBUTING.md "Local machine paths"), then restart your terminal:
-#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
-#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
-#   [Environment]::SetEnvironmentVariable("GCFM_SFINCS_EXE", "C:\path\to\sfincs.exe", "User")
-# GCFM_RAW_DATA_ROOT is applied inside load_catalogue() itself (above), so
-# scripts that load the catalogue on their own get the same root.
-# Forward slashes: results_path() joins with "/", and a Windows-style value
-# ("D:\results") would give mixed separators that Snakemake does not always
-# match between one rule's output and another rule's input.
+# ── local machine paths ──
+# Machine-specific paths come from environment variables (CONTRIBUTING.md
+# "Local machine paths"): GCFM_RESULTS_DIR, GCFM_RAW_DATA_ROOT (applied in
+# load_catalogue) and GCFM_SFINCS_EXE.
+# Forward slashes: mixed separators break Snakemake output/input matching.
 config["results_dir"] = Path(local_path("GCFM_RESULTS_DIR")).as_posix()
 
 def sfincs_exe_path(wildcards=None):
-    """SFINCS executable (GCFM_SFINCS_EXE) -- resolved lazily as a rule param
-    so only the rules that actually run the solver require it; everything up
-    to and including build_sfincs works without a SFINCS binary."""
+    """Return the SFINCS executable path (GCFM_SFINCS_EXE).
+
+    Resolved lazily as a rule param, so only solver rules require it.
+    """
     return local_path("GCFM_SFINCS_EXE")
 
 def catalogue_path(name):
+    """Return the raw-data path of a catalogue entry."""
     return raw_input_path(CATALOGUE, name)
 
 def general_path(name):
+    """Return the general path of a catalogue entry."""
     return _gen_path(CATALOGUE, name)
 
 def list_basins(name):
-    """Discover available basisn from the delta polygons shapefile"""
+    """Return the sorted basin ids in the delta polygons dataset."""
     dataset = catalogue_entry(CATALOGUE, name)
     _delta_shp = catalogue_path(name)
     attribute = dataset["attributes"][0]["name"]
@@ -51,8 +46,7 @@ def list_basins(name):
 
 BASINS = list_basins("delta_polygons")
 
-# Optional CLI override to restrict a run to specific basin(s), e.g. for
-# testing a single delta without re-running the full multi-basin fleet:
+# Optional CLI override to restrict a run to specific basin(s):
 #   snakemake build --cores N --config target_basins="[2433835]" --forceall
 if config.get("target_basins"):
     _target_basins = [int(b) for b in config["target_basins"]]
@@ -67,14 +61,13 @@ if config.get("target_basins"):
 RESULTS_DIR = config["results_dir"]
 
 def results_path(pattern):
+    """Return pattern prefixed with the results directory."""
     return f"{RESULTS_DIR}/{pattern}"
 
 
-# ── SFINCS main-grid resolution ───────────────────────────────────────────────
-# One fixed dx (m) for every basin (sfincs.grid.resolution_m), optionally
-# overridden per basin id (sfincs.grid.resolution_overrides_m) -- e.g. to
-# keep a very large delta within the memory of the machine it is built on.
-# The subgrid pixel size is dx / sfincs.subgrid.nr_subgrid_pixels.
+# ── SFINCS main-grid resolution ──
+# dx (m) per basin: sfincs.grid.resolution_m, or resolution_overrides_m (e.g.
+# to fit a large delta in memory). Subgrid pixel = dx / nr_subgrid_pixels.
 _GRID_CFG = config["sfincs"]["grid"]
 _GRID_RES_OVERRIDES = {
     int(_b): _r for _b, _r in (_GRID_CFG.get("resolution_overrides_m") or {}).items()
@@ -86,12 +79,11 @@ for _label, _r in [("resolution_m", _GRID_CFG["resolution_m"])] + [
         raise ValueError(f"sfincs.grid.{_label} must be a positive number (m), got {_r!r}")
 
 def grid_resolution_m(basin_id):
-    """-> main-grid dx (m) for one basin: its own override, else the default."""
+    """Return a basin's main-grid dx (m): its override, else the default."""
     return float(_GRID_RES_OVERRIDES.get(int(basin_id), _GRID_CFG["resolution_m"]))
 
 # Grid orientation: axis-aligned, or the minimum rotated rectangle around the
-# delta polygon (sfincs.grid.rotated), optionally per basin
-# (sfincs.grid.rotated_overrides). See src/grid.py.
+# delta polygon (sfincs.grid.rotated), optionally per basin (rotated_overrides).
 _GRID_ROTATED_OVERRIDES = {
     int(_b): _r for _b, _r in (_GRID_CFG.get("rotated_overrides") or {}).items()
 }
@@ -102,17 +94,14 @@ for _label, _r in [("rotated", _GRID_CFG.get("rotated", False))] + [
         raise ValueError(f"sfincs.grid.{_label} must be true or false, got {_r!r}")
 
 def grid_rotated(basin_id):
-    """-> whether one basin's grid is rotated: its own override, else the default."""
+    """Return whether a basin's grid is rotated: its override, else the default."""
     return bool(_GRID_ROTATED_OVERRIDES.get(int(basin_id), _GRID_CFG.get("rotated", False)))
 
 
-# ── storm-tide event window ───────────────────────────────────────────────────
-# Half-length (h) of the storm-tide event around its peak
-# (boundary_forcings.surge.hydrograph.window_hr): the length of the surge
-# shapes (rule storm_tide_hydrographs) and of the event the boundary carries
-# (rule get_boundary_forcings). One default, optionally overridden per basin
-# id (window_overrides_hr) -- surges last hours on some coasts and days on
-# others.
+# ── storm-tide event window ──
+# Half-length (h) of the storm-tide event around its peak, for the surge shapes
+# and the boundary event; overridable per basin (window_overrides_hr), since
+# surges last hours on some coasts and days on others.
 _HG_CFG = config["boundary_forcings"]["surge"]["hydrograph"]
 _HG_WINDOW_OVERRIDES = {
     int(_b): _w for _b, _w in (_HG_CFG.get("window_overrides_hr") or {}).items()
@@ -135,16 +124,13 @@ for _label, _w in [("window_hr", _HG_CFG["window_hr"])] + [
         )
 
 def hydrograph_window_hr(basin_id):
-    """-> storm-tide event half-window (h) for one basin: its own override, else the default."""
+    """Return a basin's storm-tide event half-window (h): its override, else the default."""
     return float(_HG_WINDOW_OVERRIDES.get(int(basin_id), _HG_CFG["window_hr"]))
 
 
-# ── scenario axis ─────────────────────────────────────────────────────────────
-# Scenarios (incl. the reserved name "default", used when no target_scenarios
-# is given) are defined by name in scenarios_file (config/scenarios.yml) and
-# selected as the {scenario} wildcard. Each scenario's own forcing_mode is
-# DERIVED from which of its RPs are set (see scenario_params below) rather
-# than declared separately -- there is no standalone "mode" setting anywhere.
+# ── scenario axis ──
+# Scenarios are named in config/scenarios.yml ("default" is used when no
+# target_scenarios is given). forcing_mode is derived from which RPs are set.
 
 _SURGE_RPS = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000)    # COAST-RP tabulated; no interpolation
 _RIVER_RP_MIN, _RIVER_RP_MAX = 2, 1000                     # log-interpolated from discharge_rp_table
@@ -179,17 +165,12 @@ for _name, _s in SCENARIO_DEFS.items():
         raise ValueError(f"{_name}: discharge_multiplier must be > 0")
 
 def scenario_params(name):
-    """-> dict(mode, surge_rp, river_rp, discharge_multiplier, slr_m); mode
-    via derive_forcing_mode. discharge_multiplier is per-scenario (default
-    1.0) -- e.g. river_500/river_only_500/compound_500 can be scaled up to
-    reach a genuinely flood-inducing river discharge without also inflating
-    coast_500's own small RP=2 river component. slr_m is per-scenario
-    (default 0.0 = no SLR) for the same reason: it's a single scalar read
-    ONLY by rule build_sfincs/adapt_build_forcing_pre (never rule
-    get_boundary_forcings), so keeping it per-scenario -- rather than one
-    shared config.yml value -- means changing it only invalidates the
-    scenario(s) whose own entry changed, not every already-built scenario's
-    sfincs.inp."""
+    """Return a scenario's mode, surge_rp, river_rp, discharge_multiplier and slr_m.
+
+    discharge_multiplier (default 1.0) and slr_m (m, default 0.0) are
+    per-scenario and read only by build_sfincs/adapt_build_forcing_pre, so
+    changing them invalidates only that scenario.
+    """
     s = SCENARIO_DEFS[name]
     river_rp, surge_rp = s.get("river_rp"), s.get("surge_rp")
     try:
@@ -205,15 +186,11 @@ def scenario_params(name):
     }
 
 def attribution_counterparts(scenario):
-    """-> (river_only_scenario, coastal_only_scenario): the two sibling
-    single-driver scenario names whose own RP matches `scenario`'s own
-    river_rp/surge_rp exactly (river_rp=X & surge_rp=None / surge_rp=Y &
-    river_rp=None) -- e.g. coast_500 (surge=500, river=2) pairs with
-    river_only (river=2) and coast_only_500 (surge=500); river_500
-    (surge=2, river=500) pairs with river_only_500 and coast_only (surge=2).
-    Raises if scenarios.yml has no such sibling defined yet (e.g. coast_100
-    has no coast_only_100 counterpart) -- confirmed with the user rather
-    than silently guessing a mismatched RP."""
+    """Return the (river_only, coastal_only) sibling scenarios with matching RPs.
+
+    Siblings have river_rp=X & surge_rp=None, and surge_rp=Y & river_rp=None.
+    Raises ValueError if scenarios.yml has no exact match; RPs are never guessed.
+    """
 
     river_rp = SCENARIO_DEFS[scenario]["river_rp"]
     surge_rp = SCENARIO_DEFS[scenario]["surge_rp"]
@@ -240,14 +217,9 @@ _unknown = sorted(set(SCENARIOS) - set(SCENARIO_DEFS))
 if _unknown:
     raise ValueError(f"target_scenarios {_unknown} not defined in {config['scenarios_file']}")
 
-# Basin-level (not scenario-level) restart filename: run_spinup (14) always
-# runs at a fixed RP=1 river + calm sea for spinup_days, entirely independent of any scenario's
-# own RP, so its restart file -- and this filename -- is the SAME for every
-# scenario of a basin. Computed here (00_common.smk, included first) rather
-# than in 14_run_spinup.smk itself since rules build_sfincs (13, sets
-# rstfile) and run_event (16, reads the restart file) both need it too, and
-# Snakemake's include: shares one global namespace regardless of order --
-# defining it centrally avoids a fragile "must be included after 14" dependency.
+# Basin-level restart filename: run_spinup (14) always runs at a fixed RP=1
+# river + calm sea for spinup_days, so the file is shared by every scenario.
+# Defined here because rules 13, 14 and 16 all need it.
 from datetime import datetime as _datetime, timedelta as _timedelta
 
 _tref       = _datetime.strptime(config["sfincs"]["simulation"]["tref"], "%Y-%m-%d %H:%M:%S")
@@ -256,23 +228,20 @@ RST_FNAME   = f"sfincs.{_spinup_end.strftime('%Y%m%d.%H%M%S')}.rst"
 
 
 
-# ---- Adding adaptation wildcard ----------------------------------------------- (KGL)
+# ---- Adding adaptation wildcard (tests/KL_check_adaptation_scaling.py slices this file from here)
 with open(config["adaptation"]["strategies_file"]) as _f:
     STRATEGY_DEFS_RAW = _yaml.safe_load(_f) or {}
 
-# Strategy measure files live under the same raw-data root as the catalogue
-# (GCFM_RAW_DATA_ROOT) -- adaptation_strategies.yml carries no root of its own.
+# Strategy measure files live under the catalogue's raw-data root (GCFM_RAW_DATA_ROOT).
 ADAPT_CATALOGUE_ROOT = CATALOGUE["meta"]["root"]
 
 with open(config["adaptation"]["measures_file"]) as _f:
     MEASURES_DEFS = (_yaml.safe_load(_f) or {}).get("adaptation_measures", {})
 
 
-# Automating the adaptation strategy scales (KGL)
-# adaptation_strategies.yml holds strategy FAMILIES written at scale 1; each
+# adaptation_strategies.yml holds strategy families written at scale 1; each
 # family expands into one {strategy} per entry of `scales` (0.4 -> <family>_04,
-# 0.9 -> <family>_09, 1.0 -> <family>_1), so strategy names, result folders and
-# target_strategies stay exactly as before. A param is multiplied by the scale
+# 0.9 -> <family>_09, 1.0 -> <family>_1). A param is multiplied by the scale
 # only when measures.yml flags it `scale: true`. A param value is one of:
 #   number                         same scale-1 value for every event type
 #   {coastal: .., river: .., compound: ..}
@@ -295,18 +264,15 @@ _SCALABLE_PARAMS = {
     if isinstance(_spec, dict) and _spec.get("scale")
 }
 
-# build strategy names
 def _scale_tag(scale):
-    """0.4 -> '04', 0.9 -> '09', 1.0 -> '1' (the existing strategy-name suffixes)."""
+    """0.4 -> '04', 0.9 -> '09', 1.0 -> '1'."""
     return f"{scale:g}".replace(".", "")
 
-# read strategy families which is a set of measures
 STRATEGY_FAMILIES = {k: v for k, v in STRATEGY_DEFS_RAW.items() if k not in ("meta", "scales")}
 if not STRATEGY_FAMILIES:
     raise ValueError(f"{config['adaptation']['strategies_file']} defines no strategies (besides 'meta'/'scales')")
 
 
-# Each family (group fo measures) turns into one strategy per scale
 STRATEGY_DEFS = {}
 for _fam, _fdef in STRATEGY_FAMILIES.items():
     for _m in (_fdef or {}).get("measures", {}):
@@ -324,10 +290,7 @@ for _fam, _fdef in STRATEGY_FAMILIES.items():
         STRATEGY_DEFS[_name] = {"family": _fam, "scale": float(_s), "measures": _fdef["measures"]}
 
 
-# Resolve a single parameter value
 def _resolve_strategy_param(measure, param, value, scale, event, where):
-    """One raw strategy param -> its concrete value for this scale and event
-    (or a {"from_forcing": ...} marker for src.adaptation_scaling)."""
 
     if isinstance(value, dict) and set(value) <= set(_STRATEGY_EVENTS) and value:
         if set(value) != set(_STRATEGY_EVENTS):
@@ -337,7 +300,7 @@ def _resolve_strategy_param(measure, param, value, scale, event, where):
                              f"`event:` in {config['scenarios_file']}")
         value = value[event]
 
-    scalable = (measure, param) in _SCALABLE_PARAMS # check if the parameter is scalable
+    scalable = (measure, param) in _SCALABLE_PARAMS
     if isinstance(value, str) and value in _UNSCALED_DERIVED_PARAMS:
         return {"from_forcing": value}
     if isinstance(value, str) and value in _DERIVED_PARAMS:
@@ -374,10 +337,12 @@ def _resolve_strategy_measures(strategy, event, where):
 
 
 def strategy_def_for(strategy, scenario):
-    """-> {"measures": {...}} for one strategy in one scenario: per-event values
-    picked via the scenario's `event`, scale-flagged params multiplied by the
-    strategy's scale, run-time-derived params left as {"from_forcing": ...}
-    markers. Passed as params.strategy_def to rules 18a/18b."""
+    """Return {"measures": {...}} for one strategy in one scenario.
+
+    Per-event values follow the scenario's `event`; scale-flagged params are
+    multiplied by the strategy scale; run-time-derived params stay as
+    {"from_forcing": ...} markers for src.adaptation_scaling.
+    """
     event = SCENARIO_DEFS[scenario].get("event")
     if event is not None and event not in _STRATEGY_EVENTS:
         raise ValueError(f"scenario {scenario!r}: event must be one of {_STRATEGY_EVENTS}, got {event!r}")
@@ -392,13 +357,11 @@ for _strategy in STRATEGY_DEFS:
 
 
 def adaptation_input_path(rel):
-    """Resolve a strategy measure's locations/dep_subgrid string param
-    against the raw-data root (GCFM_RAW_DATA_ROOT)."""
+    """Resolve a measure's locations/dep_subgrid path against the raw-data root."""
     return str(Path(ADAPT_CATALOGUE_ROOT) / rel)
 
 def strategy_measure_input_paths(strategy):
-    """Raw-data files a strategy's measures reference, as extra `input:`
-    so editing e.g. adaptation/levee.geojson triggers a rerun."""
+    """Return the raw-data files a strategy's measures reference, for rule inputs."""
     paths = []
     for _measure_params in STRATEGY_DEFS[strategy]["measures"].values():
         for _k, _v in _measure_params.items():
@@ -408,23 +371,17 @@ def strategy_measure_input_paths(strategy):
 
 
 def water_retention_excess_volume_input(wildcards):
-    """rule adapt_apply_pre's own conditional input for baseline_excess_volume.json
-    (rule attribution_mask's own output) -- ONLY when this strategy actually
-    uses water_retention or its storage-volume sibling water_retention_greening
-    (both sized against the same fixed reference). Unlike rule adapt_metrics_post
-    (18b), where EVERY postprocessing measure already depends on
-    attribution_mask.tif for its own class-based masking, no other preprocessing
-    measure touches attribution at all, so this must stay strategy-conditional --
-    an unconditional dependency would force every basin x scenario x strategy
-    combination through rule attribution_mask (and its own river-only/
-    coastal-only counterpart-scenario prerequisite, which not every scenario in
-    scenarios.yml has) even when the strategy never uses either measure."""
+    """Return baseline_excess_volume.json if the strategy uses water retention, else [].
+
+    Conditional so other strategies do not require rule attribution_mask and
+    its river-only/coastal-only sibling scenarios, which not every scenario has.
+    """
     if {"water_retention", "water_retention_greening"} & set(STRATEGY_DEFS[wildcards.strategy]["measures"]):
         return results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/baseline_excess_volume.json")
     return []
 
 
-# Opt-in only -- no default strategy set (unlike scenario's "default").
+# Opt-in only; no default strategy.
 # Each entry is a single scale or a family name (= all of its scales); both
 # can be mixed in one list:
 #   snakemake adapt --config target_strategies="['retreat_04']"

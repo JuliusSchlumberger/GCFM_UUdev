@@ -1,20 +1,10 @@
-"""
-08c_build_sfincs_grid.py -- Build the SFINCS model's regular grid ONCE and
-persist it, so every later step works on the identical grid: rule
-enforce_river_monotonicity's coarse conditioned-DEM resample (09), rule
-grid_align_landuse (09b), rule modelled_depth_estimation's calibration
-model (10) and rule 13's production build.
+"""Build and persist the shared SFINCS grid definition; run by rule build_sfincs_grid.
 
-The grid frame (axis-aligned, or the minimum rotated rectangle around the
-domain polygon -- sfincs.grid.rotated) was fitted by rule
-determine_model_domain (02); this rule subdivides it at the basin's own
-resolution (src.grid.build_grid_def). The output JSON holds the SFINCS grid
-parameters (x0, y0, dx, dy, mmax, nmax, rotation, epsg) and the equivalent
-affine transform/shape, in SfincsModel's own orientation (row 0 on the
-origin side, i.e. y ascending for an unrotated grid) -- see src/grid.py.
-
-No SfincsModel is instantiated here (that would create a Model root
-directory even though nothing is ever written to it).
+Subdivides rule 02's grid frame at the basin resolution; rules 09, 09b, 10 and 13
+all use this grid. The JSON holds x0, y0, dx, dy, mmax, nmax, rotation, epsg and
+the affine transform/shape in SfincsModel orientation (row 0 on the origin side,
+i.e. y ascending for an unrotated grid). No SfincsModel is instantiated: it would
+create an empty model root directory.
 """
 
 import json

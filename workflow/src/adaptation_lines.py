@@ -1,16 +1,11 @@
-"""
-adaptation_lines.py — derive the adaptation-measure line files (coastal and
-river levee, river-mouth closure, mouth pump) from a basin's own baseline
-protection weir, so they always sit on the current model grid.
+"""Derive adaptation-measure lines (levees, mouth closure, pump) from the baseline weir.
 
-Not part of the Snakemake workflow: tools/build_adaptation_lines.py calls
-this once a basin's skeleton (rule 13) exists and writes the results as
-geojsons into the raw-data folder, where config/adaptation_strategies.yml
-points to them through each measure's `locations`. Rerun it whenever the
-basin's grid changes (new domain polygon, rotation, resolution) -- the
+Entry point: tools/build_adaptation_lines.py, once a basin's skeleton (rule 13)
+exists; it writes geojsons that config/adaptation_strategies.yml points to via
+each measure's `locations`. Rerun whenever the basin's grid changes: the
 baseline weir follows the grid's cell edges, and src.protection_weir.
-merge_weir_preserve_unmatched only replaces baseline segments that lie
-within 2 m of a `locations` line.
+merge_weir_preserve_unmatched only replaces baseline segments within 2 m of a
+`locations` line.
 
 Steps
 -----
@@ -62,13 +57,8 @@ _STRUCT8 = generate_binary_structure(2, 2)
 _NEIGHBOURS4 = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 
-# ── grid-edge bookkeeping ────────────────────────────────────────────────────
-
-
 def _edge_cells(seg: LineString, inv_transform) -> tuple[tuple, tuple]:
-    """The two (row, col) cells sharing the grid edge `seg` (a 2-point segment
-    along a cell edge, as the weir builder and closure_edges write them).
-    """
+    """`seg` is a 2-point segment along a cell edge, as the weir builder writes them."""
     (x0, y0), (x1, y1) = seg.coords[0][:2], seg.coords[-1][:2]
     c0, r0 = (round(v) for v in inv_transform * (x0, y0))
     c1, r1 = (round(v) for v in inv_transform * (x1, y1))
@@ -88,9 +78,8 @@ def _in_grid(rc: tuple, shape: tuple) -> bool:
 
 
 def _components(valid: np.ndarray, blocked: set) -> np.ndarray:
-    """Connected components of the valid cells, 4-neighbour links (SFINCS
-    exchanges water across shared cell edges only), never across a blocked
-    edge (a weir). Label -1 = invalid cell.
+    """4-neighbour links only (SFINCS exchanges water across shared cell edges);
+    never across a blocked (weir) edge. Label -1 = invalid cell.
     """
     h, w = valid.shape
     idx = np.arange(h * w).reshape(h, w)
@@ -124,17 +113,14 @@ def _open_sea_label(labels: np.ndarray, seaward: np.ndarray, valid: np.ndarray) 
 def protected_land(
     weir_gdf: gpd.GeoDataFrame, seaward: np.ndarray, valid: np.ndarray, transform
 ) -> np.ndarray:
-    """Cells the baseline weir keeps apart from the open sea. Land in the
-    hydraulic sense the closure has to reach: a land-classified cell with no
-    weir between it and the sea (a small island the weir builder merged into
-    the water, or a cell whose weir ring it dropped as a tiny pinched-off
-    dikering) floods from the sea and does not count.
+    """Return the cells the baseline weir keeps apart from the open sea.
+
+    This is land in the hydraulic sense the closure has to reach: a
+    land-classified cell with no weir between it and the sea (a small merged
+    island, or a dropped tiny dikering) floods from the sea and does not count.
     """
     labels = _components(valid, _weir_edges(weir_gdf, transform))
     return valid & (labels != _open_sea_label(labels, seaward, valid))
-
-
-# ── step 1: coast / river labels ─────────────────────────────────────────────
 
 
 def label_weir_kinds(
@@ -145,8 +131,9 @@ def label_weir_kinds(
     transform,
     min_component_cells: int,
 ) -> tuple[list, dict]:
-    """Per-segment "coast"/"river" label for the baseline weir (module
-    docstring, step 1). Returns (kinds, counts).
+    """Label each baseline weir segment "coast"/"river" (module docstring, step 1).
+
+    Returns (kinds, counts).
     """
     inv = ~transform
     shape = seaward.shape
@@ -204,9 +191,6 @@ def label_weir_kinds(
     return kinds, counts
 
 
-# ── step 2: river-mouth closure + pump ───────────────────────────────────────
-
-
 def _reach_ids(value) -> list[int]:
     """SWORD rch_id_up/rch_id_dn as stored in the gpkg (e.g. "[21604100013]")."""
     return [int(x) for x in re.findall(r"\d+", str(value)) if int(x) != 0]
@@ -215,8 +199,9 @@ def _reach_ids(value) -> list[int]:
 def _outlet_centreline(
     rivers: gpd.GeoDataFrame, outlet
 ) -> tuple[LineString, Point, float]:
-    """(upstream reach + outlet reach as one line oriented inland -> sea,
-    the anchor = the outlet reach's upstream end, its distance along that line).
+    """Return (upstream + outlet reach line oriented inland -> sea, anchor, anchor distance).
+
+    The anchor is the outlet reach's upstream end.
     """
     up = rivers[
         rivers["reach_id"].astype("int64").isin(_reach_ids(outlet["rch_id_up"]))
@@ -249,9 +234,7 @@ def _outlet_centreline(
 def _first_land_point(
     anchor, direction, land, inv_transform, max_len, step_m
 ) -> Point | None:
-    """First point along the half-line from `anchor` inside a land cell,
-    sampled every step_m (so grazing a land cell's corner still counts).
-    """
+    """Sampled every step_m, so grazing a land cell's corner still counts."""
     shape = land.shape
     for s in np.arange(0.0, max_len, step_m):
         x, y = anchor.x + direction[0] * s, anchor.y + direction[1] * s
@@ -265,11 +248,10 @@ def _first_land_point(
 
 
 def _crossing_edges(p0, p1, transform, shape, ext_m) -> tuple[list[tuple], float]:
-    """Grid edges between 4-neighbour cells whose centres lie on opposite
-    sides of the line p0-p1, within the segment's extent extended by ext_m
-    at both ends. Returns ([(cell_a, cell_b, along-line position of the
-    edge midpoint)], segment length); a position < 0 or > length lies in
-    the extension.
+    """Return grid edges whose 4-neighbour cells straddle the line p0-p1 (extended by ext_m).
+
+    Returns ([(cell_a, cell_b, along-line edge midpoint position)], segment
+    length); a position < 0 or > length lies in the extension.
     """
     h, w = shape
     rows, cols = np.mgrid[0:h, 0:w]
@@ -308,10 +290,10 @@ def mouth_closures(
     ext_cells: int = 2,
     pump_upstream_m: float = 200.0,
 ) -> tuple[list[dict], list[dict], list[dict]]:
-    """Closure edges and pump line per SWORD outlet reach (module docstring,
-    steps 2 and 4); `land` = protected_land(). Returns (closure_rows,
-    pump_rows, report) -- closure rows carry cell_a/cell_b for the
-    connectivity check.
+    """Build closure edges and pump line per SWORD outlet reach (module docstring, steps 2, 4).
+
+    `land` = protected_land(). Returns (closure_rows, pump_rows, report);
+    closure rows carry cell_a/cell_b for the connectivity check.
     """
     inv = ~transform
     cell = float(np.hypot(transform.a, transform.d))
@@ -388,9 +370,6 @@ def mouth_closures(
     return closures, pumps, report
 
 
-# ── step 3: estuary + seal check ─────────────────────────────────────────────
-
-
 def estuary_and_seal(
     weir_gdf: gpd.GeoDataFrame,
     closures: list[dict],
@@ -399,10 +378,10 @@ def estuary_and_seal(
     valid: np.ndarray,
     transform,
 ) -> np.ndarray:
-    """Sea-classified cells cut off from the open sea by the baseline weir
-    plus the closures (module docstring, step 3). Adds "sealed" to every
-    closed report entry: whether the river check point behind it is cut off
-    from the open sea.
+    """Return sea cells cut off from the open sea by weir + closures (module docstring, step 3).
+
+    Side effect: adds "sealed" to every closed report entry (whether the river
+    check point behind it is cut off from the open sea).
     """
     inv = ~transform
     blocked = _weir_edges(weir_gdf, transform)
@@ -427,6 +406,7 @@ def estuary_and_seal(
 
 
 def relabel_estuary(weir_gdf, kinds, estuary, transform) -> list:
+    """Relabel coast segments bordering an estuary cell as estuary."""
     inv = ~transform
     out = []
     for seg, kind in zip(weir_gdf.geometry, kinds):

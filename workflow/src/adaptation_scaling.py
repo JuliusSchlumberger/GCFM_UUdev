@@ -1,22 +1,20 @@
-"""
-adaptation_scaling.py -- Resolve the run-time-derived strategy params that
-rule 00_common.smk's strategy_def_for() leaves as {"from_forcing": ...}
-markers (see adaptation_strategies.yml's own header), using this scenario's
-own baseline run and the basin's skeleton weir:
+"""Resolve {"from_forcing": ...} strategy params from the scenario's baseline run.
+
+Entry point: resolve_forcing_params. Markers are left by strategy_def_for()
+(00_common.smk) and resolved from the baseline run and the skeleton weir:
 
   max_coastal_waterlevel  scale x max of the baseline sfincs.bzs (all points, all times)
   max_discharge           scale x max of the baseline sfincs.dis (all sources, all times)
   max_river_waterlevel    scale x max baseline zsmax in the grid cells along the
                           measure's own `locations` polyline (first zsmax output
-                          step dropped -- it holds the restart start-up shock,
+                          step dropped: it holds the restart start-up shock,
                           e.g. 2.33 m at hour 0 in basin 2433835/coast_500)
-  current_protection      {"current": True, "fill_crest": <m>} -- never scaled;
+  current_protection      {"current": True, "fill_crest": <m>}, never scaled;
                           the levee measure keeps each matched baseline weir
-                          segment's own crest and gives fill_crest (the highest
+                          segment's crest and gives fill_crest (the highest
                           matched crest) to stretches with no baseline levee
 
-These can't be resolved in the Snakefile itself: the baseline forcing/map
-files don't exist yet when the DAG is built.
+Not resolvable in the Snakefile: the baseline files do not exist when the DAG is built.
 """
 
 from __future__ import annotations
@@ -30,7 +28,6 @@ import numpy as np
 import shapely
 import xarray as xr
 from shapely.geometry import LineString
-
 from src.sfincs_run import parse_sfincs_inp
 
 # Same tolerance as merge_weir_preserve_unmatched (src/protection_weir.py):
@@ -39,7 +36,6 @@ from src.sfincs_run import parse_sfincs_inp
 MAX_MATCH_DISTANCE_M = 2.0
 
 
-# Peak boundary value
 def _max_of_timeseries_file(path: Path, what: str) -> float:
     """Max over every column but the first (time) of a SFINCS .bzs/.dis file."""
     if not path.exists():
@@ -50,11 +46,11 @@ def _max_of_timeseries_file(path: Path, what: str) -> float:
     return float(data[:, 1:].max())
 
 
-# Parse sfincs weirs
 def read_weir_file(path: str | Path) -> gpd.GeoDataFrame:
-    """ASCII sfincs.weir -> one row per segment, with `elevation` = the
-    segment's highest vertex crest (every segment this repo writes has the
-    same crest on both vertices). No CRS -- the caller sets it.
+    """Read an ASCII sfincs.weir into one row per segment; `elevation` = highest crest.
+
+    Every segment this repo writes has the same crest on both vertices.
+    No CRS is set; the caller sets it.
     """
     lines = [ln for ln in Path(path).read_text().splitlines() if ln.strip()]
     geoms, crests, i = [], [], 0
@@ -69,7 +65,6 @@ def read_weir_file(path: str | Path) -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame({"elevation": crests}, geometry=geoms)
 
 
-# load a measures location
 def _read_polyline(locations: Path, crs) -> shapely.Geometry:
     gdf = gpd.read_file(locations)
     if gdf.crs is None:
@@ -77,7 +72,6 @@ def _read_polyline(locations: Path, crs) -> shapely.Geometry:
     return gdf.to_crs(crs).geometry.union_all()
 
 
-# checks how high existing levee is
 def _current_protection(
     locations: Path, skeleton_weir: Path, crs, where: str, log
 ) -> dict:
@@ -109,7 +103,6 @@ def _current_protection(
     return {"current": True, "fill_crest": fill_crest}
 
 
-# peak water level along the river (zsmax)
 def _max_river_waterlevel(
     locations: Path,
     map_nc: Path,
@@ -144,7 +137,6 @@ def _max_river_waterlevel(
     return float(vals[k])
 
 
-# the entry point. Where the code determines whether it sends water level or max discharge
 def resolve_forcing_params(
     strategy_def: dict,
     *,
@@ -197,7 +189,6 @@ def resolve_forcing_params(
                     )
                 else:
                     raise ValueError(f"{where}: unknown from_forcing kind {kind!r}")
-            # apply the scale
             base, scale = cache[key], float(value["scale"])
             params[param] = round(
                 scale * base, 4

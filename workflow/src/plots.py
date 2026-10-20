@@ -1,25 +1,19 @@
 """Summary plot functions for all workflow steps.
 
-Land background: every map's land background (``land_polygons_path``) is a
-land MASK -- land use != 200 (the pipeline's own open-sea code: LC100's own
-class, derived against it for ESA WorldCover, which has none -- see
-src.landuse), vectorized,
-WGS84 -- the same classification the model itself uses. Figures of model
-output (rule grid_align_landuse, 09b, onward) get the mask traced from the
-land use resampled onto the SFINCS grid ({basin}_land_mask_on_grid.gpkg),
-so it is cell-aligned with the model; figures made before that grid exists
-(rules 04-09, 11b) get the mask from the native land-use raster
-({basin}_land_polygons.gpkg, rule get_land_polygons). No OSM data and no
-web map tiles are used.
+Every map's land background (``land_polygons_path``) is a vectorized WGS84
+land mask, land use != 200 (the pipeline's open-sea code; see src.landuse).
+From rule grid_align_landuse (09b) on it is traced on the SFINCS grid
+({basin}_land_mask_on_grid.gpkg); rules 04-09 and 11b use the native land-use
+mask ({basin}_land_polygons.gpkg). No OSM data or web map tiles are used.
 """
 
 from __future__ import annotations
 
 import logging
-import time
-from typing import Any
 import math
+import time
 from pathlib import Path
+from typing import Any
 
 import geopandas as gpd
 import matplotlib
@@ -30,33 +24,27 @@ import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 import rasterio
-from rasterio.enums import Resampling
-from rasterio.warp import calculate_default_transform
 import rioxarray  # noqa: F401  — registers the .rio accessor used for reprojection
 import xarray as xr
-from scipy.spatial import cKDTree
 from matplotlib.collections import LineCollection
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from rasterio.enums import Resampling
+from rasterio.warp import calculate_default_transform
+from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
-
 
 matplotlib.use("Agg")
 
 log = logging.getLogger(__name__)
 
-# ── constants ─────────────────────────────────────────────────────────────────
-
 _PLOT_DPI = 100
 _PLOT_MAX_PX = 2_000_000  # downsample rasters larger than this before rendering
-# Fixed colour-bar maximum for every inundation-DEPTH map (plot_inundation_check,
-# plot_max_inundation_map, animate_flood_progression's depth frames) -- one
-# shared scale, so maps are comparable across scenarios/rounds instead of each
-# stretching to its own 99th percentile. Deeper cells saturate (the colour
-# bars all use extend="max").
+# One fixed depth scale for every inundation-depth map, so maps compare across
+# scenarios and rounds; deeper cells saturate (extend="max").
 _INUNDATION_DEPTH_CBAR_MAX_M = 5.0
 
-# Diverging land/sea colormap: shades of blue below 0 m, shades of brown above.
+# Blue below 0 m, brown above.
 _BATHY_CMAP = mcolors.LinearSegmentedColormap.from_list(
     "bathymetry",
     np.vstack(
@@ -69,8 +57,7 @@ _BATHY_CMAP = mcolors.LinearSegmentedColormap.from_list(
 
 _LC_NAMES: dict[int, str] = {
     0: "Unknown",
-    # ESA WorldCover only (landuse.source: esa_worldcover): 10 replaces
-    # LC100's own 111-126 forest classes, 95 has no LC100 equivalent.
+    # ESA WorldCover only: 10 stands in for LC100 111-126, 95 has no LC100 class.
     10: "Tree cover",
     95: "Mangroves",
     20: "Shrubland",
@@ -99,8 +86,8 @@ _LC_NAMES: dict[int, str] = {
 
 _LC_COLORS: dict[int, str] = {
     0: "#808080",
-    10: "#006400",  # WorldCover tree cover -- the product's own legend colour
-    95: "#009678",  # WorldCover mangroves -- likewise
+    10: "#006400",  # WorldCover's own legend colours
+    95: "#009678",
     20: "#B27800",
     30: "#A0C050",
     40: "#E8E858",
@@ -126,12 +113,10 @@ _LC_COLORS: dict[int, str] = {
 }
 
 
-# ── shared helpers ────────────────────────────────────────────────────────────
-
-
 def raster_envelope(transform, shape) -> tuple[float, float, float, float]:
-    """(left, bottom, right, top) of a raster's footprint for ANY affine
-    transform -- rotated, south-up or north-up -- from its four corners.
+    """Return (left, bottom, right, top) of a raster footprint for any affine transform.
+
+    Uses all four corners, so rotated, south-up and north-up grids all work.
     """
     rows, cols = shape
     xs, ys = zip(*(transform * c for c in [(0, 0), (cols, 0), (cols, rows), (0, rows)]))
@@ -139,14 +124,11 @@ def raster_envelope(transform, shape) -> tuple[float, float, float, float]:
 
 
 def imshow_on_grid(ax, data: np.ndarray, transform, **kwargs):
-    """
-    ``ax.imshow`` of a raster in its own CRS, at its true position for ANY
-    affine transform. The model grid is south-up and may be rotated
-    (sfincs.grid.rotated), which a plain ``imshow(extent=...)`` cannot show:
-    it always draws an upright, axis-aligned rectangle. Here the image is
-    laid out in pixel space and the raster's own affine transform is handed
-    to matplotlib, so vector overlays in the same CRS line up with it. The
-    axes limits are set to the raster's footprint.
+    """Draw a raster in its own CRS at its true position for any affine transform.
+
+    The model grid is south-up and may be rotated, which imshow(extent=...)
+    cannot show; the raster's affine is handed to matplotlib instead, so
+    vector overlays in the same CRS line up. Sets axes limits to the footprint.
     """
     from matplotlib.transforms import Affine2D
 
@@ -171,33 +153,18 @@ def _to_wgs84_grid(
     src_crs,
     dst_bounds: tuple[float, float, float, float] | None = None,
 ):
-    """
-    Reproject a 2-D array from (transform, src_crs) onto a north-up EPSG:4326 grid.
-
-    Brings rasters that live on the model's metric (UTM) working grid into
-    the same lon/lat reference frame as every other diagnostic map, so axes
-    are consistently labelled in degrees. Nearest-neighbour resampling
-    preserves exact source values (no blending across nodata / threshold
-    boundaries).
-
-    Args:
-        dst_bounds: Optional (left, bottom, right, top) in EPSG:4326.  When
-            supplied the destination grid is created to fill exactly these bounds
-            (no rasterio padding), so the imshow extent matches the domain bbox
-            precisely.  When omitted rasterio's default padded bounds are used.
-
-    Returns:
-        data_wgs84: 2-D float32 array on the reprojected grid (NaN = nodata).
-        extent:     (left, right, bottom, top) in degrees, for imshow ``extent``.
-    """
-    from rasterio.warp import calculate_default_transform, reproject as rio_reproject
+    # Nearest neighbour keeps exact source values. dst_bounds (EPSG:4326) fills
+    # exactly that box instead of rasterio's padded bounds. Returns float32 data
+    # (NaN = nodata) and the imshow extent (left, right, bottom, top) in degrees.
     from rasterio.enums import Resampling
-    from rasterio.transform import array_bounds, from_bounds as rio_from_bounds
+    from rasterio.transform import array_bounds
+    from rasterio.transform import from_bounds as rio_from_bounds
+    from rasterio.warp import calculate_default_transform
+    from rasterio.warp import reproject as rio_reproject
 
     h, w = data.shape
     src_bounds = raster_envelope(transform, (h, w))
-    # Always derive pixel count from calculate_default_transform so the output
-    # resolution is appropriate for the source data.
+    # Pixel count from calculate_default_transform even when dst_bounds is given.
     default_transform, dst_w, dst_h = calculate_default_transform(
         src_crs, "EPSG:4326", w, h, *src_bounds
     )
@@ -227,18 +194,10 @@ def read_raster_reprojected_for_plot(
     path: str,
     dst_bounds: tuple[float, float, float, float] | None = None,
 ) -> tuple[np.ndarray, tuple[float, float, float, float]]:
-    """
-    Read a raster band on its native (typically UTM) grid, reproject it to
-    EPSG:4326, mask nodata to NaN, and downsample for plotting.
+    """Read band 1, reproject to EPSG:4326 (nearest), nodata to NaN, downsample.
 
-    For rasters that are stored on the model's metric working grid —
-    reprojecting here keeps every diagnostic map in the same lon/lat
-    reference frame.
-
-    Args:
-        dst_bounds: Optional (left, bottom, right, top) in EPSG:4326.  Pass
-            the domain WGS84 bbox to ensure the reprojected raster fills the
-            plot bbox exactly (no padding-induced shift).
+    Pass the domain WGS84 bbox as dst_bounds so the raster fills it exactly.
+    Returns (data, extent) with extent (left, right, bottom, top) for imshow.
     """
     import rasterio
 
@@ -260,11 +219,9 @@ def read_raster_reprojected_for_plot(
 
 
 def add_land_background_to_geoaxes(ax, land_polygons_path: str, model_crs) -> None:
-    """
-    Draw the land mask (see this module's docstring) UNDERNEATH an existing
-    cartopy GeoAxes whose projection is the model CRS -- e.g. the one
-    hydromt_sfincs's plot_basemap(bmap=None) returns -- in place of web map
-    tiles. Same colours as map_background.
+    """Draw the land mask underneath a cartopy GeoAxes in the model CRS.
+
+    For the axes returned by hydromt_sfincs plot_basemap; replaces web map tiles.
     """
     land = gpd.read_file(land_polygons_path).to_crs(model_crs)
     if not land.empty:
@@ -285,22 +242,10 @@ def map_background(
     river_basins_path: str | None = None,
     margin_frac: float = 0.3,
 ) -> None:
-    """
-    Draw the land mask, optional river basin outlines, and domain bbox on ax.
+    """Draw the land mask, optional river basin outlines and the WGS84 domain bbox.
 
-    Land and river basins are both loaded with a spatial filter to avoid
-    reading the full global files.  The margin around the domain is proportional
-    to the larger of the two bbox dimensions. Open sea (land use 200) is
-    simply not part of the land mask, so it shows as the plain background.
-
-    Args:
-        ax:                 Matplotlib Axes to draw on.
-        bbox_poly:          Shapely Polygon of the domain bbox in WGS84.
-        land_polygons_path: Path to the land mask geopackage (land use != 200; see this module's docstring).
-        river_basins_path:  Optional path to a river basins shapefile.  When
-                            provided, basin outlines are drawn over the land layer
-                            with a transparent fill and dark-grey edge.
-        margin_frac:        Fraction of the bbox span added as margin on each side.
+    margin_frac is a fraction of the larger bbox span, added on each side.
+    Open sea is not in the land mask, so it shows as the plain background.
     """
     lon_min, lat_min, lon_max, lat_max = bbox_poly.bounds
     margin = max(lon_max - lon_min, lat_max - lat_min) * margin_frac
@@ -334,26 +279,17 @@ def map_background(
     ax.grid(True, alpha=0.3, linewidth=0.5)
 
 
-# Retries for a figure whose destination file is momentarily locked by
-# ANOTHER process -- see save_figure.
 _SAVE_ATTEMPTS = 5
 _SAVE_RETRY_WAIT_S = 1.0
 
 
 def save_figure(fig, output_path, *, close: bool = True, **savefig_kwargs) -> None:
-    """
-    fig.savefig that survives a transient lock on the destination file.
+    """Save fig, retrying while another process briefly locks the destination file.
 
-    On Windows, an existing PNG that another process has open for a moment
-    -- an antivirus scan, an image preview, Explorer building a thumbnail --
-    makes the write fail with OSError EINVAL ("Invalid argument"), not the
-    PermissionError one might expect. That killed a full rule 10 run
-    (2026-09-14) at its very last figure, after all three SFINCS
-    calibration rounds had already completed, and the same save succeeded
-    seconds later. The locks are short, so a few spaced retries turn a lost
-    run into a logged warning.
-
-    Creates the parent directory, and closes the figure unless close=False.
+    On Windows a PNG held open by antivirus, a previewer or Explorer's
+    thumbnailer fails with OSError EINVAL ("Invalid argument"), not
+    PermissionError; the locks are short, so spaced retries succeed. Creates
+    the parent directory and closes the figure unless close=False.
     """
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -382,13 +318,8 @@ def save_figure(fig, output_path, *, close: bool = True, **savefig_kwargs) -> No
 
 
 def _save(fig, output_path: str) -> None:
-    """Save figure, create parent directory, and close."""
     save_figure(fig, output_path, dpi=_PLOT_DPI, bbox_inches="tight")
     log.info(f"Written: {output_path}")
-
-
-# ── static data plots (rules 04-06: protection levels, elevation, landuse, ────
-# ── roughness, river network) ─────────────────────────────────────────────────
 
 
 def plot_landuse(
@@ -397,15 +328,11 @@ def plot_landuse(
     land_polygons_path: str,
     output_path: str,
 ) -> None:
-    """
-    Categorical land-use map with class colours and legend. The title names
-    whichever source produced the raster, read from its own landuse_source
-    tag (rule prepare_landuse, 02b, writes it; Copernicus LC100 and ESA
-    WorldCover share codes 20-100 but not 10/95/111-126).
+    """Plot the categorical land-use map with class colours and legend.
 
-    landuse.tif is on the model's metric UTM working grid (resampled onto
-    elevation_merged.tif's exact grid in 05b) -- reproject to EPSG:4326 for
-    display, nearest-neighbour to preserve exact class codes.
+    The title names the source from the raster's landuse_source tag (written
+    by rule prepare_landuse, 02b); LC100 and ESA WorldCover share codes 20-100
+    but not 10/95/111-126.
     """
     data, extent = read_raster_reprojected_for_plot(
         landuse_path, dst_bounds=bbox_poly.bounds
@@ -444,8 +371,7 @@ def plot_landuse(
 
 
 # Above this many distinct Manning values the roughness map goes continuous
-# (a reclassified class raster holds ~10; an area-averaged one, tens of
-# thousands) -- see plot_roughness.
+# (a reclassified class raster holds ~10; an area-averaged one, tens of thousands).
 _ROUGHNESS_MAX_DISCRETE_CLASSES = 24
 
 
@@ -455,26 +381,12 @@ def plot_roughness(
     land_polygons_path: str,
     output_path: str,
 ) -> None:
-    """
-    Manning's n roughness map, viridis.
+    """Plot the Manning's n roughness map.
 
-    One colour per distinct value while the raster holds only a handful of
-    them -- which is the case whenever n was reclassified straight from a
-    class raster (one value per land-use class). Since 2026-09-14 n is
-    AREA-AVERAGED from the land-use source instead
-    (src.landuse.aggregate_manning), so a mixed cell lands anywhere between
-    its classes' values and a delta easily holds tens of thousands of
-    distinct values -- there the map switches to a continuous colour scale
-    (2nd-98th percentile, so a few extreme cells don't flatten the rest).
-    The discrete branch used to be unconditional, which made matplotlib
-    build one colour per value: with 70,268 of them its BoundaryNorm
-    overflowed (int16 index) and the per-value loop below would have been
-    hopelessly slow.
-
-    roughness.tif inherits its grid from the elevation grid (the model's
-    metric UTM working grid, subdivided towards the source's own resolution)
-    -- reproject to EPSG:4326 for display, nearest-neighbour to preserve
-    exact roughness values.
+    One colour per distinct value for a few classes; area-averaged n
+    (src.landuse.aggregate_manning) has tens of thousands of values, so it gets
+    a continuous 2nd-98th percentile scale (a per-value BoundaryNorm overflows
+    its int16 index there).
     """
     data, extent = read_raster_reprojected_for_plot(
         roughness_path, dst_bounds=bbox_poly.bounds
@@ -524,18 +436,10 @@ def plot_elevation_merged(
     output_path: str,
     title_str: str,
 ) -> None:
-    """
-    Merged FathomDEM+GEBCO elevation map, diverging blue (depth) / brown-
-    orange (elevation) colormap centred at 0 m.
+    """Plot merged FathomDEM+GEBCO elevation on a diverging scale centred at 0 m.
 
-    vmin/vmax are fixed at -10 m / 30 m regardless of the data's actual
-    range, so elevation maps are visually comparable across basins; values
-    outside this range are clipped to the colormap's end colours by imshow
-    (not masked/hidden).
-
-    The raster (on the model's metric UTM grid) is reprojected to EPSG:4326
-    for display so this map shares the same lon/lat reference frame as every
-    other diagnostic plot.
+    The scale is fixed at -10 m / 30 m so basins compare; values beyond it
+    take the end colours.
     """
     data, extent = read_raster_reprojected_for_plot(
         merged_path, dst_bounds=bbox_poly.bounds
@@ -566,16 +470,10 @@ def plot_sea_mask(
     land_polygons_path: str,
     output_path: str,
 ) -> None:
-    """
-    Sea / inland-water classification: cells classified as sea or permanent
-    inland water body (landuse 200) vs land / outside-domain cells (nodata).
-    This is a pure land/sea mask, not the model's initial water level --
-    rule build_sfincs (13) turns it into the actual zsini.tif (sea cells =
-    baseline_m) once that value is known.
+    """Plot the sea / inland-water mask (landuse 200; nodata = land or outside domain).
 
-    The raster (on the model's metric UTM grid) is reprojected to EPSG:4326
-    for display so this map shares the same lon/lat reference frame as every
-    other diagnostic plot.
+    This is a land/sea mask, not the initial water level; rule build_sfincs
+    (13) turns it into zsini.tif (sea cells = baseline_m).
     """
     data, extent = read_raster_reprojected_for_plot(
         sea_mask_path, dst_bounds=bbox_poly.bounds
@@ -615,27 +513,12 @@ def plot_protection_levels(
     output_path: str,
     margin_frac: float = 0.5,
 ) -> None:
-    """
-    Two-panel map (riverine / coastal) of FLOPROS design protection return
-    period (years) for every geounit overlapping the delta polygon's bbox
-    (plus a display margin), with the delta polygon outline overlaid and the
-    dominant (largest-area) geounit's resolved RP stated in each title.
+    """Plot riverine and coastal FLOPROS design protection RP (years) around a delta.
 
-    A small windowed read of geogunit_raster_path clips to that bbox -- the
-    full global raster is never loaded.
-
-    Args:
-        delta_polygon_wgs84:  Delta polygon (EPSG:4326).
-        geogunit_raster_path: Path to the wri_geogunit_107 raster.
-        flopros_df:           Output of protection_levels.load_flopros_table().
-        summary:              Output of protection_levels.identify_dominant_protection()
-                               for this same delta polygon -- supplies the
-                               resolved (post-fallback/cap) RP values and
-                               dominant unit's id/ISO for the titles.
-        land_polygons_path:        Path to the land mask geopackage (land use != 200; see this module's docstring; background).
-        output_path:          Output PNG path.
-        margin_frac:          Display margin as a fraction of the polygon's
-                               bbox span (same convention as map_background).
+    Shows geounits overlapping the delta bbox plus margin; titles give the
+    dominant geounit's resolved (post-fallback/cap) RP from summary
+    (protection_levels.identify_dominant_protection). Only a window of the
+    wri_geogunit_107 raster is read.
     """
     import pandas as pd
     import shapely.vectorized
@@ -653,8 +536,7 @@ def plot_protection_levels(
     )
 
     with xr.open_dataset(geogunit_raster_path) as ds:
-        # lat/lon are both ascending in wri_geogunit_107 -- a plain slice()
-        # works without descending-coordinate handling.
+        # lat/lon are both ascending in wri_geogunit_107.
         sel = ds["Geogunits"].sel(
             lat=slice(window_bounds[1], window_bounds[3]),
             lon=slice(window_bounds[0], window_bounds[2]),
@@ -663,8 +545,7 @@ def plot_protection_levels(
         lon_vals = sel["lon"].values
         lat_vals = sel["lat"].values
 
-    # arr's row 0 = lat_vals[0] (southernmost, ascending) -- origin="lower"
-    # below matches that orientation directly, no flip needed.
+    # Row 0 is southernmost, hence origin="lower".
     extent = (
         float(lon_vals.min()),
         float(lon_vals.max()),
@@ -674,8 +555,7 @@ def plot_protection_levels(
 
     lon_grid, lat_grid = np.meshgrid(lon_vals, lat_vals)
     inside = shapely.vectorized.contains(delta_polygon_wgs84, lon_grid, lat_grid)
-    # xarray CF-decodes the raster's _FillValue to NaN on read, so
-    # np.isfinite already excludes fill-value pixels.
+    # xarray decodes _FillValue to NaN, so isfinite drops fill pixels.
     valid = inside & np.isfinite(arr)
 
     max_rp_for_scale = max(
@@ -728,35 +608,13 @@ def plot_global_protection_map(
     iso_column: str = "ISO_A3_EH",
     agg: str = "median",
 ) -> None:
-    """
-    Two separate world choropleths -- one riverine, one coastal -- of FLOPROS
-    design flood protection return period (years), aggregated to country
-    level. Both share the same (log) colorscale so they remain directly
-    comparable even though they're saved as separate figures.
+    """Plot world maps of country-level FLOPROS design protection RP (years).
 
-    Each country's value is the `agg` (default: median, robust to outlier
-    sub-national units) of its Riverine/Coastal FLOPROS design RP across all
-    its geounits that DO carry a value for that hazard. Countries with no
-    FLOPROS value for a hazard anywhere are left NaN and rendered grey -- no
-    default/fallback value is guessed here (unlike the per-basin pipeline's
-    fallback chain in protection_levels.identify_dominant_protection, which
-    exists to guarantee a usable RP for the forcing correction, not to
-    faithfully represent "no known standard").
-
-    Args:
-        flopros_df:           Output of protection_levels.load_flopros_table()
-                               -- must have an "ISO" column plus
-                               "Riverine"/"Coastal".
-        countries_gdf:         World country polygons (e.g. Natural Earth
-                               admin_0_countries) with an ISO3 code column.
-        riverine_output_path:  Output PNG path for the riverine map.
-        coastal_output_path:   Output PNG path for the coastal map.
-        iso_column:            Column in countries_gdf holding the ISO3 code
-                               to join on (Natural Earth's "ISO_A3" is -99 for
-                               a handful of countries, e.g. France/Norway --
-                               "ISO_A3_EH" doesn't have that gap).
-        agg:                   Aggregation applied within each country
-                               ("median", "mean", "max", ...).
+    One riverine and one coastal figure on a shared log scale. Each country is
+    the agg (default median) over its geounits with a value; countries with
+    none stay NaN (grey), with no fallback. flopros_df needs "ISO", "Riverine",
+    "Coastal". iso_column defaults to Natural Earth "ISO_A3_EH" because
+    "ISO_A3" is -99 for some countries (e.g. France, Norway).
     """
     country_agg = flopros_df.groupby("ISO")[["Riverine", "Coastal"]].agg(agg)
     merged = countries_gdf.merge(
@@ -769,12 +627,8 @@ def plot_global_protection_map(
     norm = mcolors.LogNorm(vmin=1.0, vmax=max_rp)
     cmap = plt.get_cmap("YlOrRd").copy()
 
-    # World map extent is much wider than tall (360x145 deg); geopandas locks
-    # the axes to equal aspect, so a figsize not matching that ratio leaves
-    # large blank margins around the (aspect-shrunk) map that bbox_inches=
-    # "tight" can't crop away (it's the axes' allocated box, not just its
-    # drawn content). figsize is sized to match the map's own aspect ratio
-    # plus fixed headroom for the title/colorbar.
+    # geopandas locks equal aspect, and bbox_inches="tight" cannot crop the
+    # blank axes margin, so figsize follows the 360x145 deg map aspect.
     map_aspect = (85 - -60) / (180 - -180)  # lat span / lon span
     fig_w_in = 14.0
     fig_h_in = fig_w_in * map_aspect + 1.3  # + title/colorbar headroom
@@ -818,9 +672,7 @@ def plot_river_network(
     land_polygons_path: str,
     output_path: str,
 ) -> None:
-    """
-    Clipped river network overlaid on land background and domain bbox.
-    """
+    """Plot the clipped river network over the land background and domain bbox."""
     rivers = gpd.read_file(river_path)
     if rivers.crs and rivers.crs.to_epsg() != 4326:
         rivers = rivers.to_crs("EPSG:4326")
@@ -833,9 +685,6 @@ def plot_river_network(
     _save(fig, output_path)
 
 
-# ── rule 07 plots (get_boundary_forcings) ─────────────────────────────────────
-
-
 def plot_domain_map(
     bbox_poly: Polygon,
     river_gdf: gpd.GeoDataFrame,
@@ -845,9 +694,7 @@ def plot_domain_map(
     land_polygons_path: str,
     output_path: str,
 ) -> None:
-    """
-    Map of the model domain, river network, surge stations, and river
-    crossings.
+    """Plot the model domain, river network, surge stations and river crossings.
 
     Crossing points are coloured green when matched to a GloFAS cell (active)
     and red when not matched (inactive).
@@ -874,8 +721,8 @@ def plot_domain_map(
         ax=ax, color="darkorange", markersize=35, marker="^", zorder=4, alpha=0.8
     )
 
-    # Exclusion-reason masks — derived from filter columns written by rule 07.
-    # Falls back to a single inactive category when the columns are absent.
+    # Exclusion reasons come from filter columns written by rule 07; without
+    # them all inactive crossings share one category.
     n = len(crossings)
     active = has_glofas.astype(bool) if n > 0 else np.zeros(0, dtype=bool)
     if (
@@ -985,22 +832,13 @@ def plot_forcing_timeseries(
     return_period: int,
     output_path: str,
 ) -> None:
-    """
-    Two-panel timeseries: surge water level (left) and river discharge (right).
+    """Plot surge water level (left) and river discharge (right) forcing timeseries.
 
-    The surge (left) panel always shows the single effective water-level
-    series -- the boundary forcing is never reduced by the FLOPROS coastal
-    protection level (see src.surge.build_design_surge_matrix's own
-    docstring: a weir is a real, SFINCS-modelled barrier, subtracting a
-    scalar from the boundary is not). The river (right) panel shows three
-    layers per crossing instead of one when river_ds carries
-    'discharge_uncorrected'/'protection_discharge' (rule 07 no longer
-    writes them since the discharge-side protection correction was removed,
-    2026-10-08b): the original
-    (undefended) hydrograph, the constant protection discharge netted out,
-    and the resulting effective (modelled) hydrograph -- so the size of
-    that correction is visible directly, not just its end result. Falls
-    back to the single-series plot when disabled.
+    The surge boundary is never reduced by the FLOPROS coastal protection
+    level (a weir models it). When river_ds carries 'discharge_uncorrected' /
+    'protection_discharge' (rule 07 does not write them), the river panel shows
+    the undefended hydrograph, the constant protection discharge and the
+    effective hydrograph; otherwise one series per crossing.
     """
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
@@ -1016,9 +854,6 @@ def plot_forcing_timeseries(
     ax1.set_title(f"Surge forcing — RP{return_period} ({wl.shape[0]} stations)")
     ax1.grid(True, alpha=0.3)
 
-    # Peak-value boxes (max over all stations/crossings and the full
-    # timeseries). The river boundary is a discharge boundary, so its box
-    # reports max Q rather than a water level.
     max_box = dict(boxstyle="round,pad=0.3", fc="white", ec="grey", alpha=0.85)
     if wl.size:
         ax1.text(
@@ -1032,17 +867,11 @@ def plot_forcing_timeseries(
             bbox=max_box,
         )
 
-    # ── per-station correction table ─────────────────────────────────────────
-    # Shows the correction chain: rp_raw → +MDT → peak(GOCO6s), MDT-only -- the
-    # FLOPROS coastal protection level is a separate quantity, used only to
-    # floor the weir crest in rule 13, never netted out of this timeseries.
-    # SLR is deliberately NOT shown as an applied value here: this dataset's
-    # own water_level/rp_level are MDT-only by design (see
-    # src.surge.apply_slr_fingerprint) -- the actual slr_m-scaled SLR
-    # contribution is only computed downstream, at scenario build time, so
-    # this rule-07 diagnostic instead reports the dimensionless fingerprint
-    # (multiply by the configured slr_m target yourself to see the real
-    # per-station SLR contribution the production build will add).
+    # Correction chain rp_raw → +MDT → peak(GOCO6s). water_level/rp_level are
+    # MDT-only (src.surge.apply_slr_fingerprint); SLR is added at scenario
+    # build time as slr_fingerprint × slr_m, so only the dimensionless
+    # fingerprint is shown. The FLOPROS coastal level only floors the weir
+    # crest (rule 13) and is never netted out of this series.
     has_raw = "rp_level_raw" in surge_ds
     has_mdt = "mdt" in surge_ds
     if has_raw and has_mdt:
@@ -1161,28 +990,16 @@ def plot_surge_corrections(
     stations: gpd.GeoDataFrame,
     output_path: str,
 ) -> None:
-    """
-    Diagnostic stacked-bar plot for the MDT vertical correction applied to
-    COAST-RP storm-tide levels. SLR is deliberately NOT shown as an applied
-    meter value here: surge_forcing.nc's own rp_level/water_level are
-    MDT-only by design (src.surge.apply_slr_fingerprint stores only the
-    dimensionless slr_fingerprint ratio, never a baked-in slr_m value) so
-    that this basin-level rule stays independent of the slr_m config target
-    -- see src.surge.build_design_surge_matrix's own docstring for where the
-    real, target-scaled SLR contribution actually gets applied (per-scenario
-    build time). The FLOPROS coastal protection level is a separate
-    quantity (floors the weir crest in rule 13 only) and is never netted
-    out of this boundary timeseries either, so it has no bar here.
+    """Plot the MDT correction of COAST-RP storm-tide levels per station.
+
+    surge_forcing.nc levels are MDT-only; SLR is applied per scenario as the
+    dimensionless slr_fingerprint × slr_m, so only the fingerprint is
+    annotated. The FLOPROS coastal level (weir crest floor, rule 13) has no bar.
 
     Left panel — two sub-bars per station, each anchored at 0 m (local MSL):
       1. rp_level_raw — steelblue
       2. +MDT correction — darkorange; extends above 0 when MDT > 0, below 0 when MDT < 0
       3. Net peak (MDT-only) = rp_raw + MDT — navy
-
-    Each correction has its own x sub-position so even tiny MDT bars are fully
-    visible. The right-hand map's colorbar annotation notes each station's own
-    SLR fingerprint ratio (dimensionless -- multiply by the configured slr_m
-    target to get the real per-station SLR contribution added downstream).
 
     Right panel: station locations coloured by the +MDT correction magnitude.
     """
@@ -1203,8 +1020,7 @@ def plot_surge_corrections(
 
     mdt_corr = mdt  # MSL -> GOCO06s adds MDT: positive (above 0) when MDT > 0
 
-    # ── Sub-bar x positions (each component owns its own column) ─────────────
-    # Layout (left → right): rp_raw | +MDT | net_peak
+    # Each component gets its own column so tiny MDT bars stay visible.
     n_bars = 3
     w = min(0.20, 0.85 / n_bars)
     g = 0.03
@@ -1215,7 +1031,6 @@ def plot_surge_corrections(
     x_mdt = x + centers[1]
     x_net = x + centers[2]
 
-    # ── Bar 1: rp_level_raw ──────────────────────────────────────────────────
     ax1.bar(
         x_raw,
         raw,
@@ -1224,12 +1039,10 @@ def plot_surge_corrections(
         label="rp_level_raw  (COAST-RP, local MSL)",
     )
 
-    # ── Bar 2: +MDT correction (each station its own column, anchored at 0) ──
     ax1.bar(
         x_mdt, mdt_corr, width=w, color="darkorange", label="+MDT  (local MSL → GOCO6s)"
     )
 
-    # ── Bar 3: net peak (MDT-only) ────────────────────────────────────────────
     net_peak = raw + mdt
     ax1.bar(
         x_net,
@@ -1240,7 +1053,6 @@ def plot_surge_corrections(
         label="Net peak  (rp_level_raw + MDT, MDT-only)",
     )
 
-    # ── Value annotations (black outside for small bars, white inside large) ──
     def _annotate_bar(ax, xs, vals, bottoms, fontsize=6.5, min_inside=0.12):
         for xi, v, b in zip(xs, vals, bottoms):
             if abs(v) < 1e-6:
@@ -1279,7 +1091,6 @@ def plot_surge_corrections(
     ax1.legend(fontsize=7, framealpha=0.9)
     ax1.grid(True, alpha=0.3, axis="y")
 
-    # ── Right panel: spatial map of +MDT correction ───────────────────────────
     sc = ax2.scatter(
         stations.geometry.x,
         stations.geometry.y,
@@ -1311,9 +1122,6 @@ def plot_surge_corrections(
     _save(fig, output_path)
 
 
-# ── rule 08 plots (clean_river_network) ───────────────────────────────────────
-
-
 def plot_cleaned_network(
     rivers_orig: gpd.GeoDataFrame,
     rivers_clean: gpd.GeoDataFrame,
@@ -1321,9 +1129,7 @@ def plot_cleaned_network(
     land_polygons_path: str,
     output_path: str,
 ) -> None:
-    """
-    Map of kept (blue) vs removed (salmon) reaches after connectivity cleaning.
-    """
+    """Plot kept (blue) vs removed (salmon) reaches after connectivity cleaning."""
     lon_min, lat_min, lon_max, lat_max = bbox_poly.bounds
     margin = max(lon_max - lon_min, lat_max - lat_min) * 0.3
     map_bounds = (
@@ -1382,11 +1188,10 @@ def plot_clean_network_discharge(
     land_polygons_path: str,
     output_path: str,
 ) -> None:
-    """
-    Clean river network map where both line thickness and colour encode
-    accumulated bankfull discharge (log scale).  Reaches with no accumulated
-    discharge are shown in light grey; active reaches use four quartile bins
-    to set line width and a log-scaled Blues colormap for colour.
+    """Plot the clean network with width and colour by accumulated bankfull discharge.
+
+    Reaches without discharge are light grey; others use four quartile width
+    bins and a log-scaled Blues colormap.
     """
     lon_min, lat_min, lon_max, lat_max = bbox_poly.bounds
     margin = max(lon_max - lon_min, lat_max - lat_min) * 0.3
@@ -1414,7 +1219,6 @@ def plot_clean_network_discharge(
     if not land.empty:
         land.plot(ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
 
-    # Reaches with no discharge — thin grey background
     if not inactive.empty:
         inactive.plot(ax=ax, color="#cccccc", linewidth=0.3, zorder=2)
 
@@ -1494,9 +1298,6 @@ def plot_clean_network_discharge(
     _save(fig, output_path)
 
 
-# ── rule 10 plots (modelled_depth_estimation) ──────────────────────────────
-
-
 def plot_river_depth_width(
     segments: gpd.GeoDataFrame,
     land_mask_path: str,
@@ -1506,22 +1307,12 @@ def plot_river_depth_width(
     title: str,
     lw_range: tuple[float, float] = (0.4, 6.0),
 ) -> None:
-    """River network map: line colour = river depth, line width = channel width.
+    """Plot the river network with colour = depth and line width = channel width.
 
-    Args:
-        segments: Line segments in the model CRS with columns 'depth' (m),
-            'width' (m, the width used in the calculation) and optionally
-            'fallback' (bool: depth not estimated from the hydraulics, drawn
-            dashed).
-        land_mask_path: Land mask geopackage (see this module's docstring),
-            drawn underneath.
-        domain_outline: Shapely geometry of the model domain in the model CRS.
-        output_path: PNG path.
-        depth_label: Colour-bar label.
-        title: Figure title.
-        lw_range: Line width (points) of the narrowest and widest channel;
-            in between it scales with sqrt(width), so narrow channels stay
-            visible next to km-wide estuaries.
+    segments are in the model CRS with 'depth' (m), 'width' (m, as used in the
+    calculation) and optional 'fallback' (bool, depth not from the hydraulics;
+    drawn dashed). lw_range is the line width (points) of the narrowest and
+    widest channel, scaled with sqrt(width) in between.
     """
     crs = segments.crs
     xmin, ymin, xmax, ymax = domain_outline.bounds
@@ -1644,9 +1435,7 @@ def plot_river_depth(
     land_polygons_path: str,
     output_path: str,
 ) -> None:
-    """
-    River network coloured by computed hydraulic depth (Blues colormap).
-    """
+    """Plot the river network coloured by hydraulic depth ('rivdph', m)."""
     lon_min, lat_min, lon_max, lat_max = bbox_poly.bounds
     margin = max(lon_max - lon_min, lat_max - lat_min) * 0.3
     map_bounds = (
@@ -1691,26 +1480,8 @@ def _overlay_layers(
     land_polygons_path: str,
     river_network_path: str,
 ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
-    """
-    Load land outline, river network, and domain polygon, reprojected to ``crs``.
-
-    Land polygons and the river network are stored in WGS84; ``bounds`` (the
-    raster bounds in ``crs``) is reprojected to WGS84 to spatially filter both
-    reads before reprojecting them to the raster CRS so they align with the
-    metric axes.
-
-    Args:
-        crs:                Target CRS — pass the *reprojected* (EPSG:4326)
-                            raster CRS so overlays land in the same lon/lat
-                            frame as the displayed data.
-        bounds:             Raster bounds (left, bottom, right, top) in ``crs``.
-        domain_poly:        Domain polygon in WGS84 (from ``load_domain``).
-        land_polygons_path: Path to the land mask geopackage (land use != 200; see this module's docstring).
-        river_network_path: Path to the clipped river network geopackage.
-
-    Returns:
-        (land, rivers, domain_gdf) — GeoDataFrames reprojected to ``crs``.
-    """
+    # Returns (land, rivers, domain_gdf) in crs. Land is bbox-filtered with
+    # bounds (in crs) transformed to WGS84; domain_poly is in WGS84.
     from rasterio.warp import transform_bounds
 
     wgs84_bounds = transform_bounds(crs, "EPSG:4326", *bounds)
@@ -1719,8 +1490,7 @@ def _overlay_layers(
     if not land.empty:
         land = land.to_crs(crs)
 
-    # River network may be stored in UTM — bbox filter with WGS84 bounds would
-    # return empty; load fully and reproject instead.
+    # The river network may be in UTM, where a WGS84 bbox filter returns nothing.
     rivers = gpd.read_file(river_network_path)
     if not rivers.empty and rivers.crs is not None and rivers.crs != crs:
         rivers = rivers.to_crs(crs)
@@ -1737,7 +1507,6 @@ def _draw_overlays(
     domain_gdf: gpd.GeoDataFrame,
     zorder: int,
 ) -> None:
-    """Draw filled land background, river network, and domain boundary on ``ax``."""
     if not land.empty:
         land.plot(
             ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=zorder
@@ -1754,9 +1523,6 @@ _OVERLAY_LEGEND_HANDLES = [
 ]
 
 
-# ── rule 13 plots (build_sfincs) ───────────────────────────────────────────────
-
-
 def plot_coastal_protection_weir(
     grid,
     diagnostics: dict,
@@ -1767,30 +1533,13 @@ def plot_coastal_protection_weir(
     basin_id: str = "",
     weir_gdf: gpd.GeoDataFrame | None = None,
 ) -> None:
-    """
-    Single overview diagnostic for the coastal protection weir baked into
-    the model at rule 13 (src.protection_weir.build_coastal_protection_weir):
-    ocean + river channel (filled) and the derived weir line, which now
-    hugs the coast/riverbank directly (no inland offset). Kept in the
-    model's own (UTM) CRS rather than reprojected to WGS84 like most other
-    diagnostics, since the underlying masks are native to that CRS.
+    """Plot ocean, river channel and the coastal protection weir of rule 13 in UTM.
 
-    Args:
-        grid:                A src.protection_weir.GridArrays instance.
-        diagnostics:          Output dict from build_coastal_protection_weir.
-        domain_poly:         Domain polygon in WGS84 (from ``load_domain``).
-        land_polygons_path:  Path to the land mask geopackage (land use != 200; see this module's docstring).
-        river_network_path:  Path to the clipped river network geopackage.
-        output_path:         Destination PNG path.
-        basin_id:            Basin identifier for the plot title.
-        weir_gdf:            The GeoDataFrame build_coastal_protection_weir
-                            also returns (one LineString feature per weir
-                            segment, with an 'elevation' column) -- when
-                            given, the weir line is colour-coded by its own
-                            per-segment crest elevation instead of drawn as a
-                            single flat colour, so a smoothed/varying crest
-                            is actually visible. Falls back to a flat black line
-                            (diagnostics['weir_lines']) when omitted or empty.
+    grid is a src.protection_weir.GridArrays; diagnostics and weir_gdf come
+    from build_coastal_protection_weir. The weir hugs the coast/riverbank (no
+    inland offset). With weir_gdf ('elevation' per segment) the line is
+    coloured by crest elevation, else drawn flat black. When diagnostics marks
+    the weir not applicable, an empty sentinel file is written instead.
     """
     if not diagnostics.get("applicable", True):
         Path(output_path).touch()
@@ -1886,40 +1635,14 @@ def reproject_max_for_plot(
     max_px: int = _PLOT_MAX_PX,
     resampling: Resampling = Resampling.max,
 ) -> xr.DataArray:
-    """
-    Reproject ``da`` (in its own native/projected CRS) to ``dst_crs`` directly
-    at a resolution coarse enough to keep the output spatial grid at or below
-    ``max_px`` total pixels, aggregating with ``resampling`` (max by default)
-    rather than reprojecting at native resolution and stride-decimating
-    afterward.
+    """Reproject da to dst_crs at a resolution capped at max_px pixels, max-aggregated.
 
-    Reprojecting a fine-resolution SFINCS run raster (e.g. compute_max_
-    inundation's own subgrid-resolution output, down to ~1.5 m pixels) to
-    WGS84 for a whole delta domain can produce
-    tens of thousands of pixels per side. Reprojecting at native resolution
-    first and only downsampling afterward has two problems: (a) the
-    reproject call itself still momentarily allocates the huge full-
-    resolution intermediate array, which can reach several GiB once handed
-    to matplotlib for rendering, and (b) picking every Nth pixel post-hoc
-    can alias away isolated peak values entirely, which matters for a
-    MAX-inundation map. Reprojecting directly at the coarse target
-    resolution with max-resampling avoids the large intermediate altogether
-    and guarantees the true max within each output pixel survives the
-    downsampling.
-
-    ``calculate_default_transform`` is metadata-only (no pixel data is read
-    or reprojected) and is used only to estimate the "natural" 1:1 output
-    resolution, which is then coarsened (if needed) to hit the max_px budget.
-
-    The source georeferencing is taken from hydromt's ``.raster`` accessor
-    and the warp is done with ``rasterio.warp.reproject`` directly:
-    rioxarray's own ``rio.bounds()`` / ``rio.reproject`` assume an
-    axis-aligned raster and crop (or raise on) a ROTATED one, which is what
-    a run on a rotated model grid (sfincs.grid.rotated) produces.
-
-    Returns a north-up DataArray with 1-D ``x``/``y`` pixel-centre
-    coordinates (``y`` descending); non-spatial dimensions (e.g. ``time``)
-    are kept and reprojected slice by slice.
+    Warping straight to the coarse grid avoids a multi-GiB full-resolution
+    intermediate (subgrid output reaches ~1.5 m pixels) and keeps isolated
+    peaks that stride-decimation would alias away. Georeferencing comes from
+    hydromt's ``.raster`` accessor because rioxarray crops or raises on a
+    rotated grid. Returns a north-up DataArray with 1-D pixel-centre x/y
+    (y descending); other dims (e.g. time) are reprojected slice by slice.
     """
     import hydromt  # noqa: F401 -- registers the .raster accessor
     from affine import Affine
@@ -1940,9 +1663,6 @@ def reproject_max_for_plot(
     )
     total_px = natural_width * natural_height
     factor = math.sqrt(total_px / max_px) if total_px > max_px else 1.0
-    # natural_transform.a = the "natural" (1:1) pixel size in dst_crs units
-    # that calculate_default_transform picked; scale it up by `factor` to hit
-    # the max_px budget.
     target_res = natural_transform.a * factor
     left, top = natural_transform.c, natural_transform.f
     dst_width = max(1, math.ceil(natural_width * natural_transform.a / target_res))
@@ -1966,11 +1686,8 @@ def reproject_max_for_plot(
             dst_nodata=np.nan,
             resampling=resampling,
         )
-    # A NaN-nodata source warped with Resampling.max can leave stray +/-inf
-    # behind: the max-reduction's identity element for a destination pixel
-    # whose only contributing source pixels were themselves NaN never gets
-    # replaced back with nodata, which can silently poison any min/max or
-    # percentile computed downstream without ever showing up as NaN.
+    # Resampling.max over all-NaN sources leaves the reduction's identity
+    # (+/-inf) instead of nodata, which would poison downstream min/max.
     out[~np.isfinite(out)] = np.nan
 
     coords = {d: da[d] for d in extra_dims if d in da.coords}
@@ -1986,9 +1703,6 @@ def reproject_max_for_plot(
     return result
 
 
-# ── run-output diagnostic plots (rules 14-15: run_spinup, sanity_checks) ──────
-
-
 def plot_water_level_timeseries(
     t_days: np.ndarray,
     zs: np.ndarray,
@@ -1999,26 +1713,11 @@ def plot_water_level_timeseries(
     run_label: str = "",
     ylabel: str = "Water level (m)",
 ) -> None:
-    """
-    Line plot of water level over time at each observation point (rule 14's
-    "validation_spinup.png" pattern, generalised for reuse). Convergence /
-    spin-up sufficiency is visible as flat lines near the right edge.
+    """Plot water level over time at each observation point.
 
-    Callers keep their own ``.his``-reading logic (CF-time-decoding
-    conventions differ slightly between call sites) and pass in the already
-    -extracted arrays -- this function only builds the figure.
-
-    Args:
-        t_days:         (n_time,) time coordinate, in days.
-        zs:             (n_time, n_stations) water level array.
-        output_path:    Destination PNG path.
-        day_markers:    Optional list of (day, label) vertical reference
-                        lines, e.g. spin-up end or convergence day.
-        station_labels: Optional per-station legend labels (length
-                        n_stations); defaults to "obs {i+1}" if omitted.
-        basin_id:       Basin identifier for the plot title.
-        run_label:      Optional run/scenario label for the plot title.
-        ylabel:         Y-axis label.
+    t_days is (n_time,) in days, zs is (n_time, n_stations). day_markers adds
+    (day, label) vertical lines, e.g. spin-up end. Spin-up convergence shows
+    as flat lines near the right edge.
     """
     n_stations = zs.shape[1]
     labels = (
@@ -2057,22 +1756,15 @@ def plot_crest_gap_map(
     basin_id: str = "",
     run_label: str = "",
 ) -> None:
-    """
-    Calibration diagnostic: the weir crest minus a run's own actual
-    simulated period-max water level, at every finite cell of
-    crest_on_grid (rule modelled_depth_estimation passes each weir edge's
-    crest at that edge's own water-side cell) -- negative = overtopped. Two panels: the full
-    domain, and a zoom on the overtopped cell(s) (or the crest-covered area
-    generally, if none), both with the weir line, river network, and the
-    REAL discharge point(s) overlaid (not a reach's own line-start
-    coordinate, which is not necessarily where discharge actually enters
-    the model).
+    """Plot weir crest minus simulated period-max water level (negative = overtopped).
 
-    Geographic orientation (imshow origin/extent) is auto-detected from
-    grid_transform's own sign convention rather than assumed -- a
-    SFINCS-built grid commonly has a POSITIVE y-scale (row increases
-    northward), which a plain imshow() would otherwise silently plot
-    upside down.
+    Evaluated at every finite cell of crest_on_grid (rule
+    modelled_depth_estimation puts each weir edge's crest on its water-side
+    cell). Panels: full domain, and a zoom on overtopped cells (else the crest
+    area). Discharge points are the real model inflow points, not reach line
+    starts. A SFINCS grid usually has a positive y-scale (row increases
+    northward), so orientation is taken from grid_transform. Writes an empty
+    sentinel when no cell has a crest.
     """
     out_shape = crest_on_grid.shape
     rows, cols = np.where(np.isfinite(crest_on_grid))
@@ -2083,9 +1775,8 @@ def plot_crest_gap_map(
         )
         return
 
-    # zsmax (max over every computational timestep) when written -- the
-    # same field the calibration's own overtopping check compares against
-    # -- else the max over the hourly zs output.
+    # zsmax (max over every computational timestep, as the calibration's
+    # overtopping check uses) when written, else the max of hourly zs.
     with xr.open_dataset(map_nc_path) as ds:
         if "zsmax" in ds:
             zsmax = ds["zsmax"]
@@ -2228,20 +1919,14 @@ def plot_wetland_dike_positions(
     active_on: bool,
     basin_id: str = "",
 ) -> None:
-    """
-    Where the coastal dike runs with river_depth_modelling.
-    unprotected_ocean_wetlands off vs on, both traced on the same grid and
-    overlaid on the land-use classes that decide it: open sea (200), wetland/
-    lagoon patches linked to the sea (the cells the switch moves outside the
-    dike), and other wetland/lagoon cells (80/90, protected either way).
-    Segments at the same position in both traces (matched by midpoint) are
-    grey; red/blue mark where only the OFF/ON trace runs. Left: whole
-    domain; right: zoom on the largest ocean-linked wetland patch (omitted
-    if there is none). The setting the current run uses is marked in the
-    legend.
+    """Plot the coastal dike with river_depth_modelling.unprotected_ocean_wetlands off vs on.
+
+    Overlaid on open sea (200), sea-linked wetland/lagoon (moved outside the
+    dike when on) and other wetland/lagoon (80/90, protected either way).
+    Segments are matched by midpoint (< 1 m): grey in both, red OFF only,
+    blue ON only. A zoom on the largest sea-linked patch is added if any.
     """
     from scipy.ndimage import label as _ndimage_label
-
     from src.protection_weir import LANDUSE_SEA, OCEAN_WETLAND_CLASSES
 
     shape = landuse_on_grid.shape
@@ -2350,23 +2035,12 @@ def plot_calibration_round_profiles(
     output_combined_path: str,
     round_titles: list[str] | None = None,
 ) -> None:
-    """
-    Bed / weir-crest / period-max water-level profile along one seed-to-
-    mouth path, one round per subplot plus an all-rounds-overlaid combined
-    figure -- the real per-cell calibration state
-    (src.river_depth_calibration.gather_calibration_round_profile,
-    reading each round's own calibration_state.csv directly), not a
-    reconstruction or an approximation of it.
+    """Plot bed, weir crest and period-max water level along one seed-to-mouth path.
 
-    Args:
-        basin_id, seed: For the plot titles only.
-        profiles_by_round: round_idx -> DataFrame with columns
-            'along_path_m', 'dem', 'rivdph', 'weir_crest', 'zs' (see
-            gather_calibration_round_profile).
-        n_rounds:       Number of rounds after round 0.
-        output_subplots_path, output_combined_path: Destination PNGs.
-        round_titles:   Optional per-round subplot title (n_rounds + 1
-            entries); defaults to "round {i}".
+    One subplot per round plus an all-rounds overlay. profiles_by_round maps
+    round_idx (0..n_rounds) to a DataFrame with 'along_path_m', 'dem',
+    'rivdph', 'weir_crest', 'zs' (src.river_depth_calibration.
+    gather_calibration_round_profile); the bed is dem - rivdph.
     """
     if round_titles is None:
         round_titles = [f"round {i}" for i in range(n_rounds + 1)]
@@ -2477,23 +2151,12 @@ def plot_max_inundation_map(
     basin_id: str = "",
     run_label: str = "",
 ) -> None:
-    """
-    Max inundation depth map for a SFINCS run (output of
-    ``postprocessing.compute_max_inundation``), with the land outline, river
-    network, and domain boundary overlaid.
+    """Plot max inundation depth of a SFINCS run with land, rivers and domain overlaid.
 
-    Args:
-        da_hmax:            Max inundation depth DataArray; NaN = dry / outside
-                            the land domain.  Must carry CRS metadata (``rio.crs``).
-        domain_poly:        Domain polygon in WGS84 (from ``load_domain``).
-        land_polygons_path: Path to the land mask geopackage (land use != 200; see this module's docstring).
-        river_network_path: Path to the clipped river network geopackage.
-        output_path:        Destination PNG path.
-        basin_id:           Basin identifier for the plot title.
-        run_label:          Optional run/scenario label for the plot title.
+    da_hmax (postprocessing.compute_max_inundation) uses NaN for dry or
+    outside the land domain and must carry a CRS; domain_poly is in WGS84.
     """
-    # Reproject from the model's metric UTM grid to EPSG:4326.  Use imshow with
-    # explicit extent rather than da.plot() to guarantee north-up orientation.
+    # imshow with explicit extent instead of da.plot() to guarantee north-up.
     da_wgs = reproject_max_for_plot(da_hmax.squeeze())
     y_dim = da_wgs.rio.y_dim
     x_dim = da_wgs.rio.x_dim
@@ -2556,16 +2219,10 @@ def plot_max_inundation_map(
     _save(fig, output_path)
 
 
-#: Per-``variable`` display style for animate_flood_progression: colormap,
-#: colorbar label, and whether the low end is pinned at 0 (depth, which is
-#: never negative) or left to the data's own low percentile (water level,
-#: which can be negative relative to the model's vertical datum).
-#: vmax (if set) fixes the top of the colour scale; otherwise
-#: use_percentile=True clips it to the 1st/99th percentile (robust to a
-#: single outlier pixel dominating the range) and False uses the data's true
-#: min/max. Depth uses the shared fixed _INUNDATION_DEPTH_CBAR_MAX_M; water
-#: level uses true min/max so the actual extremes (e.g. a storm-surge peak)
-#: are visible rather than compressed toward 0 by the percentile clip.
+#: Colour scale per animate_flood_progression variable. Depth is pinned at 0
+#: with the shared fixed maximum; water level can be negative relative to the
+#: model datum and uses its true min/max so surge peaks are not clipped.
+#: Without vmax, use_percentile=True clips to the 1st/99th percentile.
 _FLOOD_ANIMATION_STYLE: dict[str, dict] = {
     "depth": {
         "cmap": "Blues",
@@ -2585,11 +2242,7 @@ _FLOOD_ANIMATION_STYLE: dict[str, dict] = {
 
 
 def _flood_animation_bounds(vals: np.ndarray, style: dict) -> tuple[float, float]:
-    """Colour-scale (vmin, vmax) for one variable's whole time series, per
-    ``style["use_percentile"]``/``style["vmin"]`` (see ``_FLOOD_ANIMATION_STYLE``).
-    Filters with ``np.isfinite`` rather than ``~np.isnan`` -- see the -inf
-    caveat noted at each call site.
-    """
+    # isfinite, not ~isnan: Resampling.max can leave stray -inf pixels.
     valid = vals[np.isfinite(vals)]
     if style.get("vmax") is not None:
         vmin = (
@@ -2624,43 +2277,17 @@ def animate_flood_progression(
     fps: int = 4,
     variable: str = "depth",
 ) -> None:
-    """
-    Animate the progression of a SFINCS run's instantaneous water depth or
-    water level (output of ``postprocessing.compute_flood_progression``),
-    saved as an MP4.
+    """Write an MP4 of a run's instantaneous water depth or level over time.
 
-    The land outline, river network, and domain boundary are drawn once as a
-    static background; an imshow layer of the instantaneous variable
-    (already masked to non-water land-use areas, for ``variable="depth"``)
-    is then updated for each time step.
-
-    Args:
-        da_h:               Instantaneous water depth or water level (see
-                            ``variable``) with a ``time`` dimension; NaN =
-                            dry / water / outside domain (depth case only —
-                            level is unmasked). Must carry CRS metadata
-                            (``rio.crs``).
-        domain_poly:        Domain polygon in WGS84 (from ``load_domain``).
-        land_polygons_path: Path to the land mask geopackage (land use != 200; see this module's docstring).
-        river_network_path: Path to the clipped river network geopackage.
-        output_path:        Destination MP4 path.
-        basin_id:           Basin identifier for the plot title.
-        run_label:          Optional run/scenario label for the plot title.
-        fps:                Frames per second of the output video.
-        variable:           "depth" (default, ``da_h`` = inundation depth,
-                            colour scale pinned at 0) or "level" (``da_h`` =
-                            water level, colour scale follows the data's own
-                            range since it can be negative).
+    da_h (postprocessing.compute_flood_progression) has a time dimension and a
+    CRS; for variable="depth" NaN marks dry, water or outside the domain, for
+    "level" it is unmasked. Without a time dimension an empty sentinel is
+    written. Requires ffmpeg.
     """
     from matplotlib.animation import FFMpegWriter, FuncAnimation
 
-    # matplotlib's FFMpegWriter defaults to bitrate=-1 (encoder picks), which
-    # for libx264 falls back to a CRF that's too aggressive for this content:
-    # the pale, low-contrast floodplain signal (visually close to the light
-    # grey land background) gets quantized away by compression while the
-    # sharp, high-contrast river channel survives. -crf 15 (near-visually-
-    # lossless for x264, default is 23) fixes this without hand-tuning a
-    # bitrate for every domain size/resolution.
+    # libx264's default CRF (23) quantizes away the pale floodplain signal
+    # against the grey land; -crf 15 is near visually lossless.
     def _make_writer():
         return FFMpegWriter(fps=fps, extra_args=["-crf", "15", "-pix_fmt", "yuv420p"])
 
@@ -2678,8 +2305,6 @@ def animate_flood_progression(
         Path(output_path).touch()
         return
 
-    # Reproject from the model's metric UTM grid to EPSG:4326 so this animation
-    # shares the same lon/lat reference frame as every other diagnostic plot.
     da_wgs = reproject_max_for_plot(da_h)
     land, rivers, domain_gdf = _overlay_layers(
         da_wgs.rio.crs,
@@ -2689,12 +2314,6 @@ def animate_flood_progression(
         river_network_path,
     )
 
-    # np.isfinite (not just ~np.isnan) matters here: reproject_max_for_plot's
-    # Resampling.max can leave stray -inf pixels behind when a NaN-nodata
-    # source is warped (the max-reduction identity element never gets
-    # replaced back to nodata for destination pixels whose only contributing
-    # source pixels were themselves nodata) -- -inf silently poisons both the
-    # percentile and true min/max otherwise, without ever showing up as NaN.
     vals = da_wgs.values
     vmin, vmax = _flood_animation_bounds(vals, style)
 
@@ -2760,9 +2379,6 @@ def animate_flood_progression(
     log.info(f"Written: {output_path}")
 
 
-# ── rule 05a plots (get_elevation datum-correction diagnostics) ───────────────
-
-
 def plot_geoid_offset(
     offset_arr: np.ndarray,
     offset_transform,
@@ -2770,12 +2386,9 @@ def plot_geoid_offset(
     land_polygons_path: str,
     output_path: str,
 ) -> None:
-    """
-    Geoid offset N_EGM2008 − N_GOCO06s over the domain (WGS84 lon/lat).
+    """Plot the geoid offset N_EGM2008 − N_GOCO06s over the domain (WGS84 lon/lat).
 
-    Shows the step-1 correction field before it is resampled to the DEM grid.
-    The global array is clipped to the domain view via axis limits; land polygons
-    are overlaid in grey so the ocean pattern stands out.
+    The step-1 correction field, before resampling to the DEM grid.
     """
     h, w = offset_arr.shape
     lon_left = offset_transform.c
@@ -2825,12 +2438,10 @@ def plot_mdt_ocean(
     land_polygons_path: str,
     output_path: str,
 ) -> None:
-    """
-    MDT HYBRID-CNES-CLS22 over ocean (raw values, NaN over land, WGS84 lon/lat).
+    """Plot raw MDT HYBRID-CNES-CLS22 over ocean (NaN over land, WGS84 lon/lat).
 
-    Shows the GEBCO MSL -> GOCO06s correction field (added to GEBCO) in its raw state, before inverse-distance
-    extrapolation over land.  NaN land pixels are transparent so only the ocean
-    signal is visible; the land polygon outline is drawn for geographic context.
+    The GEBCO MSL -> GOCO06s correction field (added to GEBCO), before
+    inverse-distance extrapolation over land.
     """
     h, w = mdt_np.shape
     lon_left = mdt_transform.c
@@ -2887,31 +2498,13 @@ def plot_datum_correction_delta(
     symmetric: bool = True,
     note: str | None = None,
 ) -> None:
-    """
-    Diverging raster plot of a vertical datum correction delta (corrected − original).
-    ``note``, if given, is printed in small italics below the map.
+    """Plot a vertical datum correction delta (corrected − original) in UTM metres.
 
-    Generic for any single-step correction applied in 05a_get_elevation.py —
-    the coastal DEM's geoid offset (EGM2008 → GOCO06s) or GEBCO's +MDT
-    correction (local MSL → GOCO06s); ``title``/``colorbar_label`` distinguish
-    which. NaN pixels (including any caller has masked out, e.g. unchanged
-    cells) are fully transparent, letting the grey land-polygon background
-    show through. Axes are in projected UTM metres so the pattern can be
-    compared with the elevation and zsini maps.
-
-    By default (``symmetric=True``) the color scale is a symmetric ±vmax
-    range, clipped to the 95th percentile of |delta| unless ``vmax`` is
-    given explicitly (datum corrections are typically smooth and two-signed,
-    so this keeps the bulk of the map well-contrasted), drawn with the
-    diverging "RdBu_r" colormap. Set ``symmetric=False`` to instead use the
-    data's own (possibly one-signed) min/max directly -- appropriate for a
-    correction that only ever pushes one direction, where a symmetric ±vmax
-    scale would waste half its range. ``vmax`` is ignored when
-    ``symmetric=False``; the
-    colormap also switches to a sequential "Reds"/"Reds_r" in that case,
-    since RdBu_r's white midpoint would no longer fall at delta=0 once the
-    range matches a skewed/one-signed data extent (small values would render
-    almost fully saturated instead of faint).
+    For the single-step corrections of 05a_get_elevation.py: the coastal DEM's
+    geoid offset (EGM2008 → GOCO06s) or GEBCO's +MDT (local MSL → GOCO06s).
+    NaN pixels are transparent. symmetric=True uses ±vmax (default the 95th
+    percentile of |delta|) on RdBu_r; symmetric=False uses the data min/max on
+    a sequential Reds map and ignores vmax, for one-signed corrections.
     """
     from pyproj import Transformer
 
@@ -2954,12 +2547,8 @@ def plot_datum_correction_delta(
         if vmin == vmax:
             vmin, vmax = vmin - 0.01, vmax + 0.01
         extend = "neither"
-        # One-signed data (e.g. a correction that only ever pushes one direction):
-        # RdBu_r's white midpoint would no longer fall at zero once vmin/vmax match
-        # the (skewed) data range, so a near-zero value would render almost fully
-        # saturated instead of faint. A sequential map fixes that -- oriented so the
-        # bound closer to zero (the *smaller*-magnitude end) is light and the more
-        # extreme bound is dark, regardless of which sign dominates.
+        # With a skewed range RdBu_r's white midpoint leaves zero; a sequential
+        # map keeps the bound closer to zero light and the extreme bound dark.
         cmap = "Reds_r" if abs(vmin) >= abs(vmax) else "Reds"
 
     fig, ax = plt.subplots(figsize=(9, 7))
@@ -3001,9 +2590,6 @@ def plot_datum_correction_delta(
     _save(fig, output_path)
 
 
-# ── rule 15 plots (sanity_checks) ─────────────────────────────────────────────
-
-
 def plot_inundation_check(
     da_hmax: xr.DataArray,
     threshold_m: float,
@@ -3015,8 +2601,7 @@ def plot_inundation_check(
     basin_id: str = "",
     run_label: str = "baseline spinup",
 ) -> None:
-    """
-    Sanity check: fraction of land pixels exceeding an inundation threshold.
+    """Plot the fraction of land pixels above an inundation threshold (rules 15, 16).
 
     Left panel — map of max inundation depth using da_hmax.plot(), which reads
                  the DataArray's own x/y coordinates so north-up orientation is
@@ -3024,30 +2609,15 @@ def plot_inundation_check(
                  outline and clean river network are overlaid for context.
     Right panel — bar chart of flooded vs dry pixel counts.
 
-    Args:
-        da_hmax:            DataArray output of downscale_floodmap; NaN = dry /
-                            outside domain.  Must carry CRS metadata
-                            (``rio.crs``) and have 1-D x and y coordinate arrays.
-        threshold_m:        hmin passed to downscale_floodmap (for labelling only).
-        n_flooded:          Pre-computed flooded land pixel count (da_hmax not-null).
-        n_land:             Pre-computed total land pixel count (dep not-null).
-        land_polygons_path: Path to the land mask geopackage (land use != 200,
-                            WGS84; see this module's docstring), drawn as the background.
-        river_network_path: Path to the clean river network geopackage (WGS84),
-                            drawn as an overlay.
-        output_path:        Destination PNG path.
-        basin_id:           Basin identifier for the plot title.
-        run_label:          Run/scenario label for the plot title (e.g.
-                            "baseline spinup" or "event") — this function is
-                            shared by rule 15 (spin-up sanity checks) and
-                            rule 16 (main event run).
+    da_hmax (downscale_floodmap) uses NaN for dry or outside the domain and
+    must carry a CRS; threshold_m is its hmin, used for labels only. n_flooded
+    and n_land are precomputed land pixel counts.
     """
     frac = n_flooded / n_land if n_land > 0 else 0.0
     n_dry = n_land - n_flooded
 
-    # Reproject from the model's metric UTM grid to EPSG:4326.  Use explicit
-    # imshow with extent rather than da.plot() to guarantee north-up orientation
-    # regardless of how downscale_floodmap orders the spatial dimensions.
+    # Explicit imshow extent instead of da.plot() guarantees north-up however
+    # downscale_floodmap orders the spatial dimensions.
     da_wgs = reproject_max_for_plot(da_hmax.squeeze())
     y_dim = da_wgs.rio.y_dim
     x_dim = da_wgs.rio.x_dim
@@ -3062,11 +2632,10 @@ def plot_inundation_check(
     wgs_left, wgs_bottom, wgs_right, wgs_top = da_wgs.rio.bounds()
     _margin = max(wgs_right - wgs_left, wgs_top - wgs_bottom) * 0.3
 
-    # Land polygons are stored in WGS84; use bounds for spatial filter.
     land = gpd.read_file(
         land_polygons_path, bbox=(wgs_left, wgs_bottom, wgs_right, wgs_top)
     )
-    # River network may be in UTM: load fully then reproject.
+    # The river network may be in UTM, where a WGS84 bbox filter returns nothing.
     rivers = gpd.read_file(river_network_path)
     if not rivers.empty and rivers.crs is not None and rivers.crs.to_epsg() != 4326:
         rivers = rivers.to_crs("EPSG:4326")
@@ -3077,7 +2646,6 @@ def plot_inundation_check(
         1, 2, figsize=(14, 6), gridspec_kw={"width_ratios": [3, 1]}
     )
 
-    # Left: land background, then inundation raster, then rivers on top.
     if not land.empty:
         land.plot(ax=ax1, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
     im = ax1.imshow(
@@ -3116,7 +2684,6 @@ def plot_inundation_check(
     )
     ax1.grid(True, alpha=0.3, linewidth=0.5)
 
-    # Right: bar chart
     bars = ax2.bar(
         ["Flooded", "Dry"],
         [n_flooded, n_dry],

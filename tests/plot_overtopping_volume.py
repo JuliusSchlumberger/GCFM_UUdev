@@ -1,38 +1,15 @@
-"""
-plot_overtopping_volume.py — Crude approximation of coastal-crest overtopping
-volume, driven by the ACTUAL time-series forcing written into a scenario's
-own run (sfincs.bnd/sfincs.bzs — the real per-station water-level boundary
-SFINCS was given, already resolved to the scenario's design RP and snapped
-to real boundary-cell coordinates), applied through SFINCS's own free-flow weir
-formula for these structures: Q = par1 * 1.7049 * L * head^1.5, 1.7049 =
-(2/3)^1.5 * sqrt(g) (see config/config.yml's weir_par1 comment). SFINCS
-switches to a submerged-weir formula once the landward side fills above
-2/3 of the seaward head -- ignored here (landward level unknown), so this
-overestimates discharge once the land behind a segment has flooded.
+"""Estimate coastal-crest overtopping volume from a run's boundary forcing.
 
-For each of the basin's built coastal-protection weir segments, the nearest
-boundary station's own water-level timeseries drives that segment's head
-(head = station level − segment crest, clipped at 0). This is a genuinely
-crude approximation: no interpolation between stations, no local set-up/
-attenuation, no allowance for the (2-D, momentum-aware) hydrodynamics SFINCS
-itself would apply, and no distinction is drawn between "coastal" and
-"river-crest-elevated" segments — segments pushed high above every station's
-level (inland reaches built via max(coastal, river_crest)) simply never
-overtop; the per-segment head calculation already excludes them without any
-separate filtering.
+Uses the forcing SFINCS was given (sfincs.bnd/sfincs.bzs: per-station water
+level, seconds since tref, model CRS) and SFINCS's free-flow weir formula
+Q = par1 * 1.7049 * L * head^1.5, with 1.7049 = (2/3)^1.5 * sqrt(g) (see
+config/config.yml's weir_par1 comment). Each weir segment takes the nearest
+station's level; head = station level - crest, clipped at 0.
 
-Reads (scenario-specific, unlike plot_surge_vs_dike_crest.py's own RP-table
-lookup — this uses the real timeseries actually fed to SFINCS for one
-already-built/run scenario):
-  - {basin_id}/runs/{scenario}/sfincs/sfincs.bnd — station coordinates
-    (model CRS, matches the weir gpkg's own CRS).
-  - {basin_id}/runs/{scenario}/sfincs/sfincs.bzs — per-station water-level
-    timeseries (seconds since tref, one column per station).
-  - {basin_id}/runs/{scenario}/sfincs/sfincs.inp — tref, for a real
-    datetime x-axis.
-  - {basin_id}/sfincs_skeleton/{basin_id}_coastal_protection_weir.gpkg —
-    built weir segments (elevation, par1, geometry), basin-level and
-    scenario-independent.
+Crude: no interpolation between stations, no local set-up or 2-D dynamics.
+SFINCS's submerged-weir switch (landward side above 2/3 of the seaward head) is
+ignored, so discharge is overestimated once the land behind a segment floods.
+Inland segments raised above every station level never overtop.
 
 Usage:
     conda run -n hmt_sfincs_dev python tests/plot_overtopping_volume.py [basin_id] [scenario]
@@ -41,8 +18,8 @@ Usage:
 
 from __future__ import annotations
 
-import os
 import logging
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -70,10 +47,7 @@ SCENARIO = sys.argv[2] if len(sys.argv) > 2 else "coast_250"
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
-# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
-# Set it once in PowerShell, then restart your terminal (see
-# CONTRIBUTING.md "Local machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
 RESULTS_DIR = Path(os.environ["GCFM_RESULTS_DIR"])
 FIGS_DIR = REPO_ROOT / "figs" / "surge_vs_dike_crest"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -114,7 +88,7 @@ for _p in (bnd_path, bzs_path, inp_path):
 log.info(f"weir: {weir_path}")
 log.info(f"sfincs run dir: {sfincs_dir}")
 
-# ── real forcing actually fed to SFINCS for this run ─────────────────────────
+# forcing fed to SFINCS for this run
 inp_cfg = parse_sfincs_inp(inp_path)
 tref = datetime.strptime(inp_cfg["tref"], "%Y%m%d %H%M%S")
 
@@ -136,7 +110,7 @@ log.info(
     f"{time_s[-1] / 3600:.1f} h total"
 )
 
-# ── weir geometry: nearest boundary station per segment ──────────────────────
+# nearest boundary station per weir segment
 weir_gdf = gpd.read_file(weir_path)
 centroids = np.column_stack(
     [weir_gdf.geometry.centroid.x, weir_gdf.geometry.centroid.y]
@@ -152,8 +126,8 @@ log.info(
     f"Weir: {n_segment} segment(s), crest [{elevation.min():.3f}, {elevation.max():.3f}] m"
 )
 
-# ── per-segment head & discharge: Q = par1 * 1.7049 * L * max(0, head)^1.5 ──
-SFINCS_CWEIR = 1.7049  # (2/3)^1.5 * sqrt(g), SFINCS's own free-flow weir constant
+# per-segment head and discharge: Q = par1 * 1.7049 * L * max(0, head)^1.5
+SFINCS_CWEIR = 1.7049  # (2/3)^1.5 * sqrt(g), SFINCS free-flow weir constant
 level_at_segment = levels[:, nearest_station]  # (n_time, n_segment)
 head = np.maximum(0.0, level_at_segment - elevation[None, :])
 q_segment = (
@@ -178,7 +152,7 @@ log.info(
     f"({time_s[peak_idx] / 3600:.1f} h since tref): {q_total[peak_idx]:.1f} m3/s"
 )
 
-# ── plot: instantaneous discharge (top) + cumulative volume (bottom) ────────
+# plot: discharge (top) + cumulative volume (bottom)
 fig, (ax_q, ax_vol) = plt.subplots(2, 1, figsize=(9, 7), sharex=True)
 
 ax_q.plot(times, q_total, color="firebrick", linewidth=1.5)

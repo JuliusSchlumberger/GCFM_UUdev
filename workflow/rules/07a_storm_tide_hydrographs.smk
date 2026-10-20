@@ -7,14 +7,10 @@
 #   extract_gtsm_series     surge_stations.json + GTSM  -> gtsm_hourly.nc
 #   storm_tide_hydrographs  gtsm_hourly.nc + COAST-RP   -> storm_tide_hydrographs.nc
 #
-# extract_gtsm_series is the expensive step (it has to read every monthly
-# file of the global reanalysis, ~60 GB), so it is isolated behind
-# surge_stations.json: a small text file whose content only changes when the
-# basin's selected stations do. Snakemake compares the checksum of small
-# inputs, so rewriting an identical surge_stations.json (a new delta-polygon
-# file with this basin unchanged, a rerun of the domain rules) does NOT
-# re-trigger the extraction. The GTSM folders are parameters, not inputs,
-# for the same reason.
+# extract_gtsm_series reads every monthly file of the global reanalysis
+# (~60 GB), so it sits behind the small surge_stations.json: Snakemake compares
+# checksums of small inputs, so rewriting it unchanged does not re-trigger the
+# extraction. The GTSM folders are params, not inputs, for the same reason.
 
 rule select_surge_stations:
     input:

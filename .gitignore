@@ -27,3 +27,6 @@ __pycache__/
 
 # Logs
 *.log
+
+# Local baselines (see CLAUDE.md)
+.baseline/

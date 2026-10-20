@@ -1,15 +1,8 @@
-"""
-gtsm.py -- hourly station series from the GTSM reanalysis (Copernicus CDS
-sis-water-level-change-timeseries-cmip6, GTSMv3 reanalysis, hourly: total
-water level and storm surge residual).
+"""Extract hourly station series from the GTSMv3 reanalysis (total water level, surge).
 
-The dataset is laid out by TIME: one file per month, each holding every one
-of the ~43,000 output stations. One station's record is therefore spread
-over every monthly file (900 per variable for 1950-2024), and extracting
-any set of stations means opening all of them -- extract_station_series
-does that once, in parallel, reading only the slab of stations it needs.
-
-Files: {folder}/reanalysis_{waterlevel|surge}_hourly_YYYY_MM_v3.nc, as
+Source: Copernicus CDS sis-water-level-change-timeseries-cmip6. Files are laid
+out by time (one per month, all ~43,000 stations), so any station subset needs
+every monthly file. Files: {folder}/reanalysis_{waterlevel|surge}_hourly_YYYY_MM_v3.nc,
 unzipped from the yearly CDS archives (tools/download_cds_waterlevel.py).
 """
 
@@ -30,7 +23,7 @@ _SLAB_GAP = 2000  # station indices closer than this are read as one contiguous 
 
 
 def monthly_files(folder: str | Path) -> list[Path]:
-    """The monthly NetCDF files under `folder`, in time order."""
+    """Return the monthly NetCDF files under `folder`, in time order."""
     files = sorted(Path(folder).glob("reanalysis_*_hourly_????_??_v3.nc"))
     if not files:
         raise FileNotFoundError(
@@ -43,7 +36,7 @@ def monthly_files(folder: str | Path) -> list[Path]:
 def station_coordinates(
     folder: str | Path,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(station ids, lon, lat) of the GTSM output stations (same in every file)."""
+    """Return (station ids, lon, lat) of the GTSM output stations (same in every file)."""
     import netCDF4
 
     with netCDF4.Dataset(monthly_files(folder)[0]) as ds:
@@ -61,10 +54,11 @@ def match_stations(
     gtsm_lat: np.ndarray,
     max_km: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Position of the GTSM station coinciding with each (lon, lat) and its
-    distance (km). COAST-RP's coastal stations ARE GTSM output stations, so
-    max_km is a coincidence tolerance, not a search radius; raises if a
-    point has no GTSM station within it.
+    """Return the GTSM station index coinciding with each (lon, lat) and its distance (km).
+
+    COAST-RP's coastal stations are GTSM output stations, so max_km is a
+    coincidence tolerance, not a search radius; raises ValueError if a point
+    has no GTSM station within it.
     """
     idx = np.empty(len(lons), dtype=int)
     dist = np.empty(len(lons))
@@ -84,7 +78,6 @@ def match_stations(
 
 
 def _read_month(args) -> tuple[np.ndarray, np.ndarray]:
-    """(time as datetime64[s], values (n_time, n_station) float32) of one monthly file."""
     import netCDF4
 
     path, var, station_idx = args
@@ -119,17 +112,10 @@ def _read_month(args) -> tuple[np.ndarray, np.ndarray]:
 def extract_station_series(
     folder: str | Path, var: str, station_idx: np.ndarray, n_workers: int = 1
 ) -> pd.DataFrame:
-    """Hourly series of the given station positions over every monthly file.
+    """Return hourly series of the given station positions over every monthly file.
 
-    Args:
-        folder:      directory of the monthly files of one variable.
-        var:         variable name in the files ("waterlevel" or "surge").
-        station_idx: positions along the files' `stations` dimension.
-        n_workers:   processes reading files in parallel.
-
-    Returns:
-        DataFrame (time index, one float32 column per entry of station_idx,
-        in that order).
+    station_idx: positions along the files' `stations` dimension. Returns one
+    float32 column per entry of station_idx, in that order.
     """
     files = monthly_files(folder)
     tasks = [(str(p), var, np.asarray(station_idx, dtype=int)) for p in files]

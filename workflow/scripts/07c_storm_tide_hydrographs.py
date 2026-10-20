@@ -1,15 +1,8 @@
-"""
-07c_storm_tide_hydrographs.py -- Storm-tide hydrograph components at a
-basin's own surge stations: the average tide and one normalised surge shape
-per COAST-RP return period (src.storm_tide_hydrograph; HGRAPHER, Dullaart
-et al. 2023, with return-period-specific shapes).
+"""Derive average tide and per-RP surge shapes per station; run by rule storm_tide_hydrographs.
 
-Inputs
-------
-gtsm_hourly     Hourly GTSM total water level + surge residual at the surge
-                stations (rule extract_gtsm_series).
-surge_data      COAST-RP -- the storm-tide level per return period each
-                shape is derived for.
+HGRAPHER (Dullaart et al. 2023) with return-period-specific shapes
+(src.storm_tide_hydrograph), from hourly GTSM series (rule extract_gtsm_series)
+and COAST-RP storm-tide levels per return period.
 
 Output
 ------
@@ -21,9 +14,8 @@ storm_tide_hydrographs.nc, per station:
                                                built from, and how wide it is
 plus a diagnostic figure.
 
-TODO (follow-up, not done here): inspect the relative timing (lag) of the
-storm-tide peaks across a basin's stations in the GTSM series -- the
-boundary currently puts every station's peak at the same instant.
+TODO: inspect the relative timing (lag) of the storm-tide peaks across a
+basin's stations; the boundary puts every station's peak at the same instant.
 """
 
 from pathlib import Path
@@ -129,7 +121,7 @@ Path(snakemake.output.hydrographs).parent.mkdir(parents=True, exist_ok=True)
 out.to_netcdf(snakemake.output.hydrographs)
 log.info(f"Written: {snakemake.output.hydrographs} ({len(results)} station(s), {len(rps)} return periods)")
 
-# ── diagnostic figure: the station nearest the domain (first) ────────────────
+# Diagnostic figure: the station nearest the domain (first)
 INK, INK2, MUTED, SURFACE, GRID = "#0b0b0b", "#52514e", "#898781", "#fcfcfb", "#e6e5e1"
 RAMP = ["#b7d3f6", "#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#0d366b"]  # one hue, light -> dark = rarer
 shown = [1, 10, 50, 100, 250, 1000]

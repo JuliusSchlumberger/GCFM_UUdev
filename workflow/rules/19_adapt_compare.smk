@@ -1,10 +1,9 @@
 rule adapt_compare:
     """
-    Aggregate baseline/pre/post flood_metrics.csv across every scenario x
-    strategy currently in play for this basin (SCENARIOS x STRATEGIES, i.e.
-    target_scenarios/target_strategies) into one long-format comparison CSV
-    -- basin-scoped, not per-strategy, so it needs `adapt` (both methods)
-    to have completed for every scenario/strategy combination first.
+    Aggregate baseline/pre/post flood_metrics.csv into one long-format CSV per basin.
+
+    Covers every scenario x strategy currently in play (SCENARIOS x
+    STRATEGIES, i.e. target_scenarios/target_strategies), both methods.
     """
     input:
         baseline_metrics = lambda wc: expand(

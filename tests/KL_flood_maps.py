@@ -1,14 +1,8 @@
-"""
-KL_flood_maps.py -- Flood depth map figures for coast_500, river_500 and
-compound_500, plus a combined depth/attribution comparison figure.
+"""Plot flood depth maps per scenario and a depth | attribution comparison.
 
-Both depth and attribution panels are drawn in the same WGS84 style as rule
-16's own plot_inundation_check (src/plots.py) -- land polygons + river
-network overlay, reprojected to EPSG:4326 -- so they read consistently with
-every other sanity-check map in this pipeline, and the two columns share
-identical panel geometry/size (rather than embedding the satellite-basemap
-attribution_mask.png from src/attribution_plot.py, whose own figure aspect
-doesn't match).
+Scenarios: coast_500, river_500 and compound_500. Panels use the EPSG:4326 style
+of rule 16's plot_inundation_check (land polygons + river network), so depth and
+attribution columns share identical panel geometry.
 
 Outputs (all in OUT_DIR = results/2433835/runs/):
   fig_flood_map_<scenario>.png          one per scenario, depth map alone
@@ -34,10 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
 from src.plots import read_raster_reprojected_for_plot  # noqa: E402
 
 BASIN_ID = "2433835"
-# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
-# Set it once in PowerShell, then restart your terminal (see
-# CONTRIBUTING.md "Local machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
 BASIN_ROOT = Path(os.environ["GCFM_RESULTS_DIR"]) / BASIN_ID
 RUNS_DIR = BASIN_ROOT / "runs"
 OUT_DIR = RUNS_DIR
@@ -54,11 +45,12 @@ ATTR_NORM = BoundaryNorm([0.5, 1.5, 2.5, 3.5], ATTR_CMAP.N)
 
 
 def label(s):
+    """Return a scenario name as a title-case label."""
     return s.replace("_", " ").title()
 
 
 def draw_depth_panel(ax, scen):
-    """Same style as plot_inundation_check's left panel: land + Blues depth + rivers."""
+    """Draw a scenario's max depth like plot_inundation_check's left panel."""
     tif_path = RUNS_DIR / scen / "visuals" / "max_flood_depth.tif"
     wgs_arr, (left, right, bottom, top) = read_raster_reprojected_for_plot(
         str(tif_path)
@@ -100,9 +92,7 @@ def draw_depth_panel(ax, scen):
 
 
 def draw_attribution_panel(ax, scen, dst_bounds):
-    """Same land/river frame as draw_depth_panel, on an identical bounds/extent
-    so the two columns line up at exactly the same panel size.
-    """
+    """Draw a scenario's attribution mask on the same frame as draw_depth_panel."""
     tif_path = RUNS_DIR / scen / "attribution_mask.tif"
     wgs_arr, (left, right, bottom, top) = read_raster_reprojected_for_plot(
         str(tif_path), dst_bounds=dst_bounds
@@ -119,12 +109,8 @@ def draw_attribution_panel(ax, scen, dst_bounds):
 
     if not land.empty:
         land.plot(ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
-    # class 4 (spin-up/permanent water, e.g. the perennial river channel) has
-    # no color slot in ATTR_CMAP/ATTR_NORM (only river/coastal/compound) --
-    # left unmasked it falls above ATTR_NORM's top boundary and clips to the
-    # colormap's last color (compound), making the river channel look
-    # compound-attributed. Mask it out here, same as attribution_plot.py's
-    # own da_attr filtering.
+    # Class 4 (spin-up/permanent water, e.g. the river channel) has no colour
+    # slot and would clip to "compound"; masked as in attribution_plot.py.
     attr_arr = np.nan_to_num(wgs_arr, nan=0)
     attr_plot = np.ma.masked_where((attr_arr == 0) | (attr_arr == 4), attr_arr)
     ax.imshow(
@@ -144,7 +130,7 @@ def draw_attribution_panel(ax, scen, dst_bounds):
     ax.grid(True, alpha=0.3, linewidth=0.5)
 
 
-# --------------------------------------------------------- 1. per-scenario figures
+# per-scenario figures
 for scen in SCENARIOS:
     fig, ax = plt.subplots(figsize=(8, 7))
     im, n_flooded, _ = draw_depth_panel(ax, scen)
@@ -168,7 +154,7 @@ for scen in SCENARIOS:
     plt.close(fig)
     print(f"Wrote {out_path}")
 
-# --------------------------------------------------- 2. depth | attribution comparison
+# depth | attribution comparison
 fig, axes = plt.subplots(
     len(SCENARIOS),
     2,

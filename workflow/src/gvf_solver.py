@@ -1,7 +1,7 @@
 """Steady gradually-varied-flow (GVF) solve and bed inversion on a river network.
 
-WP2 of the GVF plan, after Neal et al. (2021), *Estimating river channel
-bathymetry in large scale flood inundation models*, WRR 57, e2020WR028301.
+After Neal et al. (2021), *Estimating river channel bathymetry in large scale
+flood inundation models*, WRR 57, e2020WR028301.
 
 Forward model, rectangular channel of width w, discharge Q, Manning n:
 
@@ -33,8 +33,9 @@ matches the target:
    The second block regularises the bed slope S_bed towards the target slope;
    it is zero on a uniform reach, so unlike a plain ``rho grad(z)`` it does
    not pull the bed flat. It only acts between two inverted beds: a step into
-   a bed from the DEM (fixed bed, water body, often GEBCO) is real. The third is a weak prior on the depth h below the
-   target, towards the Manning normal depth h_p on the target slope: where
+   a bed from the DEM (fixed bed, water body, often GEBCO) is real. The third
+   is a weak prior on the depth h below the target, towards the Manning
+   normal depth h_p on the target slope: where
    the target is (nearly) flat, as in a tidal delta whose SWORD levels sit in
    0.1 m steps near sea level, the level says almost nothing about the depth
    and the fit would otherwise run to ``h_max``.
@@ -55,15 +56,11 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import brentq, least_squares
 from scipy.sparse import lil_matrix
-
 from src.gvf_target import NODE_INVERT, NODE_NO_FLOW, NODE_WATER_BODY, GvfTargets
 
 log = logging.getLogger(__name__)
 
 G = 9.81
-
-
-# ── hydraulics ────────────────────────────────────────────────────────────
 
 
 def friction_slope(q, w, h, n):
@@ -99,9 +96,6 @@ def normal_depth(q: float, w: float, n: float, s: float) -> float:
         if hi > 1e5:
             return hi
     return float(brentq(f, lo, hi, xtol=1e-6))
-
-
-# ── forward solve ─────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -253,7 +247,7 @@ class GvfProblem:
     def downstream_level(
         self, r: str, z: np.ndarray, solved: dict[str, ReachSolve]
     ) -> float:
-        """Water level at the last node of reach ``r``."""
+        """Return the water level at the last node of reach ``r``."""
         net, t = self.net, self.t
         end = net.reach_nodes[r][-1]
         linked = [
@@ -320,14 +314,11 @@ class GvfProblem:
         return NetworkSolve(eta, eta[self.slot_node] - z, capped, mismatch, solved)
 
     def slot_eta(self, solve: NetworkSolve) -> np.ndarray:
-        """Per slot, the level its own reach simulated there."""
+        """Return per slot the level its own reach simulated there."""
         out = np.empty(self.net.n_slots)
         for r, s in solve.reach.items():
             out[self.net.reach_slots[r]] = s.eta
         return out
-
-
-# ── inverse ───────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -571,9 +562,6 @@ def _lsq_reach(
     return z
 
 
-# ── diagnostics ───────────────────────────────────────────────────────────
-
-
 def wave_class(
     s0: np.ndarray, h: np.ndarray, fr: np.ndarray, length_m: float = 1000.0
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -590,7 +578,7 @@ def wave_class(
 
 
 def slot_diagnostics(problem: GvfProblem, result: GvfResult) -> pd.DataFrame:
-    """One row per reach and node, downstream order: the WP2 output table."""
+    """Return one diagnostics row per reach and node, in downstream order."""
     t, net = problem.t, problem.net
     node, reach = problem.slot_node, problem.slot_reach
     chain = np.empty(net.n_slots)

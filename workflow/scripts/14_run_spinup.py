@@ -1,54 +1,19 @@
-"""
-14_run_spinup.py — Run a short, basin-level SFINCS spin-up to produce a
-restart file, with the river at its mean discharge and a calm sea, entirely
-independent of any scenario's own design RP.
+"""Run the basin-level SFINCS spin-up that writes the restart file for every event.
 
-Runs ONCE per basin (no {scenario} wildcard) -- every scenario's own event
-run (rule run_event, 16) picks up from the SAME restart file via its own
-sfincs.inp's rstfile entry (set in 13_build_sfincs.py). Changing a
-scenario's own RP (surge_rp/river_rp in config/scenarios.yml) never
-touches this rule's own inputs, so it never needs to re-run for that
-reason -- only a real change to the basin's own skeleton (grid/mask/
-elevation/etc, or a change to spinup_days/the spin-up forcing itself) does.
+Run by rule run_spinup, once per basin; independent of any scenario's design
+RP. Geometry and the default initial condition come from the skeleton by
+relative path (src.sfincs_run.forward_geometry_files), as in 13_build_sfincs.py.
 
-Borrows ALL geometry (grid/elevation/mask/roughness/weir/subgrid/
-observation points, plus the skeleton's own default spatially-varying
-initial condition) from 13_build_sfincs_skeleton.py's own output, via the
-SAME technique 13_build_sfincs.py uses for its own scenario forcing: load
-the skeleton in read mode, redirect writes to this rule's own directory
-(sf.root.set(...)), write ONLY the newly-built forcing components, and
-hand-craft this rule's own sfincs.inp forwarding the skeleton's geometry
-files via a relative path (src.sfincs_run.forward_geometry_files) rather
-than through HydroMT's own sf.write() (which would duplicate the skeleton
-into this directory) or sf.config.write() (which silently absolutizes any
-file reference outside the model's own root -- see either script's own
-module docstring for the full rationale).
+Forcing, held constant over spinup_days: each crossing's mean_discharge (the
+record's grand mean, the base flow every event hydrograph starts from) and
+each station's calm-sea level (calm_sea_levels, where every event's boundary
+lead-in starts). Matching both avoids a jump at the restart; an RP=1 spin-up
+sea dropped the boundary 0.30 m at the event start (basin 2433835) and
+overtopped the coastal dike during spin-up.
 
-Forcing: each crossing's own mean discharge (mean_discharge, the record's
-grand mean -- the same base flow every scenario's event hydrograph starts
-from, src.river_forcing.build_design_discharge_matrix, so the river doesn't
-step at the restart; RP=1 until 2026-10-07), held CONSTANT over the whole
-spinup_days duration, and the
-sea at each station's calm-sea level (`calm_sea_levels`, the same level
-every event's own boundary lead-in starts at) -- spin-up exists to let the
-river network reach a realistic steady background state, not to simulate
-an event.
-
-Why a calm sea, not RP=1 (changed 2026-09-11): the event's boundary lead-in
-starts at the calm-sea level, so an RP=1 spin-up sea made the boundary drop
-0.30 m (basin 2433835) the instant the event started from the restart,
-sending a drawdown wave in -- and the spin-up's own rise to RP=1 from the
-calm starting sea had already overtopped the coastal dike. A calm spin-up
-sea matches both the starting sea (zsini) and the event lead-in.
-
-Outputs (all directly under results/{basin_id}/spin_up/, not nested under
-any scenario)
--------
-sfincs.inp                          This rule's own hand-crafted config.
-sfincs.YYYYMMDD.HHMMSS.rst          SFINCS binary restart file at t = spinup_days.
-sfincs_map.nc / sfincs_his.nc       Spin-up's own run output.
-validation_spinup.png               Water-level timeseries at observation points.
-validation_max_inundation.png       Max inundation depth at spin-up end.
+Writes, under results/{basin_id}/spin_up/: sfincs.inp, the restart
+sfincs.YYYYMMDD.HHMMSS.rst at t = spinup_days, sfincs_map.nc/sfincs_his.nc,
+and the validation plots.
 """
 
 from datetime import datetime, timedelta
@@ -72,7 +37,7 @@ from src.surge import calm_sea_levels, read_baseline_m
 
 log = setup_logging(snakemake.log[0])
 
-# ── params ────────────────────────────────────────────────────────────────────
+# ── params ──
 skeleton_root       = Path(snakemake.params.skeleton_root)
 spin_up_root        = Path(snakemake.params.spin_up_root)
 resolution          = snakemake.params.resolution
@@ -85,7 +50,7 @@ dthisout_s          = int(snakemake.params.dthisout_s)
 timeout_s           = int(snakemake.params.timeout_s)
 waterlevel_buffer_m = snakemake.params.waterlevel_buffer_m
 boundary_ramp_hours = float(snakemake.params.boundary_ramp_hours)
-land_polygons_path  = Path(snakemake.input.land_mask_on_grid)  # grid-aligned land mask, plot background
+land_polygons_path  = Path(snakemake.input.land_mask_on_grid)  # plot background
 sea_mask_path       = Path(snakemake.input.sea_mask)
 river_network_path  = Path(snakemake.input.clean_river_network)
 domain_gpkg_path    = Path(snakemake.input.domain_gpkg)
@@ -94,14 +59,13 @@ river_forcing_path  = Path(snakemake.input.river_forcing)
 
 spin_up_root.mkdir(parents=True, exist_ok=True)
 
-# Load domain polygon in WGS84 for overlay plots.
 _domain_gdf = gpd.read_file(domain_gpkg_path)
 if _domain_gdf.crs is not None and _domain_gdf.crs.to_epsg() != 4326:
     _domain_gdf = _domain_gdf.to_crs("EPSG:4326")
 _union = _domain_gdf.geometry.union_all()
 domain_poly = cast(Polygon, _union if isinstance(_union, Polygon) else _union.convex_hull)
 
-# ── load skeleton, redirect writes to spin_up_root ───────────────────────────
+# ── load skeleton, redirect writes to spin_up_root ──
 sf = SfincsModel(root=str(skeleton_root), mode="r")
 sf.read()
 sf.root.set(spin_up_root, mode="w+")
@@ -109,38 +73,28 @@ log.info(f"Skeleton loaded from {skeleton_root}, writes redirected to {spin_up_r
 
 skeleton_cfg = parse_sfincs_inp(skeleton_root / "sfincs.inp")
 
-# ── timing ────────────────────────────────────────────────────────────────────
+# ── timing ──
 tref = datetime.strptime(tref_str, "%Y-%m-%d %H:%M:%S")
 tstop = tref + timedelta(days=spinup_days)
 trstout_sec = int(spinup_days * 86400)
-spinup_times = pd.DatetimeIndex([tref, tstop])  # 2-point constant timeseries
+spinup_times = pd.DatetimeIndex([tref, tstop])
 
 log.info(f"Spin-up: {tref} → {tstop} ({spinup_days} days), restart written at t={trstout_sec} s")
 
-# sf.water_level.create()/sf.discharge_points.create() below both slice their
-# own timeseries against self.model.get_model_time() (tstart/tstop read
-# straight off the in-memory sf.config) -- the skeleton's own sfincs.inp
-# deliberately never sets tref/tstart/tstop (it's not meant to be runnable
-# on its own), so without this, sf.config still carries hydromt_sfincs's own
-# Pydantic defaults (today's date), which never overlaps spinup_times (indexed
-# at `tref`, e.g. 2000-01-01) -- NoDataException: "DataFrame has no data
-# after time slicing." This has no effect on the actual sfincs.inp written to
-# disk below (hand-crafted via plain file I/O, never sf.config.write()) --
-# it only fixes what these in-memory .create() calls see.
+# The .create() calls slice timeseries by the in-memory model time. The
+# skeleton's sfincs.inp sets no tref/tstart/tstop, so the defaults (today's
+# date) would not overlap the forcing and raise NoDataException ("DataFrame has
+# no data after time slicing"). Only affects in-memory config; sfincs.inp is
+# hand-written below.
 sf.config.set("tref", tref)
 sf.config.set("tstart", tref)
 sf.config.set("tstop", tstop)
 
-# ── water-level boundary forcing: calm sea ───────────────────────────────────
-# Each station's calm-sea level (calm_sea_levels) -- the level the event's
-# own boundary lead-in starts at, so the event continues from the restart
-# with no jump at the boundary (see this module's own docstring). The sea
-# itself starts at baseline_m (the skeleton's zsini: the basin MEAN, while
-# each station has its own level -- close, but not identical), so the
-# boundary ramps from that start level to the
-# station levels over boundary_ramp_hours rather than stepping: a step at
-# the boundary sends a front in that shoals and reflects at the coast (a
-# 0.30 m step built up to +1.1 m at the 0.40 m coastal dike of basin
+# ── water-level boundary forcing: calm sea ──
+# The sea starts at baseline_m (skeleton zsini, the basin mean), not each
+# station's calm level, so the boundary ramps between them over
+# boundary_ramp_hours. A step sends in a front that shoals and reflects at the
+# coast (a 0.30 m step built up to +1.1 m at the 0.40 m coastal dike of basin
 # 2433835).
 surge_ds = xr.open_dataset(surge_forcing_path, decode_times=False)
 n_stations = surge_ds.sizes["station"]
@@ -149,8 +103,8 @@ stations_gdf = gpd.GeoDataFrame(
     geometry=gpd.points_from_xy(surge_ds.longitude.values, surge_ds.latitude.values),
     crs="EPSG:4326",
 )
-start_level = read_baseline_m(surge_ds)  # the sea's own starting level (skeleton zsini)
-calm_levels = calm_sea_levels(surge_ds)  # (n_station,), the event lead-in's own level
+start_level = read_baseline_m(surge_ds)
+calm_levels = calm_sea_levels(surge_ds)  # (n_station,)
 ramp_end = tref + timedelta(hours=min(boundary_ramp_hours, spinup_days * 24.0))
 wl_times = pd.DatetimeIndex(sorted({tref, ramp_end, tstop}))
 wl_values = np.array([np.full(n_stations, start_level) if t == tref else calm_levels for t in wl_times])
@@ -163,7 +117,7 @@ log.info(
 )
 sf.water_level.write()
 
-# ── river discharge forcing: mean discharge, constant over time ──────────────
+# ── river discharge forcing: mean discharge, constant over time ──
 river_ds = xr.open_dataset(river_forcing_path, decode_times=False)
 # Crossings on a seed that flows out of the network (rule 08's
 # 'seed_flows_out') inject nothing -- they are free-outflow boundaries.
@@ -176,9 +130,6 @@ log.info(f"River forcing: {n_active}/{len(active)} crossings with valid GloFAS d
 if n_active == 0:
     log.warning("No active river crossings — discharge forcing skipped")
 else:
-    # Mean discharge: the same base flow every scenario's event starts from
-    # (src.river_forcing.build_design_discharge_matrix), so the river doesn't
-    # step at the restart.
     base_discharge = river_ds["mean_discharge"].values[active]  # (n_active,)
 
     crossings_gdf = gpd.GeoDataFrame(
@@ -223,14 +174,8 @@ else:
         log.info(f"Discharge forcing: {len(crossings_filt)}/{n_active} source point(s) at mean discharge, held constant")
 sf.discharge_points.write()
 
-# ── hand-craft this rule's own sfincs.inp ────────────────────────────────────
-# Forward the skeleton's own grid-header + geometry "*file" entries
-# (depfile/mskfile/manningfile/sbgfile/weirfile/inifile) via a relative
-# path -- see this script's own module docstring. "inifile" is forwarded
-# UNCONDITIONALLY here (unlike build_sfincs's own river_only exclusion):
-# spin-up always represents a realistic steady background state, so it
-# always starts from the skeleton's own real (baseline_m) initial
-# condition, never a uniform dry start.
+# ── sfincs.inp (hand-written) ──
+# inifile is always forwarded: spin-up always starts from the baseline_m sea.
 exclude_keys = frozenset({"rstfile", "bzsfile", "bndfile", "disfile", "srcfile", "netsrcdisfile"})
 geometry_lines = forward_geometry_files(skeleton_cfg, skeleton_root, spin_up_root, exclude=exclude_keys)
 
@@ -247,11 +192,11 @@ lines = list(scalar_lines) + list(geometry_lines) + [
     f"{'tref':<20} = {tref.strftime('%Y%m%d %H%M%S')}",
     f"{'tstart':<20} = {tref.strftime('%Y%m%d %H%M%S')}",
     f"{'tstop':<20} = {tstop.strftime('%Y%m%d %H%M%S')}",
-    f"{'trstout':<20} = {trstout_sec}",   # write restart at spinup end
-    f"{'dtrstout':<20} = 0",              # no interval rst output, only trstout
+    f"{'trstout':<20} = {trstout_sec}",
+    f"{'dtrstout':<20} = 0",              # restart only at trstout
     f"{'dthisout':<20} = {dthisout_s}",
     f"{'dtmapout':<20} = {dtmapout_s}",
-    f"{'dtmaxout':<20} = {trstout_sec}",  # write max-envelope (zsmax) at spinup end
+    f"{'dtmaxout':<20} = {trstout_sec}",  # zsmax over the whole spin-up
     f"{'baro':<20} = 0",
     f"{'zsini':<20} = -9999.0",
     # Spin-up needs none of these instantaneous/diagnostic fields.
@@ -261,9 +206,8 @@ lines = list(scalar_lines) + list(geometry_lines) + [
     f"{'storemeteo':<20} = 0",
     f"{'storetwet':<20} = 0",
 ]
-# rstfile is intentionally NOT set: SFINCS would try to READ it at startup,
-# but it doesn't exist yet for this cold-start spin-up. Without it, SFINCS
-# starts from inifile (forwarded above) instead.
+# No rstfile: SFINCS would try to read it at startup; this is a cold start
+# from inifile.
 
 for _key in ("bndfile", "bzsfile", "srcfile", "disfile", "netsrcdisfile"):
     _val = sf.config.get(_key)
@@ -275,7 +219,7 @@ with open(spinup_inp, "w") as fh:
     fh.write("\n".join(lines) + "\n")
 log.info(f"Spinup sfincs.inp written: {spinup_inp}")
 
-# ── run SFINCS ────────────────────────────────────────────────────────────────
+# ── run SFINCS ──
 run_sfincs_subprocess(sfincs_exe, spin_up_root, timeout_s, log, label="SFINCS spin-up", n_threads=snakemake.threads)
 
 rst_path = spin_up_root / rst_fname
@@ -287,7 +231,7 @@ if not rst_path.exists():
     )
 log.info(f"Restart file written: {rst_path} ({rst_path.stat().st_size / 1e6:.1f} MB)")
 
-# ── validation plot ───────────────────────────────────────────────────────────
+# ── validation plot ──
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -331,7 +275,7 @@ else:
         )
         log.info(f"Validation plot written: {plot_path}")
 
-# ── max inundation depth map ──────────────────────────────────────────────────
+# ── max inundation depth map ──
 plot_inundation_path = Path(snakemake.output.plot_max_inundation)
 
 da_hmax, _da_dep = compute_max_inundation(

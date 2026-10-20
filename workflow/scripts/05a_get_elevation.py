@@ -1,63 +1,20 @@
-"""
-05a_get_elevation.py — Build the merged elevation product for a basin.
+"""Merge FathomDEM and GEBCO into elevation_merged.tif; run by rule get_elevation.
 
-Processing chain
-----------------
-1.  Merge FathomDEM tiles for the domain, reprojected to the UTM working grid
-    with a coverage-weighted ("nan-aware") resampling that avoids eroding real
-    data near nodata edges (tile gaps, domain-polygon boundary).
-1b. Clip FathomDEM to NaN on sea cells: land use 200 (rule prepare_landuse,
-    02b), resampled onto this grid exactly as rule get_landuse (05b) does
-    -- the pipeline's ONE sea/land criterion, the same cells zsini, the
-    coastal-protection weir and the water-level boundary treat as sea.
-    FathomDEM is a terrestrial DEM, not bathymetry, and reports spurious
-    near-zero/shallow "elevation" over water instead of nodata -- this
-    pre-clips it so step 4's merge falls back to GEBCO there. That includes
-    every sea-connected creek, estuary and lagoon the land use calls sea,
-    which GEBCO (~450 m) cannot resolve either: step 3b's shallow clamp
-    gives them a defined depth instead. (Until 2026-10-09 the DeltaDTM
-    validity mask's ocean class was used here, which left those water
-    bodies on FathomDEM's water-surface values while the rest of the
-    pipeline treated them as sea.)
-2.  Vertical datum correction, EGM2008 → GOCO06s: add the geoid offset
-    N_EGM2008 − N_GOCO06s (pyshtools synthesis) to every valid FathomDEM pixel.
-    Mandatory — FathomDEM's native EGM2008 datum must not be blended with
-    GEBCO/COAST-RP/MDT, which all share the GOCO06s frame. No further
-    correction (e.g. MDT) is applied to the DEM itself: MDT is only
-    meaningful at sea, and the merge below only ever needs land-side DEM
-    values corrected to the same geoid GEBCO is re-referenced to.
-3.  Clip GEBCO to the domain, resample to the working UTM grid, and
-    re-reference it from local MSL to GOCO06s by ADDING the MDT
-    (HYBRID-CNES-CLS2022; MDT = mean sea surface height above the geoid, so
-    H_GOCO06s = H_MSL + MDT) — extrapolated over land via inverse-distance
-    weighting before resampling, so the correction doesn't NaN-poison
-    nearshore GEBCO pixels whose receptive field straddles a land-side
-    nodata cell. (Subtracted before 2026-09-10 -- the wrong direction, see
-    src.surge.apply_mdt_correction.)
-3b. Clamp GEBCO between terrain.gebco_max_depth_m and
-    terrain.gebco_min_depth_m below local mean sea level (the MDT surface).
-    Deepest: SFINCS's CFL-driven internal time step is set by the domain's
-    single deepest active cell, so genuinely deep offshore water (which
-    SFINCS isn't modelling open-ocean dynamics for -- its offshore forcing
-    is prescribed at the water-level boundary) otherwise slows the entire
-    run for no modelling benefit. Shallowest (sea cells only): GEBCO's
-    too-shallow / above-sea-level artefacts would otherwise sit as dry
-    "land" in the sea -- and creeks and estuaries, where GEBCO holds the
-    surrounding land's elevation, come out exactly this deep.
-4.  Merge: FathomDEM wherever it has valid data, GEBCO everywhere else
-    (FathomDEM's own nodata pattern, after the sea clip, is what decides
-    which product a pixel gets), then a linear blend in the
-    terrain.coast_blend_m band seaward of the coastline, from the nearest
-    FathomDEM elevation at the coast to GEBCO at the band's outer edge
-    (src.raster.blend_coast) -- no step at the seam. Open water only
-    (src.raster.open_water_mask): sea narrower than twice the band is left
-    unblended, since a band reaching in from both banks would fill a creek
-    back up towards bank level. FathomDEM pixels themselves are never
-    changed. A final defensive fillnodata covers the rare case where
-    neither source has data for a pixel inside the domain.
-5.  Write elevation_merged.tif.
-6.  Diagnostic elevation map, plus (always) the geoid-offset, MDT, and
-    datum-correction delta maps for both the DEM and GEBCO corrections.
+1.  FathomDEM tiles to the UTM working grid, coverage-weighted resampling.
+1b. FathomDEM set to NaN on sea cells (land use 200, resampled as in rule 05b):
+    a terrestrial DEM reports spurious shallow "elevation" over water, so GEBCO
+    fills these, including sea-connected creeks, estuaries and lagoons.
+2.  FathomDEM EGM2008 -> GOCO06s: add N_EGM2008 - N_GOCO06s (pyshtools). Mandatory:
+    GEBCO/COAST-RP/MDT share the GOCO06s frame. No MDT on the DEM (sea only).
+3.  GEBCO local MSL -> GOCO06s by ADDING the MDT (HYBRID-CNES-CLS2022; MDT = mean
+    sea surface above the geoid, H_GOCO06s = H_MSL + MDT), IDW-extrapolated over
+    land so nearshore pixels are not NaN-poisoned.
+3b. GEBCO clamped between terrain.gebco_max_depth_m and terrain.gebco_min_depth_m
+    below local MSL (the MDT surface); the shallow limit on sea cells only.
+4.  FathomDEM where valid, GEBCO elsewhere, linear blend over terrain.coast_blend_m
+    seaward of the coast in open water only; FathomDEM pixels never change.
+5.  Write elevation_merged.tif (nodata -9999).
+6.  Diagnostic maps: elevation, geoid offset, MDT, both datum-correction deltas.
 
 zsini.tif is NOT produced here — it needs the land/water-body distinction
 (landuse), which rule get_landuse (05b) already computes
@@ -104,7 +61,7 @@ profiler = ScriptProfiler(snakemake)
 find_fathomdem_tiles = profiler.wrap(find_fathomdem_tiles)
 merge_tiled_raster    = profiler.wrap(merge_tiled_raster)
 
-# ── params ────────────────────────────────────────────────────────────────────
+# params
 domain_meta_path   = Path(snakemake.input.spec_basins_meta)
 topo_tiles_dir     = snakemake.input.global_topography_tiles
 bathymetry_path    = Path(snakemake.input.global_bathymetry)
@@ -116,11 +73,8 @@ mdt_path             = snakemake.input.mdt
 
 out_elev_path  = Path(snakemake.output.elevation_merged)
 out_plot_path  = snakemake.output.plot_elevation
-# Directory for the extra diagnostic plots below (geoid offset, MDT ocean,
-# datum-correction deltas) — derived from the tracked plot_elevation output
-# rather than out_elev_path's own directory, since the two are not under the
-# same parent (elevation_merged.tif lives under preprocessing_inputs/domain/,
-# plots live under preprocessing_inputs/visuals/).
+# Extra diagnostic plots go next to plot_elevation, not elevation_merged.tif
+# (visuals/ vs domain/).
 plots_dir = Path(out_plot_path).parent
 
 mdt_variable         = "mdt"  # sole variable in data_catalogue's mdt_cnes_cls22 source
@@ -136,14 +90,14 @@ if not 0 <= gebco_min_depth_m < gebco_max_depth_m:
 
 log.info("Topography source: FathomDEM (mandatory EGM2008 → GOCO06s datum correction)")
 
-# ── domain ────────────────────────────────────────────────────────────────────
+# domain
 wgs84_bounds, domain_crs_str, domain_poly = load_domain(
     domain_meta_path, snakemake.input.domain_gpkg
 )
 utm_crs = CRS.from_string(domain_crs_str)
 log.info(f"Domain WGS84 bounds: {wgs84_bounds}, UTM CRS: {utm_crs.to_string()}")
 
-# ── 1. Merge FathomDEM tiles ──────────────────────────────────────────────────
+# 1. Merge FathomDEM tiles
 tiles = find_fathomdem_tiles(topo_tiles_dir, wgs84_bounds)
 if not tiles:
     raise FileNotFoundError(
@@ -151,13 +105,9 @@ if not tiles:
     )
 log.info(f"Found {len(tiles)} FathomDEM tile(s)")
 
-# Working resolution: auto-derived from FathomDEM's own native pixel size
-# (fixed at 1 arcsecond globally, see data_catalogue.yml) rather than a
-# separately configured value. Converted to metres via the north-south
-# (latitude) WGS84 arc-length constant -- this is what "1 arcsecond ~= 30 m"
-# already refers to, and (unlike the east-west/longitude direction, which
-# shrinks toward the poles) barely varies with latitude, so every basin gets
-# a consistent, predictable pixel size regardless of location.
+# Working resolution from FathomDEM's native 1 arcsecond, converted with the
+# north-south arc length (111 320 m/deg), which barely varies with latitude,
+# so every basin gets the same ~30 m pixel.
 with rasterio.open(tiles[0]) as _tile_src:
     native_deg_res = abs(_tile_src.res[1])
 work_res_m = native_deg_res * 111_320.0
@@ -166,11 +116,8 @@ log.info(
     f"({native_deg_res:.6f} deg): {work_res_m:.2f} m"
 )
 
-# Build the UTM output grid directly from the domain's own bounds so that
-# the elevation/bathymetry rasters are pixel-perfect with the SFINCS model
-# grid.  calculate_default_transform back-projects the WGS84 source extent
-# and produces an origin that can be several metres off the UTM domain
-# corner, causing sub-pixel misalignment between the DEM and the model grid.
+# UTM grid from the domain's own bounds: calculate_default_transform would put
+# the origin several metres off the UTM domain corner, misaligning DEM and model.
 with open(domain_meta_path) as _f:
     _dm = json.load(_f)
 _b = _dm["bounds"]  # xmin/ymin/xmax/ymax in domain UTM CRS
@@ -182,11 +129,9 @@ log.info(
     f"origin ({_b['xmin']:.1f}, {_b['ymax']:.1f}) [{domain_crs_str}]"
 )
 
-# ── domain-polygon mask (UTM working grid) ────────────────────────────────────
-# topo_utm/gebco_utm are clipped to domain_poly (the actual delta polygon, not
-# its bounding box) below -- fillnodata() has no notion of "outside the study
-# area" vs. "a real internal gap", so this mask is needed to re-clamp after
-# every fillnodata call.
+# domain-polygon mask (UTM working grid)
+# fillnodata cannot tell outside the delta polygon from a real gap, so this
+# mask re-clamps after every fill.
 domain_poly_utm = gpd.GeoSeries([domain_poly], crs="EPSG:4326").to_crs(utm_crs).iloc[0]
 outside_domain = rio_geom_mask(
     [domain_poly_utm.__geo_interface__],
@@ -208,10 +153,8 @@ try:
 
     with rasterio.open(tmp_topo) as src:
         topo_nodata = src.nodata
-        # Clip merged WGS84 tiles to the domain polygon before reprojection.
-        # Tile boundaries are meridians/parallels which become curves in UTM;
-        # masking outside the domain first prevents those curved edges from
-        # appearing as NaN strips in the final UTM raster.
+        # Mask before reprojection: tile edges (meridians/parallels) curve in
+        # UTM and would show as NaN strips.
         _nd = float(topo_nodata) if topo_nodata is not None else -9999.0
         _masked, _masked_transform = rio_mask(
             src, [domain_poly.__geo_interface__],
@@ -224,9 +167,8 @@ try:
         topo_arr = topo_arr / 100.0
         topo_src_crs = src.crs
 
-    # Coverage-weighted resampling: a destination pixel only goes to NaN when
-    # its entire receptive field is nodata, instead of plain bilinear eroding
-    # real elevation right at tile gaps / the domain-polygon boundary.
+    # Coverage-weighted: a pixel is NaN only when its whole receptive field is,
+    # so plain bilinear does not erode data at tile gaps / the polygon edge.
     topo_utm = reproject_nan_aware(
         topo_arr, _masked_transform, topo_src_crs,
         (h_utm, w_utm), transform_utm, utm_crs,
@@ -240,10 +182,8 @@ log.info(
     f"({100 * (~np.isnan(topo_utm)).mean():.1f} %)"
 )
 
-# ── 1b. Clip FathomDEM to NaN on sea cells (land use 200) ───────────────────
-# Same resampling rule get_landuse (05b) applies to write landuse.tif on this
-# grid (mode, streamed in row blocks), so this sea mask IS that raster's own
-# 200 class -- the cells every later rule treats as sea.
+# 1b. Clip FathomDEM to NaN on sea cells (land use 200)
+# Same resampling as rule 05b's landuse.tif, so this is that raster's 200 class.
 with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tf:
     _tmp_landuse = tf.name
 try:
@@ -260,7 +200,7 @@ log.info(
     "GEBCO will fill these at the step 4 merge"
 )
 
-# ── 2. Vertical datum correction — EGM2008 → GOCO06s (mandatory) ─────────────
+# 2. Vertical datum correction — EGM2008 → GOCO06s (mandatory)
 topo_egm2008 = topo_utm.copy()   # snapshot before correction for the delta plot
 valid_topo = ~np.isnan(topo_utm)
 
@@ -298,7 +238,7 @@ log.info(
     f"range=[{np.nanmin(delta_correction):.4f}, {np.nanmax(delta_correction):.4f}] m"
 )
 
-# ── 3. GEBCO on UTM working grid ──────────────────────────────────────────────
+# 3. GEBCO on UTM working grid
 log.info(f"Loading GEBCO from {bathymetry_path}…")
 
 if bathymetry_path.is_dir():
@@ -333,7 +273,6 @@ if bathymetry_path.is_dir():
         out_shape=gebco_arr.shape, transform=gebco_transform, all_touched=True,
     )
     gebco_arr[_outside] = np.nan
-    # Coverage-weighted resampling -- same rationale as the DEM in step 1.
     gebco_utm = reproject_nan_aware(
         gebco_arr, gebco_transform, gebco_crs,
         (h_utm, w_utm), transform_utm, utm_crs,
@@ -356,16 +295,9 @@ else:
 
 log.info(f"GEBCO valid: {(~np.isnan(gebco_utm)).sum():,} px")
 
-# ── 3b. Vertical datum correction for GEBCO (add MDT: MSL → GOCO06s) ─────────
-# Re-references GEBCO (local-MSL-referenced) to the same GOCO06s geoid as
-# FathomDEM (step 2) by ADDING the MDT (HYBRID-CNES-CLS22, the mean sea
-# surface's height above the geoid: H_GOCO06s = H_MSL + MDT) -- the same
-# correction rule 07 applies to COAST-RP. Extrapolated over land via
-# inverse-distance weighting before resampling, so the correction doesn't
-# NaN-poison nearshore GEBCO pixels whose receptive field straddles a
-# land-side nodata cell. Applied to every valid GEBCO pixel (not just at
-# sea) since the hard merge below may also fall back to GEBCO on land where
-# FathomDEM has no data.
+# 3. GEBCO datum correction (add MDT: MSL → GOCO06s)
+# H_GOCO06s = H_MSL + MDT (HYBRID-CNES-CLS22), as rule 07 does for COAST-RP.
+# Applied to every valid GEBCO pixel: the merge may fall back to GEBCO on land.
 import xarray as xr
 
 gebco_before_mdt = gebco_utm.copy()   # snapshot before correction for the delta plot
@@ -379,10 +311,8 @@ with xr.open_dataset(mdt_path) as mdt_ds:
     mdt_da = mdt_ds[mdt_variable]
     lat_dim = next(d for d in mdt_da.dims if "lat" in d.lower())
     lon_dim = next(d for d in mdt_da.dims if "lon" in d.lower())
-    # Drop any extra dimensions (e.g. time)
     for extra in [d for d in mdt_da.dims if d not in (lat_dim, lon_dim)]:
         mdt_da = mdt_da.isel({extra: 0})
-    # Remap lon from 0…360 to −180…180 if needed
     if float(mdt_da[lon_dim].max()) > 180:
         mdt_da = mdt_da.assign_coords(
             {lon_dim: xr.where(mdt_da[lon_dim] > 180,
@@ -464,22 +394,15 @@ log.info(
     f"range=[{np.nanmin(gebco_delta_correction):.4f}, {np.nanmax(gebco_delta_correction):.4f}] m"
 )
 
-# ── 3b. Clamp GEBCO depth, relative to local mean sea level ─────────────────
-# Both limits are depths below MSL (msl_utm, the MDT surface), applied post
-# datum-correction so they are in the same GOCO06s-referenced metres the
-# merged product/SFINCS actually use.
-# Deepest (gebco_max_depth_m): SFINCS's internal time step is set by a CFL
-# condition (dt ~ dx/sqrt(g*h)) and shared by the WHOLE domain via its single
-# deepest active cell -- genuinely deep offshore water otherwise slows the
-# entire run for no modelling benefit, since SFINCS gets its offshore forcing
-# prescribed at the water-level boundary rather than resolving open-ocean
-# dynamics itself.
-# Shallowest (gebco_min_depth_m): GEBCO (~450 m) is unreliable right at the
-# coast and often too shallow or even above sea level there, which would
-# leave dry "land" standing in the sea; in creeks and estuaries it simply
-# holds the surrounding land, so they come out exactly this deep. Only on
-# sea cells -- GEBCO is also the fallback for the rare land pixel FathomDEM
-# has no data for, which must not be pushed below sea level.
+# 3b. Clamp GEBCO depth, relative to local mean sea level
+# Depths below MSL (msl_utm), after datum correction, in GOCO06s metres.
+# Deepest: SFINCS's CFL time step (dt ~ dx/sqrt(g*h)) is set by the single
+# deepest active cell, and offshore forcing is prescribed at the boundary, so
+# deep water only slows the run.
+# Shallowest: GEBCO (~450 m) is often too shallow or above sea level at the
+# coast, leaving dry "land" in the sea; creeks and estuaries hold the
+# surrounding land, so they come out exactly this deep. Sea cells only: GEBCO
+# also fills rare land gaps, which must not go below sea level.
 _deepest = msl_utm - gebco_max_depth_m
 _shallowest = msl_utm - gebco_min_depth_m
 _too_deep = gebco_utm < _deepest
@@ -493,13 +416,10 @@ log.info(
 )
 del msl_utm, _deepest, _shallowest, _too_deep, _too_shallow
 
-# ── 4. Merge: FathomDEM wherever valid, GEBCO everywhere else ───────────────
-# FathomDEM's own nodata pattern (after the sea clip) decides which source a
-# pixel gets; the seam is then smoothed in a band seaward of it (see
-# blend_coast) -- in OPEN water only. In sea narrower than twice the band
-# (creeks, estuaries) the band would reach in from both banks and fill the
-# channel back up towards bank level, undoing the depth the clamp above just
-# gave it; those keep the hard step down from their banks instead.
+# 4. Merge: FathomDEM wherever valid, GEBCO everywhere else
+# Blend in open water only: in sea narrower than twice the band (creeks,
+# estuaries) it would reach in from both banks and fill the channel back up
+# towards bank level, so those keep the hard step.
 _topo_valid = ~np.isnan(topo_utm)
 merged = np.where(_topo_valid, topo_utm, gebco_utm)
 _open_water = open_water_mask(~_topo_valid, work_res_m, coast_blend_m)
@@ -515,19 +435,10 @@ log.info(
 del _open_water
 _remaining = np.isnan(merged)
 if _remaining.any():
-    # Defensive fallback: neither FathomDEM nor GEBCO had data for these
-    # pixels (should be rare -- GEBCO is globally complete). `_remaining`
-    # includes the entire outside-domain_poly area too (topo_utm/gebco_utm
-    # are already NaN there), not just genuine gaps -- for a domain polygon
-    # that doesn't fill its own bounding box, that can be a large fraction
-    # of the raster. max_search_distance is deliberately kept SMALL (unlike
-    # the MDT fillnodata above, which searches proportional to its own tiny
-    # array) so this stays a cheap, bounded search per pixel regardless of
-    # how much outside-domain area it's asked to (uselessly) search from --
-    # an unbounded search here previously took hours on a large basin,
-    # entirely wasted since the next line unconditionally re-masks
-    # outside_domain back to NaN anyway. Genuine gaps are expected to be
-    # small and near real data, so a small bound still fills them correctly.
+    # Rare: GEBCO is globally complete. `_remaining` also holds the whole
+    # outside-polygon area, which can be most of the raster, so the search is
+    # bounded small (an unbounded one takes hours on a large basin); genuine
+    # gaps are small and near real data. The outside is re-masked next anyway.
     _GAP_FILL_MAX_SEARCH_PX = 100.0
     log.info(
         f"Hard-merge gap-fill: {int(_remaining.sum()):,} px need filling "
@@ -549,7 +460,7 @@ log.info(
 )
 del _remaining
 
-# ── 5. Write outputs ──────────────────────────────────────────────────────────
+# 5. Write outputs
 NODATA = np.float32(-9999.0)
 out_elev_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -557,7 +468,7 @@ with rasterio.open(out_elev_path, "w", **dem_meta) as dst:
     dst.write(np.where(np.isnan(merged), NODATA, merged).astype(np.float32), 1)
 log.info(f"Written: {out_elev_path}")
 
-# ── 6. Diagnostic plots ───────────────────────────────────────────────────────
+# 6. Diagnostic plots
 plot_elevation_merged(
     merged_path=str(out_elev_path),
     bbox_poly=_box(*wgs84_bounds),

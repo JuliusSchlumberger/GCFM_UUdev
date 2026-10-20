@@ -1,12 +1,9 @@
-"""
-storm_tide_hydrograph.py -- stylised storm-tide hydrograph components from
-the hourly GTSM reanalysis (total water level + surge residual) at one
-station: the average tide and a normalised surge shape PER RETURN PERIOD.
+"""Derive the average tide and a normalised surge shape per return period at one station.
 
+Input: hourly GTSM reanalysis (total water level + surge residual).
 Method: HGRAPHER (Dullaart et al. 2023, NHESS 23:1847,
-https://doi.org/10.5194/nhess-23-1847-2023), as ported to hourly data in
-tests/KL_gtsm_storm_tide.py, with one change -- the surge shape is no longer
-one average over the largest surge peaks, applied to every return period:
+https://doi.org/10.5194/nhess-23-1847-2023), applied to hourly data, with a
+surge shape per return level instead of one average over the largest peaks:
 
   tide    = total water level - surge residual, after removing the slowly
             varying mean sea level (1-yr running mean), both interpolated
@@ -50,15 +47,16 @@ MSL_WINDOW_HR = 8766  # 1 year
 
 
 def fill_short_gaps(series: pd.Series, max_gap_hr: int = 3) -> pd.Series | None:
-    """Linear fill of gaps up to max_gap_hr; None if longer gaps remain."""
+    """Linearly fill gaps up to max_gap_hr; return None if longer gaps remain."""
     filled = series.interpolate(limit=max_gap_hr, limit_area="inside")
     return None if filled.isna().any() else filled
 
 
 def remove_mean_sea_level(twl: pd.Series, surge: pd.Series) -> pd.Series:
-    """Total water level with the slowly varying mean sea level removed
-    (1-yr centred running mean of twl - surge), so tide and peaks refer to a
-    fixed mean sea level like COAST-RP.
+    """Remove the slowly varying mean sea level from the total water level.
+
+    MSL = 1-yr centred running mean of twl - surge, so tide and peaks refer to
+    a fixed mean sea level like COAST-RP.
     """
     msl = (
         (twl - surge)
@@ -69,16 +67,17 @@ def remove_mean_sea_level(twl: pd.Series, surge: pd.Series) -> pd.Series:
 
 
 def to_10min(series: pd.Series) -> np.ndarray:
+    """Resample an hourly series to 10 min by cubic interpolation."""
     return series.resample("10min").interpolate("cubic").values
 
 
 def average_tide_signal(
     tide10: np.ndarray, half_window_hr: float
 ) -> tuple[np.ndarray, int]:
-    """Average tide on -half_window_hr..+half_window_hr (10-min), high water at t=0.
+    """Return the average tide on +-half_window_hr (10-min), high water at t=0.
 
-    Returns:
-        (signal (2 * half_window_hr * 6 + 1,), number of tidal cycles averaged).
+    Returns (signal of length 2 * half_window_hr * 6 + 1, number of tidal
+    cycles averaged).
     """
     use_min = abs(np.quantile(tide10, 0.99)) < abs(np.quantile(tide10, 0.01))
     arg = np.argmin if use_min else np.argmax
@@ -101,11 +100,10 @@ def average_tide_signal(
 def storm_events(
     twl10: np.ndarray, surge10: np.ndarray, half_window_hr: float, match_on: str
 ) -> dict:
-    """Every peak (>= 72 h apart) of the total water level (match_on=
-    "water_level") or of the surge residual ("surge") that has a positive
-    surge, and the time its surge spends above each fraction of its own peak.
+    """Find peaks with positive surge and the time spent above each fraction of the peak.
 
-    Returns dict of arrays over events:
+    Peaks are >= 72 h apart, of the total water level (match_on="water_level")
+    or of the surge residual ("surge"). Returns dict of arrays over events:
         twl_peak_m, surge_peak_m (the event's highest total water level /
         surge within SURGE_PEAK_SEARCH_HR), index (10-min position of the
         surge peak), dur_before / dur_after (n_events, len(LEVELS)): 10-min
@@ -147,15 +145,12 @@ def select_events_for_level(
     min_events: int,
     window_m: float,
 ) -> tuple[np.ndarray, float, str]:
-    """Events whose peak is within +-window_m of `target`.
+    """Select events whose peak is within +-window_m of `target`.
 
     With fewer than min_events inside, the window is widened to the
     min_events nearest events ("widened"). A target above every recorded
     peak takes the min_events largest events instead ("above_record").
-
-    Returns:
-        (indices into peaks, half-window finally used (m), "window" |
-        "widened" | "above_record").
+    Returns (indices into peaks, half-window finally used (m), mode).
     """
     n = min(min_events, len(peaks))
     if target > peaks.max():
@@ -172,8 +167,9 @@ def select_events_for_level(
 def surge_shape(
     dur_before: np.ndarray, dur_after: np.ndarray, half_window_hr: float
 ) -> np.ndarray:
-    """Normalised surge (peak = 1 at t = 0) on -half_window_hr..+half_window_hr
-    (10-min) from the mean per-level durations of the two limbs.
+    """Build the normalised surge (peak = 1 at t = 0) from mean per-level limb durations.
+
+    Output is on -half_window_hr..+half_window_hr at 10-min steps.
     """
     half = int(round(half_window_hr * STEPS_PER_HR))
     steps = np.arange(-half, half + 1)
@@ -191,21 +187,15 @@ def station_hydrograph_components(
     window_m: float,
     match_on: str = "water_level",
 ) -> dict | None:
-    """Average tide + one surge shape per return level for one station.
+    """Return the average tide and one surge shape per return level for one station.
 
-    Args:
-        twl, surge:     hourly total water level and surge residual (m).
-        return_levels:  storm-tide level per return period (m, local MSL --
-                        COAST-RP), in the order the shapes are returned.
-        half_window_hr: half-length of the tide/shape signals (h).
-        min_events, window_m: see select_events_for_level.
-        match_on:       "water_level" -- events matched by their peak total
-                        water level against the return level; "surge" -- by
-                        their surge peak against return level - average high
-                        water.
+    twl, surge: hourly total water level and surge residual (m).
+    return_levels: storm-tide level per return period (m, local MSL --
+    COAST-RP). match_on: "water_level" matches events by peak total water
+    level against the return level; "surge" by surge peak against return
+    level - average high water.
 
-    Returns:
-        None if the series has gaps longer than 3 h; else a dict with
+    Returns None if the series has gaps longer than 3 h; else a dict with
         time_hr (n_t,), tide (n_t,), shape (n_rp, n_t), and per return
         period n_events, window_m, mode, surge_peak_m (median surge peak of
         the events used), dur50_hr (hours the shape stays above 0.5); plus

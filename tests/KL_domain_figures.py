@@ -1,25 +1,9 @@
-"""
-KL_domain_figures.py -- Elevation and land-use context maps for the study
-basin, publication-ready and in the same WGS84 (land polygons + river-network
-overlay) style as KL_flood_maps.py's depth maps, so all figures read as one
-consistent set in the paper.
+"""Plot elevation and land-use maps of the study basin for the paper.
 
-Uses the final SFINCS-grid-aligned rasters -- the ones actually fed to the
-model (same data behind preprocessing_inputs/visuals/sfincs_build/
-02_elevation.png and the roughness raster derived from landuse_on_grid.tif)
--- rather than preprocessing_inputs/visuals/05a_elevation.png /
-05b_landuse.png, whose own map_background() framing/extent differs from the
-flood maps' domain crop.
-
-Both rasters are clipped to the actual model domain polygon (the rotated
-footprint 09b_grid_align_landuse's create_grid_from_region built both grids
-from) rather than their own raw bounding boxes: landuse_on_grid.tif has no
-nodata of its own (unlike the elevation raster, it fills its whole rectangle
-with a valid class, including area outside the rotated domain), so without
-this clip the two panels would show different extents. The domain outline is
-then drawn as a border so the clip edge reads as a real boundary rather than
-an unexplained jagged edge, and panels are cropped tight to that polygon so
-it fills the plot.
+Same WGS84 style (land polygons + river network) as KL_flood_maps.py. Uses the
+SFINCS-grid-aligned rasters fed to the model. Both are clipped to the rotated
+model domain polygon: landuse_on_grid.tif has no nodata and fills its whole
+rectangle with valid classes, so unclipped panels would differ in extent.
 
 Outputs (all in OUT_DIR = results/2433835/runs/):
   fig_elevation_map.png      standalone elevation panel
@@ -47,10 +31,7 @@ from src.plots import (  # noqa: E402
 )
 
 BASIN_ID = "3279946"
-# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
-# Set it once in PowerShell, then restart your terminal (see
-# CONTRIBUTING.md "Local machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
 BASIN_ROOT = Path(os.environ["GCFM_RESULTS_DIR"]) / BASIN_ID
 RUNS_DIR = BASIN_ROOT / "runs"
 OUT_DIR = RUNS_DIR
@@ -61,11 +42,8 @@ DOMAIN_POLYGON_PATH = DOMAIN_DIR / f"{BASIN_ID}_domain.gpkg"
 ELEVATION_PATH = DOMAIN_DIR / f"{BASIN_ID}_elevation_conditioned_sfincs_grid.tif"
 LANDUSE_PATH = DOMAIN_DIR / f"{BASIN_ID}_landuse_on_grid.tif"
 
-# The SFINCS grid is rotated inside its bounding box, so ~45% of the raw
-# elevation raster is nodata outside the active grid -- capped, not the full
-# -7..745 m range, so the flood-relevant lowlands (75% of cells are < 10 m)
-# keep visible contrast; values above VMAX are shown as the colormap's max
-# colour (colorbar extend="max" marks this explicitly).
+# Capped well below the -7..745 m range so the lowlands (75% of cells < 10 m)
+# keep contrast; values above VMAX take the max colour (colorbar extend="max").
 ELEV_VMIN, ELEV_VMAX = -10.0, 50.0
 
 MARGIN_FRAC = 0.015  # thin enough that the domain border fills the panel
@@ -120,6 +98,7 @@ def _finish_panel(ax, margin):
 
 
 def draw_elevation_panel(ax):
+    """Draw the domain-clipped elevation map on ax and return the image."""
     data, extent = read_raster_reprojected_for_plot(
         str(ELEVATION_PATH), dst_bounds=DOMAIN_BOUNDS
     )
@@ -143,11 +122,8 @@ def draw_elevation_panel(ax):
     return im
 
 
-# Collapse the closed/open forest subtypes (evergreen/deciduous/mixed/
-# unspecified needleleaf/broadleaf, LC100 codes 111-116 / 121-126) down to
-# just "Closed forest" / "Open forest" for this paper figure's legend -- the
-# full per-type breakdown belongs to src.plots's pipeline diagnostics, not a
-# domain-overview figure.
+# LC100 forest subtypes 111-116 / 121-126 collapse to "Closed forest" / "Open
+# forest" in this figure's legend.
 _CLOSED_FOREST_CODES = list(range(111, 117))
 _OPEN_FOREST_CODES = list(range(121, 127))
 _GROUP_NAMES = {110: "Closed forest", 120: "Open forest"}
@@ -157,6 +133,7 @@ _LC_COLORS_GROUPED = {**_LC_COLORS, **_GROUP_COLORS}
 
 
 def draw_landuse_panel(ax):
+    """Draw the domain-clipped land-use map on ax; return the class codes shown."""
     data, extent = read_raster_reprojected_for_plot(
         str(LANDUSE_PATH), dst_bounds=DOMAIN_BOUNDS
     )
@@ -200,7 +177,7 @@ def _lc_legend_handles(present):
     ]
 
 
-# --------------------------------------------------------- 1. standalone elevation
+# standalone elevation
 fig, ax = plt.subplots(figsize=(8, 7))
 im = draw_elevation_panel(ax)
 cbar = fig.colorbar(im, ax=ax, extend="max", fraction=0.03, pad=0.04)
@@ -214,7 +191,7 @@ fig.tight_layout()
 # plt.close(fig)
 # print(f"Wrote {out_path}")
 
-# --------------------------------------------------------- 2. standalone land use
+# standalone land use
 fig, ax = plt.subplots(figsize=(9, 7))
 present = draw_landuse_panel(ax)
 ax.set_xlabel("Longitude (°)")
@@ -229,20 +206,15 @@ fig.tight_layout()
 # plt.close(fig)
 # print(f"Wrote {out_path}")
 
-# --------------------------------------------------------- 3. combined elevation | land use
-# The colorbar sits between the two maps in its own gridspec column (rather
-# than fig.colorbar(ax=ax1), which would shrink ax1's box relative to ax2's)
-# so both map panels still start from an identical box and render at the
-# same size, while the colorbar stays visually next to the elevation panel.
+# combined elevation | land use
+# Colorbar in its own gridspec column: fig.colorbar(ax=ax1) would shrink ax1
+# relative to ax2.
 fig = plt.figure(figsize=(15, 7), constrained_layout=True)
 gs = fig.add_gridspec(1, 3, width_ratios=[1, 0.05, 1], wspace=0.08)
 ax1 = fig.add_subplot(gs[0, 0])
 ax2 = fig.add_subplot(gs[0, 2])
 
-# cax is an inset of a hidden placeholder rather than a bare gridspec subplot
-# -- constrained_layout stretches a plain subplot to fill its whole cell
-# (full figure height), which is what made the colorbar look oversized; a
-# fixed-fraction inset lets height and thickness be tuned independently.
+# An inset, because constrained_layout stretches a plain subplot to full height.
 _cbar_cell = fig.add_subplot(gs[0, 1])
 _cbar_cell.axis("off")
 cax = _cbar_cell.inset_axes([0.3, 0.15, 0.45, 0.7])

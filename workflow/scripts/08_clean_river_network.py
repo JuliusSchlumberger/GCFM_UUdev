@@ -1,3 +1,5 @@
+"""Prune, fix and route discharge through the river network; run by rule clean_river_network."""
+
 from pathlib import Path
 
 import geopandas as gpd
@@ -23,7 +25,6 @@ from src.river_network import (
 
 
 def _norm_id(x):
-    """Normalise a nullable reach_id to a plain integer string (matches BFS output)."""
     try:
         return str(int(float(x)))
     except (ValueError, TypeError):
@@ -39,21 +40,20 @@ collect_downstream_main_paths = profiler.wrap(collect_downstream_main_paths)
 build_downstream_adjacency   = profiler.wrap(build_downstream_adjacency)
 accumulate_discharge         = profiler.wrap(accumulate_discharge)
 
-# ── domain ────────────────────────────────────────────────────────────────────
+# Domain
 
 wgs84_bounds, domain_crs, domain_poly = load_domain(
     snakemake.input.spec_basins_meta, snakemake.input.domain_gpkg
 )
 log.info(f"Domain WGS84 bounds: {wgs84_bounds}, CRS: {domain_crs}")
 
-# ── load inputs ───────────────────────────────────────────────────────────────
+# Inputs
 
 rivers = gpd.read_file(snakemake.input.spec_river_network)
 log.info(f"Loaded {len(rivers)} reaches")
 
-# Fix T-junction topology: reaches whose start lies on another reach's interior
-# rather than at its true endpoint, leaving a short (~18-111 m) dangling tail
-# that fragments the merged-line connectivity used by burn_river_rect.
+# Reaches starting on another reach's interior leave a ~18-111 m dangling
+# tail that fragments the merged-line connectivity used by burn_river_rect.
 rivers = fix_tjunction_tails(rivers)
 
 crossings = load_forcing_crossings(
@@ -62,13 +62,13 @@ crossings = load_forcing_crossings(
 )
 log.info(f"Active GloFAS crossings: {len(crossings)}")
 
-# ── main-path downstream connectivity ─────────────────────────────────────────
+# Main-path downstream connectivity
 
 seed_q = snap_crossings_to_reaches(crossings)
 reachable = collect_downstream_main_paths(rivers, set(seed_q.keys()))
 log.info(f"Main-path traversal: {len(reachable)} reachable reaches out of {len(rivers)}")
 
-# ── filter ────────────────────────────────────────────────────────────────────
+# Filter
 
 rivers_clean = rivers[rivers["reach_id"].map(_norm_id).isin(reachable)].copy()
 rivers_clean["linked_to_source"] = True
@@ -93,18 +93,11 @@ if _outward:
         f"(no inflow, free-outflow boundary): {sorted(_outward)}"
     )
 
-# Trim each seed reach's own geometry to the real delta polygon (domain_poly
-# -- the SAME polygon rule 07's own find_boundary_crossings/
-# _domain_entry_point used to locate the actual discharge injection
-# coordinate, stored independently in river_forcing.nc, not as a reach
-# endpoint). A seed reach otherwise still carries its full rectangle-clipped
-# SWORD extent (rule 06's bounding-box clip: delta polygon envelope +
-# domain.delta_buffer_m), typically extending outside the real delta
-# polygon -- e.g. a downstream observation/calibration point placed at
-# such a reach's own (now-partly-external) midpoint can end up right at or
-# beyond the active model domain's own edge. Trimming here only affects
-# this reach's OWN geometry (hence its length/midpoint/along-reach
-# sampling everywhere downstream); the entry point itself is unaffected.
+# Trim seed reaches to the delta polygon rule 07 uses for the discharge entry
+# point: rule 06's bbox clip (envelope + domain.delta_buffer_m) leaves them
+# extending outside, so a point at their midpoint can fall at or beyond the
+# domain edge. Only the reach geometry changes; the entry point in
+# river_forcing.nc is unaffected.
 seed_mask = rivers_clean["is_seed"]
 if seed_mask.any():
     domain_poly_native = gpd.GeoSeries([domain_poly], crs="EPSG:4326").to_crs(rivers_clean.crs).iloc[0]
@@ -124,49 +117,33 @@ if seed_mask.any():
             rivers_clean.at[idx, "geometry"] = clipped_line
     log.info(f"Seed reach(es) trimmed to domain polygon: {n_trimmed}/{int(seed_mask.sum())}")
 
-# ── delta-outline outflow points (neither seed nor mouth) ────────────────────
-# A reach that crosses the delta polygon's OUTLINE but is neither the seed
-# (the real inflow entry point) nor a mouth is a genuine place where flow
-# exits the modelled network into the delta plain -- it is kept in the 1D
-# network unchanged, flagged 'is_delta_outflow', and its outline-crossing
-# point is registered as an SFINCS outflow boundary (mask=3) in build_sfincs.
+# Delta-outline outflow points: a reach crossing the delta outline that is
+# neither seed nor mouth is where flow leaves the network; it is flagged
+# 'is_delta_outflow' and its crossing becomes an SFINCS outflow boundary
+# (mask=3) in build_sfincs.
 delta_polygon = gpd.read_file(snakemake.input.delta_polygon)
 rivers_clean, outflow_points = identify_delta_outflow_points(rivers_clean, delta_polygon)
 log.info(f"Delta-outline outflow points identified: {len(outflow_points)}")
 
-# ── fix width/max_width attributes, then choose the canonical 'width' ─────────
-# Some SWORD reaches have width/max_width missing (-9999) entirely -- must be
-# handled BEFORE normalize_channel_widths, since its swap step would otherwise
-# treat a missing max_width as "smaller than width" and corrupt 'width' with
-# the sentinel instead (see remove_reaches_with_missing_width's docstring).
+# Width attributes. Missing SWORD width/max_width (-9999) must go before
+# normalize_channel_widths, whose swap step would otherwise copy the sentinel
+# into 'width'.
 rivers_clean = remove_reaches_with_missing_width(rivers_clean)
 
-# Some SWORD reaches have max_width < width (swapped back) -- see
-# normalize_channel_widths. The resulting 'width' is what every downstream
-# width-dependent step uses (discharge propagation here, hydraulic depth,
-# SFINCS rivwth).
-
+# Some SWORD reaches have max_width < width. The resulting 'width' feeds
+# discharge propagation, hydraulic depth and SFINCS rivwth.
 rivers_clean = normalize_channel_widths(
     rivers_clean, max_width_fill_m=float(snakemake.params.max_width_fill_m)
 )
 
-# River mouths shouldn't be narrower than the reach feeding into them --
-# channels don't narrow immediately before the outlet; where SWORD's own
-# attributes show otherwise (e.g. a mouth obscured by tidal flats/vegetation
-# in the source imagery), raise the mouth's width to match its widest
-# upstream neighbour. Always operates on 'width' (not width_column) --
-# normalize_channel_widths above has already made 'width' the canonical,
-# live column regardless of which original SWORD attribute it was chosen from.
+# Channels do not narrow just before the outlet; where SWORD says otherwise
+# (e.g. a mouth obscured by tidal flats/vegetation), the mouth takes its
+# widest upstream neighbour's width.
 rivers_clean = enforce_mouth_width_monotonic(rivers_clean)
 
-# ── discharge propagation ─────────────────────────────────────────────────────
-# Propagate seed bankfull discharges downstream through the clean network.
-# At bifurcations discharge is split proportional to channel width; at
-# confluences contributions from all upstream reaches are summed.
-
-# Canals (SWORD lakeflag 2 / locks) get no share where they branch off a
-# bifurcation -- see src.river_network.canal_excluded_arms. Stored as
-# 'zero_discharge_share' so rule 10's own accumulation uses the same arms.
+# Discharge propagation: split proportional to width at bifurcations, summed
+# at confluences. Canals (SWORD lakeflag 2 / locks) get no share at a
+# bifurcation; stored as 'zero_discharge_share' so rule 10 excludes the same arms.
 adjacency = build_downstream_adjacency(rivers_clean)
 _canal_cfg = dict(snakemake.params.canal_routing)
 _excluded = canal_excluded_arms(
@@ -184,7 +161,7 @@ log.info(
     "Discharge propagation: 0 reaches (empty network)"
 )
 
-# ── write ─────────────────────────────────────────────────────────────────────
+# Write
 
 Path(snakemake.output.clean_river_network).parent.mkdir(parents=True, exist_ok=True)
 rivers_clean.to_file(snakemake.output.clean_river_network, driver="GPKG")
@@ -194,7 +171,7 @@ Path(snakemake.output.delta_outflow_points).parent.mkdir(parents=True, exist_ok=
 outflow_points.to_file(snakemake.output.delta_outflow_points, driver="GPKG")
 log.info(f"Written: {snakemake.output.delta_outflow_points} ({len(outflow_points)} point(s))")
 
-# ── summary plots ─────────────────────────────────────────────────────────────
+# Summary plots
 
 rivers_wgs = (
     rivers_clean.to_crs("EPSG:4326")

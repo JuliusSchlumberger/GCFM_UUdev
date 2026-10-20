@@ -1,10 +1,13 @@
-import cdsapi
+"""Download GloFAS v4 consolidated daily river discharge, one netCDF per year.
+
+Needs CDS API credentials (cdsapi); resumable: finished years are skipped.
+"""
+
 import os
 
-# Machine-specific path, read from the GCFM_RAW_DATA_ROOT environment variable.
-# Set it once in PowerShell, then restart your terminal (see
-# CONTRIBUTING.md "Local machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+import cdsapi
+
+# GCFM_RAW_DATA_ROOT is machine-specific; see CONTRIBUTING.md "Local machine paths".
 OUTPUT_DIR = os.path.join(os.environ["GCFM_RAW_DATA_ROOT"], "GloFAS")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -20,12 +23,10 @@ for year in years:
     final_path = os.path.join(OUTPUT_DIR, f"glofas_{year}.nc")
     tmp_path = final_path + ".part"
 
-    # Resume: skip anything already completed
     if os.path.exists(final_path):
         print(f"Skipping {year} (already downloaded)")
         continue
 
-    # Clean up any leftover partial file from a previous interrupt
     if os.path.exists(tmp_path):
         os.remove(tmp_path)
 
@@ -47,7 +48,6 @@ for year in years:
         os.rename(tmp_path, final_path)  # atomic: only "complete" once renamed
         print(f"Done: {final_path}")
     except Exception as e:
-        # Remove the partial file so it's re-attempted next run
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
         print(f"Failed {year}: {e}")

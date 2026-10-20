@@ -4,7 +4,6 @@ import geopandas as gpd
 import numpy as np
 import pytest
 from shapely.geometry import LineString
-
 from src.gvf_solver import (
     GvfProblem,
     critical_depth,
@@ -80,9 +79,6 @@ def _targets(
     )
 
 
-# ── 1. hydraulics ─────────────────────────────────────────────────────────
-
-
 def test_froude_includes_depth_and_critical_depth_gives_one():
     q, w = 500.0, 100.0
     hc = critical_depth(q, w)
@@ -94,9 +90,6 @@ def test_normal_depth_matches_friction_slope():
     h = normal_depth(1000.0, 200.0, N, 1e-4)
     assert friction_slope(1000.0, 200.0, h, N) == pytest.approx(1e-4, rel=1e-5)
     assert normal_depth(0.0, 200.0, N, 1e-4) == 0.0
-
-
-# ── 2. uniform reach ──────────────────────────────────────────────────────
 
 
 def _uniform(length=20000.0, s=1e-4, q=1000.0, w=200.0):
@@ -123,9 +116,6 @@ def test_uniform_reach_inversion_returns_manning_depth():
     depth = t.eta_target[t.net.slot_node()] - res.z  # beds are per (reach, node) slot
     assert np.max(np.abs(depth / hn - 1.0)) < 0.01
     assert np.max(np.abs(res.residual)) < 0.005
-
-
-# ── 3. backwater reach: regularisation ────────────────────────────────────
 
 
 def _backwater_case(noise_m):
@@ -165,9 +155,6 @@ def test_regularisation_removes_bed_spikes():
     assert np.all(adverse > -10 * s)
 
 
-# ── 4. Manning n sweep ────────────────────────────────────────────────────
-
-
 def test_manning_n_moves_the_bed_not_the_fit():
     t, _, _ = _backwater_case(noise_m=0.0)
     beds, rmses = [], []
@@ -181,9 +168,6 @@ def test_manning_n_moves_the_bed_not_the_fit():
     assert max(rmses) < 0.02
 
 
-# ── 5. steep segment ──────────────────────────────────────────────────────
-
-
 def test_steep_segment_is_capped_at_froude_limit_and_continues():
     x = np.linspace(0, 5000, 11)
     z = 50.0 - 0.02 * x  # 2 % slope, supercritical at normal depth
@@ -191,9 +175,6 @@ def test_steep_segment_is_capped_at_froude_limit_and_continues():
     assert sol.capped.all()
     assert np.all(np.isfinite(sol.eta))
     assert froude(100.0, 50.0, sol.h) == pytest.approx(np.full(11, 0.95), rel=1e-6)
-
-
-# ── 6. networks ───────────────────────────────────────────────────────────
 
 
 def _manning_target(s=1e-4, z0=5.0):
@@ -288,9 +269,6 @@ def test_structure_separates_nodes_and_sets_upstream_level():
     assert res.solve.eta[end1] == pytest.approx(t.eta_target[end1], abs=0.05)
 
 
-# ── 9. target builder ─────────────────────────────────────────────────────
-
-
 def _chain_spec():
     # Rhine-like chain plus a side arm; quantised wse, one reach line reversed.
     return {
@@ -379,9 +357,6 @@ def test_enforce_non_increasing_on_a_chain():
     prof = enforce_non_increasing(net, by_node)[net.reach_nodes["1"]]
     assert np.all(np.diff(prof) <= 1e-12)
     assert np.max(np.abs(prof - v)) < 0.3
-
-
-# ── no-flow reaches, width-depth fit, interpolation onto cells ────────────
 
 
 def test_no_flow_reach_gets_width_depth_bed_and_is_ignored_at_junction():

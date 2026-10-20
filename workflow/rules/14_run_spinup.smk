@@ -1,29 +1,13 @@
-# Rule: run a short, basin-level SFINCS spin-up to produce a restart file,
-# with the river at a fixed RP=1 and a calm sea (the level every event's own
-# boundary lead-in starts at), entirely independent of any scenario's
-# own design RP -- see 14_run_spinup.py's own module docstring for the
-# full rationale and how it borrows geometry from the skeleton (rule
-# build_sfincs_skeleton). No {scenario} wildcard: this runs ONCE per basin,
-# not once per scenario, and every scenario's own event run (rule
-# run_event, 16) references the SAME restart file via its own sfincs.inp
-# (set in 13_build_sfincs.py).
-#
-# This is where the SFINCS solver is actually EXECUTED for the first time
-# in the pipeline (rule build_sfincs_skeleton only assembles config/input
-# files -- it never runs the executable, and neither does build_sfincs).
+# Rule: basin-level SFINCS spin-up producing the restart file every scenario's
+# event run uses, with the river at a fixed RP=1 and a calm sea (the level every
+# event's boundary lead-in starts at); independent of any design RP.
 
 rule run_spinup:
     input:
         skeleton_inp         = results_path("{basin_id}/sfincs_skeleton/sfincs.inp"),
         land_mask_on_grid    = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
-        # Corrected sea/land classification (rule modelled_depth_estimation)
-        # -- cells the final weir
-        # protects are cleared to "land" so they aren't masked as open sea in
-        # this rule's own flood-diagnostic plot. Coarse, grid-aligned (rule
-        # 09b's landuse_on_grid.tif is this file's own source) -- the SAME
-        # file 13_build_sfincs_skeleton.py's own zsini reads. No separate
-        # native-resolution sea_mask_corrected.tif anymore (removed
-        # 2026-08-07b as pure duplication of this same boolean).
+        # Corrected sea/land classification (rule 10, grid-aligned): cells the
+        # final weir protects are land, so they are not masked as open sea.
         sea_mask             = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
         domain_gpkg          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
@@ -47,11 +31,8 @@ rule run_spinup:
         timeout_s                 = config["sfincs"]["simulation"]["timeout_s"],
         waterlevel_buffer_m       = config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
         boundary_ramp_hours       = config["sfincs"]["spinup"]["boundary_ramp_hours"],
-    # Claims the whole --cores budget: SFINCS itself can use multiple
-    # threads (see run_sfincs_subprocess's OMP_NUM_THREADS handling), but
-    # hydromt-sfincs/Snakemake can't parallelize *within* one run, so this
-    # ensures no other job (this basin's or another's) competes with it for
-    # CPU while it's executing -- the run gets the full machine instead.
+    # Whole --cores budget: SFINCS multi-threads (OMP_NUM_THREADS), so other
+    # jobs would only compete for CPU.
     threads: workflow.cores
     log:
         "logs/{basin_id}/14_run_spinup.log"

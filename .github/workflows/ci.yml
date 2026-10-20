@@ -56,7 +56,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      # Only what tests/unit imports (src.river_network and its own imports);
-      # environment.yml is a Windows conda export and does not solve here.
-      - run: pip install pytest numpy pandas xarray geopandas shapely rasterio pyproj
+      # Every third-party package tests/unit imports at module level, directly
+      # or through src; keep in sync (see CLAUDE.md). environment.yml is a
+      # Windows conda export and does not solve here.
+      - run: pip install pytest numpy pandas xarray geopandas shapely rasterio pyproj rioxarray scipy matplotlib "pyextremes[lmoments]" pymannkendall netCDF4 pyyaml openpyxl "hydromt-sfincs==2.0.0rc2"
       - run: pytest

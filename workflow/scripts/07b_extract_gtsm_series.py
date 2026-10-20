@@ -1,17 +1,10 @@
-"""
-07b_extract_gtsm_series.py -- Hourly total water level and surge residual
-of the GTSM reanalysis at a basin's own surge stations.
+"""Extract hourly GTSM water level and surge at the stations; run by rule extract_gtsm_series.
 
-The reanalysis is stored one file per month for every station worldwide, so
-a station's 1950-2024 record is spread over 900 files per variable and this
-rule has to read all of them (~60 GB; the run time is set by the disk, tens
-of minutes on a hard disk). It therefore depends ONLY on the basin's own
-surge_stations.json (rule select_surge_stations) and reruns only when the
-selected stations themselves change -- see that rule. The GTSM folders are
-passed as parameters, not inputs, for the same reason.
-
-COAST-RP's coastal stations are GTSM output stations, so each surge station
-is matched to the GTSM station at the same coordinates.
+The reanalysis is one file per month for all stations, so 1950-2024 means 900
+files per variable (~60 GB; disk-bound, tens of minutes on a hard disk). The only
+input is surge_stations.json; the GTSM folders are params, not inputs, so the
+rule reruns only when the selected stations change. COAST-RP coastal stations
+are GTSM output stations, matched by coordinates.
 
 Output: gtsm_hourly.nc -- waterlevel, surge (time, station) in m, float32,
         with each station's lon/lat and GTSM station id.

@@ -1,11 +1,8 @@
-"""
-02b_prepare_landuse.py -- write the per-basin land-use raster in pipeline
-codes (source classes + 200 = open sea, 255 = nodata), WGS84, at the
-selected source's own resolution, clipped to the domain bbox.
+"""Write the basin land-use raster in pipeline codes; run by rule prepare_landuse.
 
-Source-specific handling -- above all deriving 200 for ESA WorldCover,
-which has no sea class -- lives in src.landuse; everything downstream of
-this rule reads the same codes regardless of which source produced them.
+Codes: source classes + 200 = open sea, 255 = nodata; WGS84 at the source's own
+resolution, clipped to the domain bbox. ESA WorldCover has no sea class; 200 is
+derived in src.landuse.
 """
 
 from src.domain import load_domain
@@ -27,8 +24,7 @@ river_network_path = snakemake.input.river_network or None
 log.info(f"Land-use source: {source}; domain WGS84 bounds: {wgs84_bounds}")
 
 # Streamed: at 10 m a delta-sized window runs to 2.0 Gpx (Mississippi), so
-# neither this raster nor the sea morphology is ever held whole in memory
-# -- see src.landuse's own module docstring.
+# neither this raster nor the sea morphology is held whole in memory.
 meta, stats = write_landuse_source(
     source,
     wgs84_bounds,

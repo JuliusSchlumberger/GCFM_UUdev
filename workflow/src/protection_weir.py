@@ -1,47 +1,23 @@
-"""
-protection_weir.py — Builds a coastal/riverbank protection weir directly on
-the SFINCS model's regular grid.
+"""Build the coastal/riverbank protection weir on the SFINCS regular grid.
 
-The weir represents the protection-level standard itself: flood defenses
-are assumed to run continuously along the whole coast and river network (not
-just near named reaches), so no flooding should occur below the crest
-elevation anywhere in the domain until it's overtopped. It hugs the
-coast/riverbank directly -- no inland offset.
+The weir is the protection standard itself: defences run continuously along
+the whole coast and river network, hugging it with no inland offset, so
+nothing floods below the crest until overtopped. Built only by rule
+modelled_depth_estimation (10); rule 13 imports the final gpkg as-is.
+Confinement rounds use a very high crest (e.g. 1000 m) and an all-NaN
+water_side_crest_on_grid, confining coast and river alike (the confined
+river can exceed a low coastal crest near the mouth); the production weir
+uses the confined round's period-max water level per edge, floored at the
+datum-corrected coastal crest.
 
-Built by rule modelled_depth_estimation (10, 10_depth_estimation_modelled.py)
-only -- coast and river channel merged into one water_like boundary, so
-calibration and production share the same single weir set (rule 13 imports
-the final gpkg as-is). That rule calls this twice: its confinement rounds
-with crest_elevation_m set to an artificially high value (e.g. 1000 m) and
-an all-NaN water_side_crest_on_grid, so EVERY edge -- coast and riverbank
-alike -- sits at that confinement height (the confined river's water level
-can exceed a low real coastal crest right at the coast/river transition
-near the mouth, so calibration confines everything, not just the river);
-and once more for the production weir, with water_side_crest_on_grid = the
-confined, excavated round's own period-max water level and the real,
-datum-corrected coastal crest as crest_elevation_m -- every edge's crest is
-then the water level on its own water side, floored at the coastal
-standard.
-
-Design summary
---------------
-1. Classify ocean (landuse==200) and river-channel cells/faces on the model
-   grid into one combined ``water_like`` set; everything else valid is
-   ``land``. landuse==80 (inland water/tidal flat) / 90 (wetland) is just
-   land unless it coincides with the channel mask -- or, with
-   unprotected_ocean_wetlands=True, its patch is edge-connected to the open
-   sea (ocean_linked_wetland_mask), which puts it on the seaward side too.
-2. Drop small connected components on *both* sides (``discard_small_
-   components``, ``min_component_cells``): small isolated land islands get
-   no protective ring around them (they flood normally), and small isolated
-   water patches (misclassified ponds, tidal pools) get no ring walling the
-   surrounding land off from them either -- neither is a real coastline/
-   riverbank worth defending. A component dropped from either side is
-   simply excluded from both, so no edge gets traced there at all.
-3. Extract the boundary multiline directly between the two resulting sets
-   from the grid's own pixel/mesh-face edges -- correctly aligned to real
-   flux links by construction, avoiding the seepage risk a line derived
-   from a different-resolution source would carry.
+1. Ocean (landuse==200) and river-channel cells form ``water_like``; every
+   other valid cell is land. 80 (inland water/tidal flat) / 90 (wetland) are
+   land unless in the channel mask or, with unprotected_ocean_wetlands, in a
+   patch edge-connected to the open sea.
+2. Small connected components on both sides (< min_component_cells) get no
+   ring: islands flood normally, ponds/tidal pools are not walled off.
+3. The weir is traced on the grid's own cell edges, so it aligns with the
+   flux links by construction (no seepage gaps).
 """
 
 from __future__ import annotations
@@ -57,31 +33,18 @@ from scipy.ndimage import label as ndimage_label
 from shapely.geometry import LineString, Polygon
 from shapely.ops import linemerge, unary_union
 from shapely.strtree import STRtree
-
 from src.grid import cell_size_m
 from src.landuse import OCEAN_WETLAND_CLASSES, SEA_CODE
 from src.surge import ceil_crest
 
 log = logging.getLogger(__name__)
 
-# Re-exported under this module's own long-standing name (scripts import it
-# from here). Both are defined in src.landuse, next to the land-use codes
-# they belong to: LANDUSE_SEA is the pipeline's own open-sea code (LC100's
-# own 200, DERIVED for ESA WorldCover, which has no sea class), and
-# OCEAN_WETLAND_CLASSES are the classes that may sit OUTSIDE the coastal
-# dike when their patch is linked to the open sea
-# (build_coastal_protection_weir's unprotected_ocean_wetlands): 80 =
-# permanent water bodies (lagoons, tidal flats), 90 = herbaceous wetland,
-# 95 = mangroves (WorldCover only; intertidal by definition).
+# Re-exported: scripts import it from here.
 LANDUSE_SEA = SEA_CODE
 
 
 class GridArrays:
-    """
-    Uniform interface over a SFINCS regular grid's already-loaded arrays
-    (built from sf.grid.data mid-build, or from a read-mode model's own
-    data -- either works, this class only needs the arrays themselves).
-    """
+    """Hold a SFINCS regular grid's loaded arrays (mid-build or read-mode model)."""
 
     def __init__(
         self,
@@ -102,7 +65,8 @@ class GridArrays:
         self._struct8 = generate_binary_structure(2, 2)
 
     @classmethod
-    def from_regular(cls, dep_da, mask_da, crs) -> "GridArrays":
+    def from_regular(cls, dep_da, mask_da, crs) -> GridArrays:
+        """Build from hydromt_sfincs dep and mask DataArrays."""
         bed_elevation = dep_da.values.astype(np.float32)
         valid_mask = (mask_da.values > 0) & np.isfinite(bed_elevation)
         dx = cell_size_m(dep_da.raster.transform)
@@ -115,32 +79,15 @@ class GridArrays:
         )
 
     def close_gaps(self, mask: np.ndarray, iterations: int = 1) -> np.ndarray:
-        """Small, FIXED hop dilation of a boolean mask -- a safety net for
-        any remaining sub-cell gaps in a mask (e.g. a channel narrower than
-        one destination cell in only a handful of spots).
-        """
+        """Dilate a mask by a fixed 4-connected hop to close sub-cell gaps."""
         return binary_dilation(mask, structure=self._struct4, iterations=iterations)
 
     def connected_components(self, mask: np.ndarray) -> tuple:
-        """Connected components WITHIN mask (cells outside mask are never
-        connected to anything). Returns (labels, n_labels).
+        """Label 8-connected components within mask; return (labels, n_labels).
 
-        Uses 8-CONNECTIVITY (self._struct8, diagonals count as connected),
-        not scipy.ndimage.label's own 4-connectivity default. A real,
-        physically continuous coastline/riverbank commonly narrows to a
-        single diagonal-only pixel-to-pixel connection at some point (a
-        thin, jagged spit -- an ordinary raster-discretization artifact,
-        not a genuine break in the landform). Under 4-connectivity that
-        diagonal touch does NOT count as connected, so
-        discard_small_components (this method's only caller) sees the far
-        side as a SEPARATE, small component and drops it as if it were a
-        real, isolated small island -- leaving a dangling gap in the traced
-        weir exactly at that pinch point, since the dropped cells become
-        neither land_mask nor water_like and the edge tracer draws no
-        segment against either side of them (see Reference_memory.txt
-        section 14, WEIR TOPOLOGY GAPS (DIAGONAL 4-CONNECTIVITY) entry).
-        8-connectivity treats a diagonal touch as one continuous component,
-        matching the physical reality.
+        8-connectivity: a continuous coastline often narrows to a diagonal-only
+        pixel touch; under 4-connectivity the far side would be dropped as a
+        small island, leaving a gap in the traced weir.
         """
         labeled, n_labels = ndimage_label(mask, structure=self._struct8)
         return labeled, n_labels
@@ -152,18 +99,11 @@ class GridArrays:
         valid_mask: np.ndarray | None = None,
         ocean_exempt: np.ndarray | None = None,
     ) -> list:
-        """Linestrings tracing the boundary between mask_a and water_like
-        cells -- the seaward edge the weir should follow. Generic: mask_a is
-        the protected/dry side (land, or a confined channel).
+        """Trace merged linestrings along the boundary between mask_a and water_like.
 
-        valid_mask: which cells get force-closed to "land" wherever
-        water_like reaches them (see _pad_for_edge_tracing) -- defaults to
-        self.valid_mask (the grid's own true active-cell mask).
-        ocean_exempt: which cells are exempt from that force-closure
-        even when invalid, because they're genuinely open ocean rather
-        than land (see _pad_for_edge_tracing) -- defaults to all-False (no
-        exemption). Callers with domain knowledge of which cells are ocean
-        (e.g. build_coastal_protection_weir) should pass it explicitly.
+        mask_a is the protected/dry side. Cells outside valid_mask (default:
+        the grid's active mask) are force-closed to land, except ocean_exempt
+        cells (default none), which are open ocean continuing past the domain.
         """
         if valid_mask is None:
             valid_mask = self.valid_mask
@@ -181,18 +121,13 @@ class GridArrays:
         valid_mask: np.ndarray | None = None,
         ocean_exempt: np.ndarray | None = None,
     ) -> tuple[list, list, np.ndarray]:
-        """Like seaward_edges, but returns (segments, values,
-        water_side_mask) UNMERGED -- one LineString per grid edge, paired
-        with the WATER_LIKE-side cell's own value_grid entry (the water the
-        edge holds back, e.g. its own simulated water level). Deliberately
-        not linemerge'd: adjacent edges can carry different values, so
-        segments must stay separable to keep a single crest value per
-        output weir feature. Segments whose water-side value is NaN are
-        dropped entirely. water_side_mask (grid shape) marks every
-        water_like cell that supplied at least one edge's value.
+        """Trace unmerged edges with the water-side cell's value_grid entry each.
 
-        valid_mask, ocean_exempt: see seaward_edges's own docstring -- same
-        override semantics.
+        Returns (segments, values, water_side_mask): one LineString per grid
+        edge, so each weir feature keeps a single crest. Edges whose
+        water-side value is NaN are dropped. water_side_mask marks the
+        water_like cells that supplied a value. valid_mask, ocean_exempt: as
+        in seaward_edges.
         """
         if valid_mask is None:
             valid_mask = self.valid_mask
@@ -218,37 +153,11 @@ def _pad_for_edge_tracing(
     ocean_exempt: np.ndarray,
     transform,
 ):
-    """Force-close mask_a/water_like wherever the model doesn't actually
-    simulate anything -- outside the array's own edge, or an inactive
-    interior cell -- then pad by 1 cell and shift the transform to match.
-
-    Two DISTINCT reasons a cell can be "not really simulated": beyond the
-    array's own bounds (no data at all), or an inactive interior cell
-    (grid.valid_mask == False, e.g. outside sf.mask.create_active's own
-    domain polygon). Both leave a structural gap in the H/V break detection
-    below (it only ever compares adjacent cells WITHIN the array, and
-    land_mask_raw upstream, ~water_like_raw & grid.valid_mask, already
-    excludes invalid cells from ever counting as land) -- so wherever
-    water_like reaches either kind of edge, no seaward edge is traced there
-    at all.
-
-    NOT every such cell should be force-closed, though: one classified as
-    OCEAN (ocean_exempt) is genuinely just open water continuing past
-    where the model happens to stop simulating, not a coastline -- forcing
-    it closed draws a false "dike" along the domain's own seaward edge. So
-    the interior case folds in ~valid_mask & ~ocean_exempt only; the
-    array's own exterior ring has no ocean_exempt value of its own (no data
-    at all out there) and instead inherits its nearest real neighbour's
-    ocean_exempt via edge-padding. A channel
-    reach whose own head sits right at the array's edge (not ocean there)
-    still gets force-closed exactly as before.
-
-    The exterior-ring decision (via ocean_exempt) is applied ONLY to the
-    new border ring added by padding, via explicit slicing -- NOT as a
-    blanket elementwise op over the whole padded array, which would
-    silently re-decide every INTERIOR cell's closure too, including every
-    real river channel cell.
-    """
+    # Inactive cells and the array exterior would otherwise leave water_like
+    # with no traced edge. Ocean cells are exempt (open water continuing past
+    # the domain, not a coastline); the padded ring inherits the nearest real
+    # cell's ocean_exempt. The ring decision is applied to the ring only, so
+    # interior channel cells are never re-decided.
     closure_valid = valid_mask | ocean_exempt
     mask_a = mask_a | ~closure_valid
     water_like = water_like & closure_valid
@@ -262,10 +171,7 @@ def _pad_for_edge_tracing(
     ring = np.ones((h + 2, w + 2), dtype=bool)
     ring[1:-1, 1:-1] = False
     ocean_exempt_edge = np.pad(ocean_exempt, 1, mode="edge")
-    # water_like_padded[ring] is already False (the ring's own initial
-    # value) in both cases (exempt or not) -- only mask_a needs deciding:
-    # land wherever the nearest real neighbour wasn't exempt, neither
-    # land nor water where it was (open ocean continuing past the edge).
+    # Ring is never water_like; it is land unless its nearest real cell is ocean_exempt.
     mask_a_padded[ring] = ~ocean_exempt_edge[ring]
 
     padded_transform = transform * Affine.translation(-1, -1)
@@ -313,11 +219,7 @@ def _seaward_edges_regular_with_values(
     mask_a, water_like, transform = _pad_for_edge_tracing(
         mask_a, water_like, valid_mask, ocean_exempt, transform
     )
-    # The water side of a traced edge is always a real interior cell (the
-    # padding ring's own water_like is always False, see
-    # _pad_for_edge_tracing), so value_grid only needs padding to keep
-    # indices aligned with the padded masks -- the ring's own values are
-    # never read.
+    # Padding only aligns indices: the water side is never in the ring.
     value_grid = np.pad(value_grid, 1, mode="edge")
     water_side = np.zeros(mask_a.shape, dtype=bool)
     segments, values = [], []
@@ -353,13 +255,7 @@ def _seaward_edges_regular_with_values(
 def discard_small_components(
     mask: np.ndarray, grid: GridArrays, min_cells: int
 ) -> tuple[np.ndarray, int, int]:
-    """Drop connected components of ``mask`` smaller than min_cells --
-    called on both the land side and the water_like side when building a
-    protection weir, so neither a small isolated land island nor a small
-    isolated water patch (misclassified pond, tidal pool) gets a weir ring
-    around it; a farm pond does not need a dike. Returns
-    (filtered_mask, n_discarded_cells, n_discarded_components).
-    """
+    """Drop components smaller than min_cells; return (mask, n_cells, n_components) dropped."""
     labels, n_labels = grid.connected_components(mask)
     if n_labels == 0:
         return mask, 0, 0
@@ -374,10 +270,7 @@ def discard_small_components(
 def build_weir_geodataframe(
     weir_lines: list, crest_elevation_m: float | list, par1: float, crs
 ) -> gpd.GeoDataFrame:
-    """crest_elevation_m: a single scalar (broadcast to every segment,
-    today's uniform-crest behavior) or a per-segment list (same length as
-    weir_lines, one crest value per feature).
-    """
+    """Build the weir GeoDataFrame; crest_elevation_m is a scalar or one value per line."""
     if not weir_lines:
         return gpd.GeoDataFrame({"elevation": [], "par1": []}, geometry=[], crs=crs)
     elevations = (
@@ -393,26 +286,10 @@ def build_weir_geodataframe(
 
 
 def _flatten_elevation_from_z(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Give every row a populated, flat "elevation" column and plain 2D
-    geometry, regardless of which of the two representations hydromt_sfincs
-    happened to hand it in.
-
-    SfincsWeirs.read() (utils.linestring2gdf) embeds a per-vertex elevation
-    list INTO the geometry's own Z-coordinate instead of keeping a separate
-    "elevation" column, whenever the list's length matches the vertex count
-    -- true of every weir segment this repo ever writes (2 vertices, 2
-    elevation values) -- so mod.weirs.data read back from a real sfincs.weir
-    file has NO "elevation" column at all, only Z-embedded geometry. The
-    ASCII sfincs.weir writer (utils.gdf2linestring) still reconstructs
-    elevation correctly from Z on write, so the MODEL is unaffected by this
-    either way -- but gis/weir.geojson is written straight from this same
-    GeoDataFrame (utils.write_vector, no such reconstruction), so any row
-    still relying on Z alone shows a blank/Null "elevation" attribute in
-    QGIS despite carrying a perfectly real crest -- confirmed via basin
-    2433835/protect_closed_1, where every preserved river segment (kept
-    as-is from mod.weirs.data by merge_weir_preserve_unmatched, its own only
-    caller) showed Null there.
-    """
+    # hydromt_sfincs SfincsWeirs.read() (utils.linestring2gdf) stores elevation
+    # in the geometry's Z when its length matches the vertex count, leaving no
+    # "elevation" column; gis/weir.geojson (utils.write_vector) would then show
+    # a Null elevation. The sfincs.weir writer itself reconstructs it from Z.
     if gdf.empty:
         return gdf
     gdf = gdf.copy()
@@ -431,52 +308,15 @@ def merge_weir_preserve_unmatched(
     new_gdf: gpd.GeoDataFrame,
     max_match_distance_m: float = 2.0,
 ) -> gpd.GeoDataFrame:
-    """
-    Used by the protect_closed adaptation strategy (apply_coastal_levee,
-    src/adaptation_method_pre.py) to seal off the coast/river-mouth at a new
-    elevation while leaving the river's own already-built protection weir
-    (further inland, following current protection standards) untouched --
-    without this, calling mod.weirs.set(new_gdf, merge=False) directly would
-    wholesale replace the ENTIRE baseline weir with just the new coastal
-    lines, silently deleting the river's protection.
+    """Replace baseline weir segments matched by new_gdf, keep the rest, add all of new_gdf.
 
-    new_gdf's coastal rows are expected to sit at essentially the same
-    location as the baseline rows they're meant to replace, since the
-    intended workflow is copying the basin's own baseline weir file (e.g.
-    {basin_id}_coastal_protection_weir.gpkg), deleting its river rows, and
-    adding one new segment that closes off the river mouth. Matching is
-    nearest-neighbour DISTANCE, not exact/rounded-coordinate equality: a
-    "copy" in practice still picks up a few cm of drift (re-saved/
-    reprojected through QGIS, or round-tripped through the ASCII
-    sfincs.weir file's own 1-decimal precision on the baseline side -- see
-    below), and that drift lands randomly on either side of any fixed
-    rounding boundary, so two coordinates 8 cm apart can round to values
-    0.1 m apart and never compare equal no matter how many digits are
-    chosen -- confirmed via basin 2433835/protect_closed_1: baseline
-    (300087.1, 4492070.0) vs new (300087.085, 4492069.920666667), 8 cm
-    apart, whose y rounds to 4492070.0 and 4492069.9 respectively. Distance
-    to the nearest new_gdf segment is unambiguous regardless of which side
-    of a boundary either coordinate happens to fall on.
-
-    max_match_distance_m defaults to 2.0 m, well under half a grid cell (this
-    repo's basins run ~70 m resolution) so it can never conflate two
-    genuinely different grid-edge segments, but comfortably clears both the
-    baseline's own 0.1 m ASCII round-trip truncation (hydromt_sfincs.utils.
-    write_geoms's "%11.1f" format) and the sub-metre editing/reprojection
-    drift observed above -- confirmed via the same basin/strategy: every
-    baseline segment's distance to its nearest new_gdf segment fell into two
-    clean, non-overlapping bands with nothing in between -- under 1 m (the
-    same physical location, reformatting noise only) or over 5 m, up to
-    8.5 km (a genuinely distinct, inland river segment) -- so any threshold
-    in that gap works equally well for this data; 2.0 m leaves margin for
-    noisier input on a basin not yet seen.
-
-    Every baseline segment within max_match_distance_m of some new_gdf
-    segment is dropped (new_gdf's own row -- carrying its own new elevation
-    -- takes its place); every baseline segment with no near match (the
-    river) is kept unchanged; every new_gdf row is added regardless (so the
-    new river-mouth closure segment, with no baseline counterpart at all,
-    is included too).
+    Used by the protect_closed strategy (apply_coastal_levee) to re-crest the
+    coast/river mouth while keeping the inland river weir. A baseline segment
+    is replaced when its midpoint lies within max_match_distance_m of a
+    new_gdf segment. Distance, not coordinate equality: copies drift by cm
+    (QGIS re-save, the 0.1 m "%11.1f" sfincs.weir round trip). 2.0 m is well
+    under half a ~70 m cell yet clears that drift (observed matches < 1 m,
+    distinct segments > 5 m).
     """
     if baseline_gdf is None or baseline_gdf.empty:
         return new_gdf
@@ -489,24 +329,8 @@ def merge_weir_preserve_unmatched(
     tree = STRtree(new_geoms)
 
     def _is_replaced(geom):
-        # Midpoint, NOT geom.distance(...) against the whole segment -- two
-        # segments that merely CONNECT (share one endpoint, e.g. where a
-        # coastal_levee trace hands off to a sibling river_levee trace at
-        # their shared junction vertex) register as distance 0 under a
-        # whole-geometry distance check despite running in entirely
-        # different directions and covering no common ground otherwise,
-        # wrongly marking the coastal segment "replaced" with nothing in
-        # river_gdf actually covering its own stretch -- confirmed via basin
-        # 2433835/grey_protect_open_1: coastal segment (319397.977,
-        # 4510261.34)-(319467.944, 4510261.34) shares its second endpoint
-        # exactly with a river segment ending at the same point but running
-        # north-south, got dropped as "replaced", and nothing else covered
-        # that ~70 m stretch -- a real gap in the final weir. A genuine
-        # duplicate/near-duplicate segment (the actual replace-in-place case
-        # this function exists for) has its WHOLE length close to the new
-        # trace, so its midpoint is close too; a segment only touching the
-        # new trace at one endpoint has its midpoint far from it, since nothing
-        # else about the two segments coincides.
+        # Midpoint, not whole-segment distance: segments that merely share an
+        # endpoint have distance 0 and would be wrongly dropped, leaving a gap.
         midpoint = geom.interpolate(0.5, normalized=True)
         nearest_idx = tree.nearest(midpoint)
         return midpoint.distance(new_geoms[nearest_idx]) <= max_match_distance_m
@@ -536,37 +360,12 @@ def _remove_small_dikerings(
     cell_size_m: float,
     coord_ndigits: int = 3,
 ) -> gpd.GeoDataFrame:
-    """
-    Vector-space counterpart to discard_small_components: that function
-    already drops a small isolated land island/water patch that is its OWN
-    separate connected component -- but a small feature attached to a
-    larger, kept component at a single diagonal-pinch pixel (exactly the
-    geometry connected_components' own 8-connectivity treats as "part of
-    the larger component," correctly, from a raster-masking standpoint)
-    still traces its own tiny closed ring in the final VECTOR output,
-    meeting the main boundary at one shared vertex where FOUR segments
-    meet -- two continuing the main boundary through that point, two
-    entering/leaving the small ring. discard_small_components never sees
-    this case at all, since at the raster level the small feature is
-    already merged into one large, correctly-kept component; only after
-    tracing does it show up as its own separate little loop.
-
-    For every vertex where exactly two of its incident segments trace a
-    closed loop back to that SAME vertex through only degree-2 (simple
-    chain) intermediate vertices -- i.e. a standalone ring touching the
-    rest of the network at exactly that one point -- this computes the
-    loop's own enclosed area and, if it's under min_component_cells worth
-    of grid cells, drops every segment making up that loop. The other two
-    segments at the pinch vertex (the main boundary's own through-path)
-    are always left untouched, so the boundary continues with no gap --
-    mirroring discard_small_components' own "no ring around a too-small
-    feature" outcome, just reached in vector space instead of raster space.
-
-    coord_ndigits rounds endpoint coordinates before matching -- segments
-    come from exact grid-edge construction, so this is a floating-point-
-    noise safety margin, not a real snapping tolerance. cell_size_m is the
-    grid's uniform cell size.
-    """
+    # Vector counterpart of discard_small_components: a small feature joined to
+    # a kept component at a diagonal pinch still traces its own ring, hanging
+    # off a degree-4 vertex. Rings closing back to that vertex through
+    # degree-2 vertices only and enclosing < min_component_cells cells are
+    # dropped; the main boundary's through-segments stay. coord_ndigits is a
+    # float-noise margin, not a snapping tolerance.
     if weir_gdf.empty:
         return weir_gdf
 
@@ -586,24 +385,11 @@ def _remove_small_dikerings(
         a, b = endpoints[seg_idx]
         return b if a == vkey else a
 
-    # Bounds how far a trace walks before giving up -- without this, a
-    # pinch vertex on the boundary's own big main loop/chain (which also,
-    # trivially, eventually closes back on itself if it's a full loop)
-    # would walk the ENTIRE remaining network before failing the area
-    # check, for every degree-4 vertex, which is needlessly expensive on a
-    # coastline with tens of thousands of segments (e.g. the Mississippi).
-    # Generous relative to what a genuinely small loop's own perimeter can
-    # be, since only small loops are ever actually removed.
+    # Caps the walk so a pinch on the main loop does not trace the whole
+    # network; generous versus any small loop's perimeter.
     max_trace_segments = max(64, min_component_cells * 8)
 
     def _trace_loop(start_vkey: tuple, first_seg_idx: int):
-        """
-        Walk from start_vkey via first_seg_idx through degree-2 chain
-        vertices only; returns (loop_segment_indices, loop_vertex_keys) if
-        this closes back to start_vkey within max_trace_segments steps,
-        else None (hit a dangling end, another junction, or ran too long
-        first -- not a standalone SMALL loop through this vertex).
-        """
         loop_segs = [first_seg_idx]
         loop_coords = [start_vkey]
         prev_seg = first_seg_idx
@@ -637,7 +423,7 @@ def _remove_small_dikerings(
             seen_loops.add(loop_key)
             ring_coords = loop_coords + [loop_coords[0]]
             if len(set(loop_coords)) < 3:
-                continue  # degenerate -- not enough distinct vertices for a real ring
+                continue  # degenerate ring
             n_cells = Polygon(ring_coords).area / (cell_size_m**2)
             if n_cells < min_component_cells:
                 to_drop.update(loop_segs)
@@ -656,18 +442,10 @@ def _remove_small_dikerings(
 def ocean_linked_wetland_mask(
     landuse_on_grid: np.ndarray, ocean_mask: np.ndarray, grid: GridArrays
 ) -> np.ndarray:
-    """
-    Wetland/lagoon cells (OCEAN_WETLAND_CLASSES) in a patch that shares a
-    cell EDGE with the open sea (landuse==200) -- the patches
-    build_coastal_protection_weir(unprotected_ocean_wetlands=True) leaves on
-    the seaward side of the coastal dike.
+    """Return OCEAN_WETLAND_CLASSES cells in patches sharing a cell edge with the open sea.
 
-    4-connectivity on purpose, both for the patch itself and for its link to
-    the sea -- unlike connected_components' own 8-connectivity (a raster-
-    topology safeguard for the weir trace): SFINCS only exchanges water
-    across shared cell edges, so a patch touching the sea (or its own
-    remainder) only at a corner could never fill from it -- it would end up
-    walled in on the "unprotected" side without ever getting sea water.
+    4-connectivity on purpose: SFINCS exchanges water only across shared
+    cell edges, so a patch touching the sea at a corner could never fill.
     """
     wetland = np.isin(landuse_on_grid, OCEAN_WETLAND_CLASSES) & grid.valid_mask
     labels, n_labels = ndimage_label(wetland, structure=grid._struct4)
@@ -690,62 +468,25 @@ def build_coastal_protection_weir(
     channel_mask_gap_free: bool = False,
     unprotected_ocean_wetlands: bool = False,
 ) -> tuple[gpd.GeoDataFrame, dict]:
-    """
-    Top-level orchestrator: classify ocean(+river, if modelled) as
-    water_like -> discard small isolated components on both the land and
-    water_like side -> weir line extraction directly at the resulting
-    boundary. Returns (weir_gdf, diagnostics) where diagnostics carries
-    everything needed for logging and the diagnostic plot.
+    """Classify water_like, drop small components, trace the weir; return (weir_gdf, diagnostics).
 
-    Args:
-        unprotected_ocean_wetlands: True puts every wetland/lagoon patch
-            linked to the open sea (ocean_linked_wetland_mask) on the
-            seaward side too: it joins water_like, so the coastal dike runs
-            along the patch's LANDWARD edge and the patch itself stays
-            unprotected. The cells stay land otherwise (not sea in
-            zsini_sea_cells, counted in flood metrics). False (default):
-            the dike follows the open-sea boundary itself.
-        channel_mask_gap_free: True when `river_channel_mask` was derived
-            directly from the same burned-DEM raster that was actually fed
-            to hydromt_sfincs as elevation (regular-grid production builds,
-            13_build_sfincs.py) -- excavated extent and channel_mask are
-            then the same set of cells BY CONSTRUCTION, so the 1-cell
-            close_gaps() safety-net dilation below is skipped entirely: it
-            would otherwise push the traced weir line one cell outside the
-            true excavated boundary, leaving a thin un-excavated ring around
-            the whole channel perimeter. False (default) preserves the
-            dilation for an independently-rasterized mask, which can still
-            have genuine sub-cell gaps this safety net exists to catch.
-        water_side_crest_on_grid: Optional per-cell crest (same shape as
-            landuse_on_grid) looked up on the WATER side of every traced
-            edge -- rule modelled_depth_estimation passes its confined,
-            excavated round's own period-max water level here, so each edge
-            holds back exactly the water level simulated right next to it
-            (riverbank, mouth, and the coast near the river plume alike).
-            When provided: the river channel participates in water_like,
-            and each edge's crest is max(water_side_crest_on_grid,
-            crest_elevation_m) -- never below the uniform coastal standard;
-            a NaN (never-wetted) water-side cell falls back to
-            crest_elevation_m, so no edge is ever dropped for a missing
-            value. An all-NaN array therefore gives a uniform
-            crest_elevation_m weir that still includes the riverbanks (the
-            calibration's own confinement rounds). When None (no modelled
-            water level to derive a riverbank dike from): the river channel
-            does NOT participate in water_like at all, so no riverbank weir
-            is built and rivers interact with their floodplain naturally;
-            only the coastal levee is built, with the uniform-crest
-            behavior.
-        freeboard_m: Added uniformly on top of the final crest, after the
-            max() above -- a safety margin absorbing sources of
-            under-protection the crest computation itself doesn't capture
-            (subgrid/discretization roundoff, the calibration's steady-
-            state assumption, etc.). 0.0 (the default) applies no freeboard.
-
-    Every crest is finally rounded UP to the next centimetre
-    (src.surge.ceil_crest), the precision sfincs.weir is written at
-    (src.sfincs_run.write_weir_file) -- never down, so no edge ends up
-    below its computed crest. Until 2026-10-09 crests were rounded UP to the
-    next 0.1 m, the precision hydromt_sfincs' own writer keeps.
+    unprotected_ocean_wetlands: sea-linked wetland/lagoon patches join
+    water_like, so the dike runs along their landward edge; the cells stay
+    land otherwise (not sea in zsini_sea_cells, counted in flood metrics).
+    channel_mask_gap_free: True when river_channel_mask comes from the same
+    burned DEM fed to hydromt_sfincs (regular-grid production builds,
+    13_build_sfincs.py); skips the 1-cell close_gaps() dilation, which would
+    leave an un-excavated ring around the channel.
+    water_side_crest_on_grid: per-cell crest looked up on the water side of
+    each edge (rule 10 passes the confined round's period-max water level).
+    If given, the river channel joins water_like and each crest is
+    max(water side, crest_elevation_m); NaN (never wetted) falls back to
+    crest_elevation_m, so an all-NaN array gives a uniform weir including the
+    riverbanks. If None, no riverbank weir is built (coast only, uniform crest).
+    freeboard_m: added after the max(), for under-protection the crest
+    calculation does not capture (subgrid roundoff, steady-state assumption).
+    Every crest is rounded UP to the next centimetre (src.surge.ceil_crest),
+    the precision sfincs.weir is written at, so no edge falls below its crest.
     """
     ocean_mask = landuse_on_grid == LANDUSE_SEA
 
@@ -785,35 +526,9 @@ def build_coastal_protection_weir(
         water_like_raw, grid, min_component_cells
     )
 
-    # A cell discarded from EITHER side would otherwise become "neither
-    # land_mask nor water_like" -- invisible to the edge tracer
-    # (h_break/v_break require one side True and the other True; a
-    # "neither" cell reads False on both, so no segment is drawn against
-    # it from either direction). Where a discarded component sits AT the
-    # true edge of a larger, still-kept feature (not fully isolated deep
-    # inside the opposite class), that doesn't just skip a ring around the
-    # excluded feature itself -- it also breaks the LARGER feature's own
-    # boundary trace at exactly that point, leaving a dangling gap in what
-    # should still be a continuous coastline/riverbank (confirmed on basin
-    # 4267691: several dangling endpoints traced back to exactly this,
-    # for genuinely small, isolated islands/patches -- distinct from the
-    # diagonal-connectivity artifact discard_small_components' own
-    # 8-connectivity already guards against). Reclassifying a discarded
-    # cell to the OPPOSITE class instead -- a too-small land island
-    # dissolves into the surrounding water_like, a too-small water patch
-    # dissolves into the surrounding land -- keeps land_mask/water_like
-    # exact complements again, so the tracer sees a genuine, continuous
-    # transition at the larger feature's own true edge (or nothing at
-    # all, where the discarded feature was fully isolated) instead of a
-    # hole either way. This is exactly what "no ring around a small
-    # excluded feature" already meant to achieve -- just implemented
-    # without leaving an untraceable gap behind. land_mask_raw/
-    # water_like_raw are mutually exclusive by construction (land_mask_raw
-    # = ~water_like_raw & valid_mask), so the two reclassified sets can
-    # never collide with each other or with the surviving mask on the
-    # opposite side -- computed from the PRE-reclassification land_mask/
-    # water_like explicitly (not chained), so reordering these two lines
-    # later can't silently change which cells get reclassified.
+    # Discarded cells join the opposite class: a cell in neither mask is
+    # invisible to the tracer and would break the larger feature's boundary.
+    # Both sets come from the pre-reclassification masks, so order is irrelevant.
     _land_discarded = land_mask_raw & ~land_mask
     _water_discarded = water_like_raw & ~water_like
     land_mask = land_mask | _water_discarded
@@ -831,45 +546,19 @@ def build_coastal_protection_weir(
             "no weir ring around them"
         )
 
-    # ── protected ocean pockets ────────────────────────────────────────────
-    # Two distinct sources of "still landuse==200 despite the weir already
-    # deciding otherwise":
-    #  (a) GRID-RESOLUTION MISALIGNMENT (the dominant, coastline-wide case):
-    #      the weir is traced on landuse_on_grid -- the native landuse.tif
-    #      (~30 m) resampled via NEAREST-NEIGHBOR onto the much coarser
-    #      SFINCS regular grid (~70 m, rule grid_align_landuse, 09b). That
-    #      resampling necessarily generalizes the true coastline to the coarse grid's
-    #      own cell edges, so land_mask (the model's own "this is the
-    #      protected/dry side" decision, at grid resolution) and the fine
-    #      native landuse.tif disagree right along the coast -- overlaying
-    #      the weir on the native-resolution raster shows native "sea"
-    #      pixels sitting on the land side, continuously, not as isolated
-    #      pockets (confirmed: basin 2433835's own landuse.tif/sea_mask.tif
-    #      have exactly ONE connected sea component at native resolution --
-    #      there is no disconnected "pocket" to find via component analysis
-    #      at all). land_mask (final, post small-component reclassification
-    #      below) IS the ground truth for "the weir-building algorithm
-    #      considers this land" -- trusting it directly, rather than
-    #      re-deriving connectivity, is what actually fixes the overlap:
-    #      correct_sea_mask_from_grid_mask (src/raster.py, called from
-    #      10_depth_estimation_modelled.py) reprojects this mask back onto
-    #      NATIVE resolution and only touches pixels that are STILL
-    #      landuse==200 there, so this naturally scopes down to exactly the
-    #      fringe of mismatch pixels along the coast (an ordinary inland
-    #      cell is never landuse==200 in the first place).
-    #  (b) a separately-ringed pocket: an ocean_mask component large enough
-    #      to survive into water_like but NOT the main open ocean (the
-    #      SINGLE LARGEST water_like component, same convention already
-    #      used for zsini's own isolated-sea-pocket fix in
-    #      13_build_sfincs_skeleton.py) -- the weir walls it off with its
-    #      OWN ring, so it's no longer open sea either, despite staying
-    #      classified water_like (not land_mask) throughout.
-    # Returned so callers can clear these cells from sea to land in
-    # sea_mask.tif (see src.raster.correct_sea_mask_from_grid_mask) --
-    # both for zsini (13_build_sfincs_skeleton.py) and for flood-diagnostic
-    # masking downstream (src.postprocessing reads the same corrected file
-    # directly, since sea_mask already encodes exactly the "is this
-    # genuinely open sea" boolean those functions need).
+    # Protected ocean pockets: cells still landuse==200 although the weir
+    # puts them on the protected side.
+    #  (a) Grid misalignment along the whole coast: the native landuse.tif
+    #      (~30 m) resampled via NEAREST-NEIGHBOR onto the ~70 m SFINCS grid
+    #      (rule grid_align_landuse, 09b) generalizes the coastline, so
+    #      land_mask is taken as ground truth; correct_sea_mask_from_grid_mask
+    #      (src/raster.py) reprojects it to native resolution and touches only
+    #      pixels still landuse==200 there.
+    #  (b) an ocean component surviving into water_like but not the main open
+    #      ocean (the single largest water_like component, as for zsini in
+    #      13_build_sfincs_skeleton.py), walled off by its own ring.
+    # Returned so callers clear these cells from sea to land in sea_mask.tif,
+    # used by zsini and by downstream flood-diagnostic masking.
     water_like_labels, n_water_like_components = grid.connected_components(water_like)
     if n_water_like_components > 0:
         comp_sizes = np.bincount(
@@ -889,23 +578,14 @@ def build_coastal_protection_weir(
             f"{n_separately_ringed:,} ocean-classified (landuse==200) grid cell(s) form their "
             f"own separately-ringed pocket, disconnected from the main open ocean component"
         )
-    # protected_pocket_mask itself (land_mask | separately_ringed_pocket) is
-    # grid-resolution and deliberately broad (essentially the whole
-    # protected-side footprint) -- the actual number of pixels this affects
-    # is only known once it's reprojected onto native landuse.tif resolution
-    # and intersected with landuse==200 there (see relabel_landuse_from_grid_
-    # mask's own return value / 10_depth_estimation_modelled.py's log line),
-    # so no cell count is logged for it here.
+    # protected_pocket_mask is deliberately broad (the whole protected side);
+    # the affected pixel count is only known after reprojection (see
+    # relabel_landuse_from_grid_mask's own return value), so none is logged.
 
     n_final = int(land_mask.sum())
 
-    # Restrict the closure exemption to cells that SURVIVED small-component
-    # discarding above, not raw ocean_mask directly -- a small, disconnected
-    # ocean-classified patch too small to be a real coastline (exactly what
-    # discard_small_components already drops from water_like) would
-    # otherwise still count as "exempt" even though it's no longer part of
-    # water_like at all, stranding it as neither land nor water and
-    # breaking continuity against its forced-land neighbour.
+    # Only ocean cells that survived discarding are exempt; a dropped patch
+    # would otherwise be neither land nor water and break continuity.
     ocean_exempt = water_like & ocean_mask
 
     crest_surface = None
@@ -922,13 +602,8 @@ def build_coastal_protection_weir(
             f"-- flat crest, no per-edge water-side crest given"
         )
     else:
-        # np.fmax (not np.maximum): a NaN water-side cell (never wetted)
-        # falls back to crest_elevation_m, so crest_surface is finite
-        # everywhere. That matters beyond just picking a sensible crest:
-        # seaward_edges_with_values DROPS a segment wherever its value is
-        # NaN, which would otherwise leave a dangling gap in an otherwise
-        # continuous coastline/riverbank (confirmed via basin 2433835: 38
-        # dangling endpoints traced back to exactly this NaN-drop path).
+        # np.fmax: a NaN (never-wetted) cell falls back to crest_elevation_m,
+        # since seaward_edges_with_values drops NaN edges and would leave gaps.
         # float64 so the centimetre-rounded values stay exact in the gpkg.
         crest_surface = ceil_crest(
             np.fmax(water_side_crest_on_grid.astype(float), float(crest_elevation_m))
@@ -953,12 +628,6 @@ def build_coastal_protection_weir(
 
     weir_gdf = build_weir_geodataframe(weir_lines, weir_crests, weir_par1, grid.crs)
 
-    # Vector-space cleanup pass: a small feature attached to a larger, kept
-    # component at a single diagonal-pinch pixel survives discard_small_
-    # components (raster level, above) since it's part of one large,
-    # correctly-kept component there -- but still traces its own tiny
-    # closed ring in this vector output, hanging off the main boundary at
-    # one 4-way pinch vertex. See _remove_small_dikerings' own docstring.
     _dikering_cell_size_m = (
         float(grid.cell_size_m)
         if np.isscalar(grid.cell_size_m)
@@ -980,11 +649,8 @@ def build_coastal_protection_weir(
         "crest_elevation_m": crest_elevation_m,
         "protected_pocket_mask": protected_pocket_mask,
         "ocean_wetland_mask": ocean_wetland,
-        # Per-edge crest bookkeeping (None in the ocean-only branch):
-        # crest_surface is the crest every edge looked up on its water side,
-        # edge_water_side_mask marks which water_like cells were those
-        # water sides -- lets a caller compare a later run's water level
-        # against exactly the crest each edge was given.
+        # None in the coast-only branch; lets a caller compare a later run's
+        # water level against the crest each edge was given.
         "crest_surface": crest_surface,
         "edge_water_side_mask": edge_water_side_mask,
     }

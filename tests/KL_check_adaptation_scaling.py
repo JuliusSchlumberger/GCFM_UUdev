@@ -1,11 +1,9 @@
-"""
-Check the scale-1 strategy expansion (00_common.smk: strategy_def_for) and
-the run-time resolver (src/adaptation_scaling.py: resolve_forcing_params)
-on an existing results folder, without running Snakemake.
+"""Print the resolved adaptation parameters per strategy and scenario.
 
-Prints, for every strategy x scenario, the concrete crest/discharge values a
-real 18a/18b job would use, plus the resolver's own log lines (matched weir
-segments, where the river maximum sits, ...).
+Runs the strategy expansion (00_common.smk: strategy_def_for) and the resolver
+(src.adaptation_scaling.resolve_forcing_params) on an existing results folder
+without Snakemake, printing the crest/discharge values an 18a/18b job would use
+and the resolver's log lines.
 
 Usage (repo root, hmt_sfincs_dev env):
     python tests/check_adaptation_scaling.py D:/GCFM_UU/results/2433835_V5_bigpoly_manual coast_500 river_500
@@ -26,8 +24,9 @@ RAW_DATA_ROOT = "D:/GCFM_UU/raw_data"
 
 
 def load_strategy_expansion():
-    """Execute only the strategy block of 00_common.smk against the real
-    config files -> its namespace (STRATEGY_DEFS, strategy_def_for, ...).
+    """Exec the strategy block of 00_common.smk and return its namespace.
+
+    The block is cut out by two marker strings in 00_common.smk.
     """
     src = (REPO / "workflow/rules/00_common.smk").read_text(encoding="utf-8")
     block = src[
@@ -56,6 +55,7 @@ def load_strategy_expansion():
 
 
 def main(results, scenarios):
+    """Print the resolved measure parameters for every strategy x scenario."""
     results = Path(results)
     ns = load_strategy_expansion()
     logging.basicConfig(

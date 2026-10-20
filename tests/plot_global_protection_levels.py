@@ -1,18 +1,10 @@
-"""
-plot_global_protection_levels.py — Global choropleth maps of existing flood
-protection standards (design return period, years) by country, for river and
-coastal hazards separately, from the FLOPROS database.
+"""Map FLOPROS flood protection standards by country, for river and coast.
 
-This is standalone: unlike the per-basin get_protection_levels rule (04), it
-does not depend on any basin/delta having been processed by the pipeline --
-it only reads the raw FLOPROS table (data_catalogue "protection_levels_flopros")
-directly, aggregates it to country level (median of a country's sub-national
-FLOPROS units per hazard), and renders it against world country boundaries
-(Natural Earth "admin_0_countries", fetched via cartopy -- cached locally
-after the first run). Countries with no FLOPROS value for a hazard are shown
-grey, not defaulted to some assumed protection level (that default/fallback
-behaviour belongs to the per-basin forcing correction in
-src.protection_levels.identify_dominant_protection, not to this diagnostic).
+Values are design return periods (years): the median of a country's sub-national
+FLOPROS units per hazard, on Natural Earth "admin_0_countries" (via cartopy,
+cached after the first run). Needs only the raw FLOPROS table, no basin run.
+Countries without a value are grey, not given the per-basin default of
+src.protection_levels.identify_dominant_protection.
 
 Usage:
     conda run -n hmt_sfincs_dev python tests/plot_global_protection_levels.py

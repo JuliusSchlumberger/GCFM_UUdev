@@ -1,17 +1,8 @@
-"""
-18b_adapt_post.py -- Postprocessing adaptation method: apply a strategy's
-measures directly to the baseline scenario's already-computed max flood
-depth raster (cheap, approximate) instead of rerunning SFINCS.
+"""Apply a strategy's measures to the baseline max flood depth raster, without SFINCS.
 
-Each measure in adaptation_method_post.dispatch_rules is FILE-based: it
-reads flood_map_path + scenario_root/attribution_mask.tif, writes a new
-max_flood_depth.tif under output_dir, and returns {"out_raster": str}. This
-script threads that path from one measure to the next -- the first measure
-reads the baseline's own max_flood_depth.tif, every later measure reads the
-PREVIOUS measure's own output. Since output_dir is the same for every
-measure in the strategy, every one of them writes to the same
-output_dir/max_flood_depth.tif -- which IS output.flood_map_tif -- so the
-final chained path already sits where it needs to be, no separate copy step.
+Run by rule adapt_metrics_post (cheap, approximate). Measures are chained: each
+reads the previous max_flood_depth.tif plus scenario_root/attribution_mask.tif
+and writes output_dir/max_flood_depth.tif, which is output.flood_map_tif.
 """
 
 import json
@@ -28,7 +19,7 @@ from src.postprocessing import compute_max_inundation, compute_risk_metrics
 
 log = setup_logging(snakemake.log[0])
 
-# Params -----------------------------------------------------------------------
+# Params
 measures_def         = snakemake.params.measures_def
 adaptation_root      = Path(snakemake.params.adaptation_root)
 baseline_sfincs_root = Path(snakemake.params.baseline_sfincs_root)
@@ -36,9 +27,7 @@ skeleton_root        = Path(snakemake.params.skeleton_root)
 hmin                 = float(snakemake.params.hmin)
 urban_code           = int(snakemake.params.urban_code)
 
-# Fill in the params adaptation_strategies.yml derives from this scenario's own
-# baseline run -- same resolver as 18a_adapt_pre.py, so pre and post always
-# see the same crest/discharge values. See src/adaptation_scaling.py.
+# Same resolver as 18a_adapt_pre.py, so pre and post see the same crest/discharge values.
 strategy_def = resolve_forcing_params(
     snakemake.params.strategy_def,
     baseline_sfincs_root=baseline_sfincs_root,
@@ -48,19 +37,13 @@ strategy_def = resolve_forcing_params(
     log=log,
 )
 
-# snakemake.input.baseline_sfincs_map_nc / .attribution_mask_tif / .measure_data
-# are Snakemake-only dependency tracking -- read implicitly by
-# compute_max_inundation(baseline_sfincs_root, ...) and by each measure's own
-# scenario_root/attribution_mask.tif lookup below, never opened directly here.
-# .baseline_excess_volume IS opened directly, but only for water_retention
-# (below).
+# Inputs baseline_sfincs_map_nc, attribution_mask_tif and measure_data are for
+# dependency tracking only; they are read indirectly via baseline_sfincs_root.
 
 output_dir = Path(snakemake.output.metrics_csv).parent
 output_dir.mkdir(parents=True, exist_ok=True)
 
-# apply each measure in the strategy, in order, threading the flood map
-# path -- and, for retreat, the landuse path -- from one measure's own
-# output to the next
+# Thread the flood map path (and, for retreat, the landuse path) through the measures.
 flood_map_path = str(snakemake.input.baseline_flood_map_tif)
 landuse_path = str(snakemake.input.landuse)
 
@@ -71,10 +54,7 @@ for measure_type, raw_params in strategy_def["measures"].items():
         for k, v in raw_params.items()
     }
     if measure_type == "water_retention":
-        # baseline_excess_volume is never strategy-configured -- rule
-        # attribution_mask (18c) computes it once per basin x scenario (same
-        # fixed reference apply_water_retention's preprocessing sibling reads,
-        # see src.postprocessing.compute_excess_volume's own docstring).
+        # From rule attribution_mask, the same reference the pre method reads.
         with open(snakemake.input.baseline_excess_volume) as fh:
             resolved["baseline_excess_volume"] = json.load(fh)["baseline_excess_volume"]
     log.info(f"Applying measure {measure_type} with params {resolved}")
@@ -94,10 +74,7 @@ for measure_type, raw_params in strategy_def["measures"].items():
     flood_map_path = result["out_raster"]
     landuse_path = result.get("landuse_path", landuse_path)  # only retreat sets this
 
-# Metrics on the final chained raster 
-# Only da_hmax ever gets persisted to disk -- da_dep (the land-domain
-# reference grid compute_risk_metrics also needs) has to be re-derived the
-# same way rule 17 does.
+# da_dep (land-domain reference grid) is not on disk; re-derive it as rule 17 does.
 _, da_dep = compute_max_inundation(
     baseline_sfincs_root,
     skeleton_root,
@@ -107,10 +84,8 @@ _, da_dep = compute_max_inundation(
 if da_dep is None:
     raise RuntimeError("bed level unavailable — did the baseline event run (rule 16) finish?")
 
-# masked=True is required here: the ported measures write nodata via
-# rasterio with a literal fill value (e.g. -9999), and compute_risk_metrics
-# relies on da_hmax.notnull() to tell flooded from dry cells -- without
-# masking, every dry (nodata) cell would read as "flooded".
+# masked=True: measures write a literal nodata (e.g. -9999) and
+# compute_risk_metrics treats every non-null cell as flooded.
 da_hmax = rxr.open_rasterio(flood_map_path, masked=True).squeeze(drop=True)
 
 metrics = compute_risk_metrics(
@@ -121,11 +96,7 @@ metrics = compute_risk_metrics(
     urban_code=urban_code,
 )
 
-# Inundation ratio plot -- mirrors rule 16's own "Check 1", but built from
-# this method's own final adapted raster (da_hmax/da_dep above) instead of
-# a live SFINCS run's zsmax: the post method never reruns SFINCS, so there
-# is no zsmax to source it from. plot_inundation_check itself only needs a
-# da_hmax DataArray, so it's reused unmodified.
+# Inundation ratio plot as rule 16's Check 1, from the adapted raster (no zsmax here).
 n_land    = int(da_dep.notnull().sum().item())
 n_flooded = int(da_hmax.notnull().sum().item())
 plot_inundation_check(

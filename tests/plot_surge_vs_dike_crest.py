@@ -1,32 +1,12 @@
-"""
-plot_surge_vs_dike_crest.py — Debugging aid: "surprisingly little flooding at
-a given surge RP" almost always traces back to one question first — does the
-design surge level at that RP actually clear the coastal dike/weir crest
-built into the model? This compares the two directly, basin-level, with NO
-dependency on any particular scenario run having been executed (surge levels
-come from surge_forcing.nc's own COAST-RP table; the weir crest comes from
-whatever was actually built into the model, both basin-level and
-scenario-independent).
+"""Compare per-station design storm tide per RP with the built coastal weir crest.
 
-Reads:
-  - {basin_id}/preprocessing_inputs/forcing/surge_forcing.nc (falls back to
-    the pre-reorg {basin_id}/inputs/forcing/surge_forcing.nc path) — the
-    same storm_tide_rp_table + station_baseline COAST-RP lookup production
-    uses (src.surge.lookup_storm_tide_at_rp), so this is exactly what a
-    scenario's own surge_rp would resolve to, per station.
-  - The basin's built coastal protection weir gpkg (elevation column, one
-    row per weir segment) — tries the current sfincs_skeleton/ location
-    first, then older pre-reorg locations, since local results directories
-    can lag behind the current pipeline layout.
-  - coastal_protection_crest_m from surge_forcing.nc — the FLAT, per-basin
-    FLOPROS design crest; + config freeboard_m and rounded UP to 0.1 m it is
-    the floor every built weir segment sits at or above (see
-    src.protection_weir.build_coastal_protection_weir's own docstring):
-    pure-coastal weir segments equal that floor exactly; segments holding
-    back a higher simulated water level (river banks, the mouth) are pushed
-    higher -- so the built weir's own min matches this floor while its max
-    can be dominated entirely by inland river reaches that have nothing to
-    do with the coastal surge at all.
+Basin-level, needs no scenario run. Storm tide comes from surge_forcing.nc's
+COAST-RP table via src.surge.lookup_storm_tide_at_rp, as a scenario's surge_rp
+resolves. coastal_protection_crest_m is the flat per-basin FLOPROS design crest;
+plus freeboard_m, rounded up to 0.1 m, it is the floor of every built weir
+segment. Pure-coastal segments sit at that floor; segments holding back higher
+river water (banks, the mouth) are higher, so the weir's max can be set by
+inland reaches unrelated to surge. Older results layouts are tried as fallbacks.
 
 Usage:
     conda run -n hmt_sfincs_dev python tests/plot_surge_vs_dike_crest.py [basin_id] [scenario_surge_rp]
@@ -35,8 +15,8 @@ Usage:
 
 from __future__ import annotations
 
-import os
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -63,10 +43,7 @@ with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
 with open(REPO_ROOT / "config" / "scenarios.yml") as fh:
     SCENARIO_DEFS = yaml.safe_load(fh) or {}
-# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
-# Set it once in PowerShell, then restart your terminal (see
-# CONTRIBUTING.md "Local machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
 RESULTS_DIR = Path(os.environ["GCFM_RESULTS_DIR"])
 FIGS_DIR = REPO_ROOT / "figs" / "surge_vs_dike_crest"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -106,22 +83,17 @@ weir_candidates = (
 weir_path = _first_existing(weir_candidates)
 log.info(f"coastal_protection_weir.gpkg: {weir_path}")
 
-# ── surge: per-station storm tide at every COAST-RP tabulated RP ────────────
-# surge_forcing.nc's own rp_level/baseline_m are MDT-only by design (SLR is
-# stored as a dimensionless slr_fingerprint, not baked in -- see
-# src.surge.apply_slr_fingerprint) so that this basin-level file never
-# changes when only the slr_m target changes. This script isn't
-# snakemake-driven, so it reads the CURRENT scenarios.yml target itself
-# (slr_m is per-scenario, see scenario_params in 00_common.smk -- this uses
-# the "default" scenario's own value since this script isn't scenario-aware)
-# and applies it the same way 13_build_sfincs.py does at real build time, to
-# show the actual, currently-configured SLR-inclusive levels.
+# surge: per-station storm tide at every COAST-RP tabulated RP
+# surge_forcing.nc's rp_level/baseline_m are MDT-only (SLR is stored as a
+# dimensionless slr_fingerprint, see src.surge.apply_slr_fingerprint). The
+# "default" scenario's slr_m from scenarios.yml is applied as
+# 13_build_sfincs.py does at build time.
 surge_ds = xr.open_dataset(surge_forcing_path, decode_times=False)
 table_rps = surge_ds["table_rp"].values.astype(float)
 n_stations = surge_ds.sizes["station"]
 coastal_protection_crest_raw_m = float(surge_ds["coastal_protection_crest_m"].values)
-# The floor as actually built (src.protection_weir): + freeboard_m, rounded
-# up to the next 0.1 m -- same rounding the storm-tide levels below get.
+# The floor as built (src.protection_weir): + freeboard_m, rounded up to the
+# next 0.1 m, as the storm-tide levels below.
 _freeboard_m = float(config["river_processing"]["river_depth_modelling"]["freeboard_m"])
 coastal_protection_crest_m = float(
     ceil_crest(coastal_protection_crest_raw_m + _freeboard_m)
@@ -157,7 +129,7 @@ for rp, lo, mu, hi in zip(table_rps, rp_min, rp_mean, rp_max):
     )
     log.info(f"{rp:>7.0f}   {lo:+.3f}   {mu:+.3f}   {hi:+.3f}{flag}")
 
-# ── built weir crest ──────────────────────────────────────────────────────
+# built weir crest
 weir_gdf = gpd.read_file(weir_path)
 weir_elev = weir_gdf["elevation"].to_numpy(dtype=float)
 n_at_floor = int(np.isclose(weir_elev, coastal_protection_crest_m, atol=0.01).sum())
@@ -169,7 +141,7 @@ log.info(
     f"river reach via max(coastal, river_crest))"
 )
 
-# ── scenario RP under investigation ──────────────────────────────────────────
+# scenario RP under investigation
 if not np.any(np.isclose(table_rps, SCENARIO_SURGE_RP)):
     raise ValueError(
         f"surge RP {SCENARIO_SURGE_RP} not tabulated in COAST-RP ({table_rps.tolist()})"
@@ -185,18 +157,14 @@ log.info(
     f"({'OVERTOPS' if scenario_levels.mean() > coastal_protection_crest_m else 'below crest -- no coastal overtopping expected'})"
 )
 
-# ── plot ──────────────────────────────────────────────────────────────────────
-# Two panels, DIFFERENT y-scales on purpose: the built weir's full elevation
-# range is dominated by inland, river-crest-driven segments (up to
-# {weir_elev.max()} m here) that have nothing to do with coastal surge at
-# all -- sharing one axis with the surge levels (all under ~1 m) would
-# squash the actual question ("does surge clear the COASTAL crest?") down
-# to an invisible sliver at the bottom of the chart.
+# plot
+# Separate y-scales: the weir's full range is set by inland river-crest
+# segments, which would squash surge levels (under ~1 m) to a sliver.
 fig, (ax_zoom, ax_ctx) = plt.subplots(
     1, 2, figsize=(13, 6), gridspec_kw={"width_ratios": [2.2, 1]}
 )
 
-# -- left panel: zoomed on the actual coastal question --------------------
+# left panel: zoom on the coastal crest
 ax_zoom.fill_between(
     table_rps,
     rp_min,
@@ -262,7 +230,7 @@ ax_zoom.set_title("Zoomed: surge vs. coastal design crest")
 ax_zoom.legend(loc="best", fontsize=8, framealpha=0.9)
 ax_zoom.grid(True, alpha=0.3, linewidth=0.5, which="both")
 
-# -- right panel: full built-weir crest distribution, for context ---------
+# right panel: full built-weir crest distribution
 ax_ctx.hist(weir_elev, bins=40, orientation="horizontal", color="firebrick", alpha=0.6)
 ax_ctx.axhline(coastal_protection_crest_m, color="black", linestyle="--", linewidth=1.5)
 ax_ctx.set_xlabel("Weir segment count")

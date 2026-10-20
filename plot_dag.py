@@ -1,18 +1,8 @@
-"""
-plot_dag.py — Generate DAG visualisations for the preprocess and build targets.
+"""Render Snakemake rule graphs and job DAGs for pipeline targets to figs/dag/.
 
-Run from the project root:
-    python plot_dag.py
-
-Requirements:
-    Graphviz (dot command) — install via:
-        conda install graphviz -c conda-forge
-
-Outputs (written to figs/dag/):
-    *_rulegraph.svg  — rule-level graph  (compact, best for understanding structure)
-    *_dag.svg        — full job-level DAG (one node per job; large for many basins)
-
---forceall makes Snakemake show every rule even when outputs already exist.
+Run from the project root (`python plot_dag.py`); needs Graphviz `dot`
+(conda install graphviz -c conda-forge). Writes <target>_rulegraph.<fmt> and
+<target>_dag.<fmt> (one node per job; large for many basins).
 """
 
 import argparse
@@ -25,10 +15,11 @@ from pathlib import Path
 def render_graph(
     target: str, graph_flag: str, suffix: str, out_dir: Path, fmt: str
 ) -> None:
+    """Render one Snakemake graph of target through Graphviz; warn on failure."""
     out_file = out_dir / f"{target}_{suffix}.{fmt}"
     print(f"  {graph_flag}  →  {out_file}")
 
-    # Run snakemake and capture DOT output on stdout; discard its own logging (stderr).
+    # --forceall shows every rule even when outputs exist; DOT is on stdout.
     result = subprocess.run(
         ["snakemake", target, graph_flag, "--forceall", "--quiet"],
         capture_output=True,
@@ -38,7 +29,6 @@ def render_graph(
         print(f"  [warning] snakemake exited with code {result.returncode} — skipping.")
         return
 
-    # Pipe the DOT text into graphviz dot.
     dot_result = subprocess.run(
         ["dot", f"-T{fmt}", "-o", str(out_file)],
         input=result.stdout,
@@ -52,6 +42,7 @@ def render_graph(
 
 
 def main() -> None:
+    """Render the graphs for every requested target."""
     parser = argparse.ArgumentParser(
         description="Plot Snakemake DAGs for pipeline targets."
     )
@@ -82,7 +73,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # ── check dependencies ────────────────────────────────────────────────────
     if not shutil.which("snakemake"):
         sys.exit("Error: 'snakemake' not found. Activate your conda environment first.")
     if not shutil.which("dot"):
@@ -94,7 +84,6 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── generate graphs ───────────────────────────────────────────────────────
     for target in args.targets:
         print(f"\nTarget: {target}")
         render_graph(target, "--rulegraph", "rulegraph", out_dir, args.format)

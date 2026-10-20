@@ -1,21 +1,12 @@
 rule get_protection_levels:
     """
-    Identify the dominant (largest-area) existing flood-protection standard
-    (FLOPROS, joined to WRI Aqueduct's geogunit_107 admin units) inside the
-    delta polygon, separately for riverine and coastal hazards, and produce
-    a diagnostic map of the protection return period in the area.
+    Find the dominant flood-protection standard in the delta, per hazard, and map it.
 
-    Depends only on the delta polygon (rule split_delta_polygons, 01), not
-    the model domain/river network — it is not "static terrain data" and
-    doesn't need to be grouped with elevation/landuse/roughness (rules 05a-05c).
-    The plot's own background (2026-08-06: landuse-derived, not OSM anymore
-    -- see 04_get_protection_levels.py's own comment) is vectorized directly
-    from the raw global landuse catalogue source, deliberately NOT from rule
-    get_land_polygons' (03) own per-basin output, to avoid pulling in the
-    model-domain dependency chain (02/03) this rule otherwise avoids entirely.
-    Always runs and always produces its outputs: coastal_rp_yr feeds the
-    coastal protection crest (rule get_boundary_forcings, 07), and rule
-    modelled_depth_estimation (10) consumes riverine_rp_yr when finite.
+    Largest-area FLOPROS standard (joined to WRI Aqueduct geogunit_107 admin
+    units) for riverine and coastal hazards. Depends only on the delta polygon;
+    the plot background is vectorized from the raw global land use so the
+    model-domain chain (02/03) is not pulled in. coastal_rp_yr feeds the coastal
+    protection crest (rule 07); rule 10 uses riverine_rp_yr when finite.
     """
     input:
         specific_delta  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),

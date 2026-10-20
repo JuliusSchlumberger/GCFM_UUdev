@@ -1,3 +1,5 @@
+"""Find the delta's dominant FLOPROS protection level; run by rule get_protection_levels."""
+
 import json
 import tempfile
 from pathlib import Path
@@ -41,14 +43,10 @@ with open(snakemake.output.protection_levels, "w") as f:
     json.dump(summary, f, indent=2)
 log.info(f"Written: {snakemake.output.protection_levels}")
 
-# plot_protection_levels' own background needs a vector land-polygon file,
-# not the raw landuse raster -- vectorized here into a throwaway temp file
-# (never a declared Snakemake output) rather than depending on rule
-# get_land_polygons' (03) own per-basin output, which this rule deliberately
-# does NOT depend on (see this script's own module docstring / the rule's
-# docstring: protection-level lookup depends only on the delta polygon, not
-# the model domain chain). margin_frac matches plot_protection_levels' own
-# default so the vectorized window fully covers its expanded display bbox.
+# Land background vectorized into a temp file rather than read from rule 03:
+# protection-level lookup depends only on the delta polygon, not the model
+# domain chain. The 0.5 margin matches plot_protection_levels' margin_frac
+# default so the window covers its expanded display bbox.
 lon_min, lat_min, lon_max, lat_max = delta_polygon.bounds
 _margin = max(lon_max - lon_min, lat_max - lat_min) * 0.5
 land_bounds = (lon_min - _margin, lat_min - _margin, lon_max + _margin, lat_max + _margin)

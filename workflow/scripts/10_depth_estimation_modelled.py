@@ -1,82 +1,40 @@
-"""
-10_depth_estimation_modelled.py -- SFINCS-based river depth and riverbank
-weir crest calibration, the only way river depth and dike crests are set.
+"""Calibrate river depth and riverbank weir crests with SFINCS; run by rule modelled_depth_estimation.
 
 Three fixed-duration runs of one minimal, disposable SFINCS model (regular
-grid only, but otherwise matching the production model's own subgrid setup
--- see the subgrid section below), all with the SAME weir geometry the
-production model uses (src.protection_weir.build_coastal_protection_weir --
-coast AND river banks merged into one water_like boundary, not a river-only
-confinement traced by a separate function) and the same forcing: a steady
-discharge equal to the basin's protection-level return period (bankfull as
-a fallback) -- linearly RAMPED UP from each crossing's own
-bankfull_discharge over river_processing.river_depth_modelling.
-discharge_ramp_hours, then held constant for the rest of the run, rather
-than forced as an instantaneous step from t=0 (the calibration discharge is
-often several times bankfull, and stepping straight to it into a channel
-that starts near-dry produces a startup shock wave that can persist/
-oscillate for the entire run; mirrors production's own bankfull-lead-in-
-then-ramp hydrograph, src.river_forcing.build_design_discharge_matrix/
-sinusoidal_wave, just linear here since calibration only needs to reach and
-hold the peak) -- plus a steady baseline_m coastal boundary (see below).
+grid, production subgrid setup), all with the production weir geometry
+(src.protection_weir.build_coastal_protection_weir: coast and river banks in
+one water_like boundary). River forcing: a steady discharge at the protection
+RP (bankfull as fallback), ramped linearly from each crossing's bankfull over
+discharge_ramp_hours: a step to several times bankfull into a near-dry channel
+gives a startup shock that can oscillate for the whole run.
 
-Round 0 -- confined, un-excavated. Every weir edge, coastal and riverbank
-alike, sits at the artificially high weir_crest_m (e.g. 1000 m): even with
-the steady baseline_m boundary, the confined river's water level can exceed
-a low real coastal crest right at the coast/river transition near the
-mouth, leaking onto the floodplain through the coastal side of the same
-merged boundary -- so confinement must be uniform. At every centerline
-cell (src.river_depth_calibration.compute_excavation_depth):
+Round 0 -- confined, un-excavated, calm sea at baseline_m. Every edge, coast
+too, at weir_crest_m (e.g. 1000 m): the confined level can exceed a low real
+coastal crest near the mouth and leak. Method modelled, per centerline cell
+(src.river_depth_calibration.compute_excavation_depth):
 
     rise   = period_max_water_level - DEM_at_cell
     rivdph = excavation_fraction * max(rise, 0)
 
-then the mouth rules below.
+then the mouth and no-dig rules. Method gvf: steady gradually-varied flow
+fitted to SWORD water levels at the mean discharge (src.gvf), no SFINCS run.
 
-Round 1 -- confined, excavated, with the coastal protection storm tide. The
-channel is burned to round 0's rivdph, still behind the same 1000 m walls,
-and the sea boundary now carries a storm tide at the coastal protection RP
-(FLOPROS; production's own wave shape -- the average tide plus the surge
-shape, peaking on tidal high water once the river is at full discharge; a
-half-cosine if surge_forcing.nc has no storm-tide hydrograph components).
-With no overbank relief anywhere, this round's water
-level is the highest the calibration discharge and the protection-level
-storm tide reach, including the coast's own amplification of the boundary
-level (shoaling, reflection off the dike) -- so it IS the crest that
-contains them, with no iteration needed. Every production weir edge gets its
-own crest from the water level on its own water side (the channel or ocean
-cell it borders):
+Round 1 -- confined, excavated, sea boundary a storm tide at the FLOPROS
+coastal RP (average tide plus surge shape, peaking on tidal high water once the
+river is at full discharge; a half-cosine without hydrograph components). With
+no overbank relief this is the highest level reached, including coastal
+amplification (shoaling, reflection off the dike), so per edge, no iteration:
 
     crest(edge) = ceil_cm( max(zsmax(water-side cell),
                                 coastal_protection_crest_m) + freeboard_m )
 
-(zsmax: SFINCS's own maximum over every computational timestep of the
-run -- see _read_period_max_zs_field. ceil_cm: rounded UP to the next
-centimetre, src.surge.ceil_crest, the precision sfincs.weir is written at,
-src.sfincs_run.write_weir_file -- so a crest is never below the zsmax it
-came from.)
+zsmax: SFINCS's maximum over every computational timestep. ceil_cm: rounded
+up to the next centimetre (src.surge.ceil_crest), the sfincs.weir precision,
+so a crest is never below its zsmax. A never-wetted water side falls back to
+coastal_protection_crest_m, so no edge is dropped.
 
-One rule for riverbanks, the mouth, discharge-injection cells and the open
-coast alike (a coastal edge's crest is the storm-tide level SFINCS reaches
-at that stretch of dike, floored at the FLOPROS coastal crest). A never-
-wetted water-side cell falls back to coastal_protection_crest_m, so no edge
-is ever dropped.
-
-Round 2 -- verification. Same excavated geometry and forcing (discharge +
-storm tide), now with the real production weir. Changes nothing: it only
-reports every edge whose own water side still exceeds its crest (in theory
-none -- round 1 had no water above these crests -- so anything reported
-comes from flow the finite crests redistribute) and shows any resulting
-flooding in its max-inundation map.
-
-Replaces an iterative scheme (removed 2026-09-10): round 0 used to split
-the un-excavated rise between excavation and a crest, then up to
-n_correction_iterations coupled rounds raised that crest by
-min_crest_increment_per_round_m, snapped it back down and re-verified it,
-with separate coastal and river-boundary probe corrections and a hardcoded
-0.5 m calibration freeboard. It only needed to iterate because it guessed
-the crest from the UN-excavated water level; measuring the crest after
-excavation, still confined, gets it in one run.
+Round 2 -- verification with the production weir. Changes nothing; reports
+every edge whose water side exceeds its crest.
 
 period_max_water_level (excavation depth, per-cell diagnostics) is each
 cell's own MAXIMUM simulated water level over the entire run
@@ -89,155 +47,25 @@ crest only needs the worst-case (peak) forced water level, which the period
 maximum gives directly, oscillation or not, with no convergence check,
 retry, or restart-extension logic at all.
 
-For the excavation depth, each centerline cell's own water level is not
-simply the single grid cell the centerline happens to intersect (a noisy,
-non-representative sample -- most strikingly a sharp local spike right at
-the seed reach's own discharge-injection cell) but the MAX across that
-cell's own channel CROSS-SECTION: the contiguous channel_mask run through
-the cell along its own grid row vs. its own grid column, whichever is
-SHORTER (extended by one cell on each side to also reach the adjacent land
-cell the weir itself sits on) -- see _read_cross_section_period_max_zs.
-Deliberately a simple axis-aligned comparison, not a true reach-normal
-cross-section. The weir crest instead reads SFINCS's own zsmax field
-directly, one water-side cell per edge (_read_period_max_zs_field).
+A centerline cell's water level is the MAX across its channel cross-section:
+the shorter of its row and column channel_mask runs, extended one cell each
+side to the land cell the weir sits on. Axis-aligned, not reach-normal.
 
-Mouth reach(es) (n_rch_dn == 0, topologically the network's own real
-coastal outlet(s) -- NOT the same thing as a delta-outline outflow point,
-see below) have their own last (most downstream, max along_m) cell
-hard-forced to zero excavation (rivdph=0, bed=natural bathymetry) -- that
-coastal endpoint's BED is a real physical constraint (the actual seabed),
-not a calibration result. The mouth's CREST needs no special case: its
-edges get their water level like every other edge.
+Mouth reaches (n_rch_dn == 0): the last cell gets rivdph=0 (bed = natural
+bathymetry). Upstream cells shallower than that bed are floored to it, walking
+upstream until a cell is already deeper or a reach has zero or several
+upstream neighbours. Delta-outline outflow points get a free outflow boundary
+(mask=3), not mouth treatment.
 
-Every OTHER cell -- in the mouth reach itself, and however far upstream is
-needed -- keeps its own completely normal per-cell round-0 bed, UNLESS that
-normal bed is shallower than the coastal endpoint, in which case it's
-floored down to match it. Rationale: a real channel shouldn't get shallower
-right before it meets the sea (the same discharge would then have to
-accelerate through a narrower cross-section immediately before the
-outlet) -- but this floor must stop being applied the first time, walking
-upstream, that the normal per-cell bed is already at least as deep as the
-coastal endpoint on its own; otherwise every unrelated, far upstream reach
-with a genuinely shallower natural requirement would get needlessly forced
-deep too. Implemented as a stateful walk starting at the coast (reach by
-reach, via the network's own single-upstream-neighbour adjacency, since
-SWORD guarantees a mouth has exactly one upstream neighbour) that stops
-permanently -- for that entire mouth's own path -- the first time it finds
-a cell that doesn't need clamping, or hits a reach with zero or more than
-one upstream neighbour (headwater or confluence).
+Elevation: the coarse dep is elevation_conditioned_sfincs_grid.tif, the same
+raster rule 13 uses; the subgrid uses native elevation_conditioned.tif. Rounds
+1-2 burn the channel once on the subgrid pixel grid; channel cells' main-grid
+dep is its per-cell mean. Rule 13 imports both rasters and the weir as-is.
 
-Separately, a non-seed, non-mouth, non-bifurcation reach that crosses the
-delta polygon's own outline (identify_delta_outflow_points, rule
-clean_river_network) is a genuine place flow exits the modelled network
-WITHOUT reaching a real coastal mouth -- e.g. a distributary clipped by
-the domain boundary in a complex, multi-channel delta. This gets a free
-outflow boundary (mask=3) instead of any mouth-style bed treatment (there
-is no real seabed there, just an arbitrary domain edge) -- see the mask
-setup below. Without it, such a reach would be walled off like ordinary
-land by the weir/domain-edge closure, so its confined water level -- and
-therefore its crest -- would climb chasing water that in production simply
-leaves the domain there.
-
-The coastal boundary starts every round at baseline_m (mean sea level in
-model coordinates, MDT-corrected, read from surge_forcing.nc -- the level
-the sea starts at via zsini, as in production). Round 0 holds it there;
-rounds 1 and 2 raise it as a storm tide at the coastal protection RP (see
-round 1 above; the calm-sea boundary is kept if no coastal protection RP is
-known). The river is a steady calibration discharge throughout.
-
-Rounds 1 and 2 burn using each CELL's own rivdph directly as a
-burn_river_channel anchor (rivbed = dem_at_cell - rivdph), rather than a
-per-reach scalar -- every cell already carries its
-own calibrated value, so burn_river_channel's existing per-reach interp1d
-does the along-reach (and, via its neighbour-anchor-borrowing, cross-reach-
-junction) smoothing directly from real calibration data, not DEM shape
-alone.
-
-See src.river_depth_calibration's module docstring. This model is
-intermediate/disposable -- rule 13 builds the production model separately
-from this rule's outputs: the burned river channel and the traced weir (the
-exact weir round 2 verified, imported as-is -- rule 13 never re-traces it).
-
-Elevation: uses the SAME two conditioned-DEM layers rule 13's production
-build does -- the shared SFINCS-grid-resolution raster (rule
-enforce_river_monotonicity's second output, elevation_conditioned_sfincs_grid.tif)
-as this model's own coarse sf.elevation.create() background, and the
-native-resolution elevation_conditioned.tif for the subgrid table's fine
-sub-cell detail (subgrid genuinely needs finer-than-grid-cell resolution;
-the coarse layer would just duplicate one value across every sub-cell).
-Using the SAME coarse raster rule 13 uses (rather than each independently
-letting HydroMT resample from the native file) guarantees calibration and
-production sit on the identical background elevation. Rounds 1 and 2
-excavate this same background within the shared channel_mask corridor,
-using burn_river_channel ONCE, on the model's own subgrid pixel grid (main
-grid subdivided by nr_subgrid_pixels): that raster is the subgrid table's
-channel source, and the main-grid "dep" of the channel cells is its
-per-cell mean (src.river_burn.mean_elevation_on_coarse_grid). Rule 13
-imports both files directly, without re-burning anything itself, so
-production runs on exactly the channel the crests were calibrated with.
-
-Inputs
-------
-elevation_conditioned              Native-resolution conditioned DEM (rule
-                                    enforce_river_monotonicity, 09) --
-                                    subgrid's own fine source, and the
-                                    terrain the excavation is floored
-                                    against.
-elevation_conditioned_sfincs_grid  SFINCS-grid-resolution conditioned DEM
-                                    (rule enforce_river_monotonicity's
-                                    second output) -- this model's own
-                                    sf.elevation.create() base layer
-                                    (round 0), and the excavation
-                                    background for rounds 1 and 2.
-surge_forcing                      surge_forcing.nc (rule 07) -- baseline_m
-                                    (calm-sea boundary and start level),
-                                    the COAST-RP tables for rounds 1-2's
-                                    protection-level storm tide, and
-                                    coastal_protection_crest_m, the
-                                    production weir's crest floor.
-
-Outputs
--------
-river_network_depth_estimated  Same reach set, rivdph replaced with the
-                          per-reach MEDIAN of its own cells' excavation
-                          depth, plus a weir_crest_calibrated column (per-
-                          reach median of max(round 1's cross-section water
-                          level, coastal crest) + freeboard_m) -- a summary
-                          for inspection only: production uses the traced
-                          weir file, whose crests are per edge.
-river_burned_subgrid, river_burned_dem_sfincs_grid
-                          Round 0's excavation, burned on the subgrid pixel
-                          grid, and its per-cell mean on the SFINCS grid
-                          (rule 13 imports both directly).
-coastal_protection_weir   The traced production weir, per-edge crests (see
-                          round 1 above).
-zsini_sea_cells           Real open-sea cells on this rule's own grid,
-                          weir-aware (see its own section below).
-plot_calibration          Diagnostic: reaches colored by calibrated depth
-                          (per-reach median).
-plot_water_level_timeseries  Water level over time at one representative
-                          cell per reach (nearest that reach's own along_m
-                          midpoint) (round 2).
-plot_max_inundation       Max inundation depth map (round 2) -- land
-                          flooding here means some edge was overtopped.
-animation_flood_progress  Instantaneous depth animation (MP4, round 2).
-plot_crest_gap_map        Every edge's crest minus round 2's own water level
-                          at that edge's water-side cell (negative =
-                          overtopped).
-plot_dike_positions       Coastal dike position with unprotected_ocean_
-                          wetlands off vs on, overlaid on the land-use
-                          classes that decide it (the configured one is
-                          simulated; the other is traced for the figure only).
-calib_root/round{i}/calibration_state.csv  Not a declared Snakemake output
-                          (written directly under calib_root, one file per
-                          round) -- the per-cell state (reach_id, row, col,
-                          along_m, x, y, dem, rivdph, weir_crest, zs) of
-                          each round: rivdph is the excavation that round
-                          simulated (0 in round 0), weir_crest is NaN in
-                          round 0 (confined) and the per-cell summary crest
-                          above in rounds 1 and 2. Exists so diagnostics can
-                          read ground truth directly instead of re-deriving
-                          it from saved SFINCS output.
+Outputs: river_network_depth_estimated holds per-reach MEDIAN rivdph and
+weir_crest_calibrated (summary only; production uses the per-edge weir file).
+calib_root/round{i}/calibration_state.csv (not a declared output) holds the
+per-cell state of each round; weir_crest is NaN in round 0.
 """
 
 import json
@@ -261,6 +89,7 @@ from src.protection_weir import LANDUSE_SEA, GridArrays, build_coastal_protectio
 from src.domain import load_domain
 from src.geometry import snap_points_into_region
 from src.grid import create_model_grid, load_grid_def
+from src.hydromt_sfincs_patch import use_float32_subgrid_write
 from src.log import setup_logging
 from src.plots import (
     animate_flood_progression,
@@ -302,8 +131,9 @@ from src.sfincs_run import run_sfincs_subprocess, set_sfincs_inp_keys, write_wei
 from src.surge import ceil_crest, read_baseline_m, sinusoidal_wave, storm_tide_at_rp_interpolated, storm_tide_event
 
 log = setup_logging(snakemake.log[0])
+use_float32_subgrid_write()
 
-# ── paths & params ────────────────────────────────────────────────────────────
+# paths & params
 elevation_path       = Path(snakemake.input.elevation_conditioned)
 elevation_sfincs_grid_path = Path(snakemake.input.elevation_conditioned_sfincs_grid)
 river_elevation_max_path = Path(snakemake.input.river_elevation_max)
@@ -313,17 +143,11 @@ protection_levels_path = Path(snakemake.input.protection_levels)
 # Grid-aligned land mask (rule grid_align_landuse) -- plot background only.
 land_mask_path       = Path(snakemake.input.land_mask_on_grid)
 domain_gpkg_path     = Path(snakemake.input.domain_gpkg)
-# landuse_on_grid.tif / roughness_on_grid.tif (rule grid_align_landuse, 09b)
-# -- already resampled onto the SFINCS grid once, upstream; this rule reads
-# them directly with zero further reprojection (see this rule's own zsini
-# and roughness sections below).
+# Already on the SFINCS grid (rule 09b); read without reprojection.
 landuse_on_grid_path = Path(snakemake.input.landuse_on_grid)
 roughness_on_grid_path = Path(snakemake.input.roughness_on_grid)
-# Native-resolution roughness.tif (rule get_roughness, 05c) -- used ONLY by
-# the subgrid table below (sf.subgrid.create), which genuinely needs
-# sub-cell detail for both elevation AND roughness together (same DEM
-# exception the user asked to keep) -- never for the main regular-grid
-# "manning" field, which uses roughness_on_grid_path (coarse) instead.
+# Native-resolution roughness (rule 05c): subgrid table only, which needs
+# sub-cell detail; the main-grid "manning" uses roughness_on_grid_path.
 roughness_path        = Path(snakemake.input.roughness)
 surge_forcing_path   = Path(snakemake.input.surge_forcing)
 delta_outflow_points_path = Path(snakemake.input.delta_outflow_points)
@@ -351,13 +175,10 @@ discharge_ramp_hours = float(snakemake.params.discharge_ramp_hours)
 weir_crest_m       = float(snakemake.params.weir_crest_m)
 weir_par1          = float(snakemake.params.weir_par1)
 excavation_fraction = float(snakemake.params.excavation_fraction)
-# The ONLY margin on the production weir (added on top of round 1's water
-# level, see this module's own docstring) -- there is no separate internal
-# calibration freeboard.
+# The only margin on the production weir, on top of round 1's water level.
 weir_freeboard_m = float(snakemake.params.weir_freeboard_m)
-# True: wetland/lagoon patches linked to the open sea stay on the seaward
-# side of the coastal dike in all three rounds (see
-# src.protection_weir.build_coastal_protection_weir).
+# True: wetland/lagoon patches linked to the open sea stay seaward of the
+# coastal dike in all three rounds.
 unprotected_ocean_wetlands = bool(snakemake.params.unprotected_ocean_wetlands)
 min_component_cells = int(snakemake.params.min_component_cells)
 nr_subgrid_pixels  = int(snakemake.params.nr_subgrid_pixels)
@@ -371,7 +192,7 @@ waterlevel_buffer_m = float(snakemake.params.waterlevel_buffer_m)
 
 calib_root.mkdir(parents=True, exist_ok=True)
 
-# ── river network + calibration discharge ────────────────────────────────────
+# river network + calibration discharge
 rivers = gpd.read_file(river_network_path)
 
 protection_rp_yr = None
@@ -380,9 +201,7 @@ with open(protection_levels_path) as f:
 rp = protection.get("riverine_rp_yr")
 if rp is not None and np.isfinite(float(rp)):
     protection_rp_yr = float(rp)
-# Coastal protection RP (FLOPROS) -- the storm tide rounds 1 and 2 are forced
-# with (see the coastal forcing section before round 1). None: those rounds
-# keep round 0's steady calm-sea boundary.
+# FLOPROS coastal RP for rounds 1-2's storm tide; None keeps the calm sea.
 coastal_rp_yr = protection.get("coastal_rp_yr")
 coastal_rp_yr = float(coastal_rp_yr) if coastal_rp_yr is not None and np.isfinite(float(coastal_rp_yr)) else None
 
@@ -408,17 +227,11 @@ log.info(
 
 # Real, steady coastal baseline (mean sea level + SLR/MDT correction) -- same
 # value 13_build_sfincs.py/14_run_spinup.py use for their own initial/steady
-# conditions -- applied uniformly to every round, rather than isolating the
-# river from coastal influence.
-#
-# coastal_protection_crest_m: the REAL production coastal crest (same
-# surge_forcing.nc field rule 13 reads) -- the floor under every production
-# weir edge's own water-level-derived crest (see this module's own
-# docstring). Rounds 0 and 1 use the uniform weir_crest_m confinement
-# instead.
+# conditions -- applied uniformly to every round.
+# coastal_protection_crest_m: the production coastal crest, the floor under
+# every production weir edge's crest. Rounds 0 and 1 use weir_crest_m instead.
 with xr.open_dataset(surge_forcing_path, decode_times=False) as _surge_ds:
-    # The same calm-sea level (read_baseline_m, rounded to 1 cm) production's
-    # own skeleton zsini uses.
+    # Rounded to 1 cm, as production's zsini.
     baseline_m = read_baseline_m(_surge_ds)
     coastal_protection_crest_m = (
         float(_surge_ds["coastal_protection_crest_m"].values)
@@ -429,47 +242,21 @@ log.info(
     f"real coastal protection crest: {coastal_protection_crest_m:+.4f} m"
 )
 
-# Spatially-varying zsini (sea cells start at baseline_m, not bone-dry) is
-# built further below, right after this model's own grid/mask are created
-# (needs sf.grid.data["dep"] at THIS model's own exact grid shape -- see
-# that section for why landuse_on_grid.tif can't be compared against
-# elevation_conditioned_sfincs_grid.tif directly: the latter is
-# deliberately EXTENDED beyond the exact SFINCS grid bounds for HydroMT's
-# own edge-margin needs, rule enforce_river_monotonicity/09, so its shape
-# does not match landuse_on_grid.tif's exact grid shape).
-
-# ── minimal SFINCS model (regular grid) ──────────────────────────────────────
+# minimal SFINCS model (regular grid)
 resolution = float(snakemake.params.resolution)
 
-# The grid itself comes from the shared grid definition (rule
-# build_sfincs_grid, 08c -- src.grid.create_model_grid below), the same one
-# rule 13's production build is created from.
 delta_domain = gpd.read_file(domain_gpkg_path)
 
-# Delta-outline outflow points (rule clean_river_network's own
-# identify_delta_outflow_points): a non-seed, non-mouth, non-bifurcation
-# reach that crosses the delta polygon's own outline -- a genuine place
-# flow exits the modelled network without reaching a real coastal mouth
-# (e.g. a distributary clipped by the domain boundary in a complex,
-# multi-channel delta). Registered as a free outflow boundary below
-# (mask=3), matching rule 13's own production build exactly -- without
-# this, such a reach has no mouth treatment (it isn't one) AND no outflow
-# either, so calibration would just wall it off and its confined water
-# level -- and so its crest -- would climb chasing water that in reality/
-# production simply leaves the domain there.
+# Delta-outline outflow points (rule 08): where flow leaves the network without
+# a coastal mouth, e.g. a distributary clipped by the domain. Without the free
+# outflow boundary (mask=3, as in rule 13) the reach would be walled off and its
+# confined level, and so its crest, would climb.
 delta_outflow_gdf = gpd.read_file(delta_outflow_points_path)
 delta_outflow_enabled = not delta_outflow_gdf.empty
 log.info(f"Delta-outline outflow points: {len(delta_outflow_gdf)}")
 
-# The excavated channel burned at subgrid resolution (rounds 1 and 2's own
-# subgrid source, and production's -- this rule's own river_burned_subgrid
-# output) gets its catalog entry registered upfront -- the FILE
-# doesn't exist yet at this point (written after round 0, before round 1's
-# own subgrid.create() call reads it), but the catalog only needs the URI
-# declared once, at model construction time, matching every other script in
-# this codebase (none of them add catalog sources mid-run). The main "dep"
-# grid's own excavation is patched directly into sf.grid.data["dep"]'s numpy
-# array instead -- no catalog entry needed for that.
+# river_burned_subgrid is registered now although it is written only after
+# round 0: the catalog needs the URI at model construction.
 river_burned_subgrid_path = Path(snakemake.output.river_burned_subgrid)
 local_catalog_path = calib_root / "data_catalog_local.yml"
 local_catalog = {
@@ -489,8 +276,7 @@ local_catalog = {
         "uri": str(roughness_on_grid_path),
         "driver": "rasterio",
     },
-    # Native resolution -- subgrid table only, see roughness_path's own
-    # comment above.
+    # Native resolution, subgrid table only.
     "local_roughness_native": {
         "data_type": "RasterDataset",
         "uri": str(roughness_path),
@@ -531,11 +317,8 @@ log.info(
     f"rotation {sf.config.get('rotation')} deg"
 )
 
-# tref/tstart/tstop set NOW (Phase 1, matching 13_build_sfincs.py) so the
-# forcing sections below (discharge points, water level) build against the
-# right time window -- discharge_points.create() internally slices its
-# timeseries to the model's configured window and raises NoDataException
-# if the window is still at its default (unset) value when it runs.
+# Time window set before forcing: discharge_points.create() slices to it and
+# raises NoDataException while it is unset.
 tref = datetime(2000, 1, 1)
 tstop = tref + timedelta(days=calibration_days)
 trstout_sec = int(calibration_days * 86400)
@@ -551,16 +334,10 @@ sf.config.update({
     "zsini": -9999.0,
 })
 
-# ── round-0 elevation (un-excavated), mask, roughness ────────────────────────
-# Coarse SFINCS-grid-resolution background -- the SAME shared raster rule
-# 13's production build uses (rule enforce_river_monotonicity's second
-# output), so calibration and production sit on the identical coarse "dep"
-# everywhere the fine channel burn doesn't apply.
+# round-0 elevation (un-excavated), mask, roughness
+# Same coarse background raster as rule 13.
 sf.elevation.create(elevation_list=[{"elevation": "local_elevation_conditioned_sfincs_grid"}])
-# Elevation ceiling on the active mask -- same criterion rule 13's
-# production build uses (river_elevation_max.json + active_mask's own
-# elevation_buffer_m), so calibration simulates the identical active-cell
-# footprint production will actually build.
+# Elevation ceiling on the active mask, as in rule 13.
 active_mask_kwargs = {}
 if active_mask_enabled:
     with open(river_elevation_max_path) as f:
@@ -574,9 +351,7 @@ log.info(
        f"{active_mask_elevation_buffer_m:.1f} m buffer)" if active_mask_kwargs else "")
 )
 
-# Water-level boundary on open sea only, by the model grid's OWN land use
-# (landuse_on_grid != 200 -> back to a normal active cell) -- same as rule
-# 13's production build; see restrict_waterlevel_boundary_to_sea.
+# Water-level boundary on open sea only (landuse_on_grid == 200), as rule 13.
 # reset_bounds=False: create_active just built a fresh 0/1 mask, and hydromt's
 # create_boundary with reset_bounds=True and no polygon/elevation filter only
 # resets and returns -- it would set no boundary cells at all.
@@ -596,16 +371,9 @@ log.info(
     f"({_n_bnd_on_land} edge cell(s) on land use != 200 left as normal active cells)"
 )
 
-# Delta-outline outflow boundary (mask=3, no prescribed water level) --
-# reset_bounds=False so this OVERRIDES specific cells the waterlevel step
-# above may have already claimed (e.g. a domain-clipped distributary's own
-# outline crossing sitting on the active-domain edge would otherwise be
-# forced to the coastal baseline water level, which is physically wrong
-# for an inland network truncation) rather than replacing the whole
-# boundary. include_polygon_buffer turns each point into a small polygon
-# so at least one grid cell is captured regardless of exactly where within
-# a cell the point falls -- same mechanism and parameter rule 13's
-# production build already uses.
+# reset_bounds=False overrides cells the water-level step claimed: an inland
+# truncation must not be forced to the coastal baseline. The buffer makes each
+# point capture at least one cell.
 if delta_outflow_enabled:
     sf.mask.create_boundary(
         btype="outflow", include_polygon="local_delta_outflow_points",
@@ -616,22 +384,11 @@ if delta_outflow_enabled:
         f"crossing(s), {outflow_buffer_m:.0f} m buffer -> mask=3"
     )
 
-# ── spatially-varying zsini: sea cells start AT baseline_m, not bone-dry ─────
-# Built directly from landuse_on_grid.tif (rule grid_align_landuse, 09b),
-# read here (not earlier) so the connected-component dry-out check below can
-# compare against sf.grid.data["dep"] -- THIS model's own grid, guaranteed
-# the same exact shape landuse_on_grid.tif was built on (both come from the
-# shared grid definition, rule build_sfincs_grid/08c).
-# elevation_conditioned_sfincs_grid.tif (rule enforce_river_monotonicity/09)
-# is NOT usable for this comparison despite being on the same coarse grid's
-# transform/phase -- it's deliberately EXTENDED beyond the exact SFINCS grid
-# bounds for HydroMT's own edge-margin needs, so its shape doesn't match. A
-# coastal/mouth cell starting bone-dry instead would take time to fill in
-# from the boundary, producing a sharp transient spike well above its own
-# true settled level before declining back down over the following hours.
-# Since compute_period_max_zs takes the maximum over the ENTIRE run (no
-# windowing), that transient alone would inflate the calibrated crest at
-# every affected coastal cell by roughly the spike's own size.
+# spatially-varying zsini: sea cells start AT baseline_m, not bone-dry
+# Compared against sf.grid.data["dep"], not elevation_conditioned_sfincs_grid.tif,
+# which extends beyond the grid bounds. A coastal cell starting dry fills with
+# a transient spike above its settled level, which the run maximum would add
+# to its crest.
 with rasterio.open(landuse_on_grid_path) as _lu_src_zsini:
     _lu_on_grid_zsini = _lu_src_zsini.read(1)
 if _lu_on_grid_zsini.shape != sf.grid.data["dep"].shape:
@@ -641,10 +398,8 @@ if _lu_on_grid_zsini.shape != sf.grid.data["dep"].shape:
     )
 _zsini_arr = np.where(_lu_on_grid_zsini == LANDUSE_SEA, np.float32(baseline_m), np.nan)
 
-# Connected-component dry-out of isolated sea cells (same rationale/
-# mechanism as 13_build_sfincs_skeleton.py's identical fix): label connected
-# components of sea cells, keep only the main open ocean, and set isolated
-# wet cells (dep < baseline_m, so water depth > 0) to dep = dry start.
+# Isolated sea cells (not the main ocean component) below baseline_m start
+# dry at dep, as in rule 13.
 _dep_zsini = sf.grid.data["dep"].values.astype(np.float32)
 _dep_nd_zsini = np.float32(sf.grid.data["dep"].rio.nodata or -9999.0)
 _dep_valid_zsini = np.where(np.isclose(_dep_zsini, _dep_nd_zsini), np.float32(1e6), _dep_zsini)
@@ -663,12 +418,8 @@ if _n_fix_zsini > 0:
     _zsini_arr = np.where(_isolated_wet_zsini, _dep_valid_zsini, _zsini_arr)
     log.info(f"zsini connectivity fix: {_n_fix_zsini} isolated wet sea-cell(s) set to dep")
 
-# reproj_method="nearest" (not "average"): zsini is a near-binary field
-# (baseline_m at sea, NaN/nodata on land) -- and source/destination grids
-# are already identical here, so this is a no-op resample regardless (same
-# in-memory-DataArray pattern as 13_build_sfincs_skeleton.py's identical
-# construction). mask must exist first (create_active/create_boundary
-# above), matching production's own ordering.
+# Nearest: zsini is near-binary and the grids are identical. The mask must
+# exist first.
 _da_zsini = xr.DataArray(
     _zsini_arr, dims=sf.grid.data["dep"].dims, coords=sf.grid.data["dep"].coords,
 )
@@ -680,29 +431,14 @@ log.info("Initial conditions: spatially-varying zsini (sea cells start at baseli
 
 sf.roughness.create(roughness_list=[{"manning": "local_roughness"}])
 
-# ── shared, round-invariant pieces: grid arrays, channel_mask, landuse ───────
-# Same build_coastal_protection_weir rule 13 uses for the production model
-# (coast and river channel merged into one water_like boundary, so the mouth
-# never gets sealed shut) -- not a separate river-only function, so
-# calibration and production build conceptually the same single weir set.
-# GridArrays.from_regular copies dep/mask into plain numpy arrays at
-# construction time, so it stays valid across every later round even after
-# sf.elevation.create() is called again with excavated data -- valid_mask is
-# active-mask-based, not elevation-based, so it doesn't need recomputing
-# either. channel_mask is likewise a pure function of (rivers, width, grid
-# shape/transform) -- used for both the weir corridor and to constrain the
-# excavation (see rounds 1-2 below), and identical to what rule 11b/13
-# independently compute for production.
+# shared, round-invariant pieces: grid arrays, channel_mask, landuse
+# Coast and channel in one water_like boundary so the mouth is never sealed.
+# GridArrays copies dep/mask at construction, so it stays valid after the
+# excavation. channel_mask (weir corridor and excavation limit) matches what
+# rules 11b/13 compute.
 rivers_utm = rivers.to_crs(sf.crs)
 grid = GridArrays.from_regular(sf.grid.data["dep"], sf.grid.data["mask"], sf.crs)
 channel_mask = build_channel_mask_regular(rivers_utm, "width", grid.shape, grid.transform)
-# landuse_on_grid.tif (rule grid_align_landuse, 09b) -- already rasterized
-# directly onto this rule's own grid (both come from the shared grid
-# definition, sfincs_grid.json), read here with zero further reprojection, rather
-# than this rule independently resampling native landuse.tif a second time
-# (the previous GridArrays.sample_landuse call -- removed 2026-08-07, see
-# 09b_grid_align_landuse.py's own module docstring for why every consumer
-# now shares one canonical resample).
 with rasterio.open(landuse_on_grid_path) as _lu_src:
     landuse_on_grid = _lu_src.read(1)
 if landuse_on_grid.shape != grid.shape:
@@ -712,15 +448,8 @@ if landuse_on_grid.shape != grid.shape:
     )
 ocean_mask_grid = landuse_on_grid == LANDUSE_SEA
 
-# Coarse-grid ocean mask FILE (compute_max_inundation/compute_flood_
-# progression need a path, not an in-memory array -- they call
-# data_catalog.get_rasterdataset internally) -- used by every round's own
-# diagnostics below instead of native-resolution sea_mask.tif, so every
-# sea/land check in this rule shares the same single coarse-grid source (no
-# protected_pocket_mask yet at this point -- the production weir isn't
-# traced until after round 1 -- but round diagnostics never claimed
-# weir-aware precision either; ocean_mask_grid alone is the same "is this
-# genuinely open sea" classification the old native sea_mask.tif gave).
+# Written to file: compute_max_inundation/compute_flood_progression take a path.
+# Not weir-aware (no protected_pocket_mask before round 1).
 _round_ocean_mask_path = calib_root / "ocean_mask_on_grid.tif"
 with rasterio.open(
     _round_ocean_mask_path, "w", driver="GTiff", dtype="float32", count=1,
@@ -729,23 +458,14 @@ with rasterio.open(
 ) as _dst:
     _dst.write(np.where(ocean_mask_grid, np.float32(1.0), np.float32(-9999.0)), 1)
 
-# region_wgs84/buf_deg: reused below by both the observation-point and
-# discharge-point sections. hydromt's *_points.create() methods clip
-# locations against the model's own region using an UNBUFFERED 'intersects'
-# check and silently drop anything outside -- snap_points_into_region keeps
-# every point by nudging boundary-adjacent ones inward (see its own
-# docstring for why a plain buffered filter isn't enough).
+# hydromt's *_points.create() silently drops points outside the unbuffered
+# region; snap_points_into_region nudges boundary points inward instead.
 region_wgs84 = sf.region.to_crs("EPSG:4326").geometry.union_all()
 buf_deg = float(resolution) / 111_000.0
 
-# ── centerline calibration cells (every grid cell each reach's own centerline
-# passes through) -- replaces SFINCS "observation points" entirely ──────────
-# The real water level varies continuously along a reach -- a single
-# sparse observation point can completely miss a sharp local spike right
-# at the seed reach's own discharge-injection cell -- so
-# calibration tracks depth per CELL instead, sourced directly from
-# each round's own sfincs_map.nc (_read_map_zs_at_cells below), not
-# sf.observation_points/sfincs_his.nc at all.
+# Centerline calibration cells: every grid cell a reach's centerline crosses
+# Per cell from sfincs_map.nc, not observation points: a sparse point can miss
+# a sharp spike at the discharge-injection cell.
 cell_gdf = build_centerline_cells_regular(rivers_utm, grid.shape, grid.transform)
 if cell_gdf.empty:
     raise RuntimeError("No centerline calibration cells could be identified -- empty river network?")
@@ -755,41 +475,15 @@ log.info(
     f"{cell_gdf['reach_id'].nunique()} reach(es)"
 )
 
-# ── per-cell CROSS-SECTION zs sampling (replaces a single grid cell's own
-# reading) ────────────────────────────────────────────────────────────────
-# A single grid cell's own water level can be a noisy, non-representative
-# sample of "the water level at this point along the river" -- the true
-# channel cross-section at a given along-reach position is usually several
-# cells wide, and the centerline happens to intersect just one of them.
-# Every centerline cell's own "zs" (round 0's excavation depth, and the
-# per-cell crest summary/diagnostics of rounds 1-2 -- see
-# _read_cross_section_period_max_zs below; the production weir itself reads
-# the full field per edge instead) is the MAX water level across the FULL
-# cross-section of channel_mask cells
-# at that point, found by comparing the contiguous channel_mask run through
-# the cell along its own grid ROW vs. its own grid COLUMN, and taking
-# whichever run is SHORTER -- the shorter run is the cross-channel
-# direction, since a channel is narrow across and long along at any single
-# row/column slice (deliberately NOT the union of both: for a reach running
-# straight along one grid axis, the OTHER axis's own run is the reach's
-# entire length, so unioning would give every cell along that whole reach
-# the same single global maximum -- confirmed degenerate, not just a
-# theoretical concern). Each run is also extended by one cell beyond
-# channel_mask's own True region on either side, to reach the adjacent
-# LAND cell where the weir segment itself is actually drawn (the weir sits
-# at the land/water_like transition, one cell outside channel_mask's own
-# True region -- see _seaward_edges_regular_with_values). Deliberately a
-# simple axis-aligned comparison, not a true reach-normal cross-section --
-# exact only to the extent the channel isn't running near-diagonally at
-# that specific point, the same caveat any grid-aligned raster analysis
-# carries.
+# Per-cell cross-section zs sampling
+# A cell's zs is the MAX over its channel cross-section: the shorter of the
+# channel_mask runs along its row and column (the shorter is across the
+# channel). Not their union: for a reach along one grid axis the other run is
+# the whole reach, giving every cell the same global maximum. Each run extends
+# one cell past channel_mask to the land cell the weir sits on. Axis-aligned,
+# so inexact where the channel runs near-diagonally.
 def _channel_run_through(mask_1d: np.ndarray, idx: int) -> np.ndarray:
-    """Contiguous True run in a 1D boolean slice of channel_mask containing
-    position idx, extended by one cell on each side beyond the run's own
-    boundary (to also reach the adjacent land cell the weir itself sits
-    on) -- idx itself is always included even if mask_1d[idx] is somehow
-    False (shouldn't happen for a real centerline cell, but never silently
-    drop the cell's own position)."""
+    # idx is kept even if mask_1d[idx] is False.
     if not mask_1d[idx]:
         left = right = idx
     else:
@@ -816,12 +510,7 @@ for _r, _c in zip(_cell_rows, _cell_cols):
         _rc = np.column_stack([_col_run_rows, np.full(len(_col_run_rows), _c)])
     cell_cross_section_rowcol.append(_rc)
 
-# Flattened, DEDUPLICATED set of every grid cell any cross-section actually
-# needs -- sfincs_map.nc is resolved/read once for this whole set (see
-# _read_cross_section_period_max_zs below), not once per cell_gdf row, even
-# though a single grid cell can appear in more than one cell_gdf row's own
-# cross-section (e.g. two adjacent centerline cells sharing part of the
-# same cross-channel run).
+# Deduplicated: adjacent centerline cells share cross-section cells.
 _all_cross_section_rc = np.concatenate(cell_cross_section_rowcol, axis=0)
 _unique_rc, _cross_section_inverse = np.unique(_all_cross_section_rc, axis=0, return_inverse=True)
 cross_section_unique_rows = _unique_rc[:, 0]
@@ -831,11 +520,7 @@ cross_section_unique_x, cross_section_unique_y = rasterio.transform.xy(
 )
 cross_section_unique_x = np.asarray(cross_section_unique_x)
 cross_section_unique_y = np.asarray(cross_section_unique_y)
-# Split _cross_section_inverse back into per-cell_gdf-row groups (same
-# lengths/order as cell_cross_section_rowcol) -- cross_section_group_idx[i]
-# gives the positional indices into cross_section_unique_rows/cols (and
-# therefore into per-unique-cell period-max arrays) that make up cell i's
-# own cross-section.
+# cross_section_group_idx[i]: indices into the unique cells for cell i.
 _group_sizes = [len(a) for a in cell_cross_section_rowcol]
 _group_bounds = np.cumsum([0] + _group_sizes)
 cross_section_group_idx = [
@@ -847,25 +532,19 @@ log.info(
     f"(median cross-section width: {int(np.median(_group_sizes))} cell(s))"
 )
 
-# (n_idx, m_idx): sfincs_map.nc's own internal cell indices matching
-# cell_gdf's (row, col) / the cross-section cells / every grid cell --
-# resolved lazily, once, from the first sfincs_map.nc read (grid geometry is
-# round-invariant, so it's reused unchanged for every later round).
+# sfincs_map.nc (n, m) indices, resolved lazily once; the grid is round-invariant.
 map_cell_idx = None
 cross_section_map_cell_idx = None
 field_map_cell_idx = None
 
-# One representative cell per reach (nearest that reach's own along_m
-# midpoint) -- used only by the water-level-timeseries diagnostic plot,
-# which is unreadable/slow at full per-cell density. Positional (cell_gdf
-# has a plain 0..n-1 RangeIndex from build_centerline_cells_regular), so
-# these double directly as column indices into final_zs (n_time, n_cells).
+# One cell per reach (nearest its along_m midpoint) for the timeseries plot.
+# Positional (cell_gdf has a RangeIndex), so also column indices into final_zs.
 _reach_along_mid = cell_gdf.groupby("reach_id")["along_m"].transform(lambda s: s.max() / 2.0)
 _dist_to_mid = (cell_gdf["along_m"] - _reach_along_mid).abs()
 representative_cell_pos = _dist_to_mid.groupby(cell_gdf["reach_id"]).idxmin().to_numpy()
 representative_reach_ids = cell_gdf.loc[representative_cell_pos, "reach_id"].to_numpy()
 
-# ── discharge points (constant calibration discharge per crossing) ──────────
+# discharge points (constant calibration discharge per crossing)
 n_steps = max(int(forcing_days * 24), 2)
 calib_times = pd.date_range(tref, forcing_tstop, periods=n_steps)
 
@@ -876,9 +555,7 @@ with xr.open_dataset(river_forcing_path, decode_times=False) as river_ds:
     inside_ids = river_ds["inside_reach_id"].values[active] if "inside_reach_id" in river_ds else []
     cross_lons = river_ds["longitude"].values[active]
     cross_lats = river_ds["latitude"].values[active]
-    # Per-crossing bankfull discharge -- the ramp's own start value (see
-    # below), read at the SAME active crossings, same indexing/order as
-    # cross_lons/cross_lats/inside_ids.
+    # Ramp start value.
     cross_bankfull_q = river_ds["bankfull_discharge"].values[active]
 
 crossing_q = [reach_q.get(str(rid), np.nan) for rid in inside_ids]
@@ -896,14 +573,9 @@ inside_ids_valid = np.asarray(inside_ids)[valid] if len(inside_ids) else [None] 
 if crossings_gdf.empty:
     raise RuntimeError("No discharge crossings resolved to a calibration discharge -- cannot calibrate")
 
-# Snap each crossing onto the grid cell its OWN reach's centerline actually
-# passes through (cell_gdf), not just wherever its raw domain-entry point
-# happens to rasterize to -- an unsnapped point can resolve to a
-# neighbouring floodplain cell with no real channel conveyance, which is
-# exactly what produced basin 4267691's round-0 369 m water-level pileup.
-# reach_ids restricts the nearest-cell search to the point's own reach
-# first (matters at confluences/bifurcations), falling back to the nearest
-# cell across all reaches when inside_reach_id is missing/unresolved.
+# Snap to the crossing reach's centerline cell: an unsnapped point can land in
+# a floodplain cell without conveyance (basin 4267691: 369 m water level in
+# round 0). Own reach first, else nearest cell of any reach.
 crossings_utm = snap_points_to_centerline_cells(
     crossings_gdf.to_crs(sf.crs), cell_gdf, reach_ids=inside_ids_valid, resolution_m=resolution,
 )
@@ -915,21 +587,9 @@ crossing_bankfull_q = crossing_bankfull_q[cross_keep_mask]
 if crossings_filt.empty:
     raise RuntimeError("All discharge crossings fall outside the active calibration region")
 
-# Linear ramp from each crossing's own bankfull_discharge up to the full
-# calibration discharge over discharge_ramp_hours (from t=0), held flat
-# afterward -- NOT a flat step function from t=0. Forcing the full
-# calibration discharge (often several times bankfull) as an instantaneous
-# step into a channel that starts near-dry produces a startup shock wave
-# that can persist/oscillate for the entire run instead of damping out
-# (confirmed on basin 2433835: the seed's own first cell showed multi-metre
-# swings hour-to-hour under CONSTANT forcing with no ramp). Mirrors
-# production's own bankfull-lead-in-then-ramp hydrograph shape
-# (src.river_forcing.build_design_discharge_matrix/sinusoidal_wave), linear
-# instead of sinusoidal since calibration only needs to reach and hold the
-# peak, not simulate a full event recession. A crossing with NaN bankfull
-# (shouldn't happen -- same has_glofas-active set river_forcing.nc already
-# guarantees bankfull_discharge for) falls back to ramping from 0 rather
-# than dropping the ramp entirely.
+# Linear ramp from bankfull to the calibration discharge, then flat: a step
+# into a near-dry channel oscillates for the whole run (basin 2433835:
+# multi-metre hourly swings at the seed cell). NaN bankfull ramps from 0.
 _ramp_hours = np.arange(n_steps) * (forcing_days * 24.0) / (n_steps - 1)
 _ramp_frac = np.clip(_ramp_hours / max(discharge_ramp_hours, 1e-6), 0.0, 1.0)[:, None]
 _bankfull_start = np.where(np.isfinite(crossing_bankfull_q), crossing_bankfull_q, 0.0)
@@ -942,26 +602,18 @@ log.info(
     f"{max(calibration_days * 24.0 - discharge_ramp_hours, 0.0):.1f} h"
 )
 
-# Discharge points in the model CRS -- overlaid on round 2's own crest gap
-# map (the same snapped locations discharge is actually injected at).
+# For round 2's crest gap map.
 crossings_utm = crossings_filt.to_crs(grid.crs)
 
-# ── coastal water-level boundary (steady baseline_m) ─────────────────────────
+# coastal water-level boundary (steady baseline_m)
 sf.water_level.create_boundary_points_from_mask(bnd_dist=5000.0)
 sf.water_level.create_timeseries(shape="constant", offset=baseline_m)
 log.info(f"Water-level forcing: flat constant boundary at {baseline_m:+.4f} m (baseline_m)")
 
 
 def _resolve_map_cell_idx(map_nc_path: Path, x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """
-    (n_idx, m_idx) into sfincs_map.nc's own zs(time, n, m) matching each
-    (x, y) in cell_gdf, via nearest-neighbour match against the file's own
-    x(n,m)/y(n,m) cell-center coordinates -- NOT assumed to be n=row,
-    m=col directly (SFINCS's own internal index order/orientation relative
-    to grid.transform is not guaranteed), so resolved from real coordinates
-    instead. The grid is round-invariant, so this only needs to run once
-    (see map_cell_idx's own lazy-cache in _run_calibration_round).
-    """
+    # Matched on x/y coordinates: SFINCS's (n, m) order relative to
+    # grid.transform is not guaranteed.
     with xr.open_dataset(map_nc_path) as ds:
         grid_x = ds["x"].values.ravel()
         grid_y = ds["y"].values.ravel()
@@ -975,14 +627,9 @@ def _resolve_map_cell_idx(map_nc_path: Path, x: np.ndarray, y: np.ndarray) -> tu
 
 
 def _read_map_zs_at_cells(run_dir: Path, n_idx: np.ndarray, m_idx: np.ndarray):
-    # Explicit `with` (not a bare open_dataset()) -- this file gets
-    # overwritten by a LATER SFINCS run within the same process (the next
-    # round), and xarray's lazy/cached file manager doesn't otherwise
-    # release the handle promptly, which fails that later write on Windows
-    # ("Permission denied"). Vectorized .isel with dims="cell" pairing
-    # (not the outer product a plain .isel(n=n_idx, m=m_idx) would give)
-    # pulls out exactly the (n_time, n_cells) slice needed, without ever
-    # materializing the full (time, n, m) field in memory.
+    # `with` releases the handle; otherwise the next round's write fails on
+    # Windows ("Permission denied"). dims="cell" pairs indices instead of the
+    # outer product, so the full field is never loaded.
     with xr.open_dataset(run_dir / "sfincs_map.nc") as ds:
         zs = ds["zs"].isel(
             n=xr.DataArray(n_idx, dims="cell"), m=xr.DataArray(m_idx, dims="cell"),
@@ -992,8 +639,6 @@ def _read_map_zs_at_cells(run_dir: Path, n_idx: np.ndarray, m_idx: np.ndarray):
 
 
 def _read_zs_and_resolve(round_root: Path):
-    """_read_map_zs_at_cells, resolving+caching map_cell_idx on first use
-    (round 0's own first sfincs_map.nc) -- see _resolve_map_cell_idx."""
     global map_cell_idx
     if map_cell_idx is None:
         map_cell_idx = _resolve_map_cell_idx(
@@ -1004,17 +649,6 @@ def _read_zs_and_resolve(round_root: Path):
 
 
 def _read_cross_section_period_max_zs(round_root: Path) -> np.ndarray:
-    """Per-centerline-cell period-max water level, one value per cell_gdf
-    row, taken as the MAX across that cell's own channel cross-section
-    (cross_section_group_idx, precomputed above from channel_mask's row/
-    column runs) rather than the single grid cell the centerline happens
-    to intersect -- see the precomputation block above cell_gdf's own
-    global-cache-var init for the full rationale. This drives round 0's
-    excavation depth and the per-cell crest summary/diagnostics (the
-    production weir reads _read_period_max_zs_field per edge instead);
-    _read_zs_and_resolve (single intersected cell) is kept alongside this, only for
-    the water-level-timeseries diagnostic plot's own representative-cell
-    indexing, which is a visualization concern, not a calibration one."""
     global cross_section_map_cell_idx
     if cross_section_map_cell_idx is None:
         cross_section_map_cell_idx = _resolve_map_cell_idx(
@@ -1033,11 +667,7 @@ def _read_cross_section_period_max_zs(round_root: Path) -> np.ndarray:
 
 
 def _read_cross_section_end_zs(round_root: Path) -> np.ndarray:
-    """Per-centerline-cell END-OF-RUN water level: the mean of the last two
-    outputs (compute_end_of_run_zs) at each cell of the channel
-    cross-section, then the max across the section -- the same cross-section
-    rule as _read_cross_section_period_max_zs. Round 0's excavation uses
-    this when river_depth_modelling.round0_level is end_of_run."""
+    # Mean of the last two outputs per cell, then max across the cross-section.
     global cross_section_map_cell_idx
     if cross_section_map_cell_idx is None:
         cross_section_map_cell_idx = _resolve_map_cell_idx(
@@ -1052,9 +682,7 @@ def _read_cross_section_end_zs(round_root: Path) -> np.ndarray:
 
 
 def _read_exit_discharge(round_root: Path) -> np.ndarray | None:
-    """Discharge (m3/s, absolute) through every exit cross-section at the end
-    of the run (mean of the last two history outputs), or None when the run
-    has no cross-section output."""
+    # m3/s, absolute, mean of the last two outputs; None without cross-section output.
     his = round_root / "sfincs_his.nc"
     if not his.exists():
         return None
@@ -1069,13 +697,9 @@ def _read_exit_discharge(round_root: Path) -> np.ndarray | None:
 
 
 def _continue_until_steady(round_label: str, round_root: Path) -> dict:
-    """Continue the run in round_root from its own restart file, one
-    steady_state.chunk_days at a time, until the centreline water level is
-    steady (steady_state.median_dzs_3h_m / p95_dzs_3h_m over the last 3 h)
-    or the total length reaches steady_state.max_days. Only the inp's time
-    window and restart keys change; every other model file stays as the
-    first chunk wrote it. sfincs_map.nc/sfincs_his.nc then hold the LAST
-    chunk. Returns the final steady-state diagnostics."""
+    # Restart in steady_state.chunk_days chunks until steady (median/p95 |dzs|
+    # over the last 3 h) or steady_state.max_days. sfincs_map.nc/sfincs_his.nc
+    # then hold only the LAST chunk.
     run_end = tstop
     chunk = timedelta(days=float(steady_cfg["chunk_days"]))
     max_end = tref + timedelta(days=float(steady_cfg["max_days"]))
@@ -1114,19 +738,10 @@ def _continue_until_steady(round_label: str, round_root: Path) -> dict:
 
 
 def _read_period_max_zs_field(round_root: Path) -> np.ndarray:
-    """Maximum water level over the whole run at EVERY cell of this rule's
-    own grid (grid.shape, row/col order as grid.transform) -- NaN where
-    never wetted or inactive. The production weir reads each edge's own
-    water-side cell from this (see build_coastal_protection_weir's
-    water_side_crest_on_grid), and round 2 checks against it.
-
-    SFINCS's own zsmax (max over EVERY computational timestep; dtmaxout =
-    the whole run, so a single frame), not the max over the hourly zs
-    output compute_period_max_zs uses for the excavation depth: a weir
-    overtops on any timestep, not just at output times -- on basin
-    2433835's old round 0 the hourly max sat up to ~0.1 m below zsmax at 1%
-    of wet cells. sfincs_map.nc's own (n, m) order is resolved from real
-    coordinates (see _resolve_map_cell_idx), once, and cached."""
+    # zsmax on grid.shape (NaN never wetted/inactive): the maximum over every
+    # computational timestep (dtmaxout = whole run), not the hourly output, since
+    # a weir overtops between outputs (basin 2433835: hourly max up to ~0.1 m
+    # below zsmax at 1% of wet cells).
     global field_map_cell_idx
     map_nc_path = round_root / "sfincs_map.nc"
     if field_map_cell_idx is None:
@@ -1176,14 +791,7 @@ def _run_calibration_round(round_label: str, round_root: Path, until_steady: boo
         global round0_steady
         round0_steady = _continue_until_steady(round_label, round_root)
 
-    # final_zs/final_times_s (single intersected cell per centerline cell)
-    # are kept ONLY for the water-level-timeseries diagnostic plot's own
-    # representative_cell_pos indexing -- a visualization concern. The
-    # excavation depth instead uses period_max_zs from
-    # _read_cross_section_period_max_zs, the MAX water level across each
-    # centerline cell's own channel cross-section (see that function's own
-    # docstring) -- a single cell's own reading can be a noisy, non-
-    # representative sample of the true water level at that point.
+    # zs (single intersected cell) is for the timeseries plot only.
     zs, times_s = _read_zs_and_resolve(round_root)
     period_max_zs = _read_cross_section_period_max_zs(round_root)
     log.info(
@@ -1194,16 +802,9 @@ def _run_calibration_round(round_label: str, round_root: Path, until_steady: boo
     return period_max_zs, zs, times_s
 
 
-# wgs84_bounds/domain_poly: round-invariant, needed by every round's own
-# diagnostic plots below -- computed once, before the rounds.
 wgs84_bounds, domain_crs, domain_poly = load_domain(snakemake.input.spec_basins_meta, domain_gpkg_path)
 
-# Per-round diagnostic files are written directly here (NOT declared
-# Snakemake outputs, same convention as calibration_state.csv). Filenames
-# put the round number as a SUFFIX (e.g. "max_inundation_round2.png"), not a
-# prefix, so a directory listing sorted alphabetically groups by PLOT KIND
-# first -- comparing the same diagnostic across rounds means looking at
-# consecutive files, not picking them out of an interleaved by-round listing.
+# Not declared outputs. Round number as suffix so listings group by plot kind.
 round_visuals_dir = Path(snakemake.output.plot_calibration).parent / "rounds"
 round_visuals_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1226,18 +827,9 @@ def _round_visual_paths(round_idx: int) -> dict[str, Path]:
 
 
 def _start_round(round_idx: int) -> Path:
-    """Point sf at this round's OWN output subdirectory (sfincs.inp/
-    sfincs_map.nc/sfincs_his.nc/subgrid/...) instead of every round
-    overwriting the same filenames in calib_root: reusing the same
-    filenames across rounds makes SFINCS itself fail creating its own
-    output netCDF files ("Permission denied"/"NetCDF: Not a valid ID") once
-    a PREVIOUS round's own diagnostic plotting (compute_max_inundation/
-    compute_flood_progression) had read them, since some file handle
-    persists past that read on Windows regardless of Python-side
-    cache-clearing. The model itself (grid/mask/roughness/weir/discharge
-    points/config) is all in-memory on the shared `sf` object -- changing
-    root only affects where the NEXT sf.write()/sf.subgrid.create() call
-    lands."""
+    # One directory per round: reusing filenames fails SFINCS's netCDF creation
+    # on Windows ("Permission denied"/"NetCDF: Not a valid ID") once a previous
+    # round's diagnostics read them.
     round_root = calib_root / f"round{round_idx}"
     round_root.mkdir(parents=True, exist_ok=True)
     sf.root.set(round_root)
@@ -1245,12 +837,8 @@ def _start_round(round_idx: int) -> Path:
 
 
 def _create_subgrid(elevation_list: list[dict], round_label: str, channel_roughness: bool = False) -> None:
-    """(Re)build the subgrid table into the current round's own root --
-    rebuilt every round, even when the geometry is unchanged (round 2 vs
-    round 1), since each round's own diagnostics read the dep_subgrid.tif
-    written next to that round's own sfincs_map.nc. channel_roughness: put
-    the channel Manning n raster (written with the burn) first, so it wins
-    under the burned channel."""
+    # Rebuilt every round: each round's diagnostics read its own dep_subgrid.tif.
+    # channel_roughness: channel Manning n first, so it wins under the channel.
     roughness_list = [{"manning": "local_roughness_native"}]
     if channel_roughness:
         roughness_list = [{"manning": "local_river_roughness_subgrid"}] + roughness_list
@@ -1276,9 +864,7 @@ def _set_weir(weir_gdf: gpd.GeoDataFrame, weir_diagnostics: dict, round_label: s
 
 
 def _update_reach_columns(rivdph: np.ndarray, weir_crest: np.ndarray | None = None) -> None:
-    """Per-reach MEDIAN reduction (not mean -- so a mouth reach's hard-forced
-    rivdph=0 last cell doesn't skew its own reported value) -- the final
-    network output and the river-depth plot need ONE scalar per reach."""
+    # Median, so a mouth reach's forced rivdph=0 last cell does not skew it.
     cell_state = cell_gdf[["reach_id"]].assign(rivdph=rivdph)
     if weir_crest is not None:
         cell_state = cell_state.assign(crest=weir_crest)
@@ -1299,12 +885,8 @@ def _round_diagnostics(
     round_idx: int, round_root: Path, final_zs: np.ndarray, final_times_s: np.ndarray,
     weir_gdf: gpd.GeoDataFrame, crest_gap_crest_on_grid: np.ndarray | None = None,
 ) -> None:
-    """Per-round diagnostic plots. Must run right after each round's own
-    SFINCS run, before the next round's own sf.write() -- each round's own
-    transient state is only ever read back from its own round_root.
-    crest_gap_crest_on_grid (round 2 only): per-cell crest to compare
-    against this round's own water level -- a crest-gap map is meaningless
-    for the 1000 m confinement rounds."""
+    # Run before the next round's sf.write(). crest_gap_crest_on_grid: round 2
+    # only; meaningless for the 1000 m confinement rounds.
     round_label = ROUND_TITLES[round_idx]
     paths = _round_visual_paths(round_idx)
 
@@ -1323,8 +905,6 @@ def _round_diagnostics(
         basin_id=f"Basin {basin_id}", run_label=f"Depth calibration -- {round_label}",
     )
 
-    # round_root doubles as both run_dir and sfincs_root for THIS round's
-    # own disposable model.
     da_hmax, _da_dep = compute_max_inundation(
         round_root, round_root, _round_ocean_mask_path, hmin=0.0,
     )
@@ -1353,9 +933,6 @@ def _round_diagnostics(
         if crest_gap_crest_on_grid is None:
             paths["crest_gap_map"].touch()
         else:
-            # Weir line / river network / REAL discharge point(s) overlaid
-            # (crossings_utm -- the same snapped locations discharge is
-            # actually injected at, not a reach's own line-start coordinate).
             plot_crest_gap_map(
                 crest_gap_crest_on_grid, grid.transform, str(round_root / "sfincs_map.nc"),
                 weir_gdf, rivers_utm, crossings_utm.geometry.x.to_numpy(), crossings_utm.geometry.y.to_numpy(),
@@ -1365,25 +942,18 @@ def _round_diagnostics(
     log.info(f"[{round_label}] Diagnostic plots written under {round_visuals_dir}")
 
 
-# Confinement weir (rounds 0 and 1): every edge -- coast and riverbank alike
-# -- at weir_crest_m. An all-NaN water_side_crest_on_grid makes
-# build_coastal_protection_weir fall back to crest_elevation_m on every edge
-# while still tracing the riverbanks. channel_mask_gap_free=True:
-# build_channel_mask_regular already uses all_touched=True (no sub-cell
-# gaps to patch), so skip the safety-net close_gaps() dilation to keep the
-# weir hugging the channel corridor exactly -- the production weir below is
-# traced with the same flag, so all three rounds share one weir geometry.
+# Confinement weir (rounds 0 and 1): all-NaN water_side_crest_on_grid puts
+# every edge at weir_crest_m. channel_mask_gap_free=True: the mask is
+# all_touched, so close_gaps() is skipped and the weir hugs the corridor; the
+# production weir uses the same flag, so all rounds share one geometry.
 confinement_weir_gdf, confinement_weir_diagnostics = build_coastal_protection_weir(
     grid, landuse_on_grid, channel_mask, weir_crest_m, min_component_cells, weir_par1,
     water_side_crest_on_grid=np.full(grid.shape, np.nan, dtype=np.float32),
     channel_mask_gap_free=True, unprotected_ocean_wetlands=unprotected_ocean_wetlands,
 )
 
-# ── dike position with unprotected_ocean_wetlands off vs on (figure only) ────
-# The line's POSITION is the same in every round (only crests differ), so the
-# confinement trace above stands for the configured setting; the other
-# setting is traced once more here purely for the comparison figure -- never
-# simulated or exported.
+# dike position with unprotected_ocean_wetlands off vs on (figure only)
+# The other setting is traced for the figure only, never simulated or exported.
 log.info(
     f"Tracing the weir with unprotected_ocean_wetlands={not unprotected_ocean_wetlands} "
     f"(comparison figure only, not simulated)"
@@ -1402,18 +972,14 @@ plot_wetland_dike_positions(
     str(snakemake.output.plot_dike_positions), active_on=unprotected_ocean_wetlands, basin_id=basin_id,
 )
 
-# ── round 0: confined, un-excavated ──────────────────────────────────────────
+# round 0: confined, un-excavated
 round_label = ROUND_TITLES[0]
 round_root = _start_round(0)
 _set_weir(
     confinement_weir_gdf, confinement_weir_diagnostics, round_label,
     f"uniform confinement crest={weir_crest_m:.0f} m",
 )
-# Round 0 sets the river bed. method modelled: a confined SFINCS run at the
-# calibration discharge, excavation_fraction of its rise above the DEM, then
-# the mouth and no-dig rules. method gvf: steady gradually-varied flow fitted
-# to SWORD's water levels at the mean discharge (src.gvf); no SFINCS run.
-# Either way the confinement weir stays on sf for round 1.
+# Either method leaves the confinement weir on sf for round 1.
 if depth_method == "gvf":
     from pyproj import Transformer
 
@@ -1580,8 +1146,7 @@ else:
             raise RuntimeError(_msg + " (river_depth_modelling.steady_state.fail is true)")
         log.warning(_msg + " -- continuing (river_depth_modelling.steady_state.fail is false)")
 
-    # The water level the excavation is sized against: end of the (steady) run,
-    # or the old maximum over the run (round0_level: period_max).
+    # End of the (steady) run, or the maximum over the run (round0_level: period_max).
     round0_zs = (
         _read_cross_section_end_zs(round_root) if round0_level == "end_of_run" else period_max_zs_0
     )
@@ -1596,27 +1161,11 @@ else:
         f"(excavation_fraction={excavation_fraction:.3f})"
     )
 
-    # Mouth reach treatment: a mouth (n_rch_dn == 0, topologically the
-    # network's own outlet -- is_delta_outflow is NOT used, it's
-    # unreliable/unpopulated in practice) has its own last (most
-    # downstream, max along_m) cell hard-forced to natural bathymetry
-    # (rivdph=0) -- that coastal endpoint is a real physical constraint
-    # (the actual seabed), not a calibration result.
-    #
-    # Every OTHER cell (in the mouth reach itself, and however far
-    # upstream is needed) keeps the completely normal per-cell round-0
-    # bed computed above -- UNLESS that normal bed is shallower than the
-    # coastal endpoint, in which case it's floored down to match it.
-    # Rationale: a real channel shouldn't get shallower right before it
-    # meets the sea (the same discharge would then have to accelerate
-    # through a narrower cross-section just before the outlet) -- but
-    # this floor must stop being applied the first time, walking
-    # upstream, that the normal per-cell bed is already at least as deep
-    # as the coastal endpoint on its own, otherwise every far upstream
-    # reach with a genuinely shallower natural requirement would get
-    # needlessly forced deep too. This is a stateful walk (start at the
-    # coast, stop permanently at the first intersection), NOT a blanket
-    # elementwise min() over the whole network.
+    # Mouth (n_rch_dn == 0; is_delta_outflow is unreliable): the last cell is
+    # natural bathymetry (rivdph=0), a physical constraint. A channel does not
+    # get shallower before the sea, so beds shallower than that are floored to
+    # it, walking upstream and stopping for good at the first cell already
+    # deeper; a blanket min() would deepen unrelated upstream reaches.
     reach_is_mouth = dict(zip(rivers["reach_id"].astype(str), rivers["n_rch_dn"] == 0))
     cell_is_mouth_reach = cell_gdf["reach_id"].map(reach_is_mouth).fillna(False).to_numpy(dtype=bool)
 
@@ -1660,13 +1209,10 @@ else:
     else:
         log.warning(f"[{round_label}] No mouth (outlet) reach found")
 
-    # No excavation where the channel cell is already open water at its own bed:
-    # land-use sea, or an elevation at the GEBCO depth limit (rule 05a clamps
-    # GEBCO to terrain.gebco_max_depth_m below mean sea level, and rule 09's
-    # running minimum spreads that floor into channels downstream of it). The
-    # confined round-0 level there is a water surface over a sea bed, not over
-    # a river bank, and excavating 0.8 x that rise BELOW the sea bed double-
-    # counts the depth (basin 1248635: beds around -18 m on 36 reaches).
+    # No excavation on open-water cells: land-use sea, or at the GEBCO depth
+    # limit (rule 05a clamp, spread downstream by rule 09's running minimum).
+    # The rise there is over a sea bed; excavating below it double-counts the
+    # depth (basin 1248635: beds around -18 m on 36 reaches).
     _cell_rows = cell_gdf["row"].to_numpy()
     _cell_cols = cell_gdf["col"].to_numpy()
     _sea_cell = landuse_on_grid[_cell_rows, _cell_cols] == LANDUSE_SEA
@@ -1688,7 +1234,7 @@ else:
     _round_diagnostics(0, round_root, final_zs, final_times_s, confinement_weir_gdf)
     rivbed_cell = dem_at_cell - rivdph_current
 
-# ── river network map: depth (colour) and the width used (line width) ───────
+# river network map: depth (colour) and the width used (line width)
 # method gvf: water depth at the mean discharge per GVF node pair, dashed where
 # it comes from the width-depth fit; method modelled: the excavated depth per
 # centreline cell pair.
@@ -1714,39 +1260,15 @@ plot_river_depth_width(
     title=_depth_title,
 )
 
-# ── excavation (shared by rounds 1 and 2) ────────────────────────────────────
-# zbed_anchors: one anchor per centerline cell -- rivbed(cell) = DEM_at_cell
-# - rivdph_current[cell], a constant DEPTH offset from the real, locally-
-# varying terrain at the cell's own location. Mouth reaches need no special
-# case here: their own last (coastal) cell was already hard-forced to
-# natural bathymetry (rivdph=0) above, so it flows through
-# burn_river_channel's own per-reach anchor interpolation like any other
-# cell.
+# excavation (shared by rounds 1 and 2)
+# One anchor per centerline cell: rivbed = DEM_at_cell - rivdph.
 zbed_anchors = cell_gdf.assign(rivbed=rivbed_cell)
 
-# ONE burn, directly on the subgrid's own phase-locked fine-pixel grid
-# (coarse grid transform subdivided by nr_subgrid_pixels) instead of an
-# independently-bounded native-resolution grid -- otherwise hydromt_
-# sfincs's own subgrid.create() has to reproject/resample this file onto
-# its internal fine grid itself (different resolution AND phase/origin),
-# and THAT resampling step introduces new leakage across the
-# channel_mask boundary even when the source burn file itself has 0
-# pixels outside channel_mask -- hydromt's own dep_subgrid.tif can still
-# show excavated pixels bleeding into a coarse cell channel_mask
-# excludes, and since SFINCS reports a subgrid cell's own "zb" as
-# (effectively) the MINIMUM sub-pixel elevation within it, even a
-# handful of leaked sub-pixels at one corner makes the WHOLE coarse cell
-# read as deeply excavated relative to its own true (unexcavated)
-# surrounding terrain. Burning directly at the subgrid's own
-# resolution/phase eliminates the resampling step (and its leak)
-# entirely, rather than trying to out-guess hydromt's own internal
-# resampling afterward. natural_dem_path floors the burn against the real
-# conditioned DEM (never shallower than it) -- see burn_river_channel's own
-# docstring for why this is needed even with terrain-following anchors
-# (interpolation/junction-blending between anchors can still locally
-# overshoot). This file is also this rule's own river_burned_subgrid
-# output: rule 13's production subgrid table is built from the SAME raster,
-# with no resampling, so production runs on exactly this channel.
+# Burned on the subgrid's own pixel grid: hydromt resampling another grid leaks
+# excavated sub-pixels past channel_mask, and SFINCS's subgrid zb is about the
+# MINIMUM sub-pixel elevation, so a few leaked pixels deepen a whole cell.
+# natural_dem_path floors the burn: anchor interpolation can overshoot.
+# Rule 13 uses this raster unresampled.
 NODATA = np.float32(-9999.0)
 subgrid_transform = grid.transform * Affine.scale(1.0 / nr_subgrid_pixels)
 subgrid_shape = (grid.shape[0] * nr_subgrid_pixels, grid.shape[1] * nr_subgrid_pixels)
@@ -1758,10 +1280,7 @@ burned_arr_subgrid, transform_subgrid, terrain_subgrid, stats_subgrid = burn_riv
     utm_crs=sf.crs, resolution_m=grid.cell_size_m / nr_subgrid_pixels,
     out_transform=subgrid_transform, out_shape=subgrid_shape,
 )
-# Constrained to channel_mask (same shared mask used for the weir corridor),
-# so excavated cells are always a subset of the corridor's own cells -- a
-# reach's own buf_poly can rasterize a handful of edge pixels slightly
-# differently than channel_mask's own independent rasterization.
+# A reach's buf_poly can rasterize edge pixels outside channel_mask.
 burned_arr_subgrid = constrain_to_coarse_channel_mask(
     burned_arr_subgrid, transform_subgrid, sf.crs, channel_mask, grid.transform,
 )
@@ -1798,15 +1317,8 @@ log.info(
     f"{grid.cell_size_m / nr_subgrid_pixels:g} m)"
 )
 
-# Main-grid "dep" of the channel cells: the per-cell MEAN of the subgrid
-# pixels with the burn in place, so a channel narrower than a cell lowers
-# that cell only in proportion to the area it occupies (rather than setting
-# every cell the channel touches to bed level). Patched directly into
-# sf.grid.data["dep"]'s own array rather than routed through the data
-# catalog/elevation_list mechanism -- sf.write() writes whatever ends up in
-# sf.grid.data["dep"] regardless of how it got there. Also written as this
-# rule's own river_burned_dem_sfincs_grid output below, which rule 13 layers
-# onto the same background -- calibration and production share this "dep".
+# Main-grid dep of channel cells: per-cell MEAN of the burned subgrid, so a
+# channel narrower than a cell lowers it in proportion to its area.
 burned_arr_sfincs = mean_elevation_on_coarse_grid(
     burned_arr_subgrid, terrain_subgrid, nr_subgrid_pixels,
 )
@@ -1824,36 +1336,16 @@ excavated_subgrid_elevation_list = [
     {"elevation": "local_elevation_conditioned"},
 ]
 
-# ── coastal forcing for rounds 1 and 2: the protection-level storm tide ─────
-# Round 0 keeps its steady calm-sea boundary (the excavation depth is a river
-# question). Rounds 1 and 2 are forced at the surge stations production uses
-# with a storm tide at the coastal protection RP (FLOPROS), in production's
-# own wave shape: SFINCS's water level at
-# the coast can rise well above the level imposed at the boundary (shoaling,
-# reflection off the dike, bays), so a crest equal to the offshore COAST-RP
-# level does not hold that RP inside the model (basin 2433835: sea levels up
-# to ~0.8 m at the dike under a 0.4 m boundary). With the storm tide in round
-# 1, every coastal edge's crest comes from the simulated level at the dike
-# itself -- the same per-edge rule as the river banks -- and round 2 verifies
-# it. Peaks: per station, linear in RP
-# between COAST-RP's tabulated RPs (as the crest's own RP-41 level), MDT-
-# corrected, rounded to 1 cm. River and surge at
-# their protection RPs together is conservative near the mouth, where the
-# two interact.
-#
-# Wave shape = production's (src.surge.storm_tide_event, the builder rule 13's
-# boundary uses): the AVERAGE TIDE plus the surge shape for the protection
-# RP, scaled so the peak, surge on tidal high water, equals the
-# protection-level storm tide -- when
-# surge_forcing.nc carries the storm-tide hydrograph components
-# (boundary_forcings.surge.hydrograph.enabled). The peak sits midway between
-# the end of the discharge ramp and the end of the run, so the river is at
-# its full calibration discharge when it arrives; the run is shorter than
-# production's event window, so only that part of the hydrograph is seen.
-# Over the discharge ramp the boundary blends linearly from baseline_m, the
-# level the sea starts at (zsini), into the wave, so there is no step.
-# Without the components: a half-cosine over surge period_hr, starting once
-# the river is at its full discharge.
+# coastal forcing for rounds 1 and 2: the protection-level storm tide
+# The coast amplifies the boundary level (shoaling, reflection off the dike,
+# bays): basin 2433835 reaches ~0.8 m at the dike under a 0.4 m boundary, so
+# coastal crests come from the simulated level at the dike. Peaks per station,
+# linear in RP between COAST-RP's tabulated RPs, MDT-corrected, rounded to 1 cm.
+# River and surge both at protection RP is conservative near the mouth.
+# Shape (src.surge.storm_tide_event, as rule 13): average tide plus the RP's surge
+# shape, peak midway between ramp end and run end, blended in linearly from
+# baseline_m over the ramp. Without hydrograph components: a half-cosine over
+# surge period_hr starting at ramp end.
 if coastal_rp_yr is not None:
     _surge_hours = np.arange(0.0, calibration_days * 24.0 + 1e-9, 0.25)
     with xr.open_dataset(surge_forcing_path, decode_times=False) as _sds:
@@ -1910,7 +1402,7 @@ if coastal_rp_yr is not None:
 else:
     log.warning("No coastal protection RP -- rounds 1-2 keep the steady calm-sea boundary")
 
-# ── round 1: confined, excavated ─────────────────────────────────────────────
+# round 1: confined, excavated
 # sf.weirs still holds round 0's confinement weir -- unchanged here.
 round_label = ROUND_TITLES[1]
 round_root = _start_round(1)
@@ -1918,19 +1410,14 @@ _create_subgrid(excavated_subgrid_elevation_list, round_label, channel_roughness
 period_max_zs_1, final_zs, final_times_s = _run_calibration_round(round_label, round_root)
 zs_field_1 = _read_period_max_zs_field(round_root)
 
-# Production weir: every edge's crest = max(round 1's water level on its own
-# water side, coastal_protection_crest_m) + weir_freeboard_m (see this
-# module's own docstring). Traced once here and exported as-is below --
-# round 2 verifies exactly this weir.
+# Production weir, exported as-is; round 2 verifies exactly this weir.
 weir_gdf, final_weir_diagnostics = build_coastal_protection_weir(
     grid, landuse_on_grid, channel_mask, coastal_protection_crest_m, min_component_cells, weir_par1,
     water_side_crest_on_grid=zs_field_1, freeboard_m=weir_freeboard_m, channel_mask_gap_free=True,
     unprotected_ocean_wetlands=unprotected_ocean_wetlands,
 )
 
-# Per-centerline-cell summary of the same rule (cross-section water level in
-# place of each edge's own water-side cell) -- reporting only
-# (calibration_state.csv, round profiles, weir_crest_calibrated).
+# Per-centerline-cell summary of the same rule; reporting only.
 weir_crest_cell = ceil_crest(np.fmax(period_max_zs_1, coastal_protection_crest_m) + weir_freeboard_m)
 log.info(
     f"[{round_label}] Crest (centerline summary): min={np.nanmin(weir_crest_cell):.3f} m, "
@@ -1941,7 +1428,7 @@ _update_reach_columns(rivdph_current, weir_crest_cell)
 _write_calibration_state(round_root, rivdph=rivdph_current, weir_crest=weir_crest_cell, zs=period_max_zs_1)
 _round_diagnostics(1, round_root, final_zs, final_times_s, confinement_weir_gdf)
 
-# ── round 2: verification with the real production weir ─────────────────────
+# round 2: verification with the real production weir
 round_label = ROUND_TITLES[2]
 round_root = _start_round(2)
 _set_weir(weir_gdf, final_weir_diagnostics, round_label, "production crests (per edge, from round 1)")
@@ -1970,10 +1457,7 @@ if final_weir_diagnostics.get("edge_water_side_mask") is not None:
 _write_calibration_state(round_root, rivdph=rivdph_current, weir_crest=weir_crest_cell, zs=period_max_zs_2)
 _round_diagnostics(2, round_root, final_zs, final_times_s, weir_gdf, crest_gap_crest_on_grid=edge_crest_on_grid)
 
-# ── canonical production outputs: burned river channel + weir ────────────────
-# river_burned_subgrid.tif was written above (the exact burn rounds 1-2
-# simulated with); this is its per-cell mean on the SFINCS grid, the "dep"
-# those rounds ran on.
+# canonical production outputs: burned river channel + weir
 with rasterio.open(
     snakemake.output.river_burned_dem_sfincs_grid, "w", driver="GTiff", dtype="float32",
     width=burned_arr_sfincs.shape[1], height=burned_arr_sfincs.shape[0],
@@ -1990,44 +1474,18 @@ Path(snakemake.output.coastal_protection_weir).parent.mkdir(parents=True, exist_
 weir_gdf.to_file(snakemake.output.coastal_protection_weir, driver="GPKG")
 log.info(f"Written: {snakemake.output.coastal_protection_weir} ({len(weir_gdf)} segment(s))")
 
-# ── real open sea, AT THIS RULE'S OWN GRID resolution (no reprojection at
-# all -- written using grid.transform/grid.crs exactly as-is) ───────────────
+# Real open sea on this rule's grid, no reprojection
 # Mostly a GRID-RESOLUTION MISALIGNMENT fix, not an isolated-pocket one --
 # the weir is traced on landuse_on_grid (rule grid_align_landuse, 09b:
 # native landuse.tif resampled via nearest-neighbor onto the much coarser
-# SFINCS regular grid, ONCE, upstream), so land_mask (the model's own
-# "this is the protected side" decision) disagrees with the fine native
-# landuse.tif right along the coast -- overlaying the weir on the
-# native-resolution raster shows native "sea" (200) pixels sitting on the
-# land side, continuously along the coastline, wherever the coarse grid's
-# own cell edges cut across the true coastline -- see src.protection_weir.
-# build_coastal_protection_weir's own protected_pocket_mask docstring for
-# the full mechanism (confirmed via basin 2433835: its landuse.tif/
-# sea_mask.tif have exactly ONE connected sea component at native
-# resolution, so there was never an isolated "pocket" to find via
-# component analysis -- the mismatch is a coastline-wide fringe, not
-# discrete blobs).
-#
-# zsini_sea_cells_on_grid.tif is THE single sea/land classification every
-# downstream consumer reads directly, zero further reprojection: THIS
-# rule's own zsini (13_build_sfincs_skeleton.py, needs the fix for the
-# SIMULATION itself -- the uncorrected classification would start these
-# fringe cells wet at baseline_m regardless of the weir, so SFINCS would
-# show them as flooded from t=0 purely from the mismatched initial
-# condition) AND flood-diagnostic consumers downstream (rules run_spinup/
-# sanity_checks/run_event/compute_flood_metrics, via src.postprocessing's
-# own sea_mask_path argument). There used to be a SEPARATE, native-
-# resolution sea_mask_corrected.tif for the flood-diagnostic consumers --
-# removed 2026-08-07b: those consumers reproject whatever sea_mask_path
-# they're given onto their own (subgrid- or cell-resolution) output grid
-# anyway (src.postprocessing's own da_sea.raster.reproject_like calls), and
-# that reprojection is only well-defined/alignment-safe when the SOURCE is
-# already grid-aligned (subgrid is an exact integer subdivision of the
-# coarse grid, sharing its origin/axes -- unlike the arbitrary-origin
-# native FathomDEM/landuse pixel grid). A second, redundant native file
-# encoding the exact same boolean was pure duplication once that was
-# recognized -- one raster, one resampling pass, one source of truth,
-# same principle already applied to zsini/landuse/roughness above.
+# SFINCS regular grid, ONCE, upstream), so the protected side disagrees with
+# native landuse.tif along the whole coast where coarse cell edges cut the
+# coastline (basin 2433835 has one connected sea component at native
+# resolution: a coastline-wide fringe, not discrete pockets).
+# The single sea/land classification for rule 13's zsini (uncorrected, fringe
+# cells would start wet behind the weir) and for flood diagnostics
+# (src.postprocessing sea_mask_path), which reproject it onto subgrid- or
+# cell-resolution grids; that is alignment-safe only from a grid-aligned source.
 _protected_pocket_mask = final_weir_diagnostics.get(
     "protected_pocket_mask", np.zeros(landuse_on_grid.shape, dtype=bool)
 )
@@ -2047,17 +1505,9 @@ log.info(
     f"Written: {snakemake.output.zsini_sea_cells}"
 )
 
-# ── seed-to-mouth round-profile diagnostics (bed/crest/water-level per round) ─
-# Automatically produced here (not a declared Snakemake output, same
-# convention as calibration_state.csv) instead of requiring a separate,
-# manually-run script -- and reads the SAME calibration_state.csv every
-# round just wrote, so the profile is the real per-cell state this rule
-# actually calibrated with, not a reconstruction of it (see
-# gather_calibration_round_profile's own docstring). Written under the SAME
-# persistent visuals directory as the other canonical diagnostic plots
-# (results/{basin_id}/preprocessing_inputs/visuals/10_calibration/) rather
-# than calib_root -- calib_root is this rule's own intermediate/disposable
-# model directory, not where user-facing output belongs.
+# seed-to-mouth round-profile diagnostics (bed/crest/water-level per round)
+# Not declared outputs. Read from each round's calibration_state.csv; written
+# to the visuals directory, not the disposable calib_root.
 visuals_dir = Path(snakemake.output.plot_calibration).parent
 visuals_dir.mkdir(parents=True, exist_ok=True)
 seed_ids = sorted(
@@ -2089,7 +1539,7 @@ Path(snakemake.output.depth_estimated_river_network).parent.mkdir(parents=True, 
 rivers.to_file(snakemake.output.depth_estimated_river_network, driver="GPKG")
 log.info(f"Written: {snakemake.output.depth_estimated_river_network}")
 
-# ── canonical outputs: copies of round 2's own per-round files ───────────────
+# canonical outputs: copies of round 2's own per-round files
 Path(snakemake.output.plot_calibration).parent.mkdir(parents=True, exist_ok=True)
 _last_round_paths = _round_visual_paths(N_ROUNDS_AFTER_0)
 for _canonical, _kind in (

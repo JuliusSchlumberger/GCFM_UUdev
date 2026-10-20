@@ -1,15 +1,10 @@
-"""
-build_adaptation_lines.py — write a basin's adaptation line files (coastal
-and river levee, river-mouth closure, mouth pump) from its own baseline
-protection weir, so they sit on the basin's current model grid.
+"""Write a basin's adaptation line files from its baseline protection weir.
 
-Run once a basin's skeleton (rule 13) exists, and again whenever its grid
-changes (new domain polygon, rotation, resolution): the baseline weir
-follows the grid's cell edges, and the levee measures only replace baseline
-segments lying within 2 m of their `locations` lines. Not part of the
-Snakemake workflow -- the files land in the raw-data folder for you to check
-and then point config/adaptation_strategies.yml at. See
-workflow/src/adaptation_lines.py for how the lines are derived.
+Needs the basin's rule-13 skeleton; rerun whenever the grid changes (domain
+polygon, rotation, resolution): the baseline weir follows the grid's cell edges,
+and levee measures replace only baseline segments within 2 m of their
+`locations` lines. Not part of the Snakemake workflow: check the output, then
+point config/adaptation_strategies.yml at it.
 
 Writes into <out> (relative to GCFM_RAW_DATA_ROOT unless absolute):
 
@@ -44,9 +39,9 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import rasterio  # noqa: E402
 import yaml  # noqa: E402
+from hydromt_sfincs import SfincsModel  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import Polygon as MplPolygon  # noqa: E402
-from hydromt_sfincs import SfincsModel  # noqa: E402
 from shapely.geometry import LineString  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -163,6 +158,7 @@ def _plot(path, weir, closure, pump, estuary, seaward, transform, report, basin_
 
 
 def main() -> None:
+    """Build and write the adaptation lines for one basin."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("basin_id")
     parser.add_argument(
@@ -195,9 +191,8 @@ def main() -> None:
         skeleton / "gis" / "mask.tif", like=(landuse.shape, transform)
     )
     valid = mask > 0
-    # The baseline weir exactly as the model holds it (and as the levee
-    # measures merge against): sfincs.weir read through hydromt_sfincs, which
-    # drops the rule-10 segments that fall outside the model region.
+    # The weir as the model holds it (and as levee measures merge against):
+    # hydromt_sfincs drops rule-10 segments outside the model region.
     sf = SfincsModel(root=str(skeleton), mode="r")
     sf.weirs.read()
     weir = gpd.GeoDataFrame(

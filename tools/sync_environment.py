@@ -1,19 +1,10 @@
 """Pre-commit hook: keep environment.yml in sync with the hmt_sfincs_dev conda env.
 
-Only invoked by pre-commit when environment.yml is part of the commit (see
-the `files:` pattern for the `sync-environment-yml` hook in
-.pre-commit-config.yaml) -- not on every commit. Running `conda env export`
-unconditionally would surface unrelated build-string diffs any time this
-machine's installed packages have drifted from what's committed, even on
-commits that touch nothing environment-related.
-
-Regenerates the export, strips conda's trailing `prefix:` line (always the
-exporting machine's local absolute install path -- must never be committed,
-since `conda env create` would try to use it as the literal install target
-on another machine unless overridden with -n/-p), and compares it to what's
-currently on disk. If they differ, overwrites environment.yml and exits
-non-zero so pre-commit blocks the commit and asks you to `git add` the
-regenerated file and re-commit -- same pattern as the ruff --fix hook.
+Runs only when environment.yml is in the commit (`sync-environment-yml` hook in
+.pre-commit-config.yaml), so local package drift does not block unrelated
+commits. Strips conda's trailing `prefix:` line (a machine-local install path
+that `conda env create` would use as its target). If the export differs, it
+overwrites environment.yml and exits non-zero so the file can be re-added.
 """
 
 import os
@@ -28,15 +19,15 @@ ENV_FILE = REPO_ROOT / "environment.yml"
 
 
 def find_conda() -> str:
+    """Return the path to the conda executable; raise RuntimeError if not found."""
     conda_exe = os.environ.get("CONDA_EXE")
     if conda_exe and Path(conda_exe).exists():
         return conda_exe
     found = shutil.which("conda") or shutil.which("conda.exe")
     if found:
         return found
-    # Git hooks invoked from an IDE's git integration typically run outside
-    # any activated conda shell, so neither CONDA_EXE nor PATH can be relied
-    # on -- fall back to the standard per-user install locations.
+    # Hooks run from an IDE often have no activated conda shell (no CONDA_EXE,
+    # no conda on PATH): fall back to the standard per-user install locations.
     for base in ("miniforge3", "miniconda3", "anaconda3"):
         candidate = Path.home() / "AppData" / "Local" / base / "Scripts" / "conda.exe"
         if candidate.exists():
@@ -50,6 +41,7 @@ def find_conda() -> str:
 
 
 def main() -> int:
+    """Regenerate environment.yml; return 1 if it changed, else 0."""
     conda_exe = find_conda()
     result = subprocess.run(
         [conda_exe, "env", "export", "-n", ENV_NAME],

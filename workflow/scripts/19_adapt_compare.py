@@ -1,22 +1,8 @@
-"""
-19_adapt_compare.py — Aggregate a basin's baseline/pre/post flood_metrics.csv
-across EVERY scenario x strategy ever run for this basin (not just whichever
-target_strategies/target_scenarios were passed to this specific `snakemake
-adapt` invocation) into one long-format comparison CSV.
+"""Aggregate every baseline/pre/post flood_metrics.csv of a basin into one long CSV.
 
-Strategies are normally authored/tested a handful at a time, not all in one
-invocation, so building the table purely from snakemake.input (this run's
-own declared dependencies) would only ever reflect whichever strategies this
-particular invocation happened to target, dropping every other
-already-computed strategy's rows. Instead, every flood_metrics.csv actually
-sitting on disk under this basin's own runs/ folder is discovered directly
-via glob, independent of this invocation's own target_strategies/
-target_scenarios -- snakemake.input is still declared on the rule
-(19_adapt_compare.smk) so Snakemake knows to RERUN this rule whenever the
-currently-targeted strategy/scenario's own metrics change, but the script
-itself always recompiles the full table from whatever is actually on disk,
-self-healing if a strategy folder is later deleted/renamed rather than
-accumulating stale rows forever.
+Run by rule adapt_compare. Globs every flood_metrics.csv under the basin's
+runs/ folder, not only this invocation's targets: snakemake.input only
+triggers reruns, and deleted strategy folders drop out of the table.
 """
 
 from pathlib import Path
@@ -27,18 +13,11 @@ from src.log import setup_logging
 
 log = setup_logging(snakemake.log[0])
 
-# comparison_csv is results_path("{basin_id}/runs/metrics_comparison.csv") --
-# its own parent IS this basin's runs/ folder, the root every scenario/
-# strategy/method's own flood_metrics.csv lives under.
+# comparison_csv sits directly in the basin's runs/ folder.
 runs_root = Path(snakemake.output.comparison_csv).parent
 
 
 def _read_labeled(paths: list[Path], method: str, strategy_from_path: bool) -> pd.DataFrame:
-    """Read each CSV in `paths`, tagging every row with `method` and a
-    `strategy` (the containing folder name -- e.g. .../pre/{strategy}/
-    flood_metrics.csv -- since only the post-method's own CSV already
-    carries a strategy column, and even that one is overwritten here for
-    consistency). Baseline runs carry no strategy at all."""
     frames = []
     for p in paths:
         df = pd.read_csv(p)

@@ -1,17 +1,18 @@
-# Applied AFTER the SFINCS run, directly to the flood depth raster.
-# No model re-run required.
+"""Post-processing adaptation measures applied to a max flood depth raster.
+
+Applied AFTER the SFINCS run; no model rerun. Entry point: dispatch_rules().
+"""
 
 import shutil
+from pathlib import Path
+
+import geopandas as gpd
 import numpy as np
 import rasterio
 import rioxarray as rxr
-from pathlib import Path
 from hydromt_sfincs import SfincsModel
-
-import geopandas as gpd
-from shapely.ops import polygonize, unary_union
 from rasterio.features import geometry_mask
-
+from shapely.ops import polygonize, unary_union
 from src.grid import cell_area_m2
 
 # Types of flooding attribution classes (used in the attribution mask)
@@ -21,11 +22,10 @@ from src.grid import cell_area_m2
 
 
 def _is_current_protection(elevation) -> bool:
-    """True for the {"current": True, "fill_crest": ...} elevation that
-    src.adaptation_scaling resolves `current_protection` to. A levee kept at
-    current protection changes nothing here: the baseline flood map already
-    contains today's levees, so it never clears any flood class -- it never
-    "holds" in the joint compound check either.
+    """True for the {"current": True, "fill_crest": ...} form of `current_protection`.
+
+    Current protection never clears a flood class (nor "holds" in the joint
+    compound check): the baseline flood map already contains today's levees.
     """
     return isinstance(elevation, dict) and bool(elevation.get("current"))
 
@@ -40,29 +40,23 @@ def _crest_label(elevation) -> str:
 def apply_offshore_barrier(
     flood_map_path: str, scenario_root: str, output_dir: str, elevation: float, **kwargs
 ) -> str:
-    """
-    Post-processing offshore barrier rule.
-    Logic:
-      - Read the max coastal water level from the scenario model.
-      - If barrier height >= max water level = all coastal flooding removed.
-        Remove all flooding in attribution classes 2 and 3 (coastal and compound).
-      - If barrier height < max water level = full risk from coastal flooding.
+    """Remove coastal and compound flooding if the barrier tops the max coastal water level.
+
+    elevation >= max coastal water level of the scenario: classes 2 and 3 are
+    cleared; otherwise full coastal flood risk remains.
     """
 
     out_path = Path(output_dir) / "max_flood_depth.tif"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Get max coastal water level
     mod = SfincsModel(root=scenario_root, mode="r")
     wl = mod.get_component("water_level")
     wl.read()
     max_wl = float(wl.data["bzs"].max())
 
-    # Read flood map raster
     with rasterio.open(flood_map_path) as src:
         flood, prof = src.read(1), src.profile
 
-    # Apply conditional mask
     mask_path = Path(scenario_root).parent / "attribution_mask.tif"
     if not mask_path.exists():
         raise FileNotFoundError(f"Attribution mask not found at {mask_path}")
@@ -82,7 +76,6 @@ def apply_offshore_barrier(
             f"  Barrier overtopped (H={elevation}m < Surge={max_wl:.2f}m) = full risk"
         )
 
-    # Save modified raster with updated metadata
     prof.update(dtype="float32")
     with rasterio.open(out_path, "w", **prof) as dst:
         dst.write(flood.astype("float32"), 1)
@@ -99,21 +92,13 @@ def apply_river_levee(
     strategy_measures: dict = None,
     **kwargs,
 ) -> dict:
-    """
-    Post-processing river levee rule.
-    Logic:
-      - Read max river water level (e.g. obs points / dis forcing) from the scenario model.
-      - If river_height > max river water level: remove flooding in class 1 (river-only).
-      - Class 3 (compound) flooding is only removed if BOTH levees hold, since
-        either source alone could cause it -- this function owns that joint
-        decision (apply_coastal_levee defers class 3 to here whenever a
-        sibling river_levee measure is present, see its own docstring), by
-        reading the sibling coastal_levee's own elevation and coastal water
-        level directly out of strategy_measures (this strategy's own full
-        measures dict, see dispatch_rules). With no sibling coastal_levee in
-        the strategy, class 3 is left untouched (still at full risk) rather
-        than cleared based on river alone -- compound flooding by definition
-        needs both sources to be individually contained.
+    """Remove river-only flooding (class 1) if the levee tops the max river water level.
+
+    Class 3 (compound) is cleared only if BOTH levees hold, since either source
+    alone could cause it: this function owns that joint decision (apply_coastal_levee
+    defers class 3 here when a sibling river_levee exists), reading the sibling
+    coastal_levee's elevation and coastal water level from strategy_measures.
+    With no sibling coastal_levee, class 3 stays at full risk.
     """
     out_path = Path(output_dir) / "max_flood_depth.tif"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,11 +137,9 @@ def apply_river_levee(
 
     classes_to_clear = [1] + ([3] if compound_holds else [])
 
-    # Read flood map raster
     with rasterio.open(flood_map_path) as src:
         flood, prof = src.read(1), src.profile
 
-    # Apply conditional mask
     mask_path = Path(scenario_root).parent / "attribution_mask.tif"
     if not mask_path.exists():
         raise FileNotFoundError(f"Attribution mask not found at {mask_path}")
@@ -180,7 +163,6 @@ def apply_river_levee(
             f"  Levee overtopped (H={elevation}m < river water level={max_river_wl:.2f}m) = full risk"
         )
 
-    # Save modified raster with updated metadata
     prof.update(dtype="float32", nodata=prof.get("nodata", np.nan))
     with rasterio.open(out_path, "w", **prof) as dst:
         dst.write(flood.astype("float32"), 1)
@@ -198,24 +180,14 @@ def apply_nbs_land_reclamation(
     attribution_codes: tuple = (2, 3),
     **kwargs,
 ) -> dict:
-    """
-    Post-processing created vegetated foreshore ("managed advance").
+    """Lower coastal and compound flood depths for a vegetated foreshore (managed advance).
 
-    The measure is represented by an empirical reduction coefficient applied to
-    an existing flood map, without re-running the model. A uniform water-level
-    reduction dd = (D / 1000) * r is subtracted from all cells attributed to
-    coastal and compound flooding. Because depth is the difference between water
-    level and bed elevation, this is equivalent to a uniform lowering of the
-    water surface.
-
-    r is a water-level (surge) attenuation rate, NOT a wave attenuation rate:
-    wetland/saltmarsh 0.017-0.25 m/km (Wamsley et al. 2010), mangrove
-    0.05-0.50 m/km (McIvor et al. 2012).
-
-    Args:
-        distance          : Foreshore / vegetation belt width [m]
-        attenuation_rate  : Water-level attenuation rate r [m per km of belt width]
-        attribution_codes : Attribution-mask codes treated as coastal or compound
+    Empirical, no rerun: a uniform water-level reduction dd = (D / 1000) * r is
+    subtracted from all cells attributed to coastal and compound flooding (depth
+    is water level minus bed, so this equals a uniform lowering of the surface).
+    distance D: belt width [m]. attenuation_rate r: water-level (surge)
+    attenuation [m per km of belt width], NOT wave attenuation: wetland/saltmarsh
+    0.017-0.25 m/km (Wamsley et al. 2010), mangrove 0.05-0.50 m/km (McIvor et al. 2012).
     """
     out_path = Path(output_dir) / "max_flood_depth.tif"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,12 +207,10 @@ def apply_nbs_land_reclamation(
         f"(D={distance:.0f} m, r={attenuation_rate} m/km)."
     )
 
-    # Read flood map raster
     with rasterio.open(flood_map_path) as src:
         flood, prof = src.read(1).astype("float32"), src.profile
         src_nodata = src.nodata
 
-    # Read attribution mask
     mask_path = Path(scenario_root).parent / "attribution_mask.tif"
     if not mask_path.exists():
         raise FileNotFoundError(f"Attribution mask not found at {mask_path}")
@@ -267,7 +237,6 @@ def apply_nbs_land_reclamation(
         flood,
     )
 
-    # Save modified raster
     prof.update(dtype="float32")
     with rasterio.open(out_path, "w", **prof) as dst:
         dst.write(flood.astype("float32"), 1)
@@ -283,76 +252,22 @@ def apply_water_retention(
     baseline_excess_volume: float,
     **kwargs,
 ) -> dict:
-    """
-    Post-processing water retention rule.
+    """Remove storage_fraction * baseline_excess_volume from river and compound flooding.
 
-    Logic:
-        - Deducts fraction * baseline_excess_volume from the river+compound
-          flood volume (classes 1, 3).
-        - Translates the reduction into a SINGLE uniform depth `tau` [m],
-          SOLVED (not `target_volume / target_area`) so that the volume
-          actually removed -- sum(min(depth_i, tau)) * cell_area, accounting
-          for cells whose own depth is shallower than `tau` and so clip to 0
-          before giving up their "fair share" -- exactly equals target_volume
-          (capped at whatever volume is actually present, if target_volume
-          would otherwise exceed it). A naive `target_volume / target_area`
-          (the mean depth) systematically UNDER-removes volume whenever
-          depths aren't uniform, since shallow cells can't contribute more
-          than their own depth -- solving for `tau` directly is what
-          guarantees exact volume conservation, and as a consequence also
-          guarantees full drainage of every target cell once
-          storage_fraction=1 (target_volume equal to everything present).
-        - Subtracts `tau` uniformly from those cells in the max flood depth
-          map, clipped at 0.
+    The volume (classes 1, 3) is taken off as a SINGLE uniform depth `tau` [m],
+    solved so that sum(min(depth_i, tau)) * cell_area equals the target exactly
+    (see _uniform_layer_depth), capped at the volume present; the mean depth
+    target_volume / target_area would under-remove when depths are not uniform.
+    storage_fraction=1 drains every target cell.
 
-    `baseline_excess_volume` is deliberately a fixed, externally-supplied
-    reference -- computed ONCE per basin x scenario by rule attribution_mask
-    (18c_attribution_mask.py, via src.postprocessing.compute_excess_volume,
-    classes=(1, 3)) and read here from its baseline_excess_volume.json
-    output (see 18b_adapt_post.py) -- rather than recomputed from
-    `flood_map_path` here. This is the SAME reference number the preprocessing
-    sibling (src.adaptation_method_pre.apply_water_retention) reads, so
-    storage_fraction means the same thing in both methods. In a chained
-    post-processing pipeline (see adaptation.py), `flood_map_path` is the
-    OUTPUT of any earlier measure (e.g.
-    nbs_land_reclamation's attenuation), so its own excess volume already
-    reflects upstream reduction. Sizing storage_fraction against a moving,
-    already-reduced volume would make storage_fraction mean different things
-    run to run, and would no longer be comparable to the preprocessing
-    DEM-lowering method, which is always sized against the same fixed baseline.
-    The measure still reads and reduces depths from `flood_map_path` as given,
-    so upstream measures' effects are preserved and compounded as before --
-    only the volume used to size THIS measure's reduction is pinned.
-
-    NOTE: because depth cannot go negative, the *nominal* volume reduction
-    (storage_fraction * baseline_excess_volume) is only NOT fully realized
-    when target_volume itself exceeds the volume actually present in the
-    target cells (e.g. an upstream chained measure already removed more than
-    baseline_excess_volume would suggest, or floating-point/reprojection
-    drift between this run's own volume and the externally-computed
-    baseline_excess_volume) -- solved `tau` is then capped at draining every
-    target cell to 0 rather than solving past that. The realized removed
-    volume is reported alongside the nominal target so this can be checked.
-
-    Args:
-        flood_map_path : path to the max flood depth raster to reduce (may
-                         already reflect earlier measures in the chain)
-        output_dir     : where to write the reduced raster
-        storage_fraction : fraction (0-1) of baseline_excess_volume to retain/remove.
-                         1.0 -> full removal in river+compound cells (every
-                         target cell drains to 0), guaranteed by construction
-                         (actual removal may be less where the reduction depth
-                         exceeds a cell's flood depth).
-        scenario_root  : the scenario's sfincs/ model root; attribution_mask.tif
-                         lives in its parent folder
-        baseline_excess_volume : excess flood volume [m3] from the uncontrolled
-                         baseline run, classes (1, 3) (see
-                         src.postprocessing.compute_excess_volume;
-                         auto-injected by 18b_adapt_post.py, never
-                         strategy-configured)
-
-    Returns:
-        dict with method and output raster path
+    `baseline_excess_volume` [m3] is a fixed reference from rule attribution_mask
+    (compute_excess_volume, classes=(1, 3)), auto-injected by 18b_adapt_post.py and
+    shared with src.adaptation_method_pre.apply_water_retention, so storage_fraction
+    means the same in both methods. In a chained post-processing pipeline (see
+    adaptation.py) `flood_map_path` may already reflect earlier measures; depths are
+    reduced from it as given, but the volume sizing stays pinned to the baseline.
+    The realized removed volume is reported next to the nominal target.
+    scenario_root: the scenario's sfincs/ root; attribution_mask.tif is in its parent.
     """
     if not (0.0 <= storage_fraction <= 1.0):
         raise ValueError(f"storage_fraction must be in [0, 1], got {storage_fraction}")
@@ -365,9 +280,8 @@ def apply_water_retention(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if baseline_excess_volume == 0:
-        # No river/compound flooding in this scenario (e.g. a coastal-only
-        # one): nothing to store -- pass the flood map through unchanged, same
-        # as the preprocessing sibling leaves its model unchanged.
+        # No river/compound flooding (e.g. coastal-only): pass the map through
+        # unchanged, as the preprocessing sibling leaves its model unchanged.
         print(
             "  WARNING: baseline_excess_volume is 0 (no river/compound flooding in this "
             "scenario) -- water retention has nothing to store, flood map left unchanged."
@@ -396,22 +310,15 @@ def apply_water_retention(
     target_area = depths.size * cell_area
     current_volume = float(depths.sum() * cell_area)
 
-    # Single uniform depth such that sum(min(depth_i, reduction_depth)) *
-    # cell_area equals target_volume (capped at the volume present) -- see
-    # _uniform_layer_depth; not the naive target_volume/target_area mean,
-    # which under-removes whenever depths aren't uniform.
+    # Solved uniform depth, not the naive target_volume/target_area mean, which
+    # under-removes whenever depths aren't uniform.
     reduction_depth = _uniform_layer_depth(depths, target_volume, cell_area)
     remaining = np.maximum(depths - reduction_depth, 0.0)
 
-    # Fully-drained cells (remaining == 0) must become NODATA, not a literal
-    # 0.0 -- downstream (18b_adapt_post.py's own inundation-ratio plot and
-    # compute_risk_metrics' flooded_area_km2) count "flooded" via
-    # da_hmax.notnull(), not an actual depth threshold, same convention
-    # apply_offshore_barrier/apply_coastal_levee/apply_river_levee already
-    # follow (np.where(..., prof["nodata"], flood)). A literal 0.0 stays
-    # "valid" and gets counted as still-flooded even though the real depth
-    # is zero, silently inflating every area/extent metric back toward the
-    # baseline's own flooded footprint.
+    # Fully drained cells must become NODATA, not 0.0: downstream metrics
+    # (18b_adapt_post.py's inundation-ratio plot, compute_risk_metrics'
+    # flooded_area_km2) count "flooded" via da_hmax.notnull(), so a literal 0.0
+    # would still count as flooded.
     flood_new = flood.copy()
     flood_new[target_mask] = np.where(remaining <= 0, prof["nodata"], remaining)
     realized_volume = (
@@ -447,40 +354,26 @@ def apply_coastal_levee(
     strategy_measures: dict = None,
     **kwargs,
 ) -> str:
-    """
-    Post-processing coastal levee rule.
-    Logic:
-      - Read the max coastal water level from the scenario model.
-      - If levee height >= max water level = all coastal flooding removed.
-        Remove all flooding in attribution classes 2 and (usually) 3
-        (coastal and compound) -- see strategy_measures note below.
-      - If levee height < max water level = full risk from coastal flooding.
+    """Remove coastal (and compound) flooding if the levee tops the max coastal water level.
 
-    strategy_measures: this strategy's full measures dict (see dispatch_rules'
-    own docstring). When a sibling "river_levee" measure is ALSO part of the
-    same strategy (protect_open's own concept -- coast and river are two
-    INDEPENDENT open structures), compound flooding requires BOTH to hold, so
-    class 3 is left for apply_river_levee to decide jointly instead of being
-    cleared here unilaterally. With no sibling river_levee (protect_closed's
-    own concept -- the coastal barrier seals the river mouth too, so nothing
-    else can independently cause a compound flood once it holds), class 3 is
-    cleared here exactly as before.
+    elevation >= max coastal water level: class 2 is cleared, and class 3 too
+    unless a sibling "river_levee" is in strategy_measures (protect_open: coast and
+    river are independent open structures, so apply_river_levee decides class 3
+    jointly). Without one (protect_closed: the barrier also seals the river mouth)
+    class 3 is cleared here. Otherwise full coastal flood risk remains.
     """
 
     out_path = Path(output_dir) / "max_flood_depth.tif"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Get max coastal water level
     mod = SfincsModel(root=scenario_root, mode="r")
     wl = mod.get_component("water_level")
     wl.read()
     max_wl = float(wl.data["bzs"].max())
 
-    # Read flood map raster
     with rasterio.open(flood_map_path) as src:
         flood, prof = src.read(1), src.profile
 
-    # Apply conditional mask
     mask_path = Path(scenario_root).parent / "attribution_mask.tif"
     if not mask_path.exists():
         raise FileNotFoundError(f"Attribution mask not found at {mask_path}")
@@ -515,7 +408,6 @@ def apply_coastal_levee(
     else:  # if the levee is overtopped, we keep all flooding
         print(f"  Levee overtopped (H={elevation}m < Surge={max_wl:.2f}m) = full risk")
 
-    # Save modified raster with updated metadata
     prof.update(dtype="float32")
     with rasterio.open(out_path, "w", **prof) as dst:
         dst.write(flood.astype("float32"), 1)
@@ -524,19 +416,13 @@ def apply_coastal_levee(
 
 
 def _uniform_layer_depth(depths: np.ndarray, volume: float, cell_area: float) -> float:
-    """
-    Thickness d of the water layer to take off every wet cell so that the
-    removed volume equals `volume`: each cell loses min(depth, d), so cells
-    shallower than d are emptied and the volume they could not give comes
-    from the deeper cells. Same result as repeatedly splitting the remaining
-    volume evenly over the cells that still have water.
+    """Return the layer thickness d whose removal (min(depth, d) per cell) equals `volume`.
 
-    Shallowest cell first: removing depth h_k from every cell that is still
-    wet costs (water already taken from the shallower cells + h_k x the
-    number of cells at least that deep) x cell_area. The first h_k whose
-    cost exceeds `volume` is where the layer stops; d then follows from
-    sharing the remaining volume over those deeper cells. If `volume`
-    exceeds all the water present, d is the deepest depth (all cells -> 0).
+    Equivalent to repeatedly splitting the remaining volume evenly over the cells
+    that still have water. Walks cells shallowest first: removing depth h_k costs
+    (water already taken from shallower cells + h_k x cells at least that deep) x
+    cell_area; the first h_k whose cost exceeds `volume` bounds d. If `volume`
+    exceeds all water present, d is the deepest depth (all cells -> 0).
     """
     h = np.sort(depths)
     n = len(h)
@@ -553,14 +439,12 @@ def _uniform_layer_depth(depths: np.ndarray, volume: float, cell_area: float) ->
 
 
 def _river_flood_duration_s(scenario_root: str) -> float:
-    """
-    Time [s] within the event run (tstart..tstop of the scenario's
-    sfincs.inp) during which the river discharge (sfincs.dis) is above the
-    level it starts the event at, i.e. the level the spin-up leaves it at
-    (bankfull for a river RP scenario): the duration of the river flood
-    wave. Counted when any discharge point is above its own starting level.
-    0 when the run has no discharge forcing or the discharge never rises
-    (e.g. river_rp Mean or Null).
+    """Return the time [s] the river discharge is above its event-start level.
+
+    Within tstart..tstop of the scenario's sfincs.inp; the start level is what the
+    spin-up leaves (bankfull for a river RP scenario). Counted while any discharge
+    point exceeds its own start level. 0 when there is no discharge forcing or it
+    never rises (e.g. river_rp Mean or Null).
     """
     import pandas as pd
 
@@ -592,44 +476,14 @@ def _river_flood_duration_s(scenario_root: str) -> float:
 def apply_pumps(
     flood_map_path: str, scenario_root: str, output_dir: str, discharge: float, **kwargs
 ) -> dict:
-    """
-    Post-processing pumps rule.
+    """Remove the pumped volume from river and compound flooding as a uniform layer.
 
-    Logic:
-        - Computes the pumped volume as discharge capacity [m3/s] * flood
-          duration [s]: the time within the event run during which the
-          river discharge is above the level the spin-up leaves it at
-          (_river_flood_duration_s), i.e. the duration of the river flood
-          wave. Not the whole simulation: flood water does not drain within
-          the run and the run includes calm lead-in/tail hours, so duration
-          from the run length or from the flood volume time series would
-          cover the whole event. 0 when the discharge never rises (e.g.
-          river_rp Mean), so the pumps then remove nothing.
-        - Removes that volume from the river and compound cells (attribution
-          classes 1, 3) of the max flood depth map as a uniform layer: the
-          pumped volume is split evenly over the wet cells, cells without
-          enough water are set to 0, and the volume they could not give is
-          split evenly over the cells that still have water, until all of it
-          is removed (computed directly by _uniform_layer_depth). Every cell
-          loses min(depth, d); if the pumped volume exceeds all the water in
-          those cells, they all become 0.
-
-    This replaces an earlier binary rule (fully remove river+compound
-    flooding if discharge >= peak river discharge, else no removal at all)
-    with a graded, volume-based reduction so small/partial pump capacities
-    show up as partial relief instead of nothing.
-
-    Args:
-        flood_map_path : path to the max flood depth raster to reduce (may
-                         already reflect earlier measures in the chain)
-        scenario_root  : the scenario's sfincs/ model root (sfincs.inp/.dis for
-                         the flood duration); attribution_mask.tif lives in
-                         its parent folder
-        output_dir     : where to write the reduced raster
-        discharge      : pump discharge capacity [m3/s]
-
-    Returns:
-        dict with method and output raster path
+    Pumped volume = discharge [m3/s] x the river flood-wave duration
+    (_river_flood_duration_s), not the whole run: flood water does not drain within
+    the run and the run includes calm lead-in/tail hours. 0 when the discharge
+    never rises (e.g. river_rp Mean). The volume is removed from classes 1 and 3
+    via _uniform_layer_depth, so partial pump capacities give partial relief.
+    scenario_root: sfincs/ root (sfincs.inp/.dis); attribution_mask.tif is in its parent.
     """
     out_path = Path(output_dir) / "max_flood_depth.tif"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -783,41 +637,15 @@ def apply_urban_raising(
     locations: Path = None,
     **kwargs,
 ) -> dict:
-    """
-    Post-processing urban raising rule.
+    """Remove flood depth at the urban cells adaptation_method_pre.apply_urban_raising raises.
 
-    Fast, no-rerun approximation of adaptation_method_pre.py's own
-    apply_urban_raising (which physically raises the DEM and reruns SFINCS):
-    eligible cells are urban AND flooded (optionally restricted to
-    `locations`); the deepest-flooded `raise_fraction` of them (same
-    selection as apply_retreat) are raised by their own flood depth +
-    freeboard, i.e. their flood depth is removed entirely. Without a rerun
-    there is no displaced-water effect, so `freeboard` doesn't change the
-    result here; it's accepted only so both siblings read the same yml.
-
-    Raised cells are set to nodata (not 0.0) --
-    matches apply_dike_ring's own convention above -- since
-    compute_risk_metrics (src.postprocessing) tells flooded from dry purely
-    via da_hmax.notnull(), not a depth threshold; a plain 0.0 would still
-    read as "flooded".
-
-    Args:
-        flood_map_path  : (Required) baseline max_flood_depth.tif
-        scenario_root   : (Required) scenario model root -- unused here,
-                          accepted only for dispatch_rules' uniform call signature
-        output_dir      : (Required) directory the adapted raster is written to
-        raise_fraction  : (Optional) fraction of flooded urban cells to raise (0-1),
-                          deepest flood depth first; if None, all eligible cells are raised
-        freeboard       : (Optional) unused here, see above
-        landuse_path    : (Required) path to the current landuse raster,
-                          used only to determine which cells are urban
-        urban_code      : (Optional) land use code marking urban cells (default 50)
-        flood_threshold : (Optional) depth [m] above which a cell counts as flooded
-        locations       : (Optional) polygon path/gdf; if None (the usual,
-                          delta-wide case), all flooded urban cells are eligible
-
-    Returns:
-        {"method": "flood_map", "out_raster": path to the adapted max_flood_depth.tif}
+    No-rerun approximation: eligible cells are urban AND flooded (optionally inside
+    `locations`); the deepest-flooded `raise_fraction` (as apply_retreat) lose
+    their whole flood depth. Without a rerun there is no displaced-water effect,
+    so `freeboard` is accepted (both siblings read the same yml) but unused;
+    scenario_root is unused too (uniform dispatch signature). Raised cells are set
+    to nodata, not 0.0: compute_risk_metrics tells flooded from dry via
+    da_hmax.notnull(). urban_code: 50 by default.
     """
     if landuse_path is None:
         raise ValueError("apply_urban_raising needs landuse_path")
@@ -884,26 +712,14 @@ def apply_retreat(
     flood_threshold: float = 0.05,
     **kwargs,
 ) -> dict:
-    """
-    Post-processing managed retreat rule.
+    """Reclassify flooded urban cells to `target_code` in a new landuse raster.
 
-    Unlike every other post-processing measure, retreat does not touch the
-    hazard itself -- the flood map is copied unchanged. Instead it
-    reclassifies the deepest-flooded `retreat_fraction` of eligible
-    (urban AND flooded) cells from `urban_code` to `target_code` in a NEW
-    landuse raster (mirrors adaptation_method_pre.py's own apply_retreat,
-    landuse-only -- no subgrid rebuild, consistent with measures.yml marking
-    dep_subgrid preprocessing-only), and returns its path as `landuse_path`.
-
-    Deliberately does NOT write a separate risk_metrics.csv (the ported
-    original's approach): 18b_adapt_post.py recomputes every metric fresh,
-    ONCE, at the end of the whole measure chain, straight from the final
-    flood raster + landuse raster -- a separate metrics file would be
-    silently ignored by that final computation (and would also assume the
-    OTHER project's own risk_metrics.csv schema, which this repo's
-    flood_metrics.csv doesn't match). Returning landuse_path instead lets
-    retreat's effect flow through that same final computation, the same way
-    every other measure's raster edit already does via out_raster.
+    The flood map is copied unchanged. The deepest-flooded `retreat_fraction` of
+    urban AND flooded cells move from `urban_code` to `target_code` (landuse only,
+    no subgrid rebuild; dep_subgrid is preprocessing-only in measures.yml), and the
+    new raster is returned as `landuse_path`. No risk_metrics.csv is written:
+    18b_adapt_post.py computes every metric once, at the end of the measure chain,
+    from the final flood and landuse rasters.
     """
     if landuse_path is None:
         raise ValueError("apply_retreat needs landuse_path")
@@ -946,10 +762,6 @@ def apply_retreat(
     }
 
 
-# -----------------------------------------------------------------------------
-# ----------------------------- Selected measures -----------------------------
-# -----------------------------------------------------------------------------
-
 selected_measures = {
     "offshore_barrier": apply_offshore_barrier,
     "nbs_land_reclamation": apply_nbs_land_reclamation,
@@ -966,13 +778,7 @@ selected_measures = {
 def validate_measure_params(
     measure_type: str, params: dict, method: str, measure_def: dict
 ) -> None:
-    """
-    Validate a measure call's params against config/measures.yml's own bounds
-    and required_for declarations, before dispatch -- catches a bad strategy
-    definition (missing required param, out-of-range value) with a message
-    naming the measure/param, instead of a confusing failure deep inside
-    hydromt_sfincs.
-    """
+    """Check params against config/measures.yml bounds and required_for; raise ValueError."""
     param_specs = measure_def.get("params", {})
     for name, spec in param_specs.items():
         required_for = spec.get("required_for", [])
@@ -1008,31 +814,16 @@ def dispatch_rules(
     strategy_measures: dict = None,
     **params,
 ) -> dict:
-    """
+    """Validate params and call the post-processing function for `measure_type`.
+
     Entry point called by adaptation.py for post-processing method.
-
-    Args:
-        measure_type   : string matching a key in selected_measures
-        flood_map_path : path to the baseline max_flood_depth.tif
-        scenario_root  : path to the scenario model root
-        measure_def    : full measure definition dict from measures.yml
-        catalog_path   : path to data catalog YAML
-        output_dir     : directory to write the adapted raster
-        landuse_path   : path to the current landuse raster -- only apply_retreat
-                         reads this; every other measure ignores it via **kwargs
-        strategy_measures : this strategy's own full measures dict (as declared
-                         in config/adaptation_strategies.yml), passed through
-                         unvalidated (never checked against measure_def's own
-                         params -- it describes the STRATEGY, not this one
-                         measure). Lets a measure look up a SIBLING measure's
-                         own params -- currently only apply_coastal_levee/
-                         apply_river_levee, to decide compound (class 3)
-                         flooding jointly when both are part of the same
-                         strategy instead of each acting on it independently.
-        **params       : named parameter values from SimulationConfig (e.g. height=2.0)
-
-    Returns:
-        Dictionary containing the method type and path to the adapted flood map raster.
+    landuse_path: read only by apply_retreat.
+    strategy_measures: the strategy's full measures dict
+    (config/adaptation_strategies.yml), passed through unvalidated, so
+    apply_coastal_levee/apply_river_levee can decide compound (class 3) flooding
+    jointly.
+    **params: named parameter values from SimulationConfig (e.g. height=2.0)
+    Returns {"method": ..., "out_raster": adapted flood map path}.
     """
     if measure_type not in selected_measures:
         raise ValueError(

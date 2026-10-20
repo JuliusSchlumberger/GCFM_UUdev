@@ -4,7 +4,6 @@ import logging
 
 import numpy as np
 import pytest
-
 from src.river_network import accumulate_discharge, build_downstream_adjacency
 
 
@@ -76,7 +75,7 @@ def test_reaches_not_downstream_of_a_seed_stay_zero(network):
 
 
 def test_long_chain_beyond_old_iteration_limit(network):
-    """The old scheme stopped after 100 hops; the topological pass has no limit."""
+    """A chain far longer than 100 reaches still accumulates without a hop limit."""
     n = 250
     net = network(
         {str(i): {"dn": [str(i + 1)] if i < n else []} for i in range(1, n + 1)}
@@ -86,7 +85,6 @@ def test_long_chain_beyond_old_iteration_limit(network):
 
 
 def test_mass_conservation_on_random_dag(network):
-    """Total discharge leaving the network ends equals the total seed input."""
     rng = np.random.default_rng(0)
     n = 60
     reaches = {}

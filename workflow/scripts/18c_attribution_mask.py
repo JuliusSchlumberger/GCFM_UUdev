@@ -1,24 +1,14 @@
-"""
-18c_attribution_mask.py -- thin wrapper: classifies THIS basin x scenario's
-flood map by dominant source, calling src.attribution_plot.generate_attribution_maps
-for exactly one (label, river_tif, coastal_tif, spinup_tif, out_folder)
-tuple -- not the original script's hardcoded 4-scenario batch call.
+"""Classify a basin x scenario flood map by dominant source and size water retention.
 
-spinup_tif isn't produced by rule run_spinup (14) itself -- it only ever
-writes sfincs_map.nc + validation PNGs, no max_flood_depth.tif -- so this
-script derives it here, the same way rule compute_flood_metrics (17) builds
-every scenario's own visuals/max_flood_depth.tif, and caches it in this
-scenario's own attribution output folder (cheap to redo; avoids touching
-rule run_spinup's own outputs for every basin x scenario attribution run).
+Run by rule attribution_mask. Derives the spin-up max flood depth (as rule
+compute_flood_metrics does) into the output folder, since run_spinup writes
+none.
 
-Also computes baseline_excess_volume (compute_excess_volume, classes=(1,3) --
-river and compound, DELIBERATELY excluding class 4/spin-up permanent water:
-adaptation measures should never be sized against, or try to remove, a
-basin's ordinary river baseflow) from the freshly-written attribution_mask_tif
-and this scenario's own UNCONTROLLED flood map, and writes it to
-baseline_excess_volume.json -- the single reference number both
-adapt_apply_pre (18a) and adapt_metrics_post (18b) read for water_retention's
-own sizing, so neither has to touch attribution_mask.tif itself.
+baseline_excess_volume (m3) = excess volume of classes (1, 3), river and
+compound, in the unadapted flood map; class 4 (spin-up permanent water) is
+excluded so measures are never sized against ordinary baseflow. Written to
+baseline_excess_volume.json for water_retention sizing in rules
+adapt_apply_pre and adapt_metrics_post.
 """
 
 import json

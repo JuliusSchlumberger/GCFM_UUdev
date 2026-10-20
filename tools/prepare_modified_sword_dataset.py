@@ -1,42 +1,18 @@
-"""
-prepare_modified_sword_dataset.py — builds the "modified" SWORD v17c dataset
-(data catalogue entry "river_network", the pipeline's default river network
-source) from the unmodified original ("river_network_original"), by applying
-a documented dictionary of manual per-reach attribute corrections.
+"""Build the modified SWORD v17c dataset by applying manual per-reach width fixes.
 
-ALWAYS rebuilds SWORD_global_v17c_unpublished_modified.gpkg completely fresh
-from SWORD_global_v17c_unpublished.gpkg, overwriting whatever was there
-before -- this dictionary is the SOLE, authoritative source of truth for
-every correction; there is no incremental/preserve-prior-edits mode. Add new
-corrections as new WIDTH_CHANGES entries (or new dicts alongside it, e.g.
-MAIN_SIDE_CHANGES, following the same pattern) and re-run.
+Writes SWORD_global_v17c_unpublished_modified.gpkg (catalogue "river_network",
+the default river network) as a fresh copy of SWORD_global_v17c_unpublished.gpkg
+("river_network_original"), overwriting it: WIDTH_CHANGES is the only source of
+corrections. A reach whose original width differs from expected_original_width
+by more than WIDTH_MATCH_TOLERANCE_M is skipped and reported (likely a wrong
+reach_id or changed source data).
 
-Before applying each width change, the reach's CURRENT width (i.e. its
-value in the unmodified original, since the file is freshly copied from it
-first) is compared against that entry's expected_original_width, within
-WIDTH_MATCH_TOLERANCE_M (default 1 m -- absorbs expected_original_width
-values that were floored/truncated rather than rounded). A mismatch beyond
-that tolerance means the reach_id likely doesn't refer to what was intended
-(wrong ID, or the source data changed upstream) -- these are flagged and
-SKIPPED, never applied silently, so a bad reach_id can't silently corrupt
-the wrong reach.
-
-Implementation note: the two SWORD files are ~1.3 GB GeoPackages (SQLite);
-reading either fully into GeoPandas to change a handful of attribute values
-was multiple minutes just to COUNT(*) the rows on this machine's disk. This
-script instead: (1) copies the file at the OS level (no GDAL/GeoPandas
-parsing), (2) adds a temporary index on reach_id via plain sqlite3 so the
-~9-20 point lookups/updates don't each require a full-table scan, (3) reads
-current values via plain sqlite3 (fast, no triggers involved), but applies
-the actual UPDATEs via `ogrinfo -dialect SQLite` (GDAL's own SQL engine)
-rather than raw sqlite3 -- this GeoPackage's rtree/feature-count maintenance
-triggers call SpatiaLite-style functions (ST_IsEmpty, ST_MinX, ...) that
-plain Python sqlite3 has no definition for (confirmed: a raw sqlite3 UPDATE
-fails with "no such function: ST_IsEmpty" even though only the width column,
-never geometry, is being changed -- the trigger's WHEN clause still gets
-evaluated). GDAL's SQLite dialect has these functions registered, matching
-how GDAL itself created the file and its triggers in the first place.
-Geometry is never touched by these UPDATEs, only the width column.
+The files are ~1.3 GB GeoPackages, too slow to load with GeoPandas: the copy is
+an OS file copy, reads use plain sqlite3 with a temporary reach_id index, and
+UPDATEs go through `ogrinfo -dialect SQLite` because the GeoPackage's rtree
+triggers call SpatiaLite functions (ST_IsEmpty, ST_MinX, ...) that plain
+sqlite3 lacks ("no such function: ST_IsEmpty"), even for attribute-only
+updates. Only the width column is changed, never geometry.
 
 Usage:
     conda run -n hmt_sfincs_dev python prepare_modified_sword_dataset.py
@@ -60,25 +36,16 @@ if not OGRINFO.exists():
         )
     OGRINFO = Path(_which)
 
-# Machine-specific path, read from the GCFM_RAW_DATA_ROOT environment variable.
-# Set it once in PowerShell, then restart your terminal (see
-# CONTRIBUTING.md "Local machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+# GCFM_RAW_DATA_ROOT is machine-specific; see CONTRIBUTING.md "Local machine paths".
 SWORD_DIR = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "SWORD"
 ORIGINAL_PATH = SWORD_DIR / "SWORD_global_v17c_unpublished.gpkg"
 MODIFIED_PATH = SWORD_DIR / "SWORD_global_v17c_unpublished_modified.gpkg"
 TABLE = "global_edges"
 
-# Max |actual - expected_original_width_m| before a reach is flagged as a
-# mismatch and skipped -- e.g. 438.67 m actual vs. an expected_original of
-# 438 (a truncated/floored value) is within tolerance and still applied.
+# Absorbs floored expected widths (438.67 m actual vs. 438 expected is applied).
 WIDTH_MATCH_TOLERANCE_M = 1.0
 
 # reach_id -> (expected_original_width_m, new_width_m, delta, name)
-# expected_original_width_m is checked against the reach's actual current
-# width (within WIDTH_MATCH_TOLERANCE_M) before the change is applied -- a
-# mismatch beyond that tolerance is flagged and skipped rather than applied
-# blindly.
 WIDTH_CHANGES: dict[str, tuple[float, float, str, str]] = {
     "74230100061": (1020, 270, "Mississippi", ""),
     "74230100101": (432, 250, "Mississippi", ""),
@@ -93,6 +60,7 @@ WIDTH_CHANGES: dict[str, tuple[float, float, str, str]] = {
 
 
 def main() -> None:
+    """Copy the original SWORD file and apply WIDTH_CHANGES to the copy."""
     if not ORIGINAL_PATH.exists():
         raise FileNotFoundError(f"Original SWORD file not found: {ORIGINAL_PATH}")
 
@@ -101,10 +69,8 @@ def main() -> None:
     shutil.copy2(ORIGINAL_PATH, MODIFIED_PATH)
     print(f"  done ({time.time() - t0:.1f}s)", flush=True)
 
-    # ── phase 1: build a temp index, then read every current value, then
-    # close the connection entirely -- so the write phase below (each
-    # ogrinfo call opens its own connection) never contends with a
-    # long-lived Python-side connection/lock on the same file. ──────────────
+    # Read everything and close before writing: each ogrinfo call opens its
+    # own connection and must not contend with a Python-side lock.
     con = sqlite3.connect(MODIFIED_PATH)
     cur = con.cursor()
 
@@ -125,8 +91,6 @@ def main() -> None:
     con.commit()
     con.close()
 
-    # ── phase 2: verify + apply, one ogrinfo subprocess (its own connection)
-    # per reach. ─────────────────────────────────────────────────────────────
     applied, skipped = [], []
     for reach_id, (expected_orig, new_width, delta, name) in WIDTH_CHANGES.items():
         label = f"{reach_id} ({delta}{f' / {name}' if name else ''})"

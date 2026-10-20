@@ -1,80 +1,26 @@
-"""
-13_build_sfincs.py — Build the scenario-DEPENDENT forcing on top of a
-basin's already-built SFINCS skeleton (13_build_sfincs_skeleton.py,
-scenario-independent grid/elevation/mask/weir/roughness/subgrid/
-observation points, one per basin, not one per scenario).
+"""Build a scenario's forcing and sfincs.inp on top of the basin's SFINCS skeleton.
 
-Loads the skeleton in read mode, redirects subsequent writes to this
-scenario's own directory (sf.root.set(...) -- a well-established HydroMT
-pattern for "keep the in-memory model, change where writes land", already
-used this same way in 10_depth_estimation_modelled.py's own calibration
-round loop), builds ONLY the forcing-related components (initial
-conditions, water-level boundary, river discharge) that actually depend on
-forcing_mode/design_rp_river_yr/design_rp_surge_yr, writes JUST those
-(sf.water_level.write()/sf.discharge_points.write() -- independently
-callable per-component writers, confirmed via hydromt_sfincs source), and
-hand-crafts this scenario's own sfincs.inp: the skeleton's own grid-header
-scalars and non-forcing "*file" entries (depfile/mskfile/manningfile/
-sbgfile/weirfile/inifile) are forwarded via a relative path back to the
-skeleton (computed with os.path.relpath, not hand-derived "../" counting)
-using src.sfincs_run.forward_geometry_files -- NEVER re-written/duplicated
-into this scenario's own directory. This sidesteps a real HydroMT
-behavior: its own config-writing path silently ABSOLUTIZES any file
-reference outside the model's current root instead of preserving a
-relative "../" string, so a genuinely portable cross-directory reference
-has to be written by hand (same technique 14_run_spinup.py already used
-for borrowing this rule's own output, before this split).
+Run by rule build_sfincs (and adapt_build_forcing_pre). Loads the skeleton,
+redirects writes to the scenario directory (sf.root.set), writes only the
+water-level and discharge forcing, and hand-writes sfincs.inp. Skeleton grid
+scalars and non-forcing "*file" entries are referenced by os.path.relpath back
+to the skeleton (src.sfincs_run.forward_geometry_files), never copied: HydroMT's
+config writer absolutizes any file reference outside the model root.
 
-Splitting the build this way means changing a scenario's own RP
-(surge_rp/river_rp in config/scenarios.yml) only re-runs THIS (cheap)
-script, not the expensive HydroMT skeleton build -- and, more importantly,
-does not force rule run_spinup (now basin-level, RP=1 river + calm sea, entirely
-independent of any scenario's own RP) to re-run either.
+forcing_mode (from scenario river_rp/surge_rp, scenario_params in 00_common.smk):
+  "compound"     — surge/tide boundary + river discharge. compound.lag_hr
+                   shifts discharge relative to surge (positive = river peak
+                   later).
+  "coastal_only" — surge/tide boundary; discharge points kept with a zeroed
+                   timeseries so the model structure matches other modes.
+  "river_only"   — river discharge; flat boundary at river_only_flat_level_m,
+                   below terrain.gebco_max_depth_m so the coast stays dry; no
+                   inifile forwarded (uniform dry start).
 
-Forcing mode (derived per-scenario by scenario_params in 00_common.smk,
-from the {scenario}'s own river_rp/surge_rp in config/scenarios.yml)
----------------------------------------------------
-Controls which forcing(s) actually drive the model, independent of the
-input files themselves (always loaded so duration/observation points stay
-consistent across modes):
-  "compound"     — real surge/tide boundary + real river discharge (default).
-                   sfincs.boundary_setup.compound.lag_hr optionally shifts the
-                   river discharge timeseries relative to the surge
-                   timeseries (positive = river peak arrives later; negative
-                   = earlier) — see the "compound lag" section below.
-  "coastal_only" — real surge/tide boundary; river discharge forced to 0 at
-                   every crossing (discharge points are still created, just
-                   with a zeroed timeseries, so the model structure matches
-                   the other modes).
-  "river_only"   — real river discharge; the coastal water-level boundary is
-                   replaced by a flat constant BELOW terrain.gebco_max_depth_m
-                   (river_only_flat_level_m, see section below) — guaranteed
-                   dry everywhere, so no surge/tide variability and no
-                   coastal inflow of any kind confounds the river-discharge
-                   contribution being isolated. Initial conditions are also
-                   overridden to a uniform dry start (no "inifile" forwarded
-                   from the skeleton) for the same reason.
-
-discharge_multiplier (per-scenario, config/scenarios.yml, default 1.0 --
-see scenario_params in 00_common.smk) uniformly scales the built discharge
-hydrograph at every active river seed/boundary crossing -- applied HERE, at
-build time (src.river_forcing.build_design_discharge_matrix), never baked
-into river_forcing.nc. Mirrors src.surge's deferred SLR fingerprint: rule 07
-and rule 10's weir/depth calibration (which also reads river_forcing.nc, for
-its own calibration seed discharge) stay completely independent of this
-factor, so changing it only reruns this per-scenario build and its
-downstream event run. Being per-scenario (not global) lets e.g.
-river_500/river_only_500/compound_500 be amplified past their raw RP lookup
-without affecting coast_500's own small RP=2 river_rp.
-
-slr_m (per-scenario, config/scenarios.yml, default 0.0 -- see
-scenario_params in 00_common.smk) is the target global-mean SLR (m) scaled
-by each station's own slr_fingerprint (from surge_forcing.nc) and applied
-HERE, at build time (src.surge.build_design_surge_matrix), never baked into
-surge_forcing.nc -- same deferred/per-scenario pattern as
-discharge_multiplier above, and for the same reason: changing one scenario's
-slr_m only reruns THIS scenario's build + event run, never rule 07, rule
-10's calibration, the skeleton build, or any other scenario.
+discharge_multiplier (default 1.0) and slr_m (default 0.0, global-mean SLR in
+m scaled by each station's slr_fingerprint) are applied here at build time,
+never baked into river_forcing.nc / surge_forcing.nc, so changing them reruns
+only this scenario's build and event run.
 """
 
 import logging
@@ -94,7 +40,7 @@ from src.river_network import outflow_crossing_mask
 from src.sfincs_run import forward_geometry_files, parse_sfincs_inp
 from src.surge import build_design_surge_matrix
 
-# ── logging ───────────────────────────────────────────────────────────────────
+# ── logging ──
 logging.basicConfig(
     filename=snakemake.log[0],
     level=logging.INFO,
@@ -107,7 +53,7 @@ for _name in ("hydromt", "hydromt_sfincs"):
     _l.handlers = []
     _l.addHandler(logging.FileHandler(snakemake.log[0]))
 
-# ── paths & params ────────────────────────────────────────────────────────────
+# ── paths & params ──
 surge_forcing_path = Path(snakemake.input.surge_forcing)
 river_forcing_path = Path(snakemake.input.river_forcing)
 skeleton_root       = Path(snakemake.params.skeleton_root)
@@ -123,21 +69,10 @@ storevelmax       = snakemake.params.storevelmax
 storetwet         = snakemake.params.storetwet
 forcing_mode      = snakemake.params.forcing_mode
 river_only_flat_level_m = float(snakemake.params.river_only_flat_level_m)
-# None for a scenario with no design RP on that side (config/scenarios.yml --
-# e.g. "coast_100" has river_rp=None -> forcing_mode="coastal_only",
-# "river_100" has surge_rp=None -> forcing_mode="river_only") -- NOT forced
-# to float unconditionally here, since float(None) raises. design_rp_river_yr
-# flows into build_design_discharge_matrix, which already accepts None
-# natively (falls back to zero discharge -- river driver fully excluded),
-# and the string "mean" (case-insensitive; falls back to a constant
-# mean-discharge hydrograph instead, a realistic ambient river rather than
-# an excluded one) -- float() would raise on that string, so it's left
-# alone too. design_rp_surge_yr flows into build_design_surge_matrix, which
-# similarly accepts the string "tide" (tiles each station's own
-# representative tidal cycle instead of a flat calm-sea baseline) -- also
-# left uncoerced. design_rp_surge_yr is only ever dereferenced inside the
-# `forcing_mode != "river_only"` branch, i.e. exactly when it's guaranteed
-# non-None.
+# Design RPs may be None (no driver on that side: zero discharge), "mean"
+# (river: constant mean-discharge hydrograph) or "tide" (surge: each station's
+# representative tidal cycle); only numeric values are coerced to float.
+# design_rp_surge_yr is only used outside river_only, where it is non-None.
 design_rp_river_yr = snakemake.params.design_rp_river_yr
 if isinstance(design_rp_river_yr, str) and design_rp_river_yr.strip().lower() == "mean":
     pass
@@ -150,15 +85,8 @@ elif design_rp_surge_yr is not None:
     design_rp_surge_yr = float(design_rp_surge_yr)
 compound_lag_hr   = float(snakemake.params.compound_lag_hr)
 river_event       = snakemake.params.river_event
-# Uniform scaling factor on the built river discharge hydrograph (default
-# 1.0 = no-op), applied HERE -- not baked into river_forcing.nc, see this
-# script's own module docstring.
 discharge_multiplier = float(snakemake.params.discharge_multiplier)
-# Target global-mean SLR (m), per-scenario (config/scenarios.yml, default
-# 0.0), applied HERE (not baked into surge_forcing.nc, see
-# src.surge.apply_slr_fingerprint's own docstring) against each station's
-# own slr_fingerprint ratio -- 0.0 whenever SLR is disabled, so this
-# scenario's own forcing matches surge_forcing.nc's MDT-only fields exactly.
+# Target global-mean SLR (m); 0.0 when SLR is disabled, leaving the MDT-only fields.
 effective_slr_m = float(snakemake.params.slr_m) if snakemake.params.slr_enabled else 0.0
 # The spin-up restart has no SLR: the SLR term rises in over the event's first
 # hours instead of stepping in at the event start (src.surge._ramp_in_slr).
@@ -172,7 +100,7 @@ rst_fname         = snakemake.params.rst_fname
 sfincs_root.mkdir(parents=True, exist_ok=True)
 log.info(f"Forcing mode: {forcing_mode!r}")
 
-# ── load skeleton, redirect writes to this scenario's own directory ─────────
+# ── load skeleton, redirect writes to the scenario directory ──
 sf = SfincsModel(root=str(skeleton_root), mode="r")
 sf.read()
 sf.root.set(sfincs_root, mode="w+")
@@ -180,11 +108,9 @@ log.info(f"Skeleton loaded from {skeleton_root}, writes redirected to {sfincs_ro
 
 skeleton_cfg = parse_sfincs_inp(skeleton_root / "sfincs.inp")
 
-# ── simulation config ──────────────────────────────────────────────────────────
-# tref = tstart: forcing timeseries are in "hours since simulation start" so
-# any fixed reference date works — the origin t=0 maps to tref exactly.
-# tstop is derived from the actual end of the forcing files so it stays
-# consistent even if config parameters (lead_days, period_hr) change.
+# ── simulation config ──
+# Forcing time is "hours since simulation start", so t=0 maps to tref and any
+# fixed reference date works. tstop follows the end of the forcing files.
 tref = datetime.strptime(tref_str, "%Y-%m-%d %H:%M:%S")
 
 with xr.open_dataset(surge_forcing_path, decode_times=False) as surge_ds:
@@ -200,37 +126,20 @@ log.info(
     f"({sim_hours:.0f} h from forcing files)"
 )
 
-# sf.water_level.create()/sf.discharge_points.create() below both slice their
-# own timeseries against self.model.get_model_time() (tstart/tstop read
-# straight off the in-memory sf.config) -- the skeleton's own sfincs.inp
-# deliberately never sets tref/tstart/tstop (it's not meant to be runnable
-# on its own), so without this, sf.config still carries hydromt_sfincs's own
-# Pydantic defaults (today's date), which never overlaps this scenario's
-# real forcing timeseries (indexed at `tref`, e.g. 2000-01-01) --
-# NoDataException: "DataFrame has no data after time slicing." This has no
-# effect on the actual sfincs.inp written to disk below (hand-crafted via
-# plain file I/O, never sf.config.write()) -- it only fixes what these
-# in-memory .create() calls see.
+# The .create() calls slice timeseries by the in-memory model time. The
+# skeleton's sfincs.inp sets no tref/tstart/tstop, so the defaults (today's
+# date) would not overlap the forcing and raise NoDataException ("DataFrame has
+# no data after time slicing"). Only affects in-memory config; sfincs.inp is
+# hand-written below.
 sf.config.set("tref", tref)
 sf.config.set("tstart", tref)
 sf.config.set("tstop", tstop)
 
-# ── initial conditions ────────────────────────────────────────────────────────
-# forcing_mode="river_only": leave every cell (sea AND land) at the uniform
-# zsini=-9999 default -- i.e. every cell starts dry at its own bed level,
-# including the ocean. The river_only boundary is a flat constant BELOW
-# terrain.gebco_max_depth_m (river_only_flat_level_m, below) -- guaranteed
-# dry, so the ocean stays dry (no fill-in from the boundary) for the entire
-# run, same as every other cell. Giving the ocean any head start here (as
-# compound/coastal_only do, where real surge/tide dynamics need a
-# consistent non-transient sea state) would just pre-fill areas right when
-# the point of river_only is to isolate the river's own contribution
-# against a neutral, dry coast that never contributes water of its own.
-#
-# Every other mode: the skeleton's own "inifile" (baseline_m spatially-
-# varying, built once in 13_build_sfincs_skeleton.py) is forwarded below
-# via forward_geometry_files like any other geometry file -- no need to
-# rebuild it per scenario.
+# ── initial conditions ──
+# river_only: every cell, ocean included, starts dry at its bed level
+# (zsini=-9999) and the below-GEBCO-clamp boundary keeps the coast dry, so only
+# the river contributes water. Other modes forward the skeleton's
+# spatially-varying inifile.
 if forcing_mode == "river_only":
     ini_exclude_keys = frozenset({"inifile", "ncinifile"})
     log.info(
@@ -242,11 +151,8 @@ else:
     ini_exclude_keys = frozenset()
     log.info("Initial conditions: forwarding skeleton's own spatially-varying inifile")
 
-# ── water-level boundary forcing (surge) ──────────────────────────────────────
-# sf.water_level.create() with timeseries + locations writes ASCII .bnd/.bzs
-# files (into sfincs_root, since root was already redirected above) and
-# spatially matches each station to the nearest boundary cell (mask=2,
-# already loaded from the skeleton) within the given buffer.
+# ── water-level boundary forcing (surge) ──
+# Each station is matched to the nearest boundary cell (mask=2) within the buffer.
 if forcing_mode == "river_only":
     sf.water_level.create_boundary_points_from_mask(bnd_dist=flat_boundary_point_spacing_m)
     sf.water_level.create_timeseries(shape="constant", offset=river_only_flat_level_m)
@@ -270,7 +176,6 @@ else:
         crs="EPSG:4326",
     )
 
-    # water_level dims: (station, time) → transpose to (time, station) for DataFrame
     wl_df = pd.DataFrame(
         data=build_design_surge_matrix(
             surge_ds, design_rp_surge_yr, slr_m=effective_slr_m, slr_ramp_hours=slr_ramp_hours
@@ -291,10 +196,8 @@ else:
     )
 sf.water_level.write()
 
-# ── river discharge forcing ───────────────────────────────────────────────────
-# river_forcing.nc holds one timeseries per boundary crossing. Only crossings
-# with has_glofas=1 have a calibrated EVA fit and a meaningful discharge signal;
-# crossings without GloFAS data carry zero discharge and are excluded.
+# ── river discharge forcing ──
+# Only has_glofas=1 crossings have an EVA fit; the others carry zero discharge.
 river_ds = xr.open_dataset(river_forcing_path, decode_times=False)
 # Crossings on a seed that flows out of the network (rule 08's
 # 'seed_flows_out') inject nothing -- they are free-outflow boundaries.
@@ -324,7 +227,6 @@ else:
         river_ds.inside_reach_id.values[active] if "inside_reach_id" in river_ds else [None] * n_active
     )
 
-    # discharge dims: (crossing, time) → transpose to (time, crossing) for DataFrame
     dis_df = pd.DataFrame(
         data=build_design_discharge_matrix(
             river_ds, active, design_rp_river_yr,
@@ -335,17 +237,12 @@ else:
     )
     log.info(f"Discharge multiplier applied: x{discharge_multiplier:.3f}")
 
-    # ── compound lag: shift river discharge relative to surge ────────────────
     if forcing_mode == "compound" and compound_lag_hr != 0 and len(river_times) > 1:
         dt_hr = float((river_times[1] - river_times[0]).total_seconds() / 3600.0)
         shift_steps = int(round(compound_lag_hr / dt_hr))
         if shift_steps != 0:
-            # The vacated side is padded with the series' own base flow -- its
-            # first/last value, i.e. what build_design_discharge_matrix holds
-            # before and after the wave (mean discharge, already multiplied)
-            # -- so the shift never introduces a step. (Until 2026-10-09 it
-            # was padded with bankfull discharge, the base flow before the
-            # mean-discharge change.)
+            # Pad the vacated side with the series' first/last value (the base
+            # flow, mean discharge already multiplied) so the shift adds no step.
             arr = dis_df.to_numpy()
             shifted = np.empty_like(arr)
             n = min(abs(shift_steps), arr.shape[0])
@@ -364,16 +261,11 @@ else:
             )
 
     if forcing_mode == "coastal_only":
-        # Discharge points are still created below (zeroed) rather than skipped
-        # entirely, so the model structure matches the other two modes.
+        # Zeroed rather than skipped so the model structure matches other modes.
         dis_df.loc[:, :] = 0.0
         log.info("River discharge forced to 0.0 m3/s at all crossings (forcing_mode='coastal_only')")
 
-    # Snap each crossing onto the grid cell its OWN reach's centerline
-    # actually passes through -- see src.river_burn.
-    # rivers_utm isn't available in this script (river network geometry
-    # lives entirely in the skeleton build) -- snapping to centerline cells
-    # needs the actual reach geometries, so re-read them directly here.
+    # Snap each crossing onto a cell its own reach's centerline passes through.
     from src.river_burn import build_centerline_cells_regular, snap_points_to_centerline_cells
 
     rivers_utm = gpd.read_file(snakemake.input.river_network).to_crs(sf.crs)
@@ -385,9 +277,7 @@ else:
         reach_ids=inside_reach_ids, resolution_m=resolution,
     ).to_crs("EPSG:4326")
 
-    # Filter crossing points to those within the active SFINCS region, and
-    # snap any kept point that falls just outside the exact region back
-    # inside -- see src.geometry.snap_points_into_region's docstring.
+    # Keep crossings in the active region; snap near-misses back inside.
     buf_deg = float(resolution) / 111_000.0
     region_wgs84 = sf.region.to_crs("EPSG:4326").geometry.union_all()
     crossings_filt, in_region = snap_points_into_region(crossings_gdf, region_wgs84, buf_deg)
@@ -411,17 +301,11 @@ else:
         )
 sf.discharge_points.write()
 
-# ── hand-craft this scenario's own sfincs.inp ─────────────────────────────────
-# Forward the skeleton's own grid-header + non-forcing "*file" entries via a
-# relative path (never re-written/duplicated into this scenario's own
-# directory) -- see this script's own module docstring for why this is
-# hand-written rather than done via sf.config.write().
+# ── sfincs.inp (hand-written; see module docstring) ──
 exclude_keys = frozenset({"rstfile", "bzsfile", "bndfile", "disfile", "srcfile", "netsrcdisfile"}) | ini_exclude_keys
 geometry_lines = forward_geometry_files(skeleton_cfg, skeleton_root, sfincs_root, exclude=exclude_keys)
 
-# Grid-header + physics scalars, forwarded verbatim from the skeleton --
-# everything the skeleton's own build set that this script doesn't
-# explicitly own (timing/output-storage/zsini, set below).
+# Skeleton scalars forwarded verbatim, except the keys this script sets below.
 OWNED_SCALAR_KEYS = frozenset({"tref", "tstart", "tstop", "dtmapout", "dtmaxout", "dthisout",
                                 "storevelmax", "storetwet", "baro", "zsini"})
 scalar_lines = [
@@ -431,11 +315,8 @@ scalar_lines = [
 
 lines = list(scalar_lines) + list(geometry_lines)
 
-# rstfile: points at run_spinup's own (basin-level, shared, RP=1 river + calm sea) restart
-# file -- a SIBLING of this scenario's own sfincs_root (both live under
-# results/{basin_id}/, sfincs_root under runs/{scenario}/sfincs/, spin_up
-# directly under spin_up/), so the relative path depth depends on the
-# actual nesting -- computed, not hand-derived.
+# rstfile: the basin-level run_spinup restart (RP=1 river + calm sea), a
+# sibling tree of sfincs_root, referenced by a computed relative path.
 if include_rstart:
     tstart_event = tref + timedelta(days=spinup_days)
     rst_rel = os.path.relpath(spin_up_root / rst_fname, start=sfincs_root)
@@ -454,18 +335,12 @@ lines += [
     f"{'storevelmax':<20} = {storevelmax}",
     f"{'storetwet':<20} = {storetwet}",
     f"{'baro':<20} = 0",           # no wind/atmosphere data
-    # HydroMT hardcodes zsini=0.0 in sfincs.inp after create(). Override to
-    # -9999 so any cell not covered by sfincs.ini falls back to bed level
-    # (dry), consistent with how sfincs.ini itself handles land cells --
-    # and, for forcing_mode="river_only" (no inifile forwarded above), this
-    # IS the initial condition for every cell, sea included.
+    # HydroMT sets zsini=0.0; -9999 makes cells not in sfincs.ini start dry at
+    # bed level (for river_only, every cell).
     f"{'zsini':<20} = -9999.0",
 ]
 
-# Forcing files this script itself just wrote (bzs/bnd/dis/src) -- bare
-# filenames, no relative-path adjustment needed, since they live directly
-# in sfincs_root (the current, correct root) and sf.config already
-# registered them there via water_level.write()/discharge_points.write().
+# Forcing files written by this script live in sfincs_root: bare filenames.
 for _key in ("bndfile", "bzsfile", "srcfile", "disfile", "netsrcdisfile"):
     _val = sf.config.get(_key)
     if _val:
@@ -475,14 +350,7 @@ with open(sfincs_root / "sfincs.inp", "w") as fh:
     fh.write("\n".join(lines) + "\n")
 log.info(f"sfincs.inp written: {sfincs_root / 'sfincs.inp'}")
 
-# ── diagnostic plot: forcing timeseries (the only build_sfincs plot that's
-# actually forcing_mode/design_rp-dependent -- everything else moved to
-# 13_build_sfincs_skeleton.py). Rebuilds the surge/discharge matrices at
-# THIS scenario's own design_rp_surge_yr/design_rp_river_yr, exactly like
-# the water-level/discharge forcing sections above -- fixed 2026-08-05:
-# used to plot surge_forcing.nc's own stored 'water_level' directly, which
-# is a basin-level, scenario-independent preview at a fixed diagnostic RP,
-# never what this scenario's own sfincs.bzs actually contains. ──────────
+# ── diagnostic plot: forcing timeseries at this scenario's design RPs ──
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -499,12 +367,10 @@ def _hours_to_dt(hours_arr):
 
 with xr.open_dataset(surge_forcing_path, decode_times=False) as _sds:
     _surge_times = _hours_to_dt(_sds.time.values)
-    # Rebuild the ACTUAL forcing this scenario just built, not surge_forcing.nc's
-    # own stored 'water_level' -- that field is a basin-level, scenario-
-    # independent preview at a fixed diagnostic RP (see 07_boundary_forcings.smk's
-    # own comment), never what's actually in this scenario's own sfincs.bzs.
-    # Mirrors the water-level boundary section above exactly, RP-for-RP and
-    # mode-for-mode, so this plot always shows what was really built.
+    # Rebuilt rather than read from surge_forcing.nc's 'water_level', which is
+    # a basin-level preview at a fixed diagnostic RP. Mirrors the water-level
+    # boundary section above, RP-for-RP and mode-for-mode, so this plot always
+    # shows what was really built.
     if forcing_mode == "river_only":
         _wl = np.full((_sds.sizes["station"], len(_surge_times)), river_only_flat_level_m)
     else:
@@ -549,9 +415,8 @@ ax5b.set_ylabel("Discharge (m³/s)")
 ax5b.set_title(f"River discharge ({_n_cross} active GloFAS crossing(s))")
 ax5b.grid(True, alpha=0.3)
 
-# Peak-value boxes: max over all stations/crossings and the full timeseries.
-# The river boundary is a discharge (not water-level) boundary, so its box
-# reports max Q.
+# Peak boxes: max over all stations/crossings and the full timeseries; the
+# river boundary is a discharge boundary, so its box reports max Q.
 _max_box = dict(boxstyle="round,pad=0.3", fc="white", ec="grey", alpha=0.85)
 if _wl.size:
     ax5a.text(0.01, 0.97, f"Max WL = {np.nanmax(_wl):.2f} m", transform=ax5a.transAxes,

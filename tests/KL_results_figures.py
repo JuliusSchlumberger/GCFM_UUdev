@@ -1,36 +1,31 @@
-"""
-POST- vs PRE-processing agreement analysis for flood adaptation measures.
+"""Plot POST vs PRE agreement of adaptation measures for the results section.
 
-Step 1: split `strategy` into measure name + scale suffix
-Step 2: convert absolute metrics to % risk reduction vs the matching event baseline
-Step 3: agreement diagnostics (figures in results section)
-
+Reads metrics_comparison.csv; risk reduction is relative to the matching event's
+baseline row. Also plots return-period curves, forcing hydrographs and rankings.
 """
 
 import os
 from pathlib import Path
-import numpy as np
-import xarray as xr
-import pandas as pd
-from hydromt_sfincs import SfincsModel
+
 import matplotlib
 import matplotlib.dates as mdates
+import numpy as np
+import pandas as pd
+import xarray as xr
+from hydromt_sfincs import SfincsModel
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
-# Set it once in PowerShell, then restart your terminal (see
-# CONTRIBUTING.md "Local machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
+# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
 OUT_DIR = Path(os.environ["GCFM_RESULTS_DIR"]) / "2433835/runs"
 CSV = OUT_DIR / "metrics_comparison.csv"
 METRICS = ["flooded_area_km2", "urban_exposed_km2", "mean_depth_m", "volume_m3"]
-SCALES = ["04", "09", "1"]  # raw strategy-name suffix, low -> high implementation scale
+SCALES = ["04", "09", "1"]  # strategy-name suffix, low -> high implementation scale
 
-# ----------------------------------------------------------------- 1. parse
+# parse
 raw = pd.read_csv(
     CSV, sep=None, engine="python"
 )  # "," from the pipeline, ";" once re-saved in Excel
@@ -51,7 +46,7 @@ assert d["scale"].notna().all(), (
 # a fully-protected run has flooded_area == 0 and NaN depth; depth is 0 by definition
 d[["mean_depth_m", "max_depth_m"]] = d[["mean_depth_m", "max_depth_m"]].fillna(0)
 
-# # ------------------------------------------- 2. % reduction vs event baseline
+# % reduction vs event baseline
 for m in METRICS:
     b = d.event.map(baselines[m])
     d["red_" + m] = 100 * (b - d[m]) / b
@@ -67,7 +62,7 @@ for m in METRICS:
     wide[("err_" + m, "")] = wide[("red_" + m, "POST")] - wide[("red_" + m, "PRE")]
 # wide.to_csv(OUT_DIR / "post_vs_pre_wide.csv")
 
-# ------------------------------------------------------ 3a. does POST resolve scale?
+# does POST resolve scale?
 print(
     "\n# Rows sharing an identical metric vector (i.e. the approach cannot "
     "distinguish two designs):"
@@ -111,11 +106,10 @@ for (e, a), g in d.groupby(["event", "approach"]):
 #     .to_string(index=False)
 # )
 
-# ------------------------------------------------------------------ 4. figures
+# figures
 EVENT_ORDER = ["coast_500", "river_500"]  # , "compound_100c_500r"]
 events = sorted(d.event.unique(), key=EVENT_ORDER.index)
-# case-insensitive: plain sorted() puts "NbS_..." before "grey_..." (uppercase
-# N sorts before lowercase g in ASCII), not the intended alphabetical order
+# case-insensitive, else "NbS_..." sorts before "grey_..."
 measures = sorted(d.short.unique(), key=str.lower)
 
 STYLE = {
@@ -125,6 +119,7 @@ STYLE = {
 
 
 def label(s):
+    """Return a name as a title-case label."""
     return s.replace("_", " ").title()
 
 
@@ -140,7 +135,7 @@ METRIC_INFO = [
     ("mean_depth_m", "residual mean flood depth", (0, 2), [0, 0.25, 0.5, 1, 1.5, 2]),
 ]
 
-PLOT_SCALES = ["0"] + SCALES  # prepend the no-adaptation baseline (ratio == 1)
+PLOT_SCALES = ["0"] + SCALES  # "0" = no-adaptation baseline (ratio == 1)
 SCALE_LABELS = {
     "0": "No adaptation",
     "04": "Highly ineffective",
@@ -208,14 +203,13 @@ print(
 # Time series plots
 BASIN_ROOT = OUT_DIR.parent  # .../results/<basin_id>
 FORCING_DIR = BASIN_ROOT / "preprocessing_inputs" / "forcing"
-# decode_times=False: "time"'s units ("hours since simulation start") is a
-# relative offset, not a real calendar date -- xarray's CF-time decoder
-# chokes trying to parse "simulation start" as a reference date.
+# decode_times=False: units "hours since simulation start" have no reference
+# date for xarray's CF-time decoder.
 river_ds = xr.open_dataset(FORCING_DIR / "river_forcing.nc", decode_times=False)
 surge_ds = xr.open_dataset(FORCING_DIR / "surge_forcing.nc", decode_times=False)
 
-# the single most significant river crossing (largest high-RP discharge),
-# same selection basis 07_get_boundary_forcings.py's own diagnostic plot uses
+# Dominant river crossing (largest highest-RP discharge), as in
+# 07_get_boundary_forcings.py's diagnostic plot.
 active = river_ds["has_glofas"].values.astype(bool)
 rp_table = river_ds["discharge_rp_table"].values[active]
 i_main = np.nanargmax(rp_table[:, -1])
@@ -255,27 +249,16 @@ fig.savefig(OUT_DIR / "fig_return_period_curves.png", dpi=150, facecolor="white"
 plt.close(fig)
 
 
-# -------------------------------------------------------------------------------
-#  plot 2: forced hydrograph -- the REAL, actually-built forcing for one
-# scenario's own SFINCS run, read straight off its sfincs.bzs/sfincs.dis via
-# hydromt_sfincs (real calendar time, RP/protection-floor/SLR/multiplier all
-# already resolved). NOT river_forcing.nc's/surge_forcing.nc's own stored
-# 'discharge'/'water_level' -- those are a basin-level, scenario-independent
-# preview at a fixed diagnostic RP, never what a specific scenario like
-# coast_500 actually ran with (same fix 13_build_sfincs.py's own 05_forcing.png
-# already applies -- see its comment above the forcing-plot block).
+# plot 2: forced hydrograph, read from each scenario's sfincs.bzs/sfincs.dis
+# (RP, protection floor, SLR and multiplier resolved). The 'discharge' and
+# 'water_level' in river_forcing.nc/surge_forcing.nc are a scenario-independent
+# preview at a fixed diagnostic RP, not what a scenario ran with.
 # 2x3 grid: one column per scenario, water level on top / discharge on
-# bottom, y-axis shared within each row so magnitudes are directly
-# comparable across scenarios (coast_500's surge peak vs. compound_500's,
-# river_500's discharge peak vs. compound_500's, etc.)
+# bottom, y-axis shared within each row.
 SCENARIOS = ["coast_500", "river_500"]  # , "compound_100c_500r"]
 SCENARIO_COLOR = "#14b5dd"
-# if these scenarios' own slr_m (config/scenarios.yml, per-scenario) is 0.0,
-# the plotted water level IS the actual built forcing, with no SLR -- shown
-# as a flat reference line AT y=SLR_M (an illustrative SLR magnitude, not a
-# baseline+SLR shift) on the coastal scenarios only, so the flood peak's
-# height can be read directly against it (river_500 has near-baseline surge
-# to begin with, so this reference isn't the interesting comparison there).
+# Illustrative flat reference line at y=SLR_M (not a baseline+SLR shift) on the
+# coastal scenarios only; the plotted forcing has no SLR when slr_m is 0.0.
 SLR_M = 0.5
 SLR_SCENARIOS = {"coast_100"}  # , "compound_100c_500r"}
 
@@ -324,10 +307,7 @@ for j, scen in enumerate(SCENARIOS):
 axes[0, 0].set_ylabel("Water level (m)")
 axes[1, 0].set_ylabel("Discharge (m³/s)")
 
-# sharex=True only links the axis range, not tick-label visibility, and
-# AutoDateLocator's default tick density (fine in 13_build_sfincs.py's own
-# single wide 10" figure) is too cluttered at this grid's ~3" column width --
-# force 12-hourly ticks instead and rotate labels to keep them legible.
+# AutoDateLocator is too dense at ~3" column width: 12-hourly, rotated ticks.
 
 locator = mdates.HourLocator(byhour=[0, 12])
 formatter = mdates.ConciseDateFormatter(locator)
@@ -336,8 +316,7 @@ for ax in axes.flat:
     ax.xaxis.set_major_locator(locator)
     ax.xaxis.set_major_formatter(formatter)
     ax.tick_params(axis="x", labelrotation=45)
-    # "2000" is just this pipeline's dummy simulation reference year, not a
-    # meaningful date -- drop ConciseDateFormatter's repeated offset text
+    # "2000" is the pipeline's dummy reference year: hide the offset text.
     ax.xaxis.get_offset_text().set_visible(False)
 
 fig.suptitle("Forcing hydrographs")
@@ -349,15 +328,12 @@ river_ds.close()
 surge_ds.close()
 print(f"Wrote fig_return_period_curves.png, fig_forced_hydrograph.png to {OUT_DIR}")
 
-# Combined plot of hydrographs -- same two panels as fig_return_period_curves.png
-# (river discharge RP curve | coastal water level RP curves) but with every basin in
-# COMPARE_BASINS overlaid on the same axes, one colour per basin, so deltas can be
-# compared directly. Independent of OUT_DIR/the single-basin run above -- reopens each
-# basin's own river_forcing.nc/surge_forcing.nc fresh (those were already closed above).
-COMPARE_BASINS = ["2433835", "3279946"]  # add/remove basin_ids to compare others
-BASIN_LABELS = {"3279946": "Chao Phraya (3279946)"}  # optional override; else basin_id
+# Combined plot of hydrographs: the panels of fig_return_period_curves.png with
+# every basin in COMPARE_BASINS overlaid, one colour per basin.
+COMPARE_BASINS = ["2433835", "3279946"]
+BASIN_LABELS = {"3279946": "Chao Phraya (3279946)"}  # default: basin_id
 BASIN_COLORS = ["#2a9d8f", "#e76f51", "#8338ec", "#ffb703"]  # cycled if > 4 basins
-RESULTS_ROOT = OUT_DIR.parent.parent  # .../results (parent of every {basin_id}/ dir)
+RESULTS_ROOT = OUT_DIR.parent.parent
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5), facecolor="white")
 
@@ -389,8 +365,7 @@ for basin_id, color in zip(COMPARE_BASINS, BASIN_COLORS * len(COMPARE_BASINS)):
                 marker="o",
                 markersize=2,
             )
-    # one legend-only proxy line per basin on ax2 (station curves above carry no label,
-    # so the legend doesn't grow to one entry per station)
+    # one legend entry per basin, not per station
     ax2.plot([], [], color=color, label=basin_label)
 
 ax1.set_xscale("log")
@@ -418,14 +393,13 @@ plt.close(fig)
 print(f"Wrote {out_compare}")
 
 
-# Ranking plots -----------------------------------------------------------------------------------------------------------------
-# Rank the measures by residual urban exposure (1 = lowest) under the modelled
-# (PRE) and postprocessed (POST) approach -- one figure per event, one line per
-# measure linking its two ranks. Everything is computed from the numbers in
-# metrics_comparison.csv: <metric> of the run / <metric> of the event's baseline row.
+# Ranking plots
+# Rank measures by residual urban exposure (1 = lowest) under PRE and POST: one
+# figure per event, one line per measure linking its two ranks. Residual =
+# <metric> of the run / <metric> of the event's baseline row.
 RANK_EVENTS = ["coast_100"]  # any of coast_100, river_500, compound_100c_500r
 RANK_METRIC = "urban_exposed_km2"
-RANK_SCALE = "09"  # "1" = full potential; "09" / "04" also work
+RANK_SCALE = "09"  # one of SCALES; "1" = full potential
 TIE_DECIMALS = 2  # residual ratios equal at this precision share a rank ("=")
 # a reduction smaller than this fraction of the baseline (incl. an increase) counts as
 # "no effect", so all such measures tie for last; 0 = rank on the exact ratios
@@ -438,12 +412,13 @@ d["resid"] = d[RANK_METRIC] / d.event.map(baselines[RANK_METRIC])  # 1 = no chan
 
 
 def pretty(s):
+    """Return a measure name with spaces and only the first letter upper-cased."""
     s = s.replace("_", " ")
     return s[0].upper() + s[1:]  # keeps "NbS" (str.capitalize() would give "Nbs")
 
 
 def rank_by_residual(resid):
-    """Best-to-worst row order plus rank; ties share the lowest rank."""
+    """Return best-to-worst row order and rank; ties share the lowest rank."""
     effective = resid.where(resid < 1 - NO_EFFECT_TOL, 1.0)
     out = pd.DataFrame({"resid": resid, "val": effective.round(TIE_DECIMALS)})
     out = out.sort_values(["val", "resid"])
@@ -589,11 +564,9 @@ for e in RANK_EVENTS:
     print(f"Wrote {out.name} to {OUT_DIR}")
 
 
-# Rank scatter ------------------------------------------------------------------------------------------------------------------
-# Modelled rank (x) vs postprocessed rank (y) of every measure, one dot per measure and
-# scale, coloured by scale. Ranks are within each scale, exactly as in the slope chart
-# above (same RANK_METRIC / TIE_DECIMALS / NO_EFFECT_TOL). Dots on the diagonal keep
-# their rank; the shaded band marks +-SCATTER_BAND ranks.
+# Rank scatter
+# PRE rank (x) vs POST rank (y), one dot per measure and scale; ranks within each
+# scale as in the slope chart. The shaded band marks +-SCATTER_BAND ranks.
 SCATTER_EVENTS = ["coast_100"]  # any of coast_100, river_500, compound_100c_500r
 SCATTER_BAND = 1
 SCATTER_DOT_SIZES = (40, 90, 150)  # one per scale in SCALES: small (04) -> big (1)
@@ -656,9 +629,7 @@ for e in SCATTER_EVENTS:
             label=SCALE_LABELS[sc],
         )
 
-    # one label per spot (tied / repeated measures are stacked), on the left for dots on
-    # or above the diagonal and on the right for dots below it (or hugging the y-axis),
-    # to keep neighbours and the axis apart
+    # one stacked label per spot: left of dots on/above the diagonal, else right
     for (x, y), g in pts.groupby(["PRE_rank", "POST_rank"]):
         names = "\n".join(pretty(m) for m in dict.fromkeys(g["measure"]))
         left = y >= x and x > 1.3

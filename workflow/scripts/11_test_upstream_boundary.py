@@ -1,52 +1,28 @@
-"""
-11_test_upstream_boundary.py — Check that river boundary forcing locations are
-far enough upstream from river mouths to avoid surge-wave interaction.
+"""Check that river forcing points lie upstream of the surge-wave reach of each mouth.
 
-Final wave-propagation distance = min(kinematic distance, attenuation distance):
+Run by rule test_upstream_boundary.
 
-  kinematic distance (time-bounded front position):
-    d_kin = T_eff × (c − v)
+Wave-propagation distance = min(kinematic, attenuation):
+  kinematic:   d_kin = T_eff × (c − v)
     T_eff = effective_period_fraction × surge_period_hr × 3600  [s]
     c     = sqrt(g × (depth_mouth + A0))                         [m s⁻¹]
     v     = Q_bf / (W × D)                                       [m s⁻¹]
-    depth_mouth = rivdph, used as calculated -- no config floor. A mouth
-    with no usable calculated depth or velocity is skipped entirely.
-
-  attenuation distance (friction-damped amplitude decay, marching upstream
-  reach-by-reach along the mainstem -- the largest bankfull_discharge_acc
-  branch at each confluence):
+    depth_mouth = rivdph as calculated, no config floor; a mouth without
+    usable depth or velocity is skipped.
+  attenuation: march upstream along the mainstem (largest
+  bankfull_discharge_acc branch at each confluence):
     A(x) = A0 · exp(−μx),   μ = r / (2c),   r = (8/3π) · g · n² · U0 / h^(4/3)
-    U0 = c0 · A0 / depth_mouth, computed ONCE at the mouth and held fixed
-    for the whole march (the standard linearised-friction assumption -- r
-    approximately constant per reach, based on a representative tidal/surge
-    velocity). Re-deriving U from the locally-decaying amplitude at every
-    step instead turns the equation into dA/dx = -k·A², a hyperbolic decay
-    that fails to converge at all for low-amplitude mouths -- this is why
-    U is frozen at the mouth, not recomputed per reach.
-    Stops when A decays below amplitude_threshold_fraction of A0, or the
-    upstream network runs out.
+    U0 = c0 · A0 / depth_mouth, fixed at the mouth for the whole march
+    (linearised-friction assumption). Re-deriving U from the decaying A turns
+    this into dA/dx = -k·A², which does not converge for low-amplitude mouths.
+    Stops when A < amplitude_threshold_fraction · A0 or the network runs out.
 
-Both distances need A0, the surge amplitude driving that specific mouth --
-each mouth uses its OWN NEAREST CoastRP station's rp_level, not the
-domain-wide max (stations can vary 5-10x across one basin's coastline).
-
-When c ≤ v (river faster than wave), the mouth is flagged as
-"undetermined/blocked" -- a zero-radius marker is drawn but no circle.
-
-River mouths: reaches in river_network_depth_estimated.gpkg whose rch_id_dn
-targets are absent from the network (outlets / domain-exits).
-
-Active forcing points: has_glofas=1 crossings in river_forcing.nc.
-
-Check: straight-line geodesic distance from each forcing point to the
-nearest mouth, compared against that mouth's final distance (circle). A
-forcing point inside any circle is "too close" (red); outside all circles
-is "OK" (green). Reaches actually reached by a mouth's attenuation march are
-additionally colored by remaining amplitude (max across mouths, where more
-than one march reaches the same reach) -- a more literal picture of how far
-the wave itself gets, distinct from the circle's straight-line abstraction.
-The plot title reports the tightest margin (distance-from-mouth minus
-final-distance) found across all forcing-point/mouth pairs.
+A0 is the rp_level of the mouth's own nearest CoastRP station, not the domain
+max (stations can vary 5-10x along one basin's coastline). c ≤ v marks the
+mouth as blocked (marker, no circle). Mouths are reaches whose rch_id_dn
+targets are absent from the network; forcing points are has_glofas=1
+crossings in river_forcing.nc. A forcing point within any mouth's geodesic
+radius is flagged too close.
 """
 
 import math
@@ -75,7 +51,7 @@ from src.surge import lookup_storm_tide_at_rp
 log = setup_logging(snakemake.log[0])
 profiler = ScriptProfiler(snakemake)
 
-# ── constants ─────────────────────────────────────────────────────────────────
+# ── constants ──
 G    = 9.81  # m s⁻²
 GEOD = Geod(ellps="WGS84")
 _CIRCLE_COLOR  = "#D94040"   # red for wave-propagation zone
@@ -84,7 +60,7 @@ _OK_COLOR      = "#2ECC40"   # green for forcing point outside all circles
 _BAD_COLOR     = "#D94040"   # red for forcing point inside a circle
 _AMPLITUDE_CMAP = "YlOrRd"
 
-# ── params ────────────────────────────────────────────────────────────────────
+# ── params ──
 eff_frac      = float(snakemake.params.effective_period_fraction)
 period_hr     = float(snakemake.params.surge_period_hr)
 channel_n     = float(snakemake.params.channel_manning_n)
@@ -103,16 +79,15 @@ log.info(
     f"\n  depth/velocity: calculated per mouth (rivdph; Q_bf/(W×D)), no config floor"
 )
 
-# ── domain ────────────────────────────────────────────────────────────────────
+# ── domain ──
 wgs84_bounds, domain_crs, domain_poly = load_domain(
     snakemake.input.spec_basins_meta, snakemake.input.domain_gpkg
 )
 log.info(f"Domain: {wgs84_bounds}, CRS: {domain_crs}")
 
-# ── surge stations (per-station amplitude, NOT a domain-wide max) ────────────
-# station_rp is looked up at this check's OWN configured surge_rp (testing.
-# upstream_boundary_check.surge_rp), independent of rule 07's own
-# station-selection RP and of any scenario's design surge RP.
+# ── surge stations (per-station amplitude, not a domain-wide max) ──
+# Looked up at testing.upstream_boundary_check.surge_rp, independent of rule
+# 07's station-selection RP and of any scenario's design surge RP.
 with xr.open_dataset(snakemake.input.surge_forcing, decode_times=False) as surge_ds:
     station_lons = surge_ds["longitude"].values.astype(float)
     station_lats = surge_ds["latitude"].values.astype(float)
@@ -134,7 +109,7 @@ def _nearest_station_rp(lon: float, lat: float) -> tuple[float, float]:
     return float(station_rp[i]), float(dists[i])
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── helpers ──
 
 def _geodesic_circle(lon: float, lat: float, radius_m: float, n_pts: int = 72) -> ShapelyPolygon:
     """Return a Shapely Polygon approximating a geodesic circle."""
@@ -156,7 +131,7 @@ def _placeholder(output_path: str, message: str) -> None:
     plt.close(fig)
 
 
-# ── river network ─────────────────────────────────────────────────────────────
+# ── river network ──
 rivers = gpd.read_file(snakemake.input.river_network_depth_estimated)
 if rivers.crs is not None and rivers.crs.to_epsg() != 4326:
     rivers = rivers.to_crs("EPSG:4326")
@@ -174,17 +149,14 @@ rivers["_rid"] = rivers["reach_id"].apply(normalize_reach_id)
 by_rid = {r["_rid"]: r for _, r in rivers.iterrows() if r["_rid"] is not None}
 log.info(f"River network: {len(rivers)} reaches, {len(by_rid)} unique IDs")
 
-# Downstream adjacency (shared helper -- same parsing as elsewhere in the
-# pipeline, e.g. 09_condition_elevation.py) inverted to get upstream
-# adjacency for the attenuation march.
+# Inverted to upstream adjacency for the attenuation march.
 downstream_adj = build_downstream_adjacency(rivers)
 upstream_adj: dict[str, list[str]] = {rid: [] for rid in downstream_adj}
 for rid, dns in downstream_adj.items():
     for dn in dns:
         upstream_adj.setdefault(dn, []).append(rid)
 
-# Projected copy for accurate reach lengths (domain's own working UTM CRS --
-# pixel-perfect with the rest of the pipeline, not just an estimate).
+# Reach lengths in the domain's working UTM CRS.
 rivers_proj = rivers.to_crs(domain_crs)
 by_rid_proj = {r["_rid"]: r for _, r in rivers_proj.iterrows() if r["_rid"] is not None}
 
@@ -194,7 +166,7 @@ def _reach_length_m(rid: str) -> float:
     return g.length if g is not None else 0.0
 
 
-# ── identify river mouths ─────────────────────────────────────────────────────
+# ── river mouths ──
 mouth_ids = [rid for rid, dns in downstream_adj.items() if not dns]
 
 if not mouth_ids:
@@ -209,7 +181,7 @@ log.info(f"River mouths identified: {len(mouth_ids)}")
 
 
 def _mainstem_upstream(rid: str) -> str | None:
-    """Largest bankfull_discharge_acc among rid's upstream neighbours, or None."""
+    """Return the upstream neighbour with the largest bankfull_discharge_acc, or None."""
     ups = upstream_adj.get(rid, [])
     if not ups:
         return None
@@ -219,8 +191,8 @@ def _mainstem_upstream(rid: str) -> str | None:
     return max(ups, key=_q)
 
 
-# ── per-mouth wave propagation ────────────────────────────────────────────────
-MouthData = dict  # typed alias for readability
+# ── per-mouth wave propagation ──
+MouthData = dict
 mouths_data: list[MouthData] = []
 reach_amplitude: dict[str, float] = {}  # reach_id -> max remaining amplitude (m) across all mouths' marches
 
@@ -232,7 +204,7 @@ for i, mrid in enumerate(mouth_ids):
     reach_id_str = mrid
     centroid = row.geometry.interpolate(0.5, normalized=True)
 
-    # ── depth (calculated only -- no config floor) ──
+    # Calculated depth and velocity only, no config floor.
     depth = float(row.get("rivdph", np.nan) or np.nan)
     if not np.isfinite(depth):
         log.warning(
@@ -242,7 +214,6 @@ for i, mrid in enumerate(mouth_ids):
         n_skipped_no_depth += 1
         continue
 
-    # ── flow velocity (calculated only -- no config floor) ──
     width = float(row.get("width", np.nan) or np.nan)
     q_bf  = float(row.get("bankfull_discharge_acc", np.nan) or np.nan)
     if not (np.isfinite(width) and width > 0 and np.isfinite(q_bf) and q_bf >= 0):
@@ -256,10 +227,8 @@ for i, mrid in enumerate(mouth_ids):
         continue
     v = q_bf / (width * depth)
 
-    # ── local surge amplitude (nearest station, not the domain max) ──
     A0, station_dist_m = _nearest_station_rp(centroid.x, centroid.y)
 
-    # ── kinematic distance ──
     c0  = math.sqrt(G * (depth + A0))
     net = c0 - v
     if net <= 0:
@@ -274,10 +243,7 @@ for i, mrid in enumerate(mouth_ids):
         continue
     kinematic_dist = T_eff_s * net
 
-    # ── attenuation distance (friction-damped amplitude decay) ──
-    # U0: reference tidal/surge current-velocity scale, fixed ONCE at the
-    # mouth and held constant for the whole march -- see module docstring
-    # for why this must NOT be re-derived from the locally-decaying A.
+    # U0 is fixed at the mouth for the whole march; see module docstring.
     U0 = c0 * A0 / depth
     A = A0
     cum_dist = 0.0
@@ -296,7 +262,7 @@ for i, mrid in enumerate(mouth_ids):
             stop_reason = "invalid depth on next reach"
             break
         L = _reach_length_m(nxt)
-        c_i = math.sqrt(G * (h + A))  # local celerity -- genuinely varies with local A
+        c_i = math.sqrt(G * (h + A))  # celerity varies with local A
         r_i = (8.0 / (3 * math.pi)) * G * channel_n**2 * U0 / h**(4.0 / 3.0)  # friction uses FIXED U0
         mu_i = r_i / (2 * c_i)
         A = A * math.exp(-mu_i * L)
@@ -351,7 +317,7 @@ if not mouths_data:
     profiler.stop()
     raise SystemExit(0)
 
-# ── active forcing points ─────────────────────────────────────────────────────
+# ── active forcing points ──
 with xr.open_dataset(snakemake.input.river_forcing, decode_times=False) as rf_ds:
     has_glofas   = rf_ds["has_glofas"].values.astype(bool)
     forcing_lons = rf_ds["longitude"].values[has_glofas]
@@ -360,10 +326,8 @@ with xr.open_dataset(snakemake.input.river_forcing, decode_times=False) as rf_ds
 n_forcing = int(has_glofas.sum())
 log.info(f"Active forcing points: {n_forcing}")
 
-# ── inside/outside check ──────────────────────────────────────────────────────
-# Also tracks the tightest margin (distance-from-mouth minus final distance)
-# across every forcing-point/mouth pair -- the single most critical
-# comparison, reported in the plot's main title.
+# ── inside/outside check ──
+# Tightest margin = distance-from-mouth minus final distance over all pairs.
 forcing_inside = np.zeros(n_forcing, dtype=bool)
 tightest: dict | None = None
 for k in range(n_forcing):
@@ -407,17 +371,14 @@ log.info(
     f"{n_inside} WARNING (inside at least one wave zone)"
 )
 
-# ── plot ──────────────────────────────────────────────────────────────────────
+# ── plot ──
 fig, ax = plt.subplots(figsize=(10, 8))
 map_background(ax, shapely_box(*wgs84_bounds), snakemake.input.land_mask_on_grid)
 
-# River network background
 rivers.plot(ax=ax, color="steelblue", linewidth=0.5, alpha=0.55, zorder=2,
             label=f"River network ({len(rivers)} reaches)")
 
-# Reaches actually reached by a mouth's attenuation march, colored by
-# remaining amplitude (max across mouths where more than one march reaches
-# the same reach).
+# Reaches covered by an attenuation march, coloured by max remaining amplitude.
 if reach_amplitude:
     amp_norm = Normalize(vmin=0.0, vmax=max(reach_amplitude.values()))
     cmap = matplotlib.colormaps[_AMPLITUDE_CMAP]
@@ -434,7 +395,6 @@ if reach_amplitude:
     cbar = fig.colorbar(sm, ax=ax, shrink=0.7, pad=0.02)
     cbar.set_label("Remaining surge amplitude along river (m)")
 
-# Wave-propagation circles and mouth markers
 n_blocked = sum(1 for mp in mouths_data if mp["blocked"])
 n_circles = len(mouths_data) - n_blocked
 for mp in mouths_data:
@@ -458,7 +418,6 @@ if n_forcing > 0:
                 markersize=9, markeredgecolor="white", markeredgewidth=0.8,
                 zorder=8)
 
-# Legend
 legend_handles = [
     plt.Line2D([0], [0], color="steelblue", linewidth=1.5, alpha=0.7,
                label=f"River network ({len(rivers)} reaches)"),
@@ -491,12 +450,8 @@ if n_inside:
 
 ax.legend(handles=legend_handles, loc="lower right", fontsize=8, framealpha=0.92)
 
-# Main title reports the tightest margin found across all forcing-point/mouth
-# pairs (the single most critical comparison); subtitle reports the
-# parameters used to compute it -- min depth/min v are the smallest
-# CALCULATED values found across the assessed mouths (not config floors),
-# and A_surge is the amplitude at the tightest-margin mouth's own nearest
-# station (not a domain-wide value, since amplitude is now per-mouth).
+# min depth / min v are the smallest calculated values across assessed mouths;
+# A_surge is the tightest-margin mouth's own nearest-station amplitude.
 if tightest is not None:
     title_main = (
         f"Upstream boundary check: wave propagation distance "
