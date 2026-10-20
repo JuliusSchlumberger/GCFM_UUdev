@@ -1016,6 +1016,22 @@ def plot_forcing_timeseries(
     ax1.set_title(f"Surge forcing — RP{return_period} ({wl.shape[0]} stations)")
     ax1.grid(True, alpha=0.3)
 
+    # Peak-value boxes (max over all stations/crossings and the full
+    # timeseries). The river boundary is a discharge boundary, so its box
+    # reports max Q rather than a water level.
+    max_box = dict(boxstyle="round,pad=0.3", fc="white", ec="grey", alpha=0.85)
+    if wl.size:
+        ax1.text(
+            0.01,
+            0.97,
+            f"Max WL = {np.nanmax(wl):.2f} m",
+            transform=ax1.transAxes,
+            fontsize=9,
+            va="top",
+            ha="left",
+            bbox=max_box,
+        )
+
     # ── per-station correction table ─────────────────────────────────────────
     # Shows the correction chain: rp_raw → +MDT → peak(GOCO6s), MDT-only -- the
     # FLOPROS coastal protection level is a separate quantity, used only to
@@ -1125,6 +1141,17 @@ def plot_forcing_timeseries(
         f"River discharge forcing ({int(active.sum())}/{len(active)} crossings with GloFAS)"
     )
     ax2.grid(True, alpha=0.3)
+    if active.any():
+        ax2.text(
+            0.01,
+            0.97,
+            f"Max Q river = {np.nanmax(q[active]):,.0f} m³/s",
+            transform=ax2.transAxes,
+            fontsize=9,
+            va="top",
+            ha="left",
+            bbox=max_box,
+        )
 
     fig.tight_layout()
     _save(fig, output_path)

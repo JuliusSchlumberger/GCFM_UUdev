@@ -4,6 +4,161 @@ Newest changes first. See `Reference_memory.txt` for the current, up-to-date
 description of how the pipeline works; this file only describes *what changed
 and why*.
 
+# 2026-10-16: adaptation strategies written once at scale 1, levee lines derived from the baseline weir, SLR ramped in at the event start (-KL)
+
+## Strategies are written once, at scale 1, per flood event type
+
+`config/adaptation_strategies.yml` used to list every strategy three times
+(`_04`, `_09`, `_1`), each with hand-computed values, plus commented-out
+copies per flood event that had to be swapped in by hand (protect_closed's
+pumps were still scaled from 1316 m3/s although `coast_500`'s river is
+289 m3/s). Now each strategy is a FAMILY written once at scale 1; the old
+file is kept as `config/adaptation_strategies_manual.yml`.
+
+- `scales: [0.4, 0.9, 1.0]` generates `<family>_04/_09/_1` (`_scale_tag` in
+  `00_common.smk`), so strategy names, result folders and
+  `target_strategies` are unchanged. A parameter is multiplied by the scale
+  only when `config/measures.yml` flags it `scale: true` (elevation,
+  discharge, distance, storage_fraction, raise_fraction, retreat_fraction;
+  not attenuation_rate, locations, merge, target_code, min_elevation).
+- A parameter value is a number (same for every event type), a
+  `{coastal: .., river: .., compound: ..}` map, `{fixed: x}` (never scaled),
+  or a keyword resolved from the scenario's own baseline run:
+  `max_coastal_waterlevel` (max of `sfincs.bzs`), `max_discharge` (max of
+  `sfincs.dis`), `max_river_waterlevel` (max baseline `zsmax` in the cells
+  within one cell of the measure's own polyline, first `zsmax` step dropped
+  -- it holds the restart start-up shock), and `current_protection` (today's
+  baseline weir crest, never scaled; see below).
+- New per-scenario key `event: coastal | river | compound` in
+  `config/scenarios.yml` selects the per-event values. The forcing mode
+  cannot: `coast_500` (surge + mean river) has the same mode as a compound
+  scenario.
+- `strategy_def_for(strategy, scenario)` (`00_common.smk`) returns the
+  concrete parameters for one scenario, leaving the keywords as
+  `{"from_forcing": ...}` markers (the baseline files do not exist yet when
+  the DAG is built). Every strategy x event type is validated at start-up:
+  unknown keyword, incomplete event map, keyword on an unscaled parameter,
+  value outside measures.yml's min/max, measure not in measures.yml.
+- New `src/adaptation_scaling.py` (`resolve_forcing_params`) replaces the
+  markers at run time; called at the top of `18a_adapt_pre.py` and
+  `18b_adapt_post.py`, so pre and post always use the same values. Every
+  resolved value is logged with its source (e.g.
+  `coastal_levee.elevation = max_coastal_waterlevel 1.020 x 0.4 = 0.408`).
+- Rules `adapt_apply_pre` and `adapt_metrics_post` take the baseline
+  `sfincs.inp` (`.bzs`/`.dis` sit next to it; only `sfincs.inp` is a declared
+  output of `build_sfincs`), the baseline `sfincs_map.nc` and the skeleton
+  `sfincs.weir` as new inputs.
+- `target_strategies` also accepts a family name, meaning all of its scales,
+  and both can be mixed: `target_strategies="['protect_closed','retreat_1']"`.
+- New `tests/KL_check_adaptation_scaling.py.`: prints
+  every strategy's resolved values on an existing results folder, without
+  Snakemake.
+
+## `current_protection`: the levee facing the other flood driver stays as it is
+
+In a river flood, protect_closed's and grey_protect_open's coastal levee stay as is (current protection), and in a coastal flood grey_protect_open's river levee keeps current
+protection.
+
+- Pre (`src.adaptation_method_pre._levee_crests`, used by
+  `apply_coastal_levee`/`apply_river_levee`): every segment of the measure's
+  line keeps the crest of the baseline weir segment it lies on (midpoint
+  within 2 m, the same rule as `merge_weir_preserve_unmatched`); segments
+  without a baseline levee under them -- protect_closed's river-mouth
+  closure -- get the highest matched crest (`fill_crest`). Not a single
+  uniform height: the river levee runs from 0.52 m at the mouth to 5.31 m
+  upstream. Needs `merge: false`.
+- Post (`src.adaptation_method_post`): a levee at current protection clears
+  no flood class (the baseline flood map already contains today's levees)
+  and counts as not holding in the joint compound check.
+- Levee lines are read through `_read_levee_trace`, which drops empty
+  geometries (rows whose geometry was deleted in QGIS).
+
+## Adaptation lines are derived from the baseline weir (protect more automated than manual line drawing before)
+
+New `src/adaptation_lines.py` and `tools/build_adaptation_lines.py BASIN_ID
+OUT` (not part of the workflow) write a basin's levee, closure and pump
+lines from its own baseline protection weir, so they sit on the current
+model grid's cell edges: `coastal_protection_weir_PC/PO.geojson`,
+`river_protection_weir_PO.geojson`, `pump_river_mouth.geojson`, plus a
+labelled `.gpkg`, an overview `.png` and `build_info.json`. Each segment
+gets a `kind` (`coast`, `river`, `estuary`, `closure`); the river mouth is
+closed by the narrowest straight crossing at each SWORD outlet reach. Rerun
+whenever a basin's grid changes. For 2433835 the coastal PO and river PO
+lines split the baseline weir exactly (1,789 + 1,028 = 2,817 segments, no
+overlap). The strategies now point at `adaptation_ebro/auto/`: the
+hand-drawn lines match only 89 of the current weir's coastal segments, and
+`current_protection` would have added ~160 km of new coastal levee from them.
+
+## SLR ramped in at the event start
+
+The spin-up is shared by all scenarios and has no SLR: it ends with the sea
+at -0.05 m (2433835), while a scenario with `slr_m: 0.3` started its event
+boundary at 0.29 m. That 0.34 m step sent a front in that overtopped 1,625 to
+1,671 of the 1,789 coastal weir segments in the first two hours (up to
+1.23 m on the sea side of a 0.40 m crest), although the tide alone (max
+0.35 m) stays below the crest. Every SLR scenario was affected, and this was
+the 2.33 m start-up shock seen in `coast_500`.
+
+- New `src.surge._ramp_in_slr`, applied in both branches of
+  `build_design_surge_matrix`: up to the event start the SLR term is removed
+  (the boundary equals the spin-up's own rounded calm level exactly), then it
+  rises linearly to its full value over `slr_ramp_hours`. Raises if the ramp
+  would run past the surge peak.
+- Config `sfincs.boundary_setup.slr_ramp_hours: 24` (0 = old step). Not under
+  `boundary_forcings.surge.slr`: rule 07 receives that whole block, so a key
+  there would rerun everything from rule 07. A parameter of rules
+  `build_sfincs` and `adapt_build_forcing_pre` only.
+- Checked on 2433835's forcing (Tide and RP100, +0.3 m): event start at
+  -0.049 m, full SLR from hour 48 on, peaks unchanged (0.350 / 0.770 m);
+  `slr_ramp_hours: 0` and `slr_m: 0` reproduce the old forcing exactly. Not
+  yet checked in a SFINCS run.
+
+Every scenario's `build_sfincs` and `run_event` rerun once (new parameter);
+results without SLR come out identical. Flood metrics of SLR runs built
+before this change include the artificial overtopping.
+
+## Event window of 2433835: 70 -> 168 h
+
+The chosen river flood (GloFAS 2018-04-14, x1.13 to the RP100 of
+3,775 m3/s) was still at 2,552 m3/s -- 2.6 x bankfull (975 m3/s) -- when the
+70 h window ended, and only drops below bankfull ~14 days after the peak.
+`window_overrides_hr: 2433835: 168` keeps it to ~1.6 x bankfull and starts
+the event further down the rising limb, which shrinks the discharge ramp
+at the event start. Runs are ~2.3 x longer; reruns storm_tide_hydrographs
+and rule 07 onward for this basin.
+
+## Accommodate: urban raising by each cell's own flood depth
+
+`urban_raising` takes `raise_fraction` (0.1-1, scaled) and optional
+`freeboard` instead of a fixed `elevation`. As in retreat, the deepest-
+flooded `raise_fraction` of the flooded urban cells is selected; pre raises
+their ground by their own baseline flood depth (+ freeboard), post removes
+their flood depth.
+
+## Post-processing thresholds `>=` instead of `>`
+
+`apply_offshore_barrier`, `apply_coastal_levee` and `apply_river_levee`
+(post) treat a crest equal to the maximum water level as holding.
+
+## Water retention only where there is river flooding
+
+With `baseline_excess_volume == 0` (no river/compound flooding, e.g. a
+coastal-only scenario) water retention is skipped: `18a_adapt_pre.py` skips
+the measure (it no longer counts for the land-use/sea-mask/restart
+pass-through), and both `apply_water_retention` functions accept 0 and leave
+the model / flood map unchanged instead of raising. Retention areas now
+`water_retention_area_river.geojson`.
+
+## Known limits:
+
+A raised river levee gets one uniform crest (scale x the
+river maximum, set at the upstream end), so at low scales upstream
+segments can end up below today's crest (2.46 m against up to 5.31 m at
+`_04`); post's river levee check uses the observation points' `point_zs`,
+pre's sizing the `zsmax` along the levee line, which can differ; the
+adaptation changes are tested offline only (expansion, resolver, levee
+crests on the skeleton), not yet in a full SFINCS adaptation run.
+
 # 2026-10-13: river depth map replaces the rule 09 profile plot (- JS)
 
 - New rule 10 output `visuals/10_calibration/river_network_depth.png`
