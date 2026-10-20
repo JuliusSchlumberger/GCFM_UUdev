@@ -408,10 +408,45 @@ def storm_tide_at_rp_interpolated(
     return round_level(raw + _station_calm_levels_unrounded(surge_ds, slr_m))
 
 
+def _ramp_in_slr(
+    matrix: np.ndarray, surge_ds: xr.Dataset, slr_m: float, slr_ramp_hours: float
+) -> np.ndarray:
+    """
+    Remove the SLR term from the lead-in and let it rise linearly over the
+    first slr_ramp_hours of the event run instead.
+
+    The spin-up is shared by every scenario and runs without SLR, so its
+    restart holds the sea at the SLR-free calm level; a boundary that jumps
+    straight to the SLR level at the event start sends a front in that
+    overtops the coastal weir. The subtracted term is the difference of the
+    ROUNDED calm levels with and without SLR, so before the event start the
+    boundary equals the spin-up's own (rounded, SLR-free) calm level exactly.
+    """
+    if slr_m == 0.0 or slr_ramp_hours <= 0.0 or "slr_fingerprint" not in surge_ds:
+        return matrix
+    times = surge_ds["time"].values.astype(float)
+    start_hr = float(surge_ds.attrs["lead_days"]) * 24.0
+    peak_hr = float(
+        surge_ds.attrs.get(
+            "hg_peak_hr", start_hr + float(surge_ds.attrs["period_hr"]) / 2.0
+        )
+    )
+    if start_hr + slr_ramp_hours > peak_hr:
+        raise ValueError(
+            f"slr_ramp_hours={slr_ramp_hours:g} h runs past the surge peak "
+            f"({peak_hr - start_hr:g} h after the event start) -- the design peak would "
+            "miss part of its SLR; shorten sfincs.boundary_setup.slr_ramp_hours"
+        )
+    slr_offset = calm_sea_levels(surge_ds, slr_m) - calm_sea_levels(surge_ds, 0.0)
+    w = np.clip((times - start_hr) / slr_ramp_hours, 0.0, 1.0)
+    return matrix - (1.0 - w)[None, :] * slr_offset[:, None]
+
+
 def build_design_surge_matrix(
     surge_ds: xr.Dataset,
     design_rp_yr: int | None | str,
     slr_m: float = 0.0,
+    slr_ramp_hours: float = 0.0,
 ) -> np.ndarray:
     """
     Rebuild the per-station water-level timeseries at ``design_rp_yr`` from
@@ -442,6 +477,10 @@ def build_design_surge_matrix(
         surge_forcing.nc's own MDT-only fields exactly, so calibration/
         skeleton callers that never pass slr_m are fully insulated from the
         slr_m config value.
+    slr_ramp_hours: > 0 -> the SLR term is 0 up to the event start (the
+        spin-up's own SLR-free level) and rises linearly to its full value
+        over this many hours after it (see _ramp_in_slr); 0 (default) adds it
+        everywhere, as before.
 
     The stored protection_level (if rule 07 wrote one) is deliberately NOT
     subtracted here -- see 07_get_boundary_forcings.py's own design comment
@@ -459,7 +498,12 @@ def build_design_surge_matrix(
     times = surge_ds["time"].values
 
     if design_rp_yr is not None and "hg_tide_m" in surge_ds:
-        return _hydrograph_surge_matrix(surge_ds, design_rp_yr, slr_m)
+        return _ramp_in_slr(
+            _hydrograph_surge_matrix(surge_ds, design_rp_yr, slr_m),
+            surge_ds,
+            slr_m,
+            slr_ramp_hours,
+        )
 
     if isinstance(design_rp_yr, str) and design_rp_yr.strip().lower() == "tide":
         raise ValueError(
@@ -481,7 +525,7 @@ def build_design_surge_matrix(
             for b, lvl in zip(baselines, rp_level)
         ]
     )
-    return wave
+    return _ramp_in_slr(wave, surge_ds, slr_m, slr_ramp_hours)
 
 
 # ── vertical-reference correction & SLR fingerprint ─────────────────────────────

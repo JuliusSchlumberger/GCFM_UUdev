@@ -21,6 +21,7 @@ from its baseline_excess_volume.json output -- apply_water_retention below
 never touches attribution_mask.tif itself.
 """
 
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -34,7 +35,10 @@ from scipy import ndimage
 from shapely.geometry.base import BaseMultipartGeometry
 from shapely.ops import unary_union
 
-from src.protection_weir import merge_weir_preserve_unmatched
+import shapely
+from shapely.strtree import STRtree
+
+from src.protection_weir import _flatten_elevation_from_z, merge_weir_preserve_unmatched
 from src.sfincs_restart import patch_restart_zs
 
 
@@ -202,6 +206,67 @@ def apply_offshore_barrier(
     return mod
 
 
+def _is_current_protection(elevation) -> bool:
+    """True for the {"current": True, "fill_crest": ...} elevation that
+    src.adaptation_scaling resolves `current_protection` to.
+    """
+    return isinstance(elevation, dict) and bool(elevation.get("current"))
+
+
+def _levee_crests(new_gdf, elevation, baseline_gdf, max_match_distance_m: float):
+    """Crest for every segment of a new levee trace.
+
+    A number -> that crest on every segment. current_protection ({"current":
+    True, "fill_crest": x}) -> each new segment keeps the crest of the
+    baseline weir segment it lies on (its midpoint within
+    max_match_distance_m of it -- the same midpoint rule as
+    merge_weir_preserve_unmatched, so a segment only touching the baseline
+    at one endpoint is not "on" it), and a segment with no baseline levee
+    under it (e.g. protect_closed's river-mouth closure) gets fill_crest.
+    """
+    if not _is_current_protection(elevation):
+        return elevation
+
+    fill_crest = float(elevation["fill_crest"])
+    baseline = (
+        _flatten_elevation_from_z(baseline_gdf) if baseline_gdf is not None else None
+    )
+    if baseline is None or baseline.empty:
+        print(
+            f"  current_protection: no baseline weir -- every segment gets fill_crest {fill_crest:.2f} m"
+        )
+        return np.full(len(new_gdf), fill_crest)
+
+    base_crest = np.array([float(np.max(z)) for z in baseline["elevation"]])
+    base_geoms = baseline.geometry.values
+    mids = shapely.line_interpolate_point(new_gdf.geometry.values, 0.5, normalized=True)
+    nearest = STRtree(base_geoms).nearest(mids)
+    matched = shapely.distance(mids, base_geoms[nearest]) <= max_match_distance_m
+    crests = np.where(matched, base_crest[nearest], fill_crest)
+    print(
+        f"  current_protection: {int(matched.sum())} of {len(new_gdf)} segments keep their "
+        f"baseline crest ({crests[matched].min() if matched.any() else float('nan'):.2f}-"
+        f"{crests[matched].max() if matched.any() else float('nan'):.2f} m), "
+        f"{int((~matched).sum())} without a baseline levee get fill_crest {fill_crest:.2f} m"
+    )
+    return crests
+
+
+def _read_levee_trace(mod: SfincsModel, locations) -> gpd.GeoDataFrame:
+    """A levee measure's `locations` as single LineStrings in the model CRS,
+    dropping empty geometries (rows whose geometry was deleted in QGIS but
+    whose attribute row was kept).
+    """
+    new_gdf = mod.data_catalog.get_geodataframe(locations, geom=mod.region).to_crs(
+        mod.crs
+    )
+    new_gdf = new_gdf[~new_gdf.geometry.is_empty & new_gdf.geometry.notna()]
+    new_gdf = new_gdf.explode(index_parts=True).reset_index(drop=True)
+    if not new_gdf.geometry.type.isin(["LineString"]).all():
+        raise ValueError("Weirs must be of type LineString.")
+    return new_gdf[["geometry"]].copy()
+
+
 # Grey protect-open: river_levee
 def apply_river_levee(
     mod: SfincsModel,
@@ -232,7 +297,8 @@ def apply_river_levee(
 
     Args:
         mod       : (Required) Open SfincsModel object (HydroMT)
-        elevation : (Required from measures.yml) Levee crest elevation [m above datum], assigned to every line in `locations`.
+        elevation : (Required from measures.yml) Levee crest elevation [m above datum], assigned to every line in `locations`,
+                    or current_protection's {"current": True, "fill_crest": x} (merge=False only) -- see _levee_crests.
         locations : (Required from measures.yml) Path, data source name, or GeoDataFrame with the levee polyline(s).
         par1      : (Optional) Weir discharge coefficient, default 0.6.
         dep       : (Optional) Alternative elevation raster to sample crest height from.
@@ -253,6 +319,8 @@ def apply_river_levee(
         Modified SfincsModel object.
     """
     if merge:
+        if _is_current_protection(elevation):
+            raise ValueError("river_levee: current_protection needs merge: false")
         mod.weirs.create(
             locations=locations,
             elevation=elevation,
@@ -264,14 +332,10 @@ def apply_river_levee(
         )
         return mod
 
-    new_gdf = mod.data_catalog.get_geodataframe(locations, geom=mod.region).to_crs(
-        mod.crs
+    new_gdf = _read_levee_trace(mod, locations)
+    new_gdf["elevation"] = _levee_crests(
+        new_gdf, elevation, mod.weirs.data, max_match_distance_m
     )
-    new_gdf = new_gdf.explode(index_parts=True).reset_index(drop=True)
-    if not new_gdf.geometry.type.isin(["LineString"]).all():
-        raise ValueError("Weirs must be of type LineString.")
-    new_gdf = new_gdf[["geometry"]].copy()
-    new_gdf["elevation"] = elevation
     new_gdf["par1"] = par1
 
     merged = merge_weir_preserve_unmatched(
@@ -766,10 +830,31 @@ def apply_water_retention(
         raise ValueError("apply_water_retention needs roughness_native_path")
     if not (0.0 <= storage_fraction <= 1.0):
         raise ValueError(f"storage_fraction must be in [0, 1], got {storage_fraction}")
-    if baseline_excess_volume <= 0:
+    if baseline_excess_volume < 0:
         raise ValueError(
-            f"baseline_excess_volume must be > 0, got {baseline_excess_volume}"
+            f"baseline_excess_volume must be >= 0, got {baseline_excess_volume}"
         )
+    if baseline_excess_volume == 0:
+        # No river/compound flooding in this scenario (e.g. a coastal-only
+        # one): this measure stores river water only, so there is nothing to
+        # size the pit against. Leave the model unchanged -- carrying on would
+        # dig nothing (lowering = 0) but still build the weir ring around the
+        # zone, which would keep coastal water out of it. 18a_adapt_pre.py
+        # skips the measure before it gets here; this keeps a direct call
+        # safe too, including the restart copy callers expect at out_rst_path.
+        print(
+            "  WARNING: baseline_excess_volume is 0 (no river/compound flooding in this "
+            "scenario) -- water retention has nothing to store, model left unchanged."
+        )
+        if rst_path is not None:
+            dst = (
+                Path(out_rst_path)
+                if out_rst_path is not None
+                else Path(mod.root.path) / Path(rst_path).name
+            )
+            if Path(rst_path).resolve() != dst.resolve():
+                shutil.copy2(rst_path, dst)
+        return mod
 
     target_volume = storage_fraction * baseline_excess_volume
 
@@ -1108,7 +1193,8 @@ def apply_coastal_levee(
 
     Args:
         mod       : (Required) Open SfincsModel object (HydroMT)
-        elevation : (Required from measures.yml) Levee crest elevation [m above datum], assigned to every line in `locations`.
+        elevation : (Required from measures.yml) Levee crest elevation [m above datum], assigned to every line in `locations`,
+                    or current_protection's {"current": True, "fill_crest": x} (merge=False only) -- see _levee_crests.
         locations : (Required from measures.yml) Path, data source name, or GeoDataFrame with the levee polyline(s).
         par1      : (Optional) Weir discharge coefficient, default 0.6.
         dep       : (Optional) Alternative elevation raster to sample crest height from.
@@ -1137,6 +1223,8 @@ def apply_coastal_levee(
         Modified SfincsModel object.
     """
     if merge:
+        if _is_current_protection(elevation):
+            raise ValueError("coastal_levee: current_protection needs merge: false")
         mod.weirs.create(
             locations=locations,
             elevation=elevation,  # adds absolute elevation
@@ -1148,14 +1236,10 @@ def apply_coastal_levee(
         )
         return mod
 
-    new_gdf = mod.data_catalog.get_geodataframe(locations, geom=mod.region).to_crs(
-        mod.crs
+    new_gdf = _read_levee_trace(mod, locations)
+    new_gdf["elevation"] = _levee_crests(
+        new_gdf, elevation, mod.weirs.data, max_match_distance_m
     )
-    new_gdf = new_gdf.explode(index_parts=True).reset_index(drop=True)
-    if not new_gdf.geometry.type.isin(["LineString"]).all():
-        raise ValueError("Weirs must be of type LineString.")
-    new_gdf = new_gdf[["geometry"]].copy()
-    new_gdf["elevation"] = elevation
     new_gdf["par1"] = par1
 
     merged = merge_weir_preserve_unmatched(
@@ -1264,7 +1348,8 @@ def apply_pumps(
 #  Accommodate: urban_raising
 def apply_urban_raising(
     mod: SfincsModel,
-    elevation: float,
+    raise_fraction: Optional[float] = None,
+    freeboard: float = 0.0,
     urban_code: int = 50,
     dep_subgrid: Optional[str] = None,
     landuse_path: Optional[str] = None,
@@ -1277,25 +1362,23 @@ def apply_urban_raising(
     **kwargs,
 ) -> SfincsModel:
     """
-    Accommodate measure: raise the ground elevation at EVERY flooded urban
-    cell by a fixed amount, added on top of that cell's own current
-    elevation. Replaces the earlier dike_ring (weir-ring around a hand-drawn
-    polygon, commented out above) approach for the "accommodate" archetype
-    -- a delta-wide, per-cell DEM raise is directly comparable to the other
-    delta-wide strategies (advance/protect/retreat), whereas dike_ring's
-    protection footprint was scoped to one hand-drawn ring and not
-    comparable to those.
+    Accommodate measure: raise the ground elevation of flooded urban cells
+    by each cell's OWN baseline flood depth (+ optional freeboard), so a
+    raised cell sits at its baseline max water level. Replaces the earlier
+    dike_ring (weir-ring around a hand-drawn polygon, commented out above)
+    approach for the "accommodate" archetype -- a delta-wide, per-cell DEM
+    raise is directly comparable to the other delta-wide strategies
+    (advance/protect/retreat), whereas dike_ring's protection footprint was
+    scoped to one hand-drawn ring and not comparable to those.
 
-    Reuses apply_retreat's own urban+flooded eligibility detection (same
-    landuse_path/flood_map_path/flood_threshold/locations semantics) but
-    raises elevation at eligible cells instead of reclassifying land use.
-    `elevation` is an ADDITIVE raise amount, not an absolute target -- every
-    eligible cell goes up by exactly `elevation`, regardless of its own
-    current ground level, matching adaptation_method_post.py's own
-    apply_urban_raising sibling (which subtracts `elevation` from flood
-    DEPTH the same way) so the two methods are directly comparable: for the
-    same forcing, raising the bed by `elevation` here produces the same
-    residual depth as subtracting `elevation` from depth there.
+    Mirrors apply_retreat: same urban+flooded eligibility detection (same
+    landuse_path/flood_map_path/flood_threshold/locations semantics) and
+    same `raise_fraction` selection as retreat_fraction (the deepest-flooded
+    fraction of eligible cells is raised first), but raises elevation at the
+    selected cells instead of reclassifying land use. So raise_fraction=1
+    raises every flooded urban cell, 0.9 / 0.4 only the deepest 90% / 40%.
+    Matches adaptation_method_post.py's own apply_urban_raising sibling
+    (which removes the depth at the same selected cells).
 
     Land use/roughness are UNCHANGED (the cell is still urban, only its
     elevation changes), so roughness_native_path is passed straight through
@@ -1304,10 +1387,10 @@ def apply_urban_raising(
 
     Args:
         mod                    : (Required) Open SfincsModel object
-        elevation              : (Required from measures.yml) Amount [m] added to eligible
-                                 cells' own current ground elevation (additive raise, not an
-                                 absolute target -- mirrors the postprocessing sibling's own
-                                 depth subtraction).
+        raise_fraction         : (Optional) Fraction of flooded urban cells to raise (0-1),
+                                 deepest flood depth first; if None, all eligible cells are raised
+        freeboard              : (Optional) Extra height [m] added on top of each raised cell's
+                                 own flood depth (default 0.0)
         urban_code             : (Optional) Land use code marking urban cells (default 50, built-up)
         dep_subgrid            : (Required) Path to the basin's own built dep_subgrid.tif
         landuse_path           : (Required) Path to this basin's own landuse raster,
@@ -1341,6 +1424,8 @@ def apply_urban_raising(
         raise ValueError("apply_urban_raising needs landuse_path")
     if roughness_native_path is None:
         raise ValueError("apply_urban_raising needs roughness_native_path")
+    if raise_fraction is not None and not 0.0 <= raise_fraction <= 1.0:
+        raise ValueError(f"raise_fraction must be in [0, 1], got {raise_fraction}")
 
     # 1. elevation + land use + baseline flood depth, all on the dep_subgrid grid
     dep = mod.data_catalog.get_rasterdataset(dep_subgrid)
@@ -1374,13 +1459,17 @@ def apply_urban_raising(
         mask = xr.DataArray(mask, dims=dep.dims, coords=dep.coords)
         eligible = eligible & mask
 
-    # every eligible cell is raised by the SAME additive amount -- no
-    # comparison against current elevation, unlike a "raise up to a target"
-    # rule (see this function's own docstring for why: this must mirror the
-    # postprocessing sibling's flat depth subtraction).
-    n_eligible = int(eligible.sum())
+    # apply raise_fraction: deepest-flooded urban cells raised first (same
+    # selection as apply_retreat's retreat_fraction)
+    if raise_fraction is not None and raise_fraction < 1.0 and bool(eligible.any()):
+        depth_vals = flood.values[eligible.values]
+        threshold = np.nanquantile(depth_vals, 1.0 - raise_fraction)
+        raise_mask = eligible & (flood >= threshold)
+    else:
+        raise_mask = eligible
 
-    dep_new = dep.where(~eligible, dep + elevation).astype(dep.dtype)
+    # each selected cell goes up by its own baseline flood depth (+ freeboard)
+    dep_new = dep.where(~raise_mask, dep + flood + freeboard).astype(dep.dtype)
 
     out_path = Path(out_path)
     if not out_path.is_absolute():
@@ -1388,8 +1477,12 @@ def apply_urban_raising(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     dep_new.rio.to_raster(out_path)
 
+    raised_by = flood.values[raise_mask.values] + freeboard
     print(
-        f"  Applied urban raising: +{elevation:.2f} m to {n_eligible} flooded urban cell(s)."
+        f"  Applied urban raising: {int(raise_mask.sum())} of {int(eligible.sum())} flooded "
+        f"urban cell(s) raised by their own flood depth + {freeboard:.2f} m freeboard "
+        f"(mean +{np.nanmean(raised_by) if raised_by.size else 0.0:.2f} m, "
+        f"max +{np.nanmax(raised_by) if raised_by.size else 0.0:.2f} m)."
     )
 
     # 2. rebuild subgrid: elevation raised at eligible cells, roughness

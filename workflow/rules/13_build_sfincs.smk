@@ -83,6 +83,9 @@ rule build_sfincs:
         # src.surge.build_design_surge_matrix's own slr_m argument.
         slr_enabled        = config["boundary_forcings"]["surge"]["slr"]["enabled"],
         slr_m              = lambda wildcards: scenario_params(wildcards.scenario)["slr_m"],
+        # SLR rises in over the event's first hours instead of stepping in
+        # (the shared spin-up has none) -- src.surge._ramp_in_slr.
+        slr_ramp_hours     = config["sfincs"]["boundary_setup"]["slr_ramp_hours"],
         flat_boundary_point_spacing_m = config["sfincs"]["boundary_setup"]["flat_boundary_point_spacing_m"],
         waterlevel_buffer_m = config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),

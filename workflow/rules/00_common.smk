@@ -263,16 +263,133 @@ with open(config["adaptation"]["strategies_file"]) as _f:
 # Strategy measure files live under the same raw-data root as the catalogue
 # (GCFM_RAW_DATA_ROOT) -- adaptation_strategies.yml carries no root of its own.
 ADAPT_CATALOGUE_ROOT = CATALOGUE["meta"]["root"]
-STRATEGY_DEFS = {k: v for k, v in STRATEGY_DEFS_RAW.items() if k != "meta"}
-if not STRATEGY_DEFS:
-    raise ValueError(f"{config['adaptation']['strategies_file']} defines no strategies (besides 'meta')")
-
-for _name in STRATEGY_DEFS:
-    if not _re.fullmatch(r"[A-Za-z0-9_-]+", _name):
-        raise ValueError(f"strategy name {_name!r} invalid (use letters/digits/_/- only)")
 
 with open(config["adaptation"]["measures_file"]) as _f:
     MEASURES_DEFS = (_yaml.safe_load(_f) or {}).get("adaptation_measures", {})
+
+
+# Automating the adaptation strategy scales (KGL)
+# adaptation_strategies.yml holds strategy FAMILIES written at scale 1; each
+# family expands into one {strategy} per entry of `scales` (0.4 -> <family>_04,
+# 0.9 -> <family>_09, 1.0 -> <family>_1), so strategy names, result folders and
+# target_strategies stay exactly as before. A param is multiplied by the scale
+# only when measures.yml flags it `scale: true`. A param value is one of:
+#   number                         same scale-1 value for every event type
+#   {coastal: .., river: .., compound: ..}
+#                                  scale-1 value per scenario `event` (scenarios.yml)
+#   one of _DERIVED_PARAMS         scale-1 value read from the scenario's own
+#                                  baseline run at run time (forcing/map files
+#                                  don't exist yet at DAG-build time), resolved
+#                                  by src.adaptation_scaling
+#   current_protection             today's baseline weir crest, never scaled
+#   {fixed: x}                     x, never scaled
+
+_STRATEGY_EVENTS = ("coastal", "river", "compound")
+_DERIVED_PARAMS = {"max_coastal_waterlevel", "max_river_waterlevel", "max_discharge"}
+_UNSCALED_DERIVED_PARAMS = {"current_protection"}
+_STRATEGY_SCALES = STRATEGY_DEFS_RAW.get("scales", [0.4, 0.9, 1.0])
+_SCALABLE_PARAMS = {
+    (_m, _p)
+    for _m, _mdef in MEASURES_DEFS.items()
+    for _p, _spec in (_mdef.get("params") or {}).items()
+    if isinstance(_spec, dict) and _spec.get("scale")
+}
+
+# build strategy names
+def _scale_tag(scale):
+    """0.4 -> '04', 0.9 -> '09', 1.0 -> '1' (the existing strategy-name suffixes)."""
+    return f"{scale:g}".replace(".", "")
+
+# read strategy families which is a set of measures
+STRATEGY_FAMILIES = {k: v for k, v in STRATEGY_DEFS_RAW.items() if k not in ("meta", "scales")}
+if not STRATEGY_FAMILIES:
+    raise ValueError(f"{config['adaptation']['strategies_file']} defines no strategies (besides 'meta'/'scales')")
+
+
+# Each family (group fo measures) turns into one strategy per scale
+STRATEGY_DEFS = {}
+for _fam, _fdef in STRATEGY_FAMILIES.items():
+    for _m in (_fdef or {}).get("measures", {}):
+        if _m not in MEASURES_DEFS:
+            raise ValueError(f"strategy {_fam!r}: measure {_m!r} not defined in {config['adaptation']['measures_file']}")
+    for _s in _fdef.get("scales", _STRATEGY_SCALES):
+        _name = f"{_fam}_{_scale_tag(_s)}"
+        if not _re.fullmatch(r"[A-Za-z0-9_-]+", _name):
+            raise ValueError(f"strategy name {_name!r} invalid (use letters/digits/_/- only)")
+        if _name in STRATEGY_DEFS:
+            raise ValueError(f"strategy name {_name!r} generated twice -- check family names/scales")
+        # `measures` stays the raw family definition: strategy_measure_input_paths
+        # and water_retention_excess_volume_input only read measure names and
+        # `locations` strings, which never vary per scale or event.
+        STRATEGY_DEFS[_name] = {"family": _fam, "scale": float(_s), "measures": _fdef["measures"]}
+
+
+# Resolve a single parameter value
+def _resolve_strategy_param(measure, param, value, scale, event, where):
+    """One raw strategy param -> its concrete value for this scale and event
+    (or a {"from_forcing": ...} marker for src.adaptation_scaling)."""
+
+    if isinstance(value, dict) and set(value) <= set(_STRATEGY_EVENTS) and value:
+        if set(value) != set(_STRATEGY_EVENTS):
+            raise ValueError(f"{where}: per-event map must set all of {_STRATEGY_EVENTS}, got {sorted(value)}")
+        if event is None:
+            raise ValueError(f"{where}: value depends on the event type, but the scenario has no "
+                             f"`event:` in {config['scenarios_file']}")
+        value = value[event]
+
+    scalable = (measure, param) in _SCALABLE_PARAMS # check if the parameter is scalable
+    if isinstance(value, str) and value in _UNSCALED_DERIVED_PARAMS:
+        return {"from_forcing": value}
+    if isinstance(value, str) and value in _DERIVED_PARAMS:
+        if not scalable:
+            raise ValueError(f"{where}: {value!r} only allowed on a param flagged `scale: true` in measures.yml")
+        return {"from_forcing": value, "scale": scale}
+
+    if isinstance(value, dict) and set(value) == {"fixed"}:
+        value, scalable = value["fixed"], False
+    elif isinstance(value, dict):
+        raise ValueError(f"{where}: unrecognised value {value!r}")
+    elif isinstance(value, str) and scalable:
+        raise ValueError(f"{where}: unknown keyword {value!r} (expected a number, "
+                         f"{sorted(_DERIVED_PARAMS | _UNSCALED_DERIVED_PARAMS)} or {{fixed: x}})")
+
+    if not scalable:
+        return value
+
+    value = float(value) * scale
+    spec = MEASURES_DEFS[measure]["params"][param]
+    lo, hi = spec.get("min"), spec.get("max")
+    if (lo is not None and value < lo) or (hi is not None and value > hi):
+        raise ValueError(f"{where}: {param}={value:g} outside [{lo}, {hi}] from measures.yml")
+    return value
+
+
+def _resolve_strategy_measures(strategy, event, where):
+    sdef = STRATEGY_DEFS[strategy]
+    return {
+        m: {p: _resolve_strategy_param(m, p, v, sdef["scale"], event, f"{where} {m}.{p}")
+            for p, v in params.items()}
+        for m, params in sdef["measures"].items()
+    }
+
+
+def strategy_def_for(strategy, scenario):
+    """-> {"measures": {...}} for one strategy in one scenario: per-event values
+    picked via the scenario's `event`, scale-flagged params multiplied by the
+    strategy's scale, run-time-derived params left as {"from_forcing": ...}
+    markers. Passed as params.strategy_def to rules 18a/18b."""
+    event = SCENARIO_DEFS[scenario].get("event")
+    if event is not None and event not in _STRATEGY_EVENTS:
+        raise ValueError(f"scenario {scenario!r}: event must be one of {_STRATEGY_EVENTS}, got {event!r}")
+    return {"measures": _resolve_strategy_measures(strategy, event, f"{strategy}/{scenario}")}
+
+
+# Validate every strategy x event type once at startup, so a typo or an
+# out-of-range value fails `snakemake -n` instead of a single job mid-run.
+for _strategy in STRATEGY_DEFS:
+    for _event in _STRATEGY_EVENTS:
+        _resolve_strategy_measures(_strategy, _event, f"{_strategy}[{_event}]")
+
 
 def adaptation_input_path(rel):
     """Resolve a strategy measure's locations/dep_subgrid string param
@@ -307,12 +424,23 @@ def water_retention_excess_volume_input(wildcards):
     return []
 
 
-# Opt-in only -- no default strategy set (unlike scenario's "default"):
-#   snakemake adapt --config target_strategies="['retreat']"
-STRATEGIES = list(config.get("target_strategies", []))
-_unknown = sorted(set(STRATEGIES) - set(STRATEGY_DEFS))
-if _unknown:
-    raise ValueError(f"target_strategies {_unknown} not defined in {config['adaptation']['strategies_file']}")
+# Opt-in only -- no default strategy set (unlike scenario's "default").
+# Each entry is a single scale or a family name (= all of its scales); both
+# can be mixed in one list:
+#   snakemake adapt --config target_strategies="['retreat_04']"
+#   snakemake adapt --config target_strategies="['retreat']"                 # retreat_04, _09, _1
+#   snakemake adapt --config target_strategies="['retreat','protect_closed_1']"
+STRATEGIES = []
+for _t in config.get("target_strategies", []):
+    _expanded = [_t] if _t in STRATEGY_DEFS else [
+        n for n, d in STRATEGY_DEFS.items() if d["family"] == _t
+    ]
+    if not _expanded:
+        raise ValueError(
+            f"target_strategies: {_t!r} is neither a strategy nor a family in "
+            f"{config['adaptation']['strategies_file']} (families: {sorted(STRATEGY_FAMILIES)})"
+        )
+    STRATEGIES += [n for n in _expanded if n not in STRATEGIES]
 
 # Both methods run by default, unless a strategy is selected:
 #   snakemake adapt --config target_strategies="['retreat']" target_method="['pre']"

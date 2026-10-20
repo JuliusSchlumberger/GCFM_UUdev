@@ -20,6 +20,22 @@ from src.grid import cell_area_m2
 # 3 = compound
 
 
+def _is_current_protection(elevation) -> bool:
+    """True for the {"current": True, "fill_crest": ...} elevation that
+    src.adaptation_scaling resolves `current_protection` to. A levee kept at
+    current protection changes nothing here: the baseline flood map already
+    contains today's levees, so it never clears any flood class -- it never
+    "holds" in the joint compound check either.
+    """
+    return isinstance(elevation, dict) and bool(elevation.get("current"))
+
+
+def _crest_label(elevation) -> str:
+    return (
+        "current protection" if _is_current_protection(elevation) else f"{elevation}m"
+    )
+
+
 # Advance
 def apply_offshore_barrier(
     flood_map_path: str, scenario_root: str, output_dir: str, elevation: float, **kwargs
@@ -28,9 +44,9 @@ def apply_offshore_barrier(
     Post-processing offshore barrier rule.
     Logic:
       - Read the max coastal water level from the scenario model.
-      - If barrier height > max water level = all coastal flooding removed.
+      - If barrier height >= max water level = all coastal flooding removed.
         Remove all flooding in attribution classes 2 and 3 (coastal and compound).
-      - If barrier height <= max water level = full risk from coastal flooding.
+      - If barrier height < max water level = full risk from coastal flooding.
     """
 
     out_path = Path(output_dir) / "max_flood_depth.tif"
@@ -51,7 +67,7 @@ def apply_offshore_barrier(
     if not mask_path.exists():
         raise FileNotFoundError(f"Attribution mask not found at {mask_path}")
 
-    if elevation > max_wl:
+    if elevation >= max_wl:
         with rasterio.open(
             mask_path
         ) as attr_src:  # opens attribution mask which labels each pixel by flood source
@@ -59,11 +75,11 @@ def apply_offshore_barrier(
                 np.isin(attr_src.read(1), [2, 3]), prof["nodata"], flood
             )  # if barrier height exceeds surge, the pixels in 2 are replaced with nodata
         print(
-            f"  Barrier sufficient (H={elevation}m > Surge={max_wl:.2f}m) = all coastal flooding removed"
+            f"  Barrier sufficient (H={elevation}m >= Surge={max_wl:.2f}m) = all coastal flooding removed"
         )
     else:  # if the barrier is overtopped, we keep all flooding
         print(
-            f"  Barrier overtopped (H={elevation}m <= Surge={max_wl:.2f}m) = full risk"
+            f"  Barrier overtopped (H={elevation}m < Surge={max_wl:.2f}m) = full risk"
         )
 
     # Save modified raster with updated metadata
@@ -109,21 +125,24 @@ def apply_river_levee(
     riv_wl.read()
     max_river_wl = float(riv_wl.data["point_zs"].max())
 
-    river_holds = elevation > max_river_wl
+    river_current = _is_current_protection(elevation)
+    river_holds = (not river_current) and elevation >= max_river_wl
 
     coastal_measure = (strategy_measures or {}).get("coastal_levee")
     if coastal_measure is not None:
-        coastal_elevation = float(coastal_measure["elevation"])
+        coastal_elevation = coastal_measure["elevation"]
         wl = mod.get_component("water_level")
         wl.read()
         max_coastal_wl = float(wl.data["bzs"].max())
-        coastal_holds = coastal_elevation > max_coastal_wl
+        coastal_holds = (not _is_current_protection(coastal_elevation)) and float(
+            coastal_elevation
+        ) >= max_coastal_wl
         compound_holds = river_holds and coastal_holds
         print(
             f"  Joint compound check: river {'holds' if river_holds else 'overtopped'} "
-            f"(H={elevation}m vs river WL={max_river_wl:.2f}m), coastal "
+            f"(H={_crest_label(elevation)} vs river WL={max_river_wl:.2f}m), coastal "
             f"{'holds' if coastal_holds else 'overtopped'} "
-            f"(H={coastal_elevation}m vs surge={max_coastal_wl:.2f}m) "
+            f"(H={_crest_label(coastal_elevation)} vs surge={max_coastal_wl:.2f}m) "
             f"-> compound flooding {'removed' if compound_holds else 'kept at risk'}"
         )
     else:
@@ -150,11 +169,15 @@ def apply_river_levee(
                 np.isin(attr_src.read(1), classes_to_clear), prof["nodata"], flood
             )
         print(
-            f"  Levee sufficient (H={elevation}m > river water level ={max_river_wl:.2f}m) = all river flooding removed"
+            f"  Levee sufficient (H={elevation}m >= river water level ={max_river_wl:.2f}m) = all river flooding removed"
+        )
+    elif river_current:  # today's levee is already in the baseline flood map
+        print(
+            "  River levee at current protection = no change to the baseline flooding"
         )
     else:  # if the levee is overtopped, we keep all flooding
         print(
-            f"  Levee overtopped (H={elevation}m <= river water level={max_river_wl:.2f}m) = full risk"
+            f"  Levee overtopped (H={elevation}m < river water level={max_river_wl:.2f}m) = full risk"
         )
 
     # Save modified raster with updated metadata
@@ -333,13 +356,25 @@ def apply_water_retention(
     """
     if not (0.0 <= storage_fraction <= 1.0):
         raise ValueError(f"storage_fraction must be in [0, 1], got {storage_fraction}")
-    if baseline_excess_volume <= 0:
+    if baseline_excess_volume < 0:
         raise ValueError(
-            f"baseline_excess_volume must be > 0, got {baseline_excess_volume}"
+            f"baseline_excess_volume must be >= 0, got {baseline_excess_volume}"
         )
 
     out_path = Path(output_dir) / "max_flood_depth.tif"
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if baseline_excess_volume == 0:
+        # No river/compound flooding in this scenario (e.g. a coastal-only
+        # one): nothing to store -- pass the flood map through unchanged, same
+        # as the preprocessing sibling leaves its model unchanged.
+        print(
+            "  WARNING: baseline_excess_volume is 0 (no river/compound flooding in this "
+            "scenario) -- water retention has nothing to store, flood map left unchanged."
+        )
+        if Path(flood_map_path).resolve() != out_path.resolve():
+            shutil.copy2(flood_map_path, out_path)
+        return {"method": "flood_map", "out_raster": str(out_path)}
 
     with rasterio.open(flood_map_path) as src:
         flood, prof = src.read(1), src.profile
@@ -416,10 +451,10 @@ def apply_coastal_levee(
     Post-processing coastal levee rule.
     Logic:
       - Read the max coastal water level from the scenario model.
-      - If levee height > max water level = all coastal flooding removed.
+      - If levee height >= max water level = all coastal flooding removed.
         Remove all flooding in attribution classes 2 and (usually) 3
         (coastal and compound) -- see strategy_measures note below.
-      - If levee height <= max water level = full risk from coastal flooding.
+      - If levee height < max water level = full risk from coastal flooding.
 
     strategy_measures: this strategy's full measures dict (see dispatch_rules'
     own docstring). When a sibling "river_levee" measure is ALSO part of the
@@ -455,7 +490,13 @@ def apply_coastal_levee(
     )
     classes_to_clear = [2] if has_sibling_river_levee else [2, 3]
 
-    if elevation > max_wl:
+    if _is_current_protection(
+        elevation
+    ):  # today's levee is already in the baseline flood map
+        print(
+            "  Coastal levee at current protection = no change to the baseline flooding"
+        )
+    elif elevation >= max_wl:
         with rasterio.open(
             mask_path
         ) as attr_src:  # opens attribution mask which labels each pixel by flood source
@@ -468,11 +509,11 @@ def apply_coastal_levee(
             else ""
         )
         print(
-            f"  Levee sufficient (H={elevation}m > Surge={max_wl:.2f}m) = all coastal flooding removed"
+            f"  Levee sufficient (H={elevation}m >= Surge={max_wl:.2f}m) = all coastal flooding removed"
             f"{compound_note}"
         )
     else:  # if the levee is overtopped, we keep all flooding
-        print(f"  Levee overtopped (H={elevation}m <= Surge={max_wl:.2f}m) = full risk")
+        print(f"  Levee overtopped (H={elevation}m < Surge={max_wl:.2f}m) = full risk")
 
     # Save modified raster with updated metadata
     prof.update(dtype="float32")
@@ -734,7 +775,8 @@ def apply_urban_raising(
     flood_map_path: str,
     scenario_root: str,
     output_dir: str,
-    elevation: float,
+    raise_fraction: float = None,
+    freeboard: float = 0.0,
     landuse_path: str = None,
     urban_code: int = 50,
     flood_threshold: float = 0.05,
@@ -746,13 +788,14 @@ def apply_urban_raising(
 
     Fast, no-rerun approximation of adaptation_method_pre.py's own
     apply_urban_raising (which physically raises the DEM and reruns SFINCS):
-    at eligible cells (urban AND flooded, optionally restricted to
-    `locations`), `elevation` is subtracted directly from the flood DEPTH
-    raster. This method never reads the DEM, so here `elevation` means a
-    depth REDUCTION [m] -- unlike the preprocessing sibling, where it's the
-    absolute elevation eligible cells are raised UP TO.
+    eligible cells are urban AND flooded (optionally restricted to
+    `locations`); the deepest-flooded `raise_fraction` of them (same
+    selection as apply_retreat) are raised by their own flood depth +
+    freeboard, i.e. their flood depth is removed entirely. Without a rerun
+    there is no displaced-water effect, so `freeboard` doesn't change the
+    result here; it's accepted only so both siblings read the same yml.
 
-    Cells whose reduced depth drops to <=0 are set to nodata (not 0.0) --
+    Raised cells are set to nodata (not 0.0) --
     matches apply_dike_ring's own convention above -- since
     compute_risk_metrics (src.postprocessing) tells flooded from dry purely
     via da_hmax.notnull(), not a depth threshold; a plain 0.0 would still
@@ -763,8 +806,9 @@ def apply_urban_raising(
         scenario_root   : (Required) scenario model root -- unused here,
                           accepted only for dispatch_rules' uniform call signature
         output_dir      : (Required) directory the adapted raster is written to
-        elevation       : (Required from measures.yml) depth [m] subtracted from
-                          eligible cells' flood depth
+        raise_fraction  : (Optional) fraction of flooded urban cells to raise (0-1),
+                          deepest flood depth first; if None, all eligible cells are raised
+        freeboard       : (Optional) unused here, see above
         landuse_path    : (Required) path to the current landuse raster,
                           used only to determine which cells are urban
         urban_code      : (Optional) land use code marking urban cells (default 50)
@@ -777,6 +821,8 @@ def apply_urban_raising(
     """
     if landuse_path is None:
         raise ValueError("apply_urban_raising needs landuse_path")
+    if raise_fraction is not None and not 0.0 <= raise_fraction <= 1.0:
+        raise ValueError(f"raise_fraction must be in [0, 1], got {raise_fraction}")
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -803,15 +849,20 @@ def apply_urban_raising(
     if locations is not None:
         eligible &= _ring_interior_mask(locations, out_shape, transform, raster_crs)
 
+    # deepest-flooded urban cells raised first (same selection as apply_retreat)
+    if raise_fraction is not None and raise_fraction < 1.0 and eligible.any():
+        threshold = np.nanquantile(flood[eligible], 1.0 - raise_fraction)
+        raise_mask = eligible & (flood >= threshold)
+    else:
+        raise_mask = eligible
+
     fill = nodata if nodata is not None else 0.0
     new_flood = flood.copy()
-    reduced = flood[eligible] - elevation
-    now_dry = reduced <= 0
-    new_flood[eligible] = np.where(now_dry, fill, reduced)
+    new_flood[raise_mask] = fill
 
     print(
-        f"  Urban raising (postprocessing): {int(eligible.sum())} eligible cell(s), "
-        f"depth reduced by {elevation:.2f} m ({int(now_dry.sum())} now dry)."
+        f"  Urban raising (postprocessing): {int(raise_mask.sum())} of "
+        f"{int(eligible.sum())} flooded urban cell(s) raised by their own depth (now dry)."
     )
 
     prof.update(dtype="float32")

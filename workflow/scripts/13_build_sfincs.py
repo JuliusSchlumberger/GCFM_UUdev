@@ -159,6 +159,9 @@ discharge_multiplier = float(snakemake.params.discharge_multiplier)
 # own slr_fingerprint ratio -- 0.0 whenever SLR is disabled, so this
 # scenario's own forcing matches surge_forcing.nc's MDT-only fields exactly.
 effective_slr_m = float(snakemake.params.slr_m) if snakemake.params.slr_enabled else 0.0
+# The spin-up restart has no SLR: the SLR term rises in over the event's first
+# hours instead of stepping in at the event start (src.surge._ramp_in_slr).
+slr_ramp_hours = float(snakemake.params.slr_ramp_hours)
 flat_boundary_point_spacing_m = snakemake.params.flat_boundary_point_spacing_m
 waterlevel_buffer_m = snakemake.params.waterlevel_buffer_m
 include_rstart    = snakemake.params.include_rstart
@@ -269,7 +272,7 @@ else:
     # water_level dims: (station, time) → transpose to (time, station) for DataFrame
     wl_df = pd.DataFrame(
         data=build_design_surge_matrix(
-            surge_ds, design_rp_surge_yr, slr_m=effective_slr_m
+            surge_ds, design_rp_surge_yr, slr_m=effective_slr_m, slr_ramp_hours=slr_ramp_hours
         ).T,
         index=surge_times,
         columns=range(n_stations),
@@ -282,7 +285,8 @@ else:
     )
     log.info(
         f"Water-level forcing: {n_stations} stations, {len(surge_times)} time steps "
-        f"(SLR: {effective_slr_m:+.3f} m target × per-station fingerprint)"
+        f"(SLR: {effective_slr_m:+.3f} m target × per-station fingerprint, "
+        f"ramped in over {slr_ramp_hours:g} h after the event start)"
     )
 sf.water_level.write()
 
@@ -499,7 +503,9 @@ with xr.open_dataset(surge_forcing_path, decode_times=False) as _sds:
     if forcing_mode == "river_only":
         _wl = np.full((_sds.sizes["station"], len(_surge_times)), river_only_flat_level_m)
     else:
-        _wl = build_design_surge_matrix(_sds, design_rp_surge_yr, slr_m=effective_slr_m)
+        _wl = build_design_surge_matrix(
+            _sds, design_rp_surge_yr, slr_m=effective_slr_m, slr_ramp_hours=slr_ramp_hours
+        )
     _n_stn = _wl.shape[0]
 
 with xr.open_dataset(river_forcing_path, decode_times=False) as _rds:
@@ -537,6 +543,17 @@ for _i in range(_n_cross):
 ax5b.set_ylabel("Discharge (m³/s)")
 ax5b.set_title(f"River discharge ({_n_cross} active GloFAS crossing(s))")
 ax5b.grid(True, alpha=0.3)
+
+# Peak-value boxes: max over all stations/crossings and the full timeseries.
+# The river boundary is a discharge (not water-level) boundary, so its box
+# reports max Q.
+_max_box = dict(boxstyle="round,pad=0.3", fc="white", ec="grey", alpha=0.85)
+if _wl.size:
+    ax5a.text(0.01, 0.97, f"Max WL = {np.nanmax(_wl):.2f} m", transform=ax5a.transAxes,
+              fontsize=9, va="top", ha="left", bbox=_max_box)
+if _dis_active.size:
+    ax5b.text(0.01, 0.97, f"Max Q river = {np.nanmax(_dis_active):,.0f} m³/s",
+              transform=ax5b.transAxes, fontsize=9, va="top", ha="left", bbox=_max_box)
 
 if _tstart_event is not None:
     for _ax in (ax5a, ax5b):
