@@ -11,15 +11,13 @@ Outputs (all in OUT_DIR = results/2433835/runs/):
   fig_domain_input_data.png  combined elevation | land-use, 1x2
 """
 
-import os
 import sys
-from pathlib import Path
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 import shapely
-from _common import REPO_ROOT  # noqa: E402
+from _common import REPO_ROOT, site_path  # noqa: E402
 from matplotlib.colors import BoundaryNorm, ListedColormap, TwoSlopeNorm
 from matplotlib.patches import Patch
 
@@ -32,8 +30,8 @@ from src.plots import (  # noqa: E402
 )
 
 BASIN_ID = "3279946"
-# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
-BASIN_ROOT = Path(os.environ["GCFM_RESULTS_DIR"]) / BASIN_ID
+# results_dir is a site setting; see config/site.example.yml.
+BASIN_ROOT = site_path("results_dir") / BASIN_ID
 RUNS_DIR = BASIN_ROOT / "runs"
 OUT_DIR = RUNS_DIR
 DOMAIN_DIR = BASIN_ROOT / "preprocessing_inputs" / "domain"

@@ -5,9 +5,9 @@ models for river deltas from global datasets, and tests adaptation strategies on
 
 ## Environment
 
-Conda env `hmt_sfincs_dev` (`environment.yml`; installs the pinned pip `hydromt-sfincs==2.0.0rc2`, runtime fix in `workflow/src/hydromt_sfincs_patch.py`).
-`conda activate hmt_sfincs_dev`, or `conda run -n hmt_sfincs_dev <cmd>` when conda is not on PATH.
-Required env vars: `GCFM_RESULTS_DIR`, `GCFM_RAW_DATA_ROOT`, `GCFM_SFINCS_EXE`.
+Conda env `gcfm`: portable `environment.yml`; exact Windows reproduction `environment.win-64.lock.yml` (pinned pip `hydromt-sfincs==2.0.0rc2`, runtime fix in `workflow/src/hydromt_sfincs_patch.py`).
+`conda activate gcfm`, or `conda run -n gcfm <cmd>` when conda is not on PATH. Machine-specific notes: `CLAUDE.local.md`.
+Site paths: `config/site.yml` (gitignored; copy `config/site.example.yml`), keys `results_dir`, `raw_data_root`, `sfincs_exe`; `GCFM_RESULTS_DIR`, `GCFM_RAW_DATA_ROOT`, `GCFM_SFINCS_EXE` override them.
 
 ## Entry points
 
@@ -21,9 +21,9 @@ Required env vars: `GCFM_RESULTS_DIR`, `GCFM_RAW_DATA_ROOT`, `GCFM_SFINCS_EXE`.
 
 ## Protected (change only with explicit go-ahead)
 
-- `$GCFM_RAW_DATA_ROOT` (read only) and `$GCFM_RESULTS_DIR` (pipeline outputs)
+- `raw_data_root` (read only) and `results_dir` (pipeline outputs), as set in `config/site.yml`
 - `config/config.yml`, `config/scenarios.yml`, `config/data_catalogue.yml`, `config/adaptation_strategies*.yml`, `config/measures.yml`
-- `environment.yml`, `.pre-commit-config.yaml` (pinned versions)
+- `environment.yml`, `environment.win-64.lock.yml`, `.pre-commit-config.yaml` (pinned versions); `config/site.yml` (machine paths)
 - Other protected paths: <unknown: ask>
 
 ## Smallest end-to-end case

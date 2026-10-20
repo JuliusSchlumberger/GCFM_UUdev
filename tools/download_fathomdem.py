@@ -13,9 +13,9 @@ only after full extraction; otherwise it is downloaded and unpacked. The range
 comes from the name (tile n00e006.tif inside n00e000-n30e030_FathomDEM_v1-0.zip).
 
 Usage:
-    python download_fathomdem.py --share-url "https://zenodo.org/records/14523356?token=XXXX" --out D:/data/fathomdem
-    python download_fathomdem.py --token XXXX --out D:/data/fathomdem --filter S60W090
-    python download_fathomdem.py --token XXXX --out D:/data/fathomdem --keep-zip --no-unzip
+    python download_fathomdem.py --share-url "https://zenodo.org/records/14523356?token=XXXX" --out <data_root>/FathomDEM
+    python download_fathomdem.py --token XXXX --out <data_root>/FathomDEM --filter S60W090
+    python download_fathomdem.py --token XXXX --out <data_root>/FathomDEM --keep-zip --no-unzip
 
 The token can also be supplied via the ZENODO_TOKEN environment variable.
 """

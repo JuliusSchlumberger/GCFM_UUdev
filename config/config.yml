@@ -13,13 +13,8 @@ profiling:
 #   target_strategies: ['retreat_04']  # strategies or families; default: [] (no adaptation run)
 #   target_method: ['pre', 'post']     # default: both
 
-# Machine-specific paths are NOT set in this file -- they come from three
-# environment variables (read in workflow/rules/00_common.smk). Set them once
-# in PowerShell, then restart your terminal (see CONTRIBUTING.md "Local
-# machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")    # -> results_dir
-#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User") # -> data catalogue root
-#   [Environment]::SetEnvironmentVariable("GCFM_SFINCS_EXE", "C:\path\to\sfincs.exe", "User")    # -> SFINCS executable
+# Machine-specific paths (results_dir, raw_data_root, sfincs_exe) live in
+# config/site.yml, not here; see config/site.example.yml.
 
 # ── Domain & basin setup (rules 01-02) ───────────────────────────────────────
 domain:
@@ -284,7 +279,7 @@ sfincs:
     dthisout:      600           # time-series output at observation points (s) -- MAIN EVENT run only
     storevelmax:     0           # write maximum flow velocity (0=off, 1=on)
     storetwet:       0           # write inundation duration / time-wet (0=off, 1=on)
-    # SFINCS executable: set via the GCFM_SFINCS_EXE environment variable (see top of this file)
+    # SFINCS executable: sfincs_exe in config/site.yml (see config/site.example.yml)
     timeout_s: 68400             # max wall-clock time for a SFINCS subprocess (s, 19 h) --
                                   # shared by both the spin-up and main event runs
   spinup: # Spin-up simulation with constant forcings

@@ -1,10 +1,8 @@
 meta:
   version: '1'
   name: data_catalog_v1
-  # root (raw-data directory all file_path entries below are relative to) is
-  # machine-specific and NOT set here -- it comes from the GCFM_RAW_DATA_ROOT
-  # environment variable. Set it once in PowerShell, then restart your terminal:
-  #   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+  # root: every file_path below is relative to raw_data_root in config/site.yml
+  # (see config/site.example.yml); it is not set here.
 
 # The pipeline reads only name, file_path and attributes; other per-dataset fields are documentation.
 datasets:

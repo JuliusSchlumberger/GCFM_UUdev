@@ -18,19 +18,17 @@ A strategy is compared only if it has a max_flood_depth.tif under both
 <event>/adaptation/pre/<strategy>/ and <event>/adaptation/post/<strategy>/.
 """
 
-import os
-from pathlib import Path
-
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio
+from _common import site_path
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from rasterio.warp import Resampling, reproject
 
-# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
-BASIN = Path(os.environ["GCFM_RESULTS_DIR"]) / "2433835"
+# results_dir is a site setting; see config/site.example.yml.
+BASIN = site_path("results_dir") / "2433835"
 RUNS = BASIN / "runs"
 EVENTS = ["coast_100", "river_500", "compound_100c_500r"]
 SCALES = ["04", "09", "1"]  # low -> high implementation scale

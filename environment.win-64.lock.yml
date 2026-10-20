@@ -1,0 +1,4 @@
+name: gcfm
+channels:
+  - conda-forge
+dependencies: []

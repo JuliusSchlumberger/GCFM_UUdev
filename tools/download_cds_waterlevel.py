@@ -4,12 +4,14 @@ Needs CDS API credentials (cdsapi); resumable: extracted years are skipped.
 Exits non-zero if any archive was corrupt.
 """
 
-import os
 import sys
 import zipfile
 from pathlib import Path
 
 import cdsapi
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
+from src.io import site_setting  # noqa: E402
 
 DATASET = "sis-water-level-change-timeseries-cmip6"
 VARIABLES = ["storm_surge_residual", "total_water_level"]
@@ -36,8 +38,8 @@ def extract(zip_path: Path, dest: Path) -> bool:
 
 
 def main() -> None:
-    # GCFM_RAW_DATA_ROOT is machine-specific; see CONTRIBUTING.md "Local machine paths".
-    out_dir = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "GTSM_storm_tide_hourly"
+    # raw_data_root is a site setting; see config/site.example.yml.
+    out_dir = Path(site_setting("raw_data_root")) / "GTSM_storm_tide_hourly"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     client = cdsapi.Client()

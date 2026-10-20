@@ -12,17 +12,15 @@ ignored, so discharge is overestimated once the land behind a segment floods.
 Inland segments raised above every station level never overtop.
 
 Usage:
-    conda run -n hmt_sfincs_dev python analysis/plot_overtopping_volume.py [basin_id] [scenario]
-    conda run -n hmt_sfincs_dev python analysis/plot_overtopping_volume.py 2433835 coast_250
+    conda run -n <env> python analysis/plot_overtopping_volume.py [basin_id] [scenario]
+    conda run -n <env> python analysis/plot_overtopping_volume.py 2433835 coast_250
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import geopandas as gpd
 import matplotlib
@@ -33,7 +31,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
-from _common import REPO_ROOT, basin_id_from_argv, first_existing  # noqa: E402
+from _common import (  # noqa: E402
+    REPO_ROOT,
+    basin_id_from_argv,
+    first_existing,
+    site_path,
+)
 from scipy.integrate import cumulative_trapezoid
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
@@ -47,8 +50,8 @@ SCENARIO = sys.argv[2] if len(sys.argv) > 2 else "coast_250"
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
-# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
-RESULTS_DIR = Path(os.environ["GCFM_RESULTS_DIR"])
+# results_dir is a site setting; see config/site.example.yml.
+RESULTS_DIR = site_path("results_dir")
 FIGS_DIR = REPO_ROOT / "figs" / "surge_vs_dike_crest"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
 

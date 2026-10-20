@@ -8,22 +8,19 @@ name: CI
 # check, without needing any data:
 #   - formatting / lint / docstrings, via the same pre-commit hooks used
 #     locally (ruff-format, ruff-check, pyright, pydocstyle)
-# The sync-environment-yml local hook is SKIPPED here: it shells out to
-# `conda env export -n hmt_sfincs_dev`, which only makes sense on a dev's own
-# machine where that named env actually exists -- this runner has no conda
-# at all, so the hook can never succeed here (see tools/sync_environment.py).
+# The sync-environment-lock local hook is SKIPPED here: it shells out to
+# `conda env export` for the env named in environment.win-64.lock.yml, which
+# only makes sense on a dev's own machine where that env exists -- this runner
+# has no conda at all (see tools/sync_environment.py).
 #
 # Unit tests: the synthetic-data pytest suite under tests/unit (no raw data,
 # no conda environment) runs in its own job with a pip-installed minimum set
 # of packages -- see the unit-tests job below.
 #
-# There is NO code-health/import-check job here anymore -- it required
-# building the real pipeline environment from environment.yml on this
-# ubuntu-latest runner, but environment.yml is a full `conda env export`
-# from a Windows dev machine (exact win-64 build hashes plus Windows-only
-# packages like pywin32/vc/vs2015_runtime), so it cannot solve on Linux at
-# all. Run `python tests/check_code_health.py` locally (see CONTRIBUTING.md)
-# until environment.yml's cross-platform portability is revisited.
+# There is NO code-health/import-check job here: it needs the full pipeline
+# environment (the portable environment.yml; environment.win-64.lock.yml is
+# Windows-only), which is slow to build on every PR. Run
+# `python tests/check_code_health.py` locally (see CONTRIBUTING.md).
 # Before merging, also actually dry-run `snakemake -n preprocess`/`build`
 # locally against real data -- see CONTRIBUTING.md's PR checklist.
 #
@@ -41,7 +38,7 @@ jobs:
   pre-commit:
     runs-on: ubuntu-latest
     env:
-      SKIP: sync-environment-yml
+      SKIP: sync-environment-lock
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -57,7 +54,7 @@ jobs:
         with:
           python-version: "3.11"
       # Every third-party package tests/unit imports at module level, directly
-      # or through src; keep in sync (see CLAUDE.md). environment.yml is a
-      # Windows conda export and does not solve here.
+      # or through src; keep in sync (see CLAUDE.md). A pip list is faster
+      # than building the conda env from environment.yml.
       - run: pip install pytest numpy pandas xarray geopandas shapely rasterio pyproj rioxarray scipy matplotlib "pyextremes[lmoments]" pymannkendall netCDF4 pyyaml openpyxl "hydromt-sfincs==2.0.0rc2"
       - run: pytest

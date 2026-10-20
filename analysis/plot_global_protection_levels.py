@@ -7,7 +7,7 @@ Countries without a value are grey, not given the per-basin default of
 src.protection_levels.identify_dominant_protection.
 
 Usage:
-    conda run -n hmt_sfincs_dev python analysis/plot_global_protection_levels.py
+    conda run -n <env> python analysis/plot_global_protection_levels.py
 """
 
 import logging

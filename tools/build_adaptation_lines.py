@@ -6,7 +6,7 @@ and levee measures replace only baseline segments within 2 m of their
 `locations` lines. Not part of the Snakemake workflow: check the output, then
 point config/adaptation_strategies.yml at it.
 
-Writes into <out> (relative to GCFM_RAW_DATA_ROOT unless absolute):
+Writes into <out> (relative to <raw_data_root> unless absolute):
 
     coastal_protection_weir_PC.geojson  protect_closed: coast + mouth closure(s)
     coastal_protection_weir_PO.geojson  grey_protect_open coastal_levee: coast only
@@ -17,7 +17,7 @@ Writes into <out> (relative to GCFM_RAW_DATA_ROOT unless absolute):
     build_info.json                     source grid, counts, per-mouth report
 
 Usage:
-    conda run -n hmt_sfincs_dev python tools/build_adaptation_lines.py 2433835 adaptation_ebro/auto
+    conda run -n <env> python tools/build_adaptation_lines.py 2433835 adaptation_ebro/auto
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -57,6 +56,7 @@ from adaptation_lines import (  # noqa: E402
     relabel_estuary,
 )
 from src.grid import load_grid_def  # noqa: E402
+from src.io import site_setting  # noqa: E402
 from src.landuse import LANDUSE_SEA_CODE  # noqa: E402
 from src.plots import save_figure  # noqa: E402
 from src.protection_weir import GridArrays, ocean_linked_wetland_mask  # noqa: E402
@@ -152,10 +152,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("basin_id")
     parser.add_argument(
-        "out", help="output folder, relative to GCFM_RAW_DATA_ROOT unless absolute"
+        "out", help="output folder, relative to raw_data_root unless absolute"
     )
     parser.add_argument(
-        "--basin-dir", help="basin results folder, if not GCFM_RESULTS_DIR/<basin_id>"
+        "--basin-dir", help="basin results folder, if not <results_dir>/<basin_id>"
     )
     args = parser.parse_args()
     bid = args.basin_id
@@ -163,11 +163,11 @@ def main() -> None:
     results = (
         Path(args.basin_dir)
         if args.basin_dir
-        else Path(os.environ["GCFM_RESULTS_DIR"]) / bid
+        else Path(site_setting("results_dir")) / bid
     )
     out_dir = Path(args.out)
     if not out_dir.is_absolute():
-        out_dir = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / out_dir
+        out_dir = Path(site_setting("raw_data_root")) / out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     domain = results / "preprocessing_inputs" / "domain"
     skeleton = results / "sfincs_skeleton"

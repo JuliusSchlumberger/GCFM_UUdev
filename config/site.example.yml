@@ -1,0 +1,17 @@
+# Site settings: machine-specific paths, read by src.io.site_setting.
+# Copy to config/site.yml (gitignored) and fill in the three keys:
+#   cp config/site.example.yml config/site.yml
+# An environment variable, if set and non-empty, overrides its key.
+# Quote Windows paths with single quotes, or use forward slashes.
+
+# Directory the pipeline writes its outputs to (env: GCFM_RESULTS_DIR), e.g.
+#   results_dir: /data/gcfm/results
+results_dir: <results_dir>
+
+# Root of every file_path in config/data_catalogue.yml (env: GCFM_RAW_DATA_ROOT), e.g.
+#   raw_data_root: /data/gcfm/raw_data
+raw_data_root: <raw_data_root>
+
+# SFINCS executable; needed only by rules that run the solver (env: GCFM_SFINCS_EXE), e.g.
+#   sfincs_exe: /opt/sfincs/bin/sfincs
+sfincs_exe: <sfincs_exe>

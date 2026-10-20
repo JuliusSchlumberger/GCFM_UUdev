@@ -15,10 +15,9 @@ sqlite3 lacks ("no such function: ST_IsEmpty"), even for attribute-only
 updates. Only the width column is changed, never geometry.
 
 Usage:
-    conda run -n hmt_sfincs_dev python prepare_modified_sword_dataset.py
+    conda run -n <env> python prepare_modified_sword_dataset.py
 """
 
-import os
 import shutil
 import sqlite3
 import subprocess
@@ -36,8 +35,11 @@ if not OGRINFO.exists():
         )
     OGRINFO = Path(_which)
 
-# GCFM_RAW_DATA_ROOT is machine-specific; see CONTRIBUTING.md "Local machine paths".
-SWORD_DIR = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "SWORD"
+# raw_data_root is a site setting; see config/site.example.yml.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
+from src.io import site_setting  # noqa: E402
+
+SWORD_DIR = Path(site_setting("raw_data_root")) / "SWORD"
 ORIGINAL_PATH = SWORD_DIR / "SWORD_global_v17c_unpublished.gpkg"
 MODIFIED_PATH = SWORD_DIR / "SWORD_global_v17c_unpublished_modified.gpkg"
 TABLE = "global_edges"

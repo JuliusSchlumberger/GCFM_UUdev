@@ -25,5 +25,5 @@ exclude = [
 testpaths = ["tests/unit"]
 addopts = "-m 'not needs_data'"
 markers = [
-    "needs_data: needs raw data or pipeline results (GCFM_RAW_DATA_ROOT / GCFM_RESULTS_DIR); run with -m needs_data",
+    "needs_data: needs raw data or pipeline results (site settings raw_data_root / results_dir); run with -m needs_data",
 ]

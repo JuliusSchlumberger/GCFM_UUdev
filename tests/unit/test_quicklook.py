@@ -1,5 +1,6 @@
 """Smoke tests for the quick-look figure renderer in quicklook.py."""
 
+import subprocess
 from pathlib import Path
 
 import geopandas as gpd
@@ -8,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
-from quicklook import STAGES, render
+from quicklook import STAGES, git_hash, render
 from shapely.geometry import LineString, Point, box
 
 FIGURES = Path(__file__).resolve().parents[2] / ".baseline" / "figures"
@@ -153,3 +154,19 @@ def test_raster_panel_requires_2d_data(tmp_path):
             tmp_path,
             commit="x",
         )
+
+
+def test_git_hash_is_nogit_outside_a_git_checkout(monkeypatch):
+    def _fail(cmd, **kwargs):
+        raise subprocess.CalledProcessError(128, cmd)
+
+    monkeypatch.setattr(subprocess, "run", _fail)
+    assert git_hash() == "nogit"
+
+
+def test_git_hash_is_nogit_without_git(monkeypatch):
+    def _missing(cmd, **kwargs):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(subprocess, "run", _missing)
+    assert git_hash() == "nogit"

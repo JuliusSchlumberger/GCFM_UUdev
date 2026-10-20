@@ -2,7 +2,7 @@
 import json
 import os
 
-from src.io import load_catalogue, catalogue_entry,read_geometry, raw_input_path, local_path, require_keys
+from src.io import load_catalogue, catalogue_entry,read_geometry, raw_input_path, site_setting, require_keys
 from src.io import general_path as _gen_path
 from src.river_forcing import derive_forcing_mode
 import geopandas as gpd
@@ -12,19 +12,18 @@ import yaml as _yaml
 
 CATALOGUE = load_catalogue(config["data_catalogue"])
 
-# ── local machine paths ──
-# Machine-specific paths come from environment variables (CONTRIBUTING.md
-# "Local machine paths"): GCFM_RESULTS_DIR, GCFM_RAW_DATA_ROOT (applied in
-# load_catalogue) and GCFM_SFINCS_EXE.
+# ── site settings ──
+# Machine-specific paths come from config/site.yml (see config/site.example.yml):
+# results_dir, raw_data_root (applied in load_catalogue) and sfincs_exe.
 # Forward slashes: mixed separators break Snakemake output/input matching.
-config["results_dir"] = Path(local_path("GCFM_RESULTS_DIR")).as_posix()
+config["results_dir"] = Path(site_setting("results_dir")).as_posix()
 
 def sfincs_exe_path(wildcards=None):
-    """Return the SFINCS executable path (GCFM_SFINCS_EXE).
+    """Return the SFINCS executable path (site setting sfincs_exe).
 
     Resolved lazily as a rule param, so only solver rules require it.
     """
-    return local_path("GCFM_SFINCS_EXE")
+    return site_setting("sfincs_exe")
 
 def catalogue_path(name):
     """Return the raw-data path of a catalogue entry."""
@@ -233,7 +232,7 @@ RST_FNAME   = f"sfincs.{_spinup_end.strftime('%Y%m%d.%H%M%S')}.rst"
 with open(config["adaptation"]["strategies_file"]) as _f:
     STRATEGY_DEFS_RAW = _yaml.safe_load(_f) or {}
 
-# Strategy measure files live under the catalogue's raw-data root (GCFM_RAW_DATA_ROOT).
+# Strategy measure files live under the catalogue's raw-data root (site setting raw_data_root).
 ADAPT_CATALOGUE_ROOT = CATALOGUE["meta"]["root"]
 
 with open(config["adaptation"]["measures_file"]) as _f:

@@ -131,7 +131,7 @@ configures how the built model consumes it. Before adding a new key:
 - Every key is required: the code has no defaults, so a new key must be set
   in the yml before the code reads it.
 - If you rename or move a key, `grep` for the old path across `workflow/`,
-  `tools/`, `analysis/`, `tests/` and `Reference_memory.txt` — config
+  `tools/`, `analysis/`, `tests/` and `docs/` — config
   key renames are the easiest thing to half-finish, since a stale reference
   won't fail until that specific code path runs.
 
@@ -189,107 +189,103 @@ configures how the built model consumes it. Before adding a new key:
   descriptive names over abbreviations except where a term is standard in
   the field (e.g. `dem`, `eva`, `gpd`, `amax`, `rp`).
 
-## Environment management (Windows / conda)
+## Environment management (conda)
 
-- The environment is defined in `environment.yml` (conda), env name
-  `hmt_sfincs_dev`. Create it fresh with:
+- The portable environment is `environment.yml` (direct dependencies,
+  major.minor pins). It names the environment `<env>`, for example:
 
   ```bash
-  mamba env create -f environment.yml
+  mamba env create -f environment.yml   # creates env "gcfm"
+  conda activate gcfm
   ```
 
   or update an existing one with `mamba env update -f environment.yml --prune`.
-- `hydromt-sfincs` is pinned to `2.0.0rc2` in the `pip:` section of
-  `environment.yml`, so the command above installs it; no source clone is
-  needed. `workflow/src/hydromt_sfincs_patch.py` holds a runtime fix for
-  that release (float32 subgrid write buffers), called by the scripts that
-  write a SFINCS model (rules 10, 13, 18a).
-- If your work needs a new package, install it into `hmt_sfincs_dev`
-  locally, then `git add environment.yml` (even without editing it) and
-  commit. The `sync-environment-yml` pre-commit hook
-  (`tools/sync_environment.py`) automatically regenerates the file from the
-  live environment, strips conda's machine-specific trailing `prefix:` line
-  (always your local absolute install path — must never be committed, since
-  `conda env create` would try to use it as the literal install target on
-  the next machine unless overridden with `-n`/`-p`), and compares it to
-  what's staged. If it's stale, the hook rewrites `environment.yml` and
-  fails the commit (same as the `ruff --fix` hook) — review the diff,
-  `git add environment.yml` again, and re-commit.
-  - This hook only runs when `environment.yml` is already part of the
-    commit — it doesn't fire on unrelated commits, so drift on your machine
-    won't pollute commits that don't touch the environment.
+- `environment.win-64.lock.yml` is the full `conda env export` of the
+  reference Windows environment (exact builds); create from it to reproduce
+  that machine exactly on Windows.
+- `hydromt-sfincs` is pinned to `2.0.0rc2` in the `pip:` section of both
+  files, so the commands above install it; no source clone is needed.
+  `workflow/src/hydromt_sfincs_patch.py` holds a runtime fix for that release
+  (float32 subgrid write buffers), called by the scripts that write a SFINCS
+  model (rules 10, 13, 18a).
+- If your work needs a new package, add it with a major.minor pin to
+  `environment.yml`, install it into `<env>`, then `git add
+  environment.win-64.lock.yml` (even without editing it) and commit. The
+  `sync-environment-lock` pre-commit hook (`tools/sync_environment.py`)
+  regenerates the lock file from the live environment named in its `name:`
+  line, strips conda's machine-specific trailing `prefix:` line (your local
+  absolute install path, which `conda env create` would otherwise use as the
+  install target on the next machine), and compares it to what's staged. If
+  it's stale, the hook rewrites the lock file and fails the commit (same as
+  the `ruff --fix` hook): review the diff, `git add
+  environment.win-64.lock.yml` again, and re-commit.
+  - This hook only runs when the lock file is already part of the commit, so
+    drift on your machine won't pollute commits that don't touch the
+    environment.
   - It needs `conda` resolvable via `$CONDA_EXE` (set automatically when a
-    conda environment is active) or on `PATH`.
+    conda environment is active), on `PATH`, or in a standard
+    miniforge3/miniconda3/anaconda3 install under your home directory.
   - To run it manually without committing:
     `python tools/sync_environment.py`.
-- Don't pin exact build strings unless there's a known compatibility issue —
-  prefer version-only pins so the environment stays resolvable on a
-  different machine/OS patch level.
+- Don't pin exact build strings in `environment.yml`: version-only pins keep
+  it solvable on other machines and operating systems.
 - The SFINCS executable itself is a separately licensed/downloaded binary,
   not part of the conda environment or this repo. Rules that only
   *assemble* SFINCS input files (`build_sfincs`) don't need it; rules that
   actually *run* the solver (`run_spinup`, `run_event`, the depth
-  calibration, pre-adaptation runs) do — point at your own local copy via
-  `GCFM_SFINCS_EXE` (see "Local machine paths" below).
+  calibration, pre-adaptation runs) do: point `sfincs_exe` at your own local
+  copy (see "Site settings" below).
 
-## Local machine paths (one-time, after cloning)
+## Site settings (one-time, after cloning)
 
-Three settings are inherently specific to your own machine, not something
-the codebase can know for you:
+Three settings are specific to your own machine:
 
-- the results directory — where pipeline outputs get written.
-- the raw-data root — where raw input data lives locally (every
+- the results directory: where pipeline outputs get written.
+- the raw-data root: where raw input data lives locally (every
   `file_path` in `data_catalogue.yml` and every measure file in
   `adaptation_strategies.yml` is relative to it).
-- the SFINCS executable — your local SFINCS binary.
+- the SFINCS executable: your local SFINCS binary.
 
-None of the three is committed anywhere in the repo (no `results_dir` /
-`sfincs_exe` in `config.yml`, no `meta.root` in `data_catalogue.yml` /
-`adaptation_strategies.yml`), so a `git pull` can never reset or conflict
-with your local paths. Instead, set three environment variables once —
-there is no fallback, the pipeline stops with a message naming the missing
-variable if one is unset:
+They live in `config/site.yml`, which is gitignored, so a `git pull` can never
+reset or conflict with your local paths. Create it from the committed
+template and fill in the three keys:
 
-| Variable | Sets | Required for |
-|---|---|---|
-| `GCFM_RESULTS_DIR` | results directory (`config["results_dir"]`) | every Snakemake run |
-| `GCFM_RAW_DATA_ROOT` | raw-data root (`CATALOGUE["meta"]["root"]`) | every Snakemake run |
-| `GCFM_SFINCS_EXE` | SFINCS executable | only rules that run the solver |
-
-They are read in `workflow/src/io.py` (`local_path`, `load_catalogue`) and
-`workflow/rules/00_common.smk`; the standalone scripts in `tools/` and
-`analysis/` read the same variables directly.
-
-**PowerShell** (persists across sessions — set once, restart your terminal):
-
-```powershell
-[Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
-[Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
-[Environment]::SetEnvironmentVariable("GCFM_SFINCS_EXE", "C:\path\to\sfincs.exe", "User")
+```bash
+cp config/site.example.yml config/site.yml
 ```
 
-Or for the current session only (until you close the terminal):
+| Key | Override variable | Sets | Required for |
+|---|---|---|---|
+| `results_dir` | `GCFM_RESULTS_DIR` | results directory (`config["results_dir"]`) | every Snakemake run |
+| `raw_data_root` | `GCFM_RAW_DATA_ROOT` | raw-data root (`CATALOGUE["meta"]["root"]`) | every Snakemake run |
+| `sfincs_exe` | `GCFM_SFINCS_EXE` | SFINCS executable | only rules that run the solver |
 
-```powershell
-$env:GCFM_RESULTS_DIR = "D:\your\results\path"
-$env:GCFM_RAW_DATA_ROOT = "D:\your\raw_data\path"
-$env:GCFM_SFINCS_EXE = "C:\path\to\sfincs.exe"
+All code reads them through `src.io.site_setting` (`workflow/src/io.py`);
+`analysis/` scripts use `_common.site_path`. There is no fallback: the
+pipeline stops with a message naming the missing key and its variable.
+
+An environment variable, when set and non-empty, overrides its key (useful
+for CI or batch jobs):
+
+```bash
+export GCFM_RESULTS_DIR=/data/gcfm/results
 ```
 
-Verify they're picked up with a dry run — the printed input/output paths
+```powershell
+$env:GCFM_RESULTS_DIR = "$HOME\gcfm\results"
+```
+
+Verify they're picked up with a dry run; the printed input/output paths
 should reflect your own directories:
 
-```powershell
+```bash
 snakemake preprocess -n --cores 1
 ```
 
-A terminal (or VS Code window) that was already open when you set the
-persistent variables doesn't see them yet — restart it first.
-
 ## Setting up pre-commit (one-time, after cloning)
 
-`.pre-commit-config.yaml` being in the repo does **nothing by itself** —
-it only takes effect once you've run, from inside `hmt_sfincs_dev`:
+`.pre-commit-config.yaml` being in the repo does **nothing by itself**;
+it only takes effect once you've run, from inside `<env>`:
 
 ```bash
 pre-commit install
@@ -307,9 +303,9 @@ pre-commit run --all-files
 ```
 
 should list every hook (`ruff format`, `ruff check`, `pyright`, `pydocstyle`,
-`sync environment.yml with hmt_sfincs_dev`, etc.) as `Passed`/`Failed`, not
-silently do nothing. You can also make a throwaway commit and check that the
-hooks' output appears before it completes.
+`sync environment.win-64.lock.yml with the project conda env`, etc.) as
+`Passed`/`Failed`, not silently do nothing. You can also make a throwaway
+commit and check that the hooks' output appears before it completes.
 
 **If hooks behave differently between a manual `pre-commit run` and an
 actual `git commit`** (e.g. some hooks silently don't run, or one fails with
@@ -317,18 +313,15 @@ a "Python was not found" / exit-code-9009-style error): check
 `.git/hooks/pre-commit`'s `INSTALL_PYTHON` line — it hardcodes the exact
 interpreter path pre-commit was installed from at `pre-commit install` time.
 If it points at the wrong or an old conda env, rerun `pre-commit install`
-from inside `hmt_sfincs_dev` to refresh it.
+from inside `<env>` to refresh it.
 
-## Reference memory (optional, if you use Claude Code)
+## Documentation
 
-`Reference_memory.txt` at the repo root is a living reference an AI
-assistant maintains across sessions on this project — current pipeline
-structure, config schema, known issues, rationale for non-obvious design
-choices. It's not a substitute for code comments and isn't required reading
-to contribute, but if you're using Claude Code on this repo, keeping it in
-sync with structural changes (new rules, renamed config keys, etc.) means
-the next session — yours or the other person's — doesn't have to
-re-discover context that already got worked out once.
+`docs/` holds the install, data, running and methods pages linked from the
+README. When a change alters a rule, an output, a config key or a modelling
+choice, update the page that describes it in the same pull request.
+`docs/data.md` is generated: edit `config/data_catalogue.yml` and run
+`python tools/make_data_table.py`.
 
 ## Commit messages
 

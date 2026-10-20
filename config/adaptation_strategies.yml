@@ -4,11 +4,8 @@
 # name = {strategy} wildcard.  scale = the concrete param values, specified HERE.
 # method (pre/post) is chosen at the CLI and validated against measures.yml.
 
-# Relative `locations` paths below resolve against the raw-data
-# root, which is machine-specific and NOT set here -- it comes from the
-# GCFM_RAW_DATA_ROOT environment variable. Set it once in PowerShell, then
-# restart your terminal:
-#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+# Relative `locations` paths below resolve against raw_data_root in
+# config/site.yml (see config/site.example.yml).
 
 # Each block is a strategy FAMILY written at scale 1. The workflow generates
 # <family>_04/_09/_1 from `scales` (x0.4, x0.9, x1.0 on params flagged scale: true

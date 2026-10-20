@@ -5,8 +5,8 @@ Runs the strategy expansion (00_common.smk: strategy_def_for) and the resolver
 without Snakemake, printing the crest/discharge values an 18a/18b job would use
 and the resolver's log lines.
 
-Usage (repo root, hmt_sfincs_dev env):
-    python analysis/check_adaptation_scaling.py D:/GCFM_UU/results/2433835_V5_bigpoly_manual coast_500 river_500
+Usage (repo root, project env activated):
+    python analysis/check_adaptation_scaling.py <results_dir>/2433835 coast_500 river_500
 """
 
 import logging
@@ -19,9 +19,9 @@ from _common import REPO_ROOT as REPO
 
 sys.path.insert(0, str(REPO / "workflow"))
 from src.adaptation_scaling import resolve_forcing_params  # noqa: E402
-from src.io import require_keys  # noqa: E402
+from src.io import require_keys, site_setting  # noqa: E402
 
-RAW_DATA_ROOT = "D:/GCFM_UU/raw_data"
+RAW_DATA_ROOT = site_setting("raw_data_root")
 
 
 def load_strategy_expansion():

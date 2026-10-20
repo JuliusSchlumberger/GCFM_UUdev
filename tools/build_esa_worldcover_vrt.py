@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 import sys
 from pathlib import Path
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
+from src.io import site_setting  # noqa: E402
 
 # Must match the data_catalogue.yml entry; validate() checks the built VRT.
 NODATA = 0  # raster_properties.nodata_value ("no data" class)
@@ -34,12 +36,11 @@ CATALOGUE_NAME = "land_use_esa_worldcover"
 
 
 def catalogue_root_and_relpath(repo_root: Path, name: str) -> tuple[Path, str]:
-    """Return the raw-data root (GCFM_RAW_DATA_ROOT) and a dataset's file_path from the catalogue."""
+    """Return the raw-data root (site setting) and a dataset's file_path from the catalogue."""
     cat = yaml.safe_load(
         (repo_root / "config" / "data_catalogue.yml").read_text(encoding="utf-8")
     )
-    # Machine-specific; see CONTRIBUTING.md "Local machine paths".
-    root = Path(os.environ["GCFM_RAW_DATA_ROOT"])
+    root = Path(site_setting("raw_data_root"))
     for ds in cat["datasets"]:
         if ds["name"] == name:
             return root, ds["file_path"]

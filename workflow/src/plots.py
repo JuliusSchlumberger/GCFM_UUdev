@@ -790,7 +790,7 @@ def plot_forcing_timeseries(
             bbox=max_box,
         )
 
-    # Correction chain rp_raw → +MDT → peak(GOCO6s). water_level/storm_tide_at_rp_m are
+    # Correction chain rp_raw → +MDT → peak(GOCO06s). water_level/storm_tide_at_rp_m are
     # MDT-only (src.surge.apply_slr_fingerprint); SLR is added at scenario
     # build time as slr_fingerprint × slr_m, so only the dimensionless
     # fingerprint is shown. The FLOPROS coastal level only floors the weir
@@ -800,7 +800,7 @@ def plot_forcing_timeseries(
     if has_raw and has_mdt:
         rp_levels = surge_ds[
             "storm_tide_at_rp_m"
-        ].values  # peak in GOCO6s (= rp_raw + MDT, MDT-only)
+        ].values  # peak in GOCO06s (= rp_raw + MDT, MDT-only)
         rp_levels_raw = surge_ds[
             "storm_tide_at_rp_raw_m"
         ].values  # raw COAST-RP (local MSL)

@@ -2,13 +2,19 @@
 
 ## Open decisions and follow-ups
 
-- URGENT D:/GCFM_UU/raw_data/SWORD/SWORD_global_v17c_unpublished_modified.gpkg: partly rewritten (3 of 9 WIDTH_CHANGES applied) by an accidental `--help` run; rebuild with `python tools/prepare_modified_sword_dataset.py` (copies the intact original, applies all fixes) before the next rule 06 run.
+- docs (cold start, major): every dry run, incl. `preprocess` (rule 10 resolves the SFINCS path), needs `sfincs_exe` set in config/site.yml; docs say only solver rules need it. State in README step 3 and docs/install.md "Verifying the install" that any path works for `-n`.
+- docs (cold start, minor): `pre-commit run --all-files` needs a git clone plus `pre-commit install`; say so next to the command in README and docs/install.md.
+- docs (cold start, minor): give the expected `pytest -q` result (274 passed, ~2 min) in docs/install.md and README checks.
+- docs/install.md:78: "other SFINCS versions: <to be documented>" placeholder; fill in or drop the row.
+- URGENT <raw_data_root>/SWORD/SWORD_global_v17c_unpublished_modified.gpkg: partly rewritten (3 of 9 WIDTH_CHANGES applied) by an accidental `--help` run; rebuild with `python tools/prepare_modified_sword_dataset.py` (copies the intact original, applies all fixes) before the next rule 06 run.
 - DECIDE data columns still without units: rule 08 gpkg `bankfull_discharge_acc` (-> bankfull_discharge_acc_m3s?), 07c `storm_tide_level` (-> storm_tide_level_m?), calibration_state.csv `weir_crest`/`dem`/`zs` (-> *_m?).
 - CLAUDE.md:25: "Other protected paths: <unknown: ask>" still unresolved.
 - docs/gvf_discovery.md (+ docs/figures/gvf/): now visible as untracked since /docs/ is no longer ignored; session record: trim into a docs/ page or delete.
 - AUDIT Q14 (decided yes, not done): turn tools/build_adaptation_lines.py into a Snakemake rule (per-basin step after rule 13).
-- AUDIT Q16 / phase 5 (decided yes, not done): split Reference_memory.txt into docs/ pages (install, data, running, methods), keep its domain facts (AUDIT section 5), drop history; CHANGELOG.md and Reference_memory.txt still use pre-rename names.
-- AUDIT phase 8 (not done): site-settings example file for GCFM_* env vars and SFINCS exe, data table generated from data_catalogue.yml, cross-platform environment file, LICENSE and CITATION.cff, cold-start check following README.
+- AUDIT phase 8 (remaining): LICENSE and CITATION.cff, cold-start check following README.
+- DECIDE <raw_data_root>/adaptation_ebro/offshore_island.geojson (config/adaptation_strategies.yml:22, `advance/offshore_barrier`) is missing on the data root (only advance_pumps, land_reclamation, water_retention_area_river, auto/); CLAUDE.md names advance_1 as the smallest adaptation case: supply the file or name another smallest case (docs/running.md uses accommodate_1 + compound_100, 37 jobs).
+- config/data_catalogue.yml:39 (protected): FathomDEM `source` says `tests/download_fathomdem.py`; the tool is tools/download_fathomdem.py (docs/data.md copies the text).
+- DECIDE config/data_catalogue.yml:725 (protected): `file_path: AVISO/...` vs folder `Aviso` on the data root; works on case-insensitive Windows, fails on Linux: rename the folder or the catalogue path.
 
 - workflow/rules/18a_adapt_pre.smk:24, workflow/rules/18c_attribution_mask.smk:14: `adapt` still requires spin-up outputs (restart file, spin-up map); make it run with `sfincs.spinup.enabled: false` like `build`.
 - workflow/src/river_forcing.py:56: `_domain_entry_point` returns the touching Point when a reach only touches the domain boundary, so `resolve_inside_domain_reaches` keeps the outside reach instead of walking downstream as its docstring (:85) says; synthetic case gives inside_reach_id '1', expected '2'.
@@ -18,7 +24,7 @@
 - analysis/check_adaptation_scaling.py:34: slices workflow/rules/00_common.smk by comment text ("# ---- Adding adaptation wildcard" to "def adaptation_input_path"); import the strategy expansion instead.
 - workflow/Snakefile:156: `adapt` is the first rule, so a bare `snakemake` runs `adapt`, not `all`; mark `rule all` (:190) `default_target: True` (changes the default target: decide).
 - tools/prepare_modified_sword_dataset.py:62: no argparse, so `--help` runs the job and overwrites SWORD_global_v17c_unpublished_modified.gpkg under the raw data root; add argparse.
-- tools/sync_environment.py: no argparse, so `--help` regenerates environment.yml from the live env; add argparse.
+- tools/sync_environment.py: no argparse, so `--help` regenerates environment.win-64.lock.yml from the live env; add argparse.
 - analysis/*.py: no argparse or `main()`; `--help` runs each script (csi_pre_vs_post.py crashes: 'DataFrame' object has no attribute 'scale').
 
 ## Docstrings and comments that contradict the code
@@ -74,3 +80,9 @@
 - analysis/domain_figures.py:8-11 | outputs in results/2433835 incl. elevation/landuse maps | BASIN_ID 3279946; those saves commented out
 - analysis/flood_maps.py:3,13 | scenarios coast_500/river_500/compound_500; "section 3 below" | coast_100/river_500/compound_100c_500r; no section 3
 - analysis/results_figures.py:252 | "2x3 grid"; SLR line on coastal scenarios; "hydrographs" | 2x2; SLR scenario not in SCENARIOS; plots RP curves
+- workflow/scripts/13_build_sfincs.py:283: river_only scenarios still load the spin-up restart (sea held at calm level) although the docstring (:16-18) promises a uniform dry start against the -10.5 m boundary.
+- workflow/scripts/14_run_spinup.py:139: spin-up runs at unscaled mean discharge while the event lead-in is mean x discharge_multiplier (src/river_forcing.py:816): a step at the restart when the multiplier != 1.
+- workflow/rules/07_boundary_forcings.smk:50: rule 07 previews the default scenario's surge_rp_yr; a 'Tide' default would fail in src/surge.py:574 (f"{rp_yr:04d}"); validation in 00_common.smk accepts it.
+- config/config.yml:202-205, src/extreme_values.py:256: comments say the GRDC correlation diagnostic runs unconditionally; bias_correct_discharge returns before computing it when bias_correction.enabled is false.
+- workflow/scripts/13_build_sfincs.py:290-304: event sfincs.inp never sets storevel (spin-up hard-wires 0, 14_run_spinup.py:188); decide whether to pin it.
+- Stale docstrings/comments: 09b_grid_align_landuse.py:9-16 (nearest + lookup; code uses mode + area-average), 05a_get_elevation.py:19-22 (zsini built in 05b; built in rule 10 + skeleton), 10_depth_estimation_modelled.py:3,39-48 (fixed-duration rounds; round 0 runs until steady), config.yml:114 (period_max_zs; round0_level end_of_run), config.yml:287-288 and 00_common.smk:220 (spin-up at bankfull / RP=1; mean discharge), src/protection_levels.py:3-6 (protection subtracted from forcing; never), src/extreme_values.py:3 (bankfull RP 2 yr; config 1.5), config/data_catalogue.yml:106 (rule bifurcation_calibration_options; test_bifurcation_calibration_options) and the FathomDEM source naming tests/download_fathomdem.py (tools/).

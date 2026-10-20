@@ -78,15 +78,21 @@ STAGES: dict[str, dict[str, Panel]] = {
 
 
 def git_hash(repo: Path | None = None) -> str:
-    """Return the short commit hash of ``repo`` (default: this file's repo)."""
+    """Return the short commit hash of ``repo`` (default: this file's repo).
+
+    Returns "nogit" when git is not installed or ``repo`` is not a git checkout.
+    """
     cwd = repo or Path(__file__).resolve().parent
-    out = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "nogit"
     return out.stdout.strip()
 
 

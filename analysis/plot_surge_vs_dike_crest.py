@@ -9,16 +9,14 @@ river water (banks, the mouth) are higher, so the weir's max can be set by
 inland reaches unrelated to surge. Older results layouts are tried as fallbacks.
 
 Usage:
-    conda run -n hmt_sfincs_dev python analysis/plot_surge_vs_dike_crest.py [basin_id] [scenario_surge_rp]
-    conda run -n hmt_sfincs_dev python analysis/plot_surge_vs_dike_crest.py 2433835 500
+    conda run -n <env> python analysis/plot_surge_vs_dike_crest.py [basin_id] [scenario_surge_rp]
+    conda run -n <env> python analysis/plot_surge_vs_dike_crest.py 2433835 500
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import sys
-from pathlib import Path
 
 import geopandas as gpd
 import matplotlib
@@ -28,7 +26,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 import yaml
-from _common import REPO_ROOT, basin_id_from_argv, first_existing  # noqa: E402
+from _common import (  # noqa: E402
+    REPO_ROOT,
+    basin_id_from_argv,
+    first_existing,
+    site_path,
+)
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
 from src.surge import ceil_crest, lookup_storm_tide_at_rp
@@ -43,8 +46,8 @@ with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
 with open(REPO_ROOT / "config" / "scenarios.yml") as fh:
     SCENARIO_DEFS = yaml.safe_load(fh) or {}
-# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
-RESULTS_DIR = Path(os.environ["GCFM_RESULTS_DIR"])
+# results_dir is a site setting; see config/site.example.yml.
+RESULTS_DIR = site_path("results_dir")
 FIGS_DIR = REPO_ROOT / "figs" / "surge_vs_dike_crest"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
 

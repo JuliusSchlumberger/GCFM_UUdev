@@ -20,15 +20,13 @@ Figure (figs/crest_calibration_check/{basin_id}_crest_margin.png): weir
 segments coloured by margin (map) + margin histogram per segment type.
 
 Usage:
-    conda run -n hmt_sfincs_dev python analysis/check_crest_calibration.py [basin_id]
+    conda run -n <env> python analysis/check_crest_calibration.py [basin_id]
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import sys
-from pathlib import Path
 
 import geopandas as gpd
 import matplotlib
@@ -40,7 +38,7 @@ import pandas as pd
 import rasterio
 import xarray as xr
 import yaml
-from _common import REPO_ROOT, basin_id_from_argv  # noqa: E402
+from _common import REPO_ROOT, basin_id_from_argv, site_path  # noqa: E402
 from affine import Affine
 from matplotlib.collections import LineCollection
 from scipy.spatial import cKDTree
@@ -56,8 +54,8 @@ BASIN_ID = basin_id_from_argv()
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
-# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
-RESULTS_DIR = Path(os.environ["GCFM_RESULTS_DIR"])
+# results_dir is a site setting; see config/site.example.yml.
+RESULTS_DIR = site_path("results_dir")
 FIGS_DIR = REPO_ROOT / "figs" / "crest_calibration_check"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
 

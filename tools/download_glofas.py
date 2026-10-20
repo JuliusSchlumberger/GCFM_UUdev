@@ -6,8 +6,12 @@ Exits non-zero if any year failed.
 
 import os
 import sys
+from pathlib import Path
 
 import cdsapi
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
+from src.io import site_setting  # noqa: E402
 
 DATASET = "cems-glofas-historical"
 YEARS = [str(y) for y in range(1979, 2026)]
@@ -16,8 +20,8 @@ DAYS = [f"{d:02d}" for d in range(1, 32)]
 
 
 def main() -> None:
-    # GCFM_RAW_DATA_ROOT is machine-specific; see CONTRIBUTING.md "Local machine paths".
-    output_dir = os.path.join(os.environ["GCFM_RAW_DATA_ROOT"], "GloFAS")
+    # raw_data_root is a site setting; see config/site.example.yml.
+    output_dir = os.path.join(site_setting("raw_data_root"), "GloFAS")
     os.makedirs(output_dir, exist_ok=True)
 
     client = cdsapi.Client()

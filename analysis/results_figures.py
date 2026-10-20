@@ -4,9 +4,6 @@ Reads metrics_comparison.csv; risk reduction is relative to the matching event's
 baseline row. Also plots return-period curves, forcing hydrographs and rankings.
 """
 
-import os
-from pathlib import Path
-
 import matplotlib
 import matplotlib.dates as mdates
 import numpy as np
@@ -16,12 +13,12 @@ from hydromt_sfincs import SfincsModel
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from _common import label
+from _common import label, site_path
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
-OUT_DIR = Path(os.environ["GCFM_RESULTS_DIR"]) / "2433835/runs"
+# results_dir is a site setting; see config/site.example.yml.
+OUT_DIR = site_path("results_dir") / "2433835/runs"
 CSV = OUT_DIR / "metrics_comparison.csv"
 METRICS = ["flooded_area_km2", "urban_exposed_km2", "mean_depth_m", "volume_m3"]
 SCALES = ["04", "09", "1"]  # strategy-name suffix, low -> high implementation scale

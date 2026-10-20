@@ -32,3 +32,9 @@ __pycache__/
 
 # Local baselines (see CLAUDE.md)
 .baseline/
+
+# Site settings (see config/site.example.yml)
+config/site.yml
+
+# Machine-specific agent notes
+CLAUDE.local.md

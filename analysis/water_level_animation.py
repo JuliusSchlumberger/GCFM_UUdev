@@ -10,14 +10,13 @@ Edit the CONFIG block below and run directly:
     python analysis/water_level_animation.py
 """
 
-import os
 import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
-from _common import REPO_ROOT  # noqa: E402
+from _common import REPO_ROOT, site_path  # noqa: E402
 from matplotlib.animation import FFMpegWriter, FuncAnimation
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
@@ -25,8 +24,8 @@ sys.path.insert(0, str(REPO_ROOT / "workflow"))
 from src.postprocessing import load_sfincs_output
 
 # CONFIG
-# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
-RESULTS_DIR = os.environ["GCFM_RESULTS_DIR"]
+# results_dir is a site setting; see config/site.example.yml.
+RESULTS_DIR = site_path("results_dir")
 BASIN_ID = "2433835"
 SCENARIO = "coast_500"
 STRATEGY = "protect_closed_1"  # an already-run `pre` strategy folder

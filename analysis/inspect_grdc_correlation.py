@@ -13,7 +13,6 @@ Usage:
 """
 
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -22,7 +21,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import yaml
-from _common import REPO_ROOT  # noqa: E402
+from _common import REPO_ROOT, site_path  # noqa: E402
 from shapely.geometry import Polygon
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
@@ -175,8 +174,8 @@ def plot_grdc_overview(
     log.info(f"Wrote GRDC overview plot: {output_path}")
 
 
-# GCFM_RAW_DATA_ROOT is machine-specific; see CONTRIBUTING.md "Local machine paths".
-GRDC_PATH = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "GRDC/GRDC-Daily.nc"
+# raw_data_root is a site setting; see config/site.example.yml.
+GRDC_PATH = site_path("raw_data_root") / "GRDC/GRDC-Daily.nc"
 
 with open(REPO_ROOT / "config" / "config.yml") as f:
     config = yaml.safe_load(f)
@@ -186,8 +185,8 @@ glofas_variable = (
 )
 grdc_radius_m = float(river_cfg["bias_correction"]["grdc_search_radius_km"]) * 1000.0
 min_overlap_days = int(river_cfg["bias_correction"]["min_overlap_days"])
-# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
-results_dir_root = Path(os.environ["GCFM_RESULTS_DIR"])
+# results_dir is a site setting; see config/site.example.yml.
+results_dir_root = site_path("results_dir")
 
 catalogue = load_catalogue(REPO_ROOT / "config" / "data_catalogue.yml")
 delta_attr = catalogue_entry(catalogue, "delta_polygons")["attributes"][0]["name"]

@@ -13,14 +13,12 @@ from __future__ import (
     annotations,
 )  # must be the first statement; section 3 below needs it
 
-import os
 import sys
-from pathlib import Path
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
-from _common import REPO_ROOT, label  # noqa: E402
+from _common import REPO_ROOT, label, site_path  # noqa: E402
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
@@ -29,8 +27,8 @@ sys.path.insert(0, str(REPO_ROOT / "workflow"))
 from src.plots import draw_depth_map, read_raster_reprojected_for_plot  # noqa: E402
 
 BASIN_ID = "2433835"
-# GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
-BASIN_ROOT = Path(os.environ["GCFM_RESULTS_DIR"]) / BASIN_ID
+# results_dir is a site setting; see config/site.example.yml.
+BASIN_ROOT = site_path("results_dir") / BASIN_ID
 RUNS_DIR = BASIN_ROOT / "runs"
 OUT_DIR = RUNS_DIR
 DOMAIN_DIR = BASIN_ROOT / "preprocessing_inputs" / "domain"

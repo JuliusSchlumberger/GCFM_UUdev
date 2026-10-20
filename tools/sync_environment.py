@@ -1,21 +1,34 @@
-"""Pre-commit hook: keep environment.yml in sync with the hmt_sfincs_dev conda env.
+"""Pre-commit hook: keep environment.win-64.lock.yml in sync with the project env.
 
-Runs only when environment.yml is in the commit (`sync-environment-yml` hook in
-.pre-commit-config.yaml), so local package drift does not block unrelated
-commits. Strips conda's trailing `prefix:` line (a machine-local install path
-that `conda env create` would use as its target). If the export differs, it
-overwrites environment.yml and exits non-zero so the file can be re-added.
+The env name is read from the lock file's `name:` line. Runs only when the lock
+file is in the commit (`sync-environment-lock` hook in .pre-commit-config.yaml),
+so local package drift does not block unrelated commits. Strips conda's trailing
+`prefix:` line (a machine-local install path that `conda env create` would use
+as its target). If the export differs, it overwrites the lock file and exits
+non-zero so the file can be re-added. The portable environment.yml is edited by
+hand.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-ENV_NAME = "hmt_sfincs_dev"
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ENV_FILE = REPO_ROOT / "environment.yml"
+LOCK_FILE = REPO_ROOT / "environment.win-64.lock.yml"
+CONDA_BASES = ("miniforge3", "miniconda3", "anaconda3")
+
+
+def env_name(env_file: Path) -> str:
+    """Return the `name:` of a conda environment file."""
+    match = re.search(
+        r"^name:\s*(\S+)\s*$", env_file.read_text(encoding="utf-8"), re.MULTILINE
+    )
+    if match is None:
+        raise ValueError(f"No 'name:' line in {env_file}")
+    return match.group(1)
 
 
 def find_conda() -> str:
@@ -28,23 +41,27 @@ def find_conda() -> str:
         return found
     # Hooks run from an IDE often have no activated conda shell (no CONDA_EXE,
     # no conda on PATH): fall back to the standard per-user install locations.
-    for base in ("miniforge3", "miniconda3", "anaconda3"):
-        candidate = Path.home() / "AppData" / "Local" / base / "Scripts" / "conda.exe"
-        if candidate.exists():
-            return str(candidate)
+    home = Path.home()
+    for base in CONDA_BASES:
+        for candidate in (
+            home / "AppData" / "Local" / base / "Scripts" / "conda.exe",
+            home / base / "bin" / "conda",
+        ):
+            if candidate.exists():
+                return str(candidate)
     raise RuntimeError(
-        "Could not locate conda.exe (CONDA_EXE is not set, 'conda' is not on "
-        "PATH, and no standard miniforge3/miniconda3/anaconda3 install was "
-        "found under your user profile). Set CONDA_EXE or install conda in a "
-        "standard location before committing changes to environment.yml."
+        "Could not locate conda (CONDA_EXE is not set, 'conda' is not on PATH, "
+        f"and no {'/'.join(CONDA_BASES)} install was found under your home "
+        "directory). Set CONDA_EXE or install conda in a standard location "
+        f"before committing changes to {LOCK_FILE.name}."
     )
 
 
 def main() -> int:
-    """Regenerate environment.yml; return 1 if it changed, else 0."""
-    conda_exe = find_conda()
+    """Regenerate the lock file; return 1 if it changed, else 0."""
+    name = env_name(LOCK_FILE)
     result = subprocess.run(
-        [conda_exe, "env", "export", "-n", ENV_NAME],
+        [find_conda(), "env", "export", "-n", name],
         capture_output=True,
         text=True,
         check=True,
@@ -54,16 +71,17 @@ def main() -> int:
         lines = lines[:-1]
     new_content = "".join(lines)
 
-    old_content = ENV_FILE.read_text(encoding="utf-8") if ENV_FILE.exists() else ""
+    old_content = LOCK_FILE.read_text(encoding="utf-8")
 
     if new_content.strip() == old_content.strip():
-        print(f"{ENV_FILE.name} already matches the '{ENV_NAME}' environment.")
+        print(f"{LOCK_FILE.name} already matches the '{name}' environment.")
         return 0
 
-    ENV_FILE.write_text(new_content, encoding="utf-8")
+    LOCK_FILE.write_text(new_content, encoding="utf-8")
     print(
-        f"{ENV_FILE.name} was stale relative to the '{ENV_NAME}' environment -- "
-        "regenerated it. Review the diff, `git add environment.yml`, and commit again."
+        f"{LOCK_FILE.name} was stale relative to the '{name}' environment -- "
+        f"regenerated it. Review the diff, `git add {LOCK_FILE.name}`, and commit "
+        "again."
     )
     return 1
 

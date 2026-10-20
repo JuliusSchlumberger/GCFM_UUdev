@@ -4,17 +4,24 @@ from pathlib import Path
 
 import geopandas as gpd
 import pytest
+import src.io
 import yaml
 from shapely.geometry import box
 from src.io import (
     catalogue_entry,
     general_path,
     load_catalogue,
-    local_path,
     raw_input_path,
     read_geometry,
     require_keys,
+    site_setting,
 )
+
+SITE_VALUES = {
+    "results_dir": "/site/results",
+    "raw_data_root": "/site/raw_data",
+    "sfincs_exe": "/site/bin/sfincs",
+}
 
 
 def _catalogue(tmp_path):
@@ -33,13 +40,53 @@ def _catalogue(tmp_path):
     return path
 
 
-def test_local_path_raises_when_unset(monkeypatch):
-    monkeypatch.delenv("GCFM_RESULTS_DIR", raising=False)
-    with pytest.raises(EnvironmentError, match="GCFM_RESULTS_DIR"):
-        local_path("GCFM_RESULTS_DIR")
+@pytest.fixture
+def site_file(tmp_path, monkeypatch):
+    """Point site_setting at a tmp site.yml and clear the override variables."""
+    path = tmp_path / "site.yml"
+    monkeypatch.setattr(src.io, "SITE_FILE", path)
+    for env_var in src.io.SITE_ENV_VARS.values():
+        monkeypatch.delenv(env_var, raising=False)
+    return path
 
 
-def test_load_catalogue_roots_paths_at_raw_data_env(tmp_path, monkeypatch):
+def test_site_setting_reads_site_file(site_file):
+    site_file.write_text(yaml.safe_dump(SITE_VALUES))
+    for key, value in SITE_VALUES.items():
+        assert site_setting(key) == value
+
+
+def test_site_setting_env_var_overrides_site_file(site_file, monkeypatch):
+    site_file.write_text(yaml.safe_dump(SITE_VALUES))
+    for key, env_var in src.io.SITE_ENV_VARS.items():
+        monkeypatch.setenv(env_var, f"/env/{key}")
+        assert site_setting(key) == f"/env/{key}"
+
+
+def test_site_setting_raises_naming_key_env_var_and_copy_command(site_file):
+    for key, env_var in src.io.SITE_ENV_VARS.items():
+        with pytest.raises(OSError, match=key) as err:
+            site_setting(key)
+        assert env_var in str(err.value)
+        assert "cp config/site.example.yml config/site.yml" in str(err.value)
+
+
+@pytest.mark.parametrize("value", ["", "  ", "<results_dir>"])
+def test_site_setting_treats_empty_and_placeholder_as_unset(site_file, value):
+    site_file.write_text(yaml.safe_dump({"results_dir": value}))
+    with pytest.raises(OSError, match="GCFM_RESULTS_DIR"):
+        site_setting("results_dir")
+
+
+def test_site_setting_rejects_unknown_keys(site_file):
+    with pytest.raises(ValueError, match="results"):
+        site_setting("results")
+    site_file.write_text(yaml.safe_dump({**SITE_VALUES, "result_dir": "/x"}))
+    with pytest.raises(ValueError, match="result_dir"):
+        site_setting("results_dir")
+
+
+def test_load_catalogue_roots_paths_at_raw_data_root(tmp_path, monkeypatch):
     monkeypatch.setenv("GCFM_RAW_DATA_ROOT", str(tmp_path / "raw"))
     cat = load_catalogue(_catalogue(tmp_path))
     assert cat["meta"]["root"] == str(tmp_path / "raw")
