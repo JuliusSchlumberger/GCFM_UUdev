@@ -9,8 +9,9 @@ from src.surge import (
     build_time_axis,
     calm_sea_levels,
     ceil_crest,
+    load_mdt,
     lookup_storm_tide_at_rp,
-    read_baseline_m,
+    read_calm_sea_level_m,
     sinusoidal_wave,
     storm_tide_at_rp_interpolated,
     storm_tide_event,
@@ -21,37 +22,37 @@ _PERIOD_HR = 24.0
 
 
 def _surge_ds(with_hydrograph: bool = False) -> xr.Dataset:
-    rps = np.array(_COASTRP_RPS, dtype=float)
-    table = np.stack([1.0 + 0.3 * np.log(rps), 1.5 + 0.4 * np.log(rps)])
+    rps_yr = np.array(_COASTRP_RPS, dtype=float)
+    table = np.stack([1.0 + 0.3 * np.log(rps_yr), 1.5 + 0.4 * np.log(rps_yr)])
     times = build_time_axis(_LEAD_DAYS, _PERIOD_HR, 0.5)
     ds = xr.Dataset(
         {
-            "storm_tide_rp_table": (("station", "table_rp"), table),
-            "station_baseline": ("station", np.array([0.123, -0.051])),
-            "baseline_m": 0.036,
+            "storm_tide_rp_table": (("station", "rp_yr"), table),
+            "station_calm_sea_level_m": ("station", np.array([0.123, -0.051])),
+            "calm_sea_level_m": 0.036,
             "slr_fingerprint": ("station", np.array([1.0, 0.8])),
         },
-        coords={"table_rp": rps, "time": times},
+        coords={"rp_yr": rps_yr, "time": times},
         attrs={"lead_days": _LEAD_DAYS, "period_hr": _PERIOD_HR},
     )
     if with_hydrograph:
         hg_t = np.arange(-6.0, 6.01, 0.5)
         tide = 0.5 * np.cos(2.0 * np.pi * hg_t / 12.42)
         shape = np.clip(1.0 - np.abs(hg_t) / 6.0, 0.0, 1.0)
-        hg_rps = np.array([1.0, 10.0, 100.0])
+        hg_rps_yr = np.array([1.0, 10.0, 100.0])
         ds["hg_tide_m"] = (("station", "hg_time"), np.stack([tide, tide]))
         ds["hg_surge_shape"] = (
-            ("station", "hg_rp", "hg_time"),
-            np.broadcast_to(shape, (2, hg_rps.size, hg_t.size)).copy(),
+            ("station", "hg_rp_yr", "hg_time"),
+            np.broadcast_to(shape, (2, hg_rps_yr.size, hg_t.size)).copy(),
         )
-        ds = ds.assign_coords(hg_time_hr=("hg_time", hg_t), hg_rp=hg_rps)
-        ds.attrs.update(hg_peak_hr=_LEAD_DAYS * 24.0 + 12.0, hg_ramp_hours=2.0)
+        ds = ds.assign_coords(hg_time_hr=("hg_time", hg_t), hg_rp_yr=hg_rps_yr)
+        ds.attrs.update(hg_peak_hr=_LEAD_DAYS * 24.0 + 12.0, hg_ramp_hr=2.0)
     return ds
 
 
 def test_storm_tide_level_increases_with_rp_yr():
     ds = _surge_ds()
-    rp2, rp10, rp100 = (lookup_storm_tide_at_rp(ds, rp) for rp in (2, 10, 100))
+    rp2, rp10, rp100 = (lookup_storm_tide_at_rp(ds, rp_yr) for rp_yr in (2, 10, 100))
     assert np.all(rp100 >= rp10) and np.all(rp10 >= rp2)
     assert np.all(rp2 > calm_sea_levels(ds))
 
@@ -76,7 +77,7 @@ def test_levels_are_on_centimetre_grid_and_crest_never_below_input():
     ds = _surge_ds()
     levels = lookup_storm_tide_at_rp(ds, 100, slr_m=0.37)
     np.testing.assert_allclose(levels * 100.0, np.round(levels * 100.0), atol=1e-9)
-    assert read_baseline_m(ds) == pytest.approx(0.04)
+    assert read_calm_sea_level_m(ds) == pytest.approx(0.04)
     raw = np.array([2.75, 2.751, -0.004, np.nan])
     crest = ceil_crest(raw)
     assert np.all(crest[:3] >= raw[:3])
@@ -100,7 +101,7 @@ def test_sinusoidal_wave_peaks_at_design_level_and_spans_window():
     assert wave[0] == pytest.approx(0.2) and wave[-1] == pytest.approx(0.2)
 
 
-def test_design_matrix_without_hydrograph_peaks_at_rp_level():
+def test_design_matrix_without_hydrograph_peaks_at_storm_tide_at_rp():
     ds = _surge_ds()
     m = build_design_surge_matrix(ds, 100)
     assert m.shape == (2, ds.sizes["time"])
@@ -112,7 +113,7 @@ def test_design_matrix_without_hydrograph_peaks_at_rp_level():
         build_design_surge_matrix(ds, "tide")
 
 
-def test_design_matrix_with_hydrograph_peaks_at_rp_level_from_calm_start():
+def test_design_matrix_with_hydrograph_peaks_at_storm_tide_at_rp_from_calm_start():
     ds = _surge_ds(with_hydrograph=True)
     m = build_design_surge_matrix(ds, 10)
     level = lookup_storm_tide_at_rp(ds, 10)
@@ -135,3 +136,24 @@ def test_storm_tide_event_hits_peak_and_holds_tide_outside_window():
     np.testing.assert_allclose(event[:, outside], tide[:, outside])
     with pytest.raises(ValueError, match="rp_yr is required"):
         storm_tide_event(ds, rel_hr, level)
+
+
+def test_load_mdt_clips_descending_lat_0_360_file_to_bbox(tmp_path):
+    lat = np.arange(10.0, -10.5, -1.0)
+    lon = np.arange(0.0, 360.0, 1.0)
+    mdt = lat[:, None] * 1000.0 + np.where(lon > 180, lon - 360, lon)[None, :]
+    path = tmp_path / "mdt.nc"
+    xr.Dataset(
+        {"mdt": (("time", "latitude", "longitude"), mdt[None])},
+        coords={"time": [0], "latitude": lat, "longitude": lon},
+    ).to_netcdf(path)
+
+    da = load_mdt(str(path), bbox=(-2.0, -1.0, 2.0, 1.0), margin_deg=1.0)
+
+    assert da.dims == ("latitude", "longitude")
+    np.testing.assert_array_equal(da["latitude"], np.arange(-2.0, 2.5, 1.0))
+    np.testing.assert_array_equal(da["longitude"], np.arange(-3.0, 3.5, 1.0))
+    np.testing.assert_array_equal(
+        da.values,
+        da["latitude"].values[:, None] * 1000.0 + da["longitude"].values[None, :],
+    )

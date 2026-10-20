@@ -48,10 +48,10 @@ def test_dominant_unit_missing_riverine_falls_back_to_coastal(tmp_path):
     )
     assert out["dominant_geounit_id"] == 1
     assert out["dominant_iso"] == "AAA"
-    assert out["riverine_rp_raw"] is None
-    assert out["riverine_rp_yr"] == out["coastal_rp_yr"] == 50.0
-    assert out["riverine_source"] == "flopros_other_hazard_fallback"
-    assert out["coastal_source"] == "flopros"
+    assert out["river_protection_rp_raw_yr"] is None
+    assert out["river_protection_rp_yr"] == out["surge_protection_rp_yr"] == 50.0
+    assert out["river_protection_source"] == "flopros_other_hazard_fallback"
+    assert out["surge_protection_source"] == "flopros"
     assert 0.5 < out["pixel_fraction"] <= 1.0
     assert out["n_geounits_in_delta"] == 2
 
@@ -64,8 +64,8 @@ def test_resolved_rp_is_capped_at_max(tmp_path):
         ISO,
         max_rp_yr=1000.0,
     )
-    assert out["riverine_rp_yr"] == 1000.0
-    assert out["coastal_rp_yr"] == 1000.0
+    assert out["river_protection_rp_yr"] == 1000.0
+    assert out["surge_protection_rp_yr"] == 1000.0
 
 
 def test_polygon_without_valid_pixels_uses_default_rp(tmp_path):
@@ -77,8 +77,8 @@ def test_polygon_without_valid_pixels_uses_default_rp(tmp_path):
         default_rp_yr=2.0,
     )
     assert out["dominant_geounit_id"] is None
-    assert out["riverine_rp_yr"] == out["coastal_rp_yr"] == 2.0
-    assert out["riverine_source"] == out["coastal_source"] == "default"
+    assert out["river_protection_rp_yr"] == out["surge_protection_rp_yr"] == 2.0
+    assert out["river_protection_source"] == out["surge_protection_source"] == "default"
 
 
 def test_flopros_and_iso_tables_round_trip_from_excel(tmp_path):

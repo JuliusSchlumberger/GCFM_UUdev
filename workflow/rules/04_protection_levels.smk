@@ -5,8 +5,8 @@ rule get_protection_levels:
     Largest-area FLOPROS standard (joined to WRI Aqueduct geogunit_107 admin
     units) for riverine and coastal hazards. Depends only on the delta polygon;
     the plot background is vectorized from the raw global land use so the
-    model-domain chain (02/03) is not pulled in. coastal_rp_yr feeds the coastal
-    protection crest (rule 07); rule 10 uses riverine_rp_yr when finite.
+    model-domain chain (02/03) is not pulled in. surge_protection_rp_yr feeds the coastal
+    protection crest (rule 07); rule 10 uses river_protection_rp_yr when finite.
     """
     input:
         specific_delta  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),

@@ -74,7 +74,7 @@ rule modelled_depth_estimation:
         # written undeclared to round_visuals_dir.
     params:
         calib_root  = lambda wildcards: results_path(f"{wildcards.basin_id}/preprocessing_inputs/depth_crest_calibration"),
-        resolution  = lambda wildcards: grid_resolution_m(wildcards.basin_id),
+        resolution_m = lambda wildcards: grid_resolution_m(wildcards.basin_id),
         sfincs_exe  = sfincs_exe_path,
         timeout_s   = config["sfincs"]["simulation"]["timeout_s"],
         active_mask_enabled = config["sfincs"]["grid"]["active_mask"]["enabled"],
@@ -82,14 +82,15 @@ rule modelled_depth_estimation:
         outflow_buffer_m = config["sfincs"]["boundary_setup"]["outflow_buffer_m"],
         # Same station matching radius as rules 13/14; rounds 1-2 force the
         # coastal protection storm tide there.
-        waterlevel_buffer_m = config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
+        water_level_buffer_m = config["sfincs"]["boundary_setup"]["water_level_buffer_m"],
         depth_method                 = config["river_processing"]["river_depth_modelling"]["method"],
         gvf                          = config["river_processing"]["river_depth_modelling"]["gvf"],
+        channel_manning_n            = config["river_processing"]["channel_manning_n"],
         calibration_days             = config["river_processing"]["river_depth_modelling"]["calibration_days"],
         round0_level                 = config["river_processing"]["river_depth_modelling"]["round0_level"],
         gebco_max_depth_m            = config["terrain"]["gebco_max_depth_m"],
         steady_state                 = config["river_processing"]["river_depth_modelling"]["steady_state"],
-        discharge_ramp_hours          = config["river_processing"]["river_depth_modelling"]["discharge_ramp_hours"],
+        discharge_ramp_hr            = config["river_processing"]["river_depth_modelling"]["discharge_ramp_hr"],
         weir_crest_m                  = config["river_processing"]["river_depth_modelling"]["weir_crest_m"],
         weir_par1                     = config["river_processing"]["river_depth_modelling"]["weir_par1"],
         excavation_fraction           = config["river_processing"]["river_depth_modelling"]["excavation_fraction"],

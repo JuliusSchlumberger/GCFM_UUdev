@@ -34,13 +34,10 @@ from shapely.geometry import LineString, Polygon
 from shapely.ops import linemerge, unary_union
 from shapely.strtree import STRtree
 from src.grid import cell_size_m
-from src.landuse import OCEAN_WETLAND_CLASSES, SEA_CODE
+from src.landuse import LANDUSE_SEA_CODE, OCEAN_WETLAND_CLASSES
 from src.surge import ceil_crest
 
 log = logging.getLogger(__name__)
-
-# Re-exported: scripts import it from here.
-LANDUSE_SEA = SEA_CODE
 
 
 class GridArrays:
@@ -49,32 +46,32 @@ class GridArrays:
     def __init__(
         self,
         crs,
-        bed_elevation: np.ndarray,
+        bed_elevation_m: np.ndarray,
         valid_mask: np.ndarray,
         cell_size_m,
         transform,
     ):
         self.crs = crs
-        self.bed_elevation = bed_elevation
+        self.bed_elevation_m = bed_elevation_m
         self.valid_mask = valid_mask
         self.cell_size_m = cell_size_m
         self.transform = transform
-        self.shape = bed_elevation.shape
-        self.n_cells = bed_elevation.size
+        self.shape = bed_elevation_m.shape
+        self.n_cells = bed_elevation_m.size
         self._struct4 = generate_binary_structure(2, 1)
         self._struct8 = generate_binary_structure(2, 2)
 
     @classmethod
     def from_regular(cls, dep_da, mask_da, crs) -> GridArrays:
         """Build from hydromt_sfincs dep and mask DataArrays."""
-        bed_elevation = dep_da.values.astype(np.float32)
-        valid_mask = (mask_da.values > 0) & np.isfinite(bed_elevation)
-        dx = cell_size_m(dep_da.raster.transform)
+        bed_elevation_m = dep_da.values.astype(np.float32)
+        valid_mask = (mask_da.values > 0) & np.isfinite(bed_elevation_m)
+        dx_m = cell_size_m(dep_da.raster.transform)
         return cls(
             crs,
-            bed_elevation,
+            bed_elevation_m,
             valid_mask,
-            dx,
+            dx_m,
             transform=dep_da.raster.transform,
         )
 
@@ -488,7 +485,7 @@ def build_coastal_protection_weir(
     Every crest is rounded UP to the next centimetre (src.surge.ceil_crest),
     the precision sfincs.weir is written at, so no edge falls below its crest.
     """
-    ocean_mask = landuse_on_grid == LANDUSE_SEA
+    ocean_mask = landuse_on_grid == LANDUSE_SEA_CODE
 
     n_ocean = int(ocean_mask.sum())
     if n_ocean == 0:

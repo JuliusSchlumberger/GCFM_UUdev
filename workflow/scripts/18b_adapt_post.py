@@ -50,7 +50,7 @@ landuse_path = str(snakemake.input.landuse)
 for measure_type, raw_params in strategy_def["measures"].items():
     measure_def = measures_def[measure_type]
     resolved = {
-        k: (str(adaptation_root / v) if k in ("locations", "dep_subgrid") and isinstance(v, str) else v)
+        k: (str(adaptation_root / v) if k == "locations" and isinstance(v, str) else v)
         for k, v in raw_params.items()
     }
     if measure_type == "water_retention":

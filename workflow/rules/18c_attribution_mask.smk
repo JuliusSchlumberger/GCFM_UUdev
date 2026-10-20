@@ -1,6 +1,6 @@
 # Flood attribution: classify flooding by source (river/coast). The matching
 # river-only and coastal-only scenarios must be defined in scenarios.yml.
-# Not yet tested on a rotated grid (sfincs.grid.rotated defaults to true); only
+# Not yet tested on a rotated grid (sfincs.grid.rotated is true in config.yml); only
 # rules 02-17 were validated, on basin 620947. On a rotated grid dep_subgrid.tif,
 # max_flood_depth.tif and attribution_mask.tif are rotated GeoTIFFs: check the
 # first run, or set sfincs.grid.rotated_overrides: {<basin_id>: false}.

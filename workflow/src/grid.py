@@ -86,16 +86,16 @@ def frame_footprint(frame: dict) -> Polygon:
     return footprint(transform, (frame["length_y_m"], frame["length_x_m"]))
 
 
-def build_grid_def(domain: gpd.GeoDataFrame, frame: dict, resolution: float) -> dict:
-    """Return the JSON-serialisable grid definition with cells of resolution m.
+def build_grid_def(domain: gpd.GeoDataFrame, frame: dict, resolution_m: float) -> dict:
+    """Return the JSON-serialisable grid definition with square cells of resolution_m.
 
     Holds the SFINCS grid parameters (x0, y0, dx, dy, mmax, nmax, rotation,
     epsg) plus the equivalent affine six-tuple and raster shape.
     """
     if frame.get("rotated"):
         x0, y0, rotation = frame["x0"], frame["y0"], frame["rotation"]
-        mmax = int(math.ceil(frame["length_x_m"] / resolution))
-        nmax = int(math.ceil(frame["length_y_m"] / resolution))
+        mmax = int(math.ceil(frame["length_x_m"] / resolution_m))
+        nmax = int(math.ceil(frame["length_y_m"] / resolution_m))
         crs = domain.crs
     else:
         # Same call and y-ascending flip as SfincsModel.grid.create_from_region(),
@@ -104,7 +104,7 @@ def build_grid_def(domain: gpd.GeoDataFrame, frame: dict, resolution: float) -> 
 
         ds = create_grid_from_region(
             region={"geom": domain},
-            res=resolution,
+            res=resolution_m,
             crs="utm",
             region_crs=4326,
             rotated=False,
@@ -120,17 +120,17 @@ def build_grid_def(domain: gpd.GeoDataFrame, frame: dict, resolution: float) -> 
     transform = (
         Affine.translation(x0, y0)
         * Affine.rotation(rotation)
-        * Affine.scale(resolution, resolution)
+        * Affine.scale(resolution_m, resolution_m)
     )
     return {
         "rotated": bool(frame.get("rotated")),
-        "resolution": float(resolution),
+        "resolution": float(resolution_m),
         "crs": crs.to_string(),
         "epsg": int(crs.to_epsg()),
         "x0": float(x0),
         "y0": float(y0),
-        "dx": float(resolution),
-        "dy": float(resolution),
+        "dx": float(resolution_m),
+        "dy": float(resolution_m),
         "mmax": int(mmax),
         "nmax": int(nmax),
         "rotation": float(rotation),

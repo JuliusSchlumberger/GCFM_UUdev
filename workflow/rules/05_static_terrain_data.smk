@@ -25,7 +25,7 @@ rule get_elevation:
 
     sea_mask.tif is built in rule get_landuse (05b). The actual initial water
     level (zsini.tif) is built later, in rule build_sfincs (13), once
-    baseline_m is known.
+    calm_sea_level_m is known.
     """
     input:
         spec_basins_meta        = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
@@ -66,7 +66,7 @@ rule get_landuse:
     outside the weir. land_polygons is used for plot backgrounds only.
     sea_mask.tif is a pure classification, not the initial water level
     itself -- rule build_sfincs (13) turns it into zsini.tif once
-    baseline_m is known."""
+    calm_sea_level_m is known."""
     input:
         spec_basins_meta = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
         domain_gpkg      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),

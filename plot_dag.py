@@ -14,8 +14,8 @@ from pathlib import Path
 
 def render_graph(
     target: str, graph_flag: str, suffix: str, out_dir: Path, fmt: str
-) -> None:
-    """Render one Snakemake graph of target through Graphviz; warn on failure."""
+) -> bool:
+    """Render one Snakemake graph of target through Graphviz; return success."""
     out_file = out_dir / f"{target}_{suffix}.{fmt}"
     print(f"  {graph_flag}  →  {out_file}")
 
@@ -27,7 +27,7 @@ def render_graph(
     )
     if result.returncode != 0:
         print(f"  [warning] snakemake exited with code {result.returncode} — skipping.")
-        return
+        return False
 
     dot_result = subprocess.run(
         ["dot", f"-T{fmt}", "-o", str(out_file)],
@@ -37,8 +37,9 @@ def render_graph(
     )
     if dot_result.returncode != 0:
         print(f"  [warning] dot rendering failed:\n{dot_result.stderr.strip()}")
-    else:
-        print(f"  Written: {out_file}")
+        return False
+    print(f"  Written: {out_file}")
+    return True
 
 
 def main() -> None:
@@ -84,12 +85,18 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    failed: list[str] = []
     for target in args.targets:
         print(f"\nTarget: {target}")
-        render_graph(target, "--rulegraph", "rulegraph", out_dir, args.format)
-        if not args.no_dag:
-            render_graph(target, "--dag", "dag", out_dir, args.format)
+        if not render_graph(target, "--rulegraph", "rulegraph", out_dir, args.format):
+            failed.append(f"{target} rulegraph")
+        if not args.no_dag and not render_graph(
+            target, "--dag", "dag", out_dir, args.format
+        ):
+            failed.append(f"{target} dag")
 
+    if failed:
+        sys.exit(f"\nFailed: {', '.join(failed)}")
     print(f"\nDone. Open the .{args.format} files in {out_dir}/")
 
 

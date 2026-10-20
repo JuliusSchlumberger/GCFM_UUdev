@@ -20,12 +20,13 @@ from pathlib import Path
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
+from _common import REPO_ROOT, label  # noqa: E402
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
-from src.plots import read_raster_reprojected_for_plot  # noqa: E402
+sys.path.insert(0, str(REPO_ROOT / "workflow"))
+from src.plots import draw_depth_map, read_raster_reprojected_for_plot  # noqa: E402
 
 BASIN_ID = "2433835"
 # GCFM_RESULTS_DIR is machine-specific; see CONTRIBUTING.md "Local machine paths".
@@ -42,11 +43,6 @@ ATTR_COLORS = ["#d1c740", "#3277d3", "#d883e9"]
 ATTR_LABELS = ["River", "Coastal", "Compound"]
 ATTR_CMAP = ListedColormap(ATTR_COLORS)
 ATTR_NORM = BoundaryNorm([0.5, 1.5, 2.5, 3.5], ATTR_CMAP.N)
-
-
-def label(s):
-    """Return a scenario name as a title-case label."""
-    return s.replace("_", " ").title()
 
 
 def draw_depth_panel(ax, scen):
@@ -70,20 +66,7 @@ def draw_depth_panel(ax, scen):
     vmax = max(vmax, 0.01)
     n_flooded = int(np.sum(~np.isnan(wgs_arr)))
 
-    if not land.empty:
-        land.plot(ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
-    im = ax.imshow(
-        wgs_arr,
-        cmap="Blues",
-        vmin=0,
-        vmax=vmax,
-        extent=(left, right, bottom, top),
-        origin="upper",
-        aspect="auto",
-        zorder=2,
-    )
-    if not rivers.empty:
-        rivers.plot(ax=ax, color="steelblue", linewidth=0.6, zorder=3)
+    im = draw_depth_map(ax, wgs_arr, (left, right, bottom, top), land, rivers, vmax)
     ax.set_xlim(left - margin, right + margin)
     ax.set_ylim(bottom - margin, top + margin)
     ax.set_aspect("equal")

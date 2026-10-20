@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.postprocessing import compute_max_inundation, compute_risk_metrics
+from src.raster import FLOAT_NODATA
 
 sfincs_root = Path(snakemake.params.sfincs_root)
 # The subgrid reference raster lives here; sfincs_root only references it.
@@ -22,7 +23,7 @@ if da_hmax is None:
 
 tif_path = Path(snakemake.output.flood_map_tif)
 tif_path.parent.mkdir(parents=True, exist_ok=True)
-da_hmax.raster.to_raster(str(tif_path), dtype="float32", nodata=-9999.0)
+da_hmax.raster.to_raster(str(tif_path), dtype="float32", nodata=FLOAT_NODATA)
 
 # A water_retention zone is excluded from the risk metrics: water stored there
 # is the measure working, not flood risk. strategy_def is only set by rule
@@ -30,9 +31,7 @@ da_hmax.raster.to_raster(str(tif_path), dtype="float32", nodata=-9999.0)
 strategy_def = getattr(snakemake.params, "strategy_def", None)
 exclude_geom_path = None
 if strategy_def is not None:
-    retention_measure = strategy_def["measures"].get(
-        "water_retention", strategy_def["measures"].get("water_retention_greening")
-    )
+    retention_measure = strategy_def["measures"].get("water_retention")
     if retention_measure is not None:
         adaptation_root = Path(snakemake.params.adaptation_root)
         exclude_geom_path = str(adaptation_root / retention_measure["locations"])

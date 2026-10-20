@@ -4,7 +4,7 @@ rule enforce_river_monotonicity:
 
     Modifies the DEM, not the network: each centerline pixel above the running
     minimum from upstream is lowered to it, at native (FathomDEM) resolution.
-    Needs only the cleaned network's topology/width, not rivdph, so it does not
+    Needs only the cleaned network's topology/width, not river_depth_m, so it does not
     depend on rule 10. Also writes the conditioned DEM on the shared SFINCS
     grid, the base elevation layer of rules 10 and 13 (the burned channel is
     layered on top).

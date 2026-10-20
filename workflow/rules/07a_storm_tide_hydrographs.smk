@@ -20,7 +20,6 @@ rule select_surge_stations:
     output:
         surge_stations = results_path("{basin_id}/preprocessing_inputs/forcing/surge_stations.json"),
     params:
-        # the same four values rule get_boundary_forcings selects with
         min_surge_stations     = config["boundary_forcings"]["surge"]["min_stations"],
         max_surge_stations     = config["boundary_forcings"]["surge"]["max_stations"],
         surge_dedupe_radius_km = config["boundary_forcings"]["surge"]["dedupe_radius_km"],
@@ -37,9 +36,9 @@ rule extract_gtsm_series:
     output:
         gtsm_hourly = results_path("{basin_id}/preprocessing_inputs/forcing/gtsm_hourly.nc"),
     params:
-        gtsm_waterlevel_dir = catalogue_path("gtsm_total_water_level"),
-        gtsm_surge_dir      = catalogue_path("gtsm_surge_residual"),
-        max_match_km        = config["boundary_forcings"]["surge"]["hydrograph"]["max_match_km"],
+        gtsm_water_level_dir = catalogue_path("gtsm_total_water_level"),
+        gtsm_surge_dir       = catalogue_path("gtsm_surge_residual"),
+        max_match_km         = config["boundary_forcings"]["surge"]["hydrograph"]["max_match_km"],
     # Disk-bound, not CPU-bound: more readers do not help on a hard disk.
     threads: 2
     log:

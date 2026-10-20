@@ -1,6 +1,6 @@
 """Plot elevation and land-use maps of the study basin for the paper.
 
-Same WGS84 style (land polygons + river network) as KL_flood_maps.py. Uses the
+Same WGS84 style (land polygons + river network) as flood_maps.py. Uses the
 SFINCS-grid-aligned rasters fed to the model. Both are clipped to the rotated
 model domain polygon: landuse_on_grid.tif has no nodata and fills its whole
 rectangle with valid classes, so unclipped panels would differ in extent.
@@ -19,10 +19,11 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 import shapely
+from _common import REPO_ROOT  # noqa: E402
 from matplotlib.colors import BoundaryNorm, ListedColormap, TwoSlopeNorm
 from matplotlib.patches import Patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
+sys.path.insert(0, str(REPO_ROOT / "workflow"))
 from src.plots import (  # noqa: E402
     _BATHY_CMAP,
     _LC_COLORS,

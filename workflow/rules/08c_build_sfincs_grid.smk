@@ -13,7 +13,7 @@ rule build_sfincs_grid:
     output:
         sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sfincs_grid.json"),
     params:
-        resolution = lambda wildcards: grid_resolution_m(wildcards.basin_id),
+        resolution_m = lambda wildcards: grid_resolution_m(wildcards.basin_id),
     log:
         "logs/{basin_id}/08c_build_sfincs_grid.log"
     script:

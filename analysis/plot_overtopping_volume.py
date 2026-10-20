@@ -12,8 +12,8 @@ ignored, so discharge is overestimated once the land behind a segment floods.
 Inland segments raised above every station level never overtop.
 
 Usage:
-    conda run -n hmt_sfincs_dev python tests/plot_overtopping_volume.py [basin_id] [scenario]
-    conda run -n hmt_sfincs_dev python tests/plot_overtopping_volume.py 2433835 coast_250
+    conda run -n hmt_sfincs_dev python analysis/plot_overtopping_volume.py [basin_id] [scenario]
+    conda run -n hmt_sfincs_dev python analysis/plot_overtopping_volume.py 2433835 coast_250
 """
 
 from __future__ import annotations
@@ -33,16 +33,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
+from _common import REPO_ROOT, basin_id_from_argv, first_existing  # noqa: E402
 from scipy.integrate import cumulative_trapezoid
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
+sys.path.insert(0, str(REPO_ROOT / "workflow"))
 from src.sfincs_run import parse_sfincs_inp
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-BASIN_ID = sys.argv[1] if len(sys.argv) > 1 else "2433835"
+BASIN_ID = basin_id_from_argv()
 SCENARIO = sys.argv[2] if len(sys.argv) > 2 else "coast_250"
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
@@ -56,15 +56,6 @@ basin_dir = RESULTS_DIR / BASIN_ID
 sfincs_dir = basin_dir / "runs" / SCENARIO / "sfincs"
 
 
-def _first_existing(candidates: list[Path]) -> Path:
-    for p in candidates:
-        if p.exists():
-            return p
-    raise FileNotFoundError(
-        "None of the candidate paths exist:\n" + "\n".join(f"  {p}" for p in candidates)
-    )
-
-
 weir_candidates = (
     [
         basin_dir / "sfincs_skeleton" / f"{BASIN_ID}_coastal_protection_weir.gpkg",
@@ -72,7 +63,7 @@ weir_candidates = (
     + sorted(basin_dir.glob("runs/*/sfincs/*_coastal_protection_weir.gpkg"))
     + sorted(basin_dir.glob("scenarios/*/sfincs/*_coastal_protection_weir.gpkg"))
 )
-weir_path = _first_existing(weir_candidates)
+weir_path = first_existing(weir_candidates)
 
 bnd_path = sfincs_dir / "sfincs.bnd"
 bzs_path = sfincs_dir / "sfincs.bzs"

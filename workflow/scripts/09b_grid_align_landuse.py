@@ -38,13 +38,13 @@ wgs84_bounds, domain_crs, domain_poly = load_domain(
     snakemake.input.spec_basins_meta, snakemake.input.domain_gpkg
 )
 
-resolution = float(snakemake.params.resolution)
+resolution_m = float(snakemake.params.resolution_m)
 
 grid_def = load_grid_def(snakemake.input.sfincs_grid)
 grid_transform = grid_def["transform"]
 grid_shape = grid_def["shape"]
 log.info(
-    f"Shared SFINCS grid: {grid_shape[0]}x{grid_shape[1]} cells @ {resolution} m, "
+    f"Shared SFINCS grid: {grid_shape[0]}x{grid_shape[1]} cells @ {resolution_m} m, "
     f"rotation {grid_def['rotation']:.3f} deg"
 )
 
@@ -77,7 +77,7 @@ Path(snakemake.output.landuse_on_grid).parent.mkdir(parents=True, exist_ok=True)
 with rasterio.open(snakemake.output.landuse_on_grid, "w", **landuse_on_grid_meta) as dst:
     dst.write(lu_on_grid, 1)
 log.info(
-    f"landuse resampled onto the SFINCS grid (nearest-neighbor, single pass): "
+    f"landuse resampled onto the SFINCS grid (mode, single pass): "
     f"{grid_shape[0]}x{grid_shape[1]} cells. Written: {snakemake.output.landuse_on_grid}"
 )
 

@@ -5,7 +5,7 @@ rule test_upstream_boundary:
     Distance = min(kinematic T_eff × (c − v_river), attenuation): the upstream
     distance, along the mainstem, until Lorentz-linearised friction decay
     (channel_manning_n) brings the amplitude below amplitude_threshold_fraction.
-    Each mouth uses its own nearest CoastRP station's rp_level; rivdph and
+    Each mouth uses its own nearest CoastRP station's storm_tide_at_rp_m; river_depth_m and
     Q_bf / (W × D) are used as calculated, no floor. Diagnostic only; does not
     gate build_sfincs.
     """
@@ -21,9 +21,9 @@ rule test_upstream_boundary:
         plot_upstream_check = results_path("{basin_id}/preprocessing_inputs/visuals/11_upstream_boundary_check.png"),
     params:
         effective_period_fraction    = config["testing"]["upstream_boundary_check"]["effective_period_fraction"],
-        channel_manning_n            = config["testing"]["upstream_boundary_check"]["channel_manning_n"],
+        channel_manning_n            = config["river_processing"]["channel_manning_n"],
         amplitude_threshold_fraction = config["testing"]["upstream_boundary_check"]["amplitude_threshold_fraction"],
-        surge_rp                     = config["testing"]["upstream_boundary_check"]["surge_rp"],
+        surge_rp_yr                  = config["testing"]["upstream_boundary_check"]["surge_rp_yr"],
         surge_period_hr              = config["boundary_forcings"]["surge"]["period_hr"],
     log:
         "logs/{basin_id}/11_upstream_boundary_check.log"

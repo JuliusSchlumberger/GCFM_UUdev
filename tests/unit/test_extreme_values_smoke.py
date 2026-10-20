@@ -3,16 +3,38 @@
 import numpy as np
 import pandas as pd
 import pytest
+import src.extreme_values as ev
 from src.extreme_values import (
     STANDARD_RETURN_PERIODS_YR,
+    EVAFitError,
+    EVAResult,
     analyse_cell,
     bias_correct_discharge,
     empirical_quantile_map,
     estimate_decorrelation_days,
+    eva_active_flags,
     gpd_return_value_table,
 )
 
-_EVA_CFG = {"min_days": 3650, "min_years_high_confidence": 10.0}
+_EVA_CFG = {
+    "min_days": 3650,
+    "min_years_high_confidence": 10.0,
+    "fit_method": "Lmoments",
+    "bankfull_rp_yr": 2.0,
+    "preview_rp_yr": 100.0,
+    "ci_alpha": 0.95,
+    "decorr_cut": 1.0 / np.e,
+    "decorr_max": 30,
+    "deseasonalize_for_decorr": True,
+    "threshold_start_pct": 90.0,
+    "threshold_step_pct": 1.0,
+    "threshold_max_pct": 99.5,
+    "threshold_min_pct": 50.0,
+    "threshold_max_iter": 30,
+    "peaks_per_year_min": 1.0,
+    "peaks_per_year_max": 5.0,
+}
+_BIAS_CFG = {"enabled": True, "min_overlap_days": 730, "tail_percentile": 90.0}
 
 
 def _daily_discharge(n_years: int, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
@@ -56,7 +78,9 @@ def test_quantile_map_is_monotonic_non_negative_and_extrapolates_tail():
 
 def test_bias_correction_disabled_returns_input_unchanged():
     times, q = _daily_discharge(3)
-    out, diag = bias_correct_discharge(times, q, times, q * 1.2, {"enabled": False})
+    out, diag = bias_correct_discharge(
+        times, q, times, q * 1.2, {**_BIAS_CFG, "enabled": False}
+    )
     assert diag is None
     np.testing.assert_array_equal(out, q)
 
@@ -65,7 +89,7 @@ def test_bias_correction_moves_glofas_towards_gauge():
     times, q = _daily_discharge(4)
     gauge = 1.25 * q
     out, diag = bias_correct_discharge(
-        times, q, times, gauge, {"min_overlap_days": 365}
+        times, q, times, gauge, {**_BIAS_CFG, "min_overlap_days": 365}
     )
     assert diag is not None
     assert out.shape == q.shape
@@ -81,7 +105,7 @@ def test_decorrelation_days_within_bounds():
 @pytest.fixture(scope="module")
 def eva_result():
     times, q = _daily_discharge(12)
-    return analyse_cell(times, q, _EVA_CFG, label="synthetic", protection_rp=20.0)
+    return analyse_cell(times, q, _EVA_CFG, label="synthetic", protection_rp_yr=20.0)
 
 
 def test_analyse_cell_rp100_exceeds_rp2_with_ordered_ci(eva_result):
@@ -107,3 +131,69 @@ def test_analyse_cell_short_record_is_skipped_with_nan_levels():
     assert np.isnan(res.q_rp2) and np.isnan(res.q_rp100)
     assert res.n_valid_days == int(np.isfinite(q).sum())
     assert res.messages
+    assert res.skip_reason == "record too short"
+
+
+def test_valid_eva_is_active(eva_result):
+    assert eva_active_flags([("synthetic", eva_result)]) == [True]
+
+
+def test_forced_pot_failure_is_not_ok_and_fails_the_crossing(monkeypatch):
+    def _fail(*_args, **_kwargs):
+        raise ValueError("forced POT failure")
+
+    monkeypatch.setattr(ev, "estimate_decorrelation_days", _fail)
+    times, q = _daily_discharge(12)
+    res = analyse_cell(times, q, _EVA_CFG, label="forced")
+    assert np.isfinite(res.q_rp2)
+    assert np.isnan(res.q_rp100)
+    assert not res.ok and not res.skip_reason
+    with pytest.raises(EVAFitError, match="crossing0.*forced POT failure"):
+        eva_active_flags([("crossing0", res)])
+
+
+def test_missing_fit_dependency_propagates(monkeypatch):
+    def _missing(*_args, **_kwargs):
+        raise ImportError("lmoments3 not installed")
+
+    monkeypatch.setattr(ev.EVA, "fit_model", _missing)
+    times, q = _daily_discharge(12)
+    with pytest.raises(ImportError):
+        analyse_cell(times, q, _EVA_CFG)
+
+
+def test_threshold_search_exhaustion_raises():
+    times, q = _daily_discharge(12)
+    cfg = {
+        **_EVA_CFG,
+        "peaks_per_year_min": 200.0,
+        "peaks_per_year_max": 300.0,
+        "threshold_start_pct": 60.0,
+        "threshold_min_pct": 58.0,
+    }
+    with pytest.raises(EVAFitError, match="threshold search"):
+        analyse_cell(times, q, cfg, label="exhausted")
+
+
+def test_skipped_crossing_is_inactive_next_to_an_active_one(eva_result):
+    skipped = EVAResult(skip_reason="record too short")
+    assert eva_active_flags([("a", eva_result), ("b", skipped)]) == [True, False]
+
+
+def test_all_crossings_skipped_raises():
+    skipped = EVAResult(skip_reason="record too short")
+    with pytest.raises(EVAFitError, match="None of 1"):
+        eva_active_flags([("a", skipped)])
+
+
+def test_no_analysed_crossing_is_not_an_error():
+    assert eva_active_flags([]) == []
+
+
+def test_analyse_cell_missing_config_key_names_its_path():
+    times, q = _daily_discharge(12)
+    cfg = {k: v for k, v in _EVA_CFG.items() if k != "bankfull_rp_yr"}
+    with pytest.raises(
+        KeyError, match=r"boundary_forcings\.river\.eva\.bankfull_rp_yr"
+    ):
+        analyse_cell(times, q, cfg)

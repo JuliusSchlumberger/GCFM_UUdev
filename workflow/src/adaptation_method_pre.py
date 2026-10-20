@@ -24,6 +24,9 @@ from scipy import ndimage
 from shapely.geometry.base import BaseMultipartGeometry
 from shapely.ops import unary_union
 from shapely.strtree import STRtree
+from src.adaptation_measures import _is_current_protection, validate_measure_params
+from src.adaptation_scaling import read_polyline
+from src.landuse import LANDUSE_SEA_CODE
 from src.protection_weir import _flatten_elevation_from_z, merge_weir_preserve_unmatched
 from src.sfincs_restart import patch_restart_zs
 
@@ -155,11 +158,6 @@ def apply_offshore_barrier(
     return mod
 
 
-def _is_current_protection(elevation) -> bool:
-    """True for the {"current": True, "fill_crest": ...} form of `current_protection`."""
-    return isinstance(elevation, dict) and bool(elevation.get("current"))
-
-
 def _levee_crests(new_gdf, elevation, baseline_gdf, max_match_distance_m: float):
     """Return the crest for every segment of a new levee trace.
 
@@ -193,21 +191,6 @@ def _levee_crests(new_gdf, elevation, baseline_gdf, max_match_distance_m: float)
         f"{int((~matched).sum())} without a baseline levee get fill_crest {fill_crest:.2f} m"
     )
     return crests
-
-
-def _read_levee_trace(mod: SfincsModel, locations) -> gpd.GeoDataFrame:
-    """Return `locations` as single LineStrings in the model CRS, minus empty geometries.
-
-    Empty geometries are rows whose geometry was deleted in QGIS but kept as attributes.
-    """
-    new_gdf = mod.data_catalog.get_geodataframe(locations, geom=mod.region).to_crs(
-        mod.crs
-    )
-    new_gdf = new_gdf[~new_gdf.geometry.is_empty & new_gdf.geometry.notna()]
-    new_gdf = new_gdf.explode(index_parts=True).reset_index(drop=True)
-    if not new_gdf.geometry.type.isin(["LineString"]).all():
-        raise ValueError("Weirs must be of type LineString.")
-    return new_gdf[["geometry"]].copy()
 
 
 # Grey protect-open: river_levee
@@ -257,7 +240,9 @@ def apply_river_levee(
         )
         return mod
 
-    new_gdf = _read_levee_trace(mod, locations)
+    new_gdf = read_polyline(
+        mod.data_catalog.get_geodataframe(locations, geom=mod.region), mod.crs
+    )
     new_gdf["elevation"] = _levee_crests(
         new_gdf, elevation, mod.weirs.data, max_match_distance_m
     )
@@ -304,7 +289,7 @@ def apply_NbS_land_reclamation(
     locations: Path,
     target_code: int = 90,
     water_code: int = 80,
-    unclassified_code: int | None = 200,
+    unclassified_code: int | None = LANDUSE_SEA_CODE,
     dep_subgrid: str | None = None,
     landuse_path: str | None = None,
     roughness_native_path: str | None = None,
@@ -768,117 +753,6 @@ def apply_water_retention(
     return mod
 
 
-# Water retention (storage-volume / FloodAdapt-style green infrastructure)
-# def apply_water_retention_greening(
-#     mod: SfincsModel,
-#     locations: Path,
-#     storage_fraction: float,
-#     baseline_excess_volume: float,
-#     **kwargs,
-# ) -> SfincsModel:
-#     """
-#     Storage-volume retention measure -- FloodAdapt's own mechanism for green
-#     infrastructure (water square / greening / total storage are all just UIs
-#     over this one thing): a total volume is distributed across the cells
-#     covered by the retention polygon(s), and SFINCS's own solver removes
-#     water entering those cells until each cell's own share of that capacity
-#     is used up.
-
-#     This is a deliberate alternative to apply_water_retention's DEM-lowering
-#     + containing-weir approach, not a replacement for it -- confirmed on a
-#     real run that this repo's basin data supports both. storage_volume is
-#     simpler (no DEM excavation, no weir, no "does the polygon cross the
-#     channel" question, no dep_subgrid/roughness passthrough or subgrid
-#     rebuild at all -- storage_volume lives on the coarse regular grid, not
-#     subgrid, and doesn't touch elevation/roughness), but behaves differently:
-#     it's a ONE-WAY SINK. SFINCS's own storage_volume output only ever
-#     decreases over a run (confirmed empirically) -- water captured here is
-#     never released back, unlike a real basin (or apply_water_retention's own
-#     DEM pit), which can also drain as levels recede. Use this when that
-#     "absorbs and holds" behaviour is the right representation (e.g. a rain
-#     garden / infiltration-style measure); use apply_water_retention when the
-#     physical basin-with-outflow behaviour matters.
-
-#     Storage target is derived the same way as apply_water_retention:
-#     target_volume = storage_fraction * baseline_excess_volume, sized against
-#     the SAME fixed reference (see apply_water_retention's own docstring for
-#     where baseline_excess_volume comes from) -- so storage_fraction means the
-#     same thing across both pre-processing variants and the post-processing
-#     method.
-
-#     Realized fill is reported directly by SFINCS itself (config
-#     storestoragevolume=1, set below), as a per-cell-per-timestep
-#     'storage_volume' output variable (remaining capacity) -- read that back
-#     post-hoc to see exactly how much of target_volume actually got used,
-#     instead of re-deriving it from a before/after flood-map comparison.
-
-#     hydromt_sfincs's own storage_volume.create() -> workflows.add_storage_volume()
-#     only handles geometry.type == "Polygon" (or "Point") -- a MultiPolygon
-#     silently adds ZERO volume anywhere, no error or warning at all (confirmed
-#     empirically). So `locations` is exploded into individual Polygon rows
-#     first, each carrying its own "volume" attribute (target_volume split
-#     proportionally by that piece's own area share) before being handed to
-#     storage_volume.create() -- this is what lets a single measure span
-#     several disconnected zones (e.g. one compartment per riverbank) correctly.
-
-#     Args:
-#         mod                     : (Required) Open SfincsModel object (HydroMT)
-#         locations               : (Required from measures.yml) Path / data source /
-#                                   GeoDataFrame of the retention polygon(s) -- may be
-#                                   a MultiPolygon or several disjoint features
-#         storage_fraction        : (Required from measures.yml) Fraction (0-1) of
-#                                   baseline_excess_volume to target as storage
-#         baseline_excess_volume  : (Required) Excess flood volume [m3] from the
-#                                   uncontrolled baseline run (see
-#                                   src.postprocessing.compute_excess_volume;
-#                                   auto-injected by 18a_adapt_pre.py, never
-#                                   strategy-configured)
-
-#     Returns:
-#         Modified SfincsModel object.
-#     """
-#     if not (0.0 <= storage_fraction <= 1.0):
-#         raise ValueError(f"storage_fraction must be in [0, 1], got {storage_fraction}")
-#     if baseline_excess_volume <= 0:
-#         raise ValueError(
-#             f"baseline_excess_volume must be > 0, got {baseline_excess_volume}"
-#         )
-
-#     target_volume = storage_fraction * baseline_excess_volume
-
-#     if isinstance(locations, str):
-#         locations = gpd.read_file(locations)
-#     locations = locations.to_crs(mod.crs)
-
-#     # explode MultiPolygon/multi-feature input into individual Polygon rows --
-#     # see this function's own docstring for why (hydromt_sfincs's own
-#     # add_storage_volume() silently drops anything that isn't exactly
-#     # geometry.type == "Polygon") -- and split target_volume across them
-#     # proportional to each piece's own area share.
-#     locations = locations.explode(index_parts=False).reset_index(drop=True)
-#     areas = locations.geometry.area
-#     total_area = float(areas.sum())
-#     if total_area == 0:
-#         raise ValueError(
-#             "Retention zone covers no area - check the polygon / CRS."
-#         )
-#     locations["volume"] = target_volume * (areas / total_area)
-
-#     mod.storage_volume.create(storage_locs=locations, merge=True)
-#     # direct realized-fill output -- see this function's own docstring
-#     mod.config.set("storestoragevolume", 1)
-
-#     print(
-#         f"  Applied storage-volume retention: storage_fraction={storage_fraction:.2f} -> "
-#         f"target_volume={target_volume:.0f} m3 distributed across {len(locations)} zone "
-#         f"piece(s) ({total_area / 1e6:.2f} km2 total). Realized fill is reported directly "
-#         f"by SFINCS's own 'storage_volume' output (storestoragevolume=1) -- read that back "
-#         f"post-hoc rather than re-deriving it from a flood-map comparison."
-#     )
-
-#     return mod
-
-
 #  Protect-closed: coastal_levee
 def apply_coastal_levee(
     mod: SfincsModel,
@@ -920,7 +794,9 @@ def apply_coastal_levee(
         )
         return mod
 
-    new_gdf = _read_levee_trace(mod, locations)
+    new_gdf = read_polyline(
+        mod.data_catalog.get_geodataframe(locations, geom=mod.region), mod.crs
+    )
     new_gdf["elevation"] = _levee_crests(
         new_gdf, elevation, mod.weirs.data, max_match_distance_m
     )
@@ -1265,40 +1141,12 @@ selected_measures = {
     "river_levee": apply_river_levee,
     "nbs_land_reclamation": apply_NbS_land_reclamation,
     "water_retention": apply_water_retention,
-    # "water_retention_greening": apply_water_retention_greening,
     "coastal_levee": apply_coastal_levee,
     "pumps": apply_pumps,
     # "dike_ring": apply_dike_ring,
     "urban_raising": apply_urban_raising,
     "retreat": apply_retreat,
 }
-
-
-def validate_measure_params(
-    measure_type: str, params: dict, method: str, measure_def: dict
-) -> None:
-    """Check params against config/measures.yml bounds and required_for; raise ValueError."""
-    param_specs = measure_def.get("params", {})
-    for name, spec in param_specs.items():
-        required_for = spec.get("required_for", [])
-        if method in required_for and name not in params:
-            raise ValueError(
-                f"Measure '{measure_type}': param '{name}' is required for method "
-                f"'{method}' (config/measures.yml) but was not provided."
-            )
-        if (
-            name in params
-            and spec.get("min") is not None
-            and spec.get("max") is not None
-        ):
-            value = params[name]
-            if isinstance(value, (int, float)) and not (
-                spec["min"] <= value <= spec["max"]
-            ):
-                raise ValueError(
-                    f"Measure '{measure_type}': param '{name}'={value} is out of bounds "
-                    f"[{spec['min']}, {spec['max']}] (config/measures.yml)."
-                )
 
 
 def dispatch_rules(

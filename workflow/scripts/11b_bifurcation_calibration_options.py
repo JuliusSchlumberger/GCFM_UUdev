@@ -33,6 +33,7 @@ from shapely.geometry import box as shapely_box
 from src.domain import load_domain
 from src.geometry import pick_utm_crs
 from src.log import setup_logging
+from src.plots import save_figure
 from src.profiling import ScriptProfiler
 from src.river_forcing import load_forcing_crossings, snap_crossings_to_reaches
 from src.river_network import (
@@ -128,8 +129,8 @@ def downstream_within_steps(adjacency: dict, root: str, n_steps: int) -> list[st
     frontier = [root]
     for _ in range(n_steps):
         next_frontier = []
-        for rid in frontier:
-            for dn in adjacency.get(rid, []):
+        for reach_id in frontier:
+            for dn in adjacency.get(reach_id, []):
                 if dn not in visited:
                     visited.add(dn)
                     next_frontier.append(dn)
@@ -157,20 +158,20 @@ def utm_epsg_to_cartopy_crs(utm_epsg: str) -> ccrs.CRS:
 
 
 def annotation_label(
-    rid: str, root_rid: str, q_series: pd.Series, upstream_adj: dict[str, list[str]]
+    reach_id: str, root_reach_id: str, q_series: pd.Series, upstream_adj: dict[str, list[str]]
 ) -> str | None:
     """Return 'immediate% / bifurcation%', or 'bifurcation%' at confluences; None if undefined."""
-    q_root = float(q_series.get(root_rid, np.nan))
-    q_rid = float(q_series.get(rid, np.nan))
-    if not np.isfinite(q_root) or q_root <= 0 or not np.isfinite(q_rid):
+    q_root = float(q_series.get(root_reach_id, np.nan))
+    q_reach_id = float(q_series.get(reach_id, np.nan))
+    if not np.isfinite(q_root) or q_root <= 0 or not np.isfinite(q_reach_id):
         return None
-    bifurcation_pct = q_rid / q_root * 100
+    bifurcation_pct = q_reach_id / q_root * 100
 
-    ups = upstream_adj.get(rid, [])
+    ups = upstream_adj.get(reach_id, [])
     if len(ups) == 1:
         q_parent = float(q_series.get(ups[0], np.nan))
         if np.isfinite(q_parent) and q_parent > 0:
-            immediate_pct = q_rid / q_parent * 100
+            immediate_pct = q_reach_id / q_parent * 100
             return f"{immediate_pct:.0f}% / {bifurcation_pct:.0f}%"
     return f"{bifurcation_pct:.0f}%"
 
@@ -212,12 +213,12 @@ else:
     rivers_mod_utm = _prep(rivers_mod)
 
     adjacency = build_downstream_adjacency(rivers_orig_utm)
-    upstream_adj: dict[str, list[str]] = {rid: [] for rid in adjacency}
-    for rid, dns in adjacency.items():
+    upstream_adj: dict[str, list[str]] = {reach_id: [] for reach_id in adjacency}
+    for reach_id, dns in adjacency.items():
         for dn in dns:
-            upstream_adj.setdefault(dn, []).append(rid)
+            upstream_adj.setdefault(dn, []).append(reach_id)
 
-    bifurcation_ids = [rid for rid, dn in adjacency.items() if len(dn) >= 2]
+    bifurcation_ids = [reach_id for reach_id, dn in adjacency.items() if len(dn) >= 2]
     log.info(f"Basin {basin_id}: {len(rivers_orig_utm)} reaches, {len(bifurcation_ids)} bifurcation(s)")
 
     q_by_scenario = {
@@ -225,11 +226,11 @@ else:
         "Modified": rivers_mod_utm["bankfull_discharge_acc"],
     }
 
-    for root_rid in bifurcation_ids:
-        neighborhood_ids = downstream_within_steps(adjacency, root_rid, N_STEPS)
-        if not all(rid in rivers_orig_utm.index for rid in neighborhood_ids):
+    for root_reach_id in bifurcation_ids:
+        neighborhood_ids = downstream_within_steps(adjacency, root_reach_id, N_STEPS)
+        if not all(reach_id in rivers_orig_utm.index for reach_id in neighborhood_ids):
             log.warning(
-                f"Basin {basin_id}, bifurcation {root_rid}: neighborhood reach missing "
+                f"Basin {basin_id}, bifurcation {root_reach_id}: neighborhood reach missing "
                 f"from network -- skipping"
             )
             continue
@@ -237,9 +238,9 @@ else:
         # Canonical 'width' drives accumulate_discharge, so compare that, not
         # the raw SWORD attribute.
         width_differs = any(
-            abs(float(rivers_orig_utm.loc[rid, "width"]) - float(rivers_mod_utm.loc[rid, "width"]))
+            abs(float(rivers_orig_utm.loc[reach_id, "width"]) - float(rivers_mod_utm.loc[reach_id, "width"]))
             > WIDTH_DIFF_TOLERANCE_M
-            for rid in neighborhood_ids
+            for reach_id in neighborhood_ids
         )
         panels = dict(q_by_scenario) if width_differs else {"Modified": q_by_scenario["Modified"]}
         n_panels = len(panels)
@@ -251,7 +252,7 @@ else:
         if not np.isfinite(q_max) or q_max <= 0:
             q_max = 1.0
 
-        neighborhood_geoms = [rivers_orig_utm.loc[rid].geometry for rid in neighborhood_ids]
+        neighborhood_geoms = [rivers_orig_utm.loc[reach_id].geometry for reach_id in neighborhood_ids]
         minx = min(g.bounds[0] for g in neighborhood_geoms)
         miny = min(g.bounds[1] for g in neighborhood_geoms)
         maxx = max(g.bounds[2] for g in neighborhood_geoms)
@@ -273,21 +274,21 @@ else:
                     facecolor="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=0,
                 )
 
-            for rid in neighborhood_ids:
-                line = _as_linestring(rivers_orig_utm.loc[rid].geometry)
+            for reach_id in neighborhood_ids:
+                line = _as_linestring(rivers_orig_utm.loc[reach_id].geometry)
                 if line is None:
                     continue
-                q_val = float(q_series.get(rid, 0.0))
+                q_val = float(q_series.get(reach_id, 0.0))
                 lw = discharge_to_linewidth(q_val, q_max)
-                color = "black" if rid == root_rid else "steelblue"
+                color = "black" if reach_id == root_reach_id else "steelblue"
                 ax.plot(
                     *line.xy, color=color, linewidth=lw, solid_capstyle="round",
                     transform=cartopy_crs, zorder=2,
                 )
 
-                if rid == root_rid:
+                if reach_id == root_reach_id:
                     continue
-                label_text = annotation_label(rid, root_rid, q_series, upstream_adj)
+                label_text = annotation_label(reach_id, root_reach_id, q_series, upstream_adj)
                 if label_text is not None:
                     mid = line.interpolate(0.5, normalized=True)
                     # Offset radially from the neighbourhood centroid so labels
@@ -318,7 +319,7 @@ else:
             else "original and modified are identical here -- single panel"
         )
         fig.suptitle(
-            f"Basin {basin_id} — bifurcation at reach {root_rid} ({diff_note})\n"
+            f"Basin {basin_id} — bifurcation at reach {root_reach_id} ({diff_note})\n"
             f"line width ∝ accumulated discharge"
             f"{' (shared scale across panels)' if n_panels > 1 else ''}; "
             f"labels = immediate-upstream % / bifurcation-relative % "
@@ -326,9 +327,8 @@ else:
             fontsize=12,
         )
         fig.tight_layout(rect=(0, 0, 1, 0.92))
-        out_path = plot_dir / f"{root_rid}.png"
-        fig.savefig(out_path, dpi=150)
-        plt.close(fig)
+        out_path = plot_dir / f"{root_reach_id}.png"
+        save_figure(fig, out_path, dpi=150)
         log.info(f"Written: {out_path}")
 
 profiler.stop()

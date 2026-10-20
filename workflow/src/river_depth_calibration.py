@@ -7,7 +7,7 @@ fraction of the rise is excavated
 (river_processing.river_depth_modelling.excavation_fraction):
 
     rise   = period_max_water_level - DEM_at_cell
-    rivdph = excavation_fraction * max(rise, 0)
+    river_depth_m = excavation_fraction * max(rise, 0)
 
 A second confined run on the excavated channel sets the weir crests; a third
 verifies them (see 10_depth_estimation_modelled.py).
@@ -21,7 +21,7 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from src.river_forcing import interpolate_discharge_at_rp, snap_crossings_to_reaches
+from src.river_forcing import interpolate_discharge_at_rp, seed_discharge_by_reach
 from src.river_network import (
     compute_seed_path_offsets,
     normalize_reach_id,
@@ -39,37 +39,27 @@ def build_calibration_seed_discharge(
 
     Protection-level RP discharge (log-RP interpolated from
     discharge_rp_table), or bankfull discharge when protection_rp_yr is None.
-    The 'bankfull_q' column passed to snap_crossings_to_reaches holds this
+    The 'bankfull_discharge_m3s' column passed to snap_crossings_to_reaches holds this
     calibration discharge, not literal bankfull.
     """
     active = river_ds["has_glofas"].values.astype(bool)
-    bankfull_q = river_ds["bankfull_discharge"].values[active]
+    bankfull_discharge_m3s = river_ds["bankfull_discharge_m3s"].values[active]
 
     if protection_rp_yr is not None and "discharge_rp_table" in river_ds:
         table = river_ds["discharge_rp_table"].values[active]
-        table_rps = river_ds["return_period"].values
-        calibration_q = interpolate_discharge_at_rp(table, table_rps, protection_rp_yr)
+        rps_yr = river_ds["rp_yr"].values
+        calibration_q = interpolate_discharge_at_rp(table, rps_yr, protection_rp_yr)
         log.info(
             f"Calibration discharge: protection level RP={protection_rp_yr:.1f} yr "
             f"(log-RP interpolated from discharge_rp_table)"
         )
     else:
-        calibration_q = bankfull_q
-        log.info("Calibration discharge: bankfull_discharge (no protection level RP)")
+        calibration_q = bankfull_discharge_m3s
+        log.info(
+            "Calibration discharge: bankfull_discharge_m3s (no protection level RP)"
+        )
 
-    inside_ids = (
-        river_ds["inside_reach_id"].values[active]
-        if "inside_reach_id" in river_ds
-        else np.full(active.sum(), "", dtype=object)
-    )
-    crossings = gpd.GeoDataFrame(
-        {"bankfull_q": calibration_q, "inside_reach_id": inside_ids},
-        geometry=gpd.points_from_xy(
-            river_ds["longitude"].values[active], river_ds["latitude"].values[active]
-        ),
-        crs="EPSG:4326",
-    )
-    return snap_crossings_to_reaches(crossings)
+    return seed_discharge_by_reach(river_ds, calibration_q, active)
 
 
 def steady_state_metrics(zs: np.ndarray, window_steps: int = 3) -> dict[str, float]:
@@ -133,24 +123,25 @@ def gather_calibration_round_profile(
     """Return per-round calibration state along one seed's widest path.
 
     Reads round{i}/calibration_state.csv under calib_root for i in
-    0..n_rounds (dem, rivdph, weir_crest, zs = period-max water level).
-    weir_crest is NaN in round 0 (1000 m walls). rivers_utm may be in any CRS.
+    0..n_rounds (dem, river_depth_m, weir_crest, zs). zs is the period-max water
+    level, except in round 0: the level the excavation used (end of run, period
+    max or GVF). weir_crest is NaN in round 0 (1000 m walls). rivers_utm may be in any CRS.
 
     Returns:
         (path_rids, {round_idx: rows on the path with 'along_path_m', sorted}).
     """
-    path_rids = trace_widest_path(rivers_utm, seed)
-    offsets = compute_seed_path_offsets(rivers_utm, path_rids)
+    path_reach_ids = trace_widest_path(rivers_utm, seed)
+    offsets = compute_seed_path_offsets(rivers_utm, path_reach_ids)
 
     profiles: dict[int, pd.DataFrame] = {}
     for round_idx in range(n_rounds + 1):
         csv_path = calib_root / f"round{round_idx}" / "calibration_state.csv"
         df = pd.read_csv(csv_path)
         df["reach_id"] = df["reach_id"].apply(normalize_reach_id)
-        on_path = df[df["reach_id"].isin(path_rids)].copy()
+        on_path = df[df["reach_id"].isin(path_reach_ids)].copy()
         on_path["along_path_m"] = on_path["reach_id"].map(offsets) + on_path["along_m"]
         profiles[round_idx] = on_path.sort_values("along_path_m").reset_index(drop=True)
-    return path_rids, profiles
+    return path_reach_ids, profiles
 
 
 def compute_excavation_depth(
@@ -179,18 +170,18 @@ def cell_depth_segments(
     from shapely.geometry import LineString
 
     rows = []
-    rid_arr = cell_gdf["reach_id"].map(normalize_reach_id).to_numpy()
+    reach_id_arr = cell_gdf["reach_id"].map(normalize_reach_id).to_numpy()
     along = cell_gdf["along_m"].to_numpy(dtype=float)
     xs, ys = cell_gdf["x"].to_numpy(dtype=float), cell_gdf["y"].to_numpy(dtype=float)
-    for rid in pd.unique(rid_arr):
-        pos = np.flatnonzero(rid_arr == rid)
+    for reach_id in pd.unique(reach_id_arr):
+        pos = np.flatnonzero(reach_id_arr == reach_id)
         pos = pos[np.argsort(along[pos])]
         for a, b in zip(pos[:-1], pos[1:]):
             rows.append(
                 {
-                    "reach_id": rid,
+                    "reach_id": reach_id,
                     "depth": float(np.nanmean(depth[[a, b]])),
-                    "width": float(width_by_reach.get(rid, np.nan)),
+                    "width": float(width_by_reach.get(reach_id, np.nan)),
                     "geometry": LineString([(xs[a], ys[a]), (xs[b], ys[b])]),
                 }
             )

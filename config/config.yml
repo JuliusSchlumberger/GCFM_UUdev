@@ -7,6 +7,12 @@ adaptation:
 profiling:
   enabled: false   # set to true to write line-level timing reports next to each log file
 
+# Command-line only (snakemake --config key=value), never set here:
+#   target_basins: [2433835]           # default: every basin in delta_polygons
+#   target_scenarios: ['default']      # default: ['default']
+#   target_strategies: ['retreat_04']  # strategies or families; default: [] (no adaptation run)
+#   target_method: ['pre', 'post']     # default: both
+
 # Machine-specific paths are NOT set in this file -- they come from three
 # environment variables (read in workflow/rules/00_common.smk). Set them once
 # in PowerShell, then restart your terminal (see CONTRIBUTING.md "Local
@@ -68,10 +74,11 @@ flopros_range:
   default_rp_yr: 2.0    # fallback assumed protection RP when neither Riverine nor Coastal are given
   max_rp_yr: 1000.0     # cap on the (FLOPROS) protection RP before discharge/
 
-# ── River network processing (rules 06, 08, 09, 10) ──────────────────────────
+# ── River network processing (rules 06, 08, 09, 10, 11) ──────────────────────
 river_processing:
+  channel_manning_n: 0.03           # channel Manning n: GVF solve and burned-channel subgrid roughness (rule 10), tidal damping check (rule 11)
   flow_accumulation:
-    discharge_variable: bankfull_discharge
+    discharge_variable: bankfull_discharge_m3s
   width_qa:  # rule 08 (and 07): SWORD width checks
     max_width_fill_m: 30.0          # SWORD max_width fill value: never swapped into width (Waal: 389 m width, 30 m max_width)
   canal_routing:  # rule 08/10 discharge accumulation: canals get no share at a bifurcation
@@ -82,8 +89,6 @@ river_processing:
   river_depth_modelling:  # rule modelled_depth_estimation (10): SFINCS runs that set river depth and dike crests
     method: modelled                # modelled: round 0 (confined SFINCS run) + excavation_fraction | gvf: river bed from steady gradually-varied flow fitted to SWORD wse (src/gvf*.py); round 0 is not run, rounds 1-2 still set the crests
     gvf:  # method gvf only (GVF plan WP1-WP3; Neal et al. 2021, WRR 57, e2020WR028301)
-      target_discharge: mean        # GloFAS mean_discharge, routed like the calibration discharge, paired with SWORD wse
-      manning_channel: 0.03         # channel Manning n in the GVF solve; also written under the burned channel in the subgrid roughness (rules 10 and 13)
       node_spacing_m: 500           # GVF node spacing along each reach
       target_smoothing_m: 5000      # running-mean length of the target level (removes SWORD's 0.1 m steps); never across a structure
       step_threshold_m: 0.5         # a level drop larger than this at a junction is a structure (weir/lock/dam); a rise this large is cut likewise (inconsistent SWORD levels)
@@ -109,9 +114,9 @@ river_processing:
       max_days: 5                   # stop extending after this total run length (warns if still not steady)
       flow_balance_tol: 0.05        # warn when |inflow - outflow| / inflow at the exits exceeds this
       fail: false                   # true: an unsteady or unbalanced round 0 stops the rule instead of warning
-    discharge_ramp_hours: 6.0        # linear ramp from each crossing's own bankfull_discharge up to the full calibration discharge over this many hours (from t=0), then held flat for the rest of the run -- avoids forcing the full (often many-times-bankfull) calibration discharge as an instantaneous step into an initially near-dry channel, which produces a startup shock wave that can persist/oscillate for the whole run instead of damping out. Mirrors production's own bankfull-lead-in-then-ramp hydrograph shape (src.river_forcing.build_design_discharge_matrix/sinusoidal_wave, rule 13/14's own spin-up), just linear instead of sinusoidal since calibration only needs to reach and hold the peak, not simulate a full event recession.
+    discharge_ramp_hr: 6.0        # linear ramp from each crossing's own bankfull_discharge_m3s up to the full calibration discharge over this many hours (from t=0), then held flat for the rest of the run -- avoids forcing the full (often many-times-bankfull) calibration discharge as an instantaneous step into an initially near-dry channel, which produces a startup shock wave that can persist/oscillate for the whole run instead of damping out. Mirrors production's own bankfull-lead-in-then-ramp hydrograph shape (src.river_forcing.build_design_discharge_matrix/sinusoidal_wave, rule 13/14's own spin-up), just linear instead of sinusoidal since calibration only needs to reach and hold the peak, not simulate a full event recession.
     weir_crest_m: 1000.0            # confinement weir crest (m) for rounds 0 and 1 -- effectively never overtopped
-    excavation_fraction: 0.8        # fraction of round 0's confined rise above the DEM (period_max_zs - dem_at_cell, per centerline cell) excavated as channel depth (rivdph). The mouth rules in 10_depth_estimation_modelled.py (coastal endpoint at natural bathymetry, bed floored upstream of it) are applied on top.
+    excavation_fraction: 0.8        # fraction of round 0's confined rise above the DEM (period_max_zs - dem_at_cell, per centerline cell) excavated as channel depth (river_depth_m). The mouth rules in 10_depth_estimation_modelled.py (coastal endpoint at natural bathymetry, bed floored upstream of it) are applied on top.
     # ── weir-building params (used by modelled_depth_estimation every round)
     min_component_cells: 30           # discard small isolated land islands or water patches below this cell count on either side -- neither gets a weir ring around it
     unprotected_ocean_wetlands: false # true: wetland/lagoon patches (80 = permanent water/tidal flats, 90 = herbaceous wetland, and 95 = mangroves under ESA WorldCover; src.landuse.OCEAN_WETLAND_CLASSES) sharing a cell edge with the open sea are left on the SEAWARD side of the coastal dike -- the dike runs along their landward edge and they flood freely (still counted as land in flood metrics). false: the dike follows the open-sea (200) boundary.
@@ -134,7 +139,7 @@ boundary_forcings:
       # every surge scenario uses average tide + surge peaking on tidal high water ("Tide": tide
       # only) over -window_hr..+window_hr; the window starts right after the lead-in (lead_days)
       # and the river peak is aligned with the surge peak. Disabled: an RP falls back to a
-      # half-cosine of period_hr after the lead-in, and surge_rp "Tide" is unavailable.
+      # half-cosine of period_hr after the lead-in, and surge_rp_yr "Tide" is unavailable.
       enabled: true
       window_hr: 60          # event = -60..+60 h around the peak -> 120 h event window; also the length of the surge shapes
       window_overrides_hr:   # optional per-basin window (h), keyed by basin id -- surges last hours on
@@ -142,7 +147,7 @@ boundary_forcings:
                              # storm_tide_hydrographs and rule 07 onward, not the GTSM extraction.
       # KGL: Changed from 70 to 168 to ensure the whole falling limb is included in the timerseires
 
-      ramp_hours: 6.0        # boundary blends from the calm lead-in level into the tide over the window's first hours (surge is still 0 there)
+      ramp_hr: 6.0        # boundary blends from the calm lead-in level into the tide over the window's first hours (surge is still 0 there)
       max_match_km: 0.1      # coincidence tolerance: COAST-RP's coastal stations ARE GTSM output stations
       # One surge shape per return period, from the historic events whose peak is close to what
       # that return period needs:
@@ -170,18 +175,18 @@ boundary_forcings:
                              # events, each scaled to it
       # The event run starts at the spin-up's mean discharge, while a real flood is already well
       # above it at that point: the discharge blends from the mean into the event over a ramp of
-      #   max(min_ramp_hours, gap / (max_rise_per_hr x peak))   with gap = event start discharge - mean
-      min_ramp_hours: 6.0    # shortest ramp (h)
+      #   max(min_ramp_hr, gap / (max_rise_per_hr x peak))   with gap = event start discharge - mean
+      min_ramp_hr: 6.0    # shortest ramp (h)
       max_rise_per_hr: 0.05  # the main inflow closes the gap by at most this share of its own peak per
                              # hour (0.05 -> a gap of 60 % of the peak takes 12 h). Relative, so it suits
                              # small and large rivers alike; real floods rise at ~0.01 of the 100-yr peak per hour
     glofas_buffer_deg: 1.0
     glofas_search_radius_km: 5.0    # radius around inside-domain reach centroid to search for GloFAS cells
-    glofas_min_mean_discharge: 10.0  # minimum mean discharge (m³/s) for a GloFAS cell to be considered
+    glofas_min_mean_discharge_m3s: 10.0  # minimum mean discharge (m³/s) for a GloFAS cell to be considered
 
     eva:  # Extreme value analysis on GloFAS discharge -- river-only
-      rp_fl: 100.0          # diagnostic-only preview return period (yr) for rule get_boundary_forcings' own q_rp100/CI/plot-vertical-line and the has_glofas "ok" gate -- a fixed, basin-level constant, NOT derived from any requested scenario's own river_rp (a scenario-derived value here previously made this basin-level rule's own output -- and therefore everything downstream, including the expensive depth calibration -- rerun on every scenario switch, and even made has_glofas itself vary depending on which scenario happened to be requested first). The actual production discharge_rp_table (rules 08/10/13) is always computed at every standard RP regardless of this value.
-      rp_bf: 1.5            # return period for bankfull discharge (yr, AMAX/GEV fit)
+      preview_rp_yr: 100.0          # diagnostic-only preview return period (yr) for rule get_boundary_forcings' own q_rp100/CI/plot-vertical-line and the has_glofas "ok" gate -- a fixed, basin-level constant, NOT derived from any requested scenario's own river_rp_yr (a scenario-derived value here previously made this basin-level rule's own output -- and therefore everything downstream, including the expensive depth calibration -- rerun on every scenario switch, and even made has_glofas itself vary depending on which scenario happened to be requested first). The actual production discharge_rp_table (rules 08/10/13) is always computed at every standard RP regardless of this value.
+      bankfull_rp_yr: 1.5            # return period for bankfull discharge (yr, AMAX/GEV fit)
       ci_alpha: 0.95
       threshold_start_pct: 90.0
       threshold_step_pct: 1.0
@@ -194,6 +199,7 @@ boundary_forcings:
       min_days: 9131       # minimum valid days to attempt EVA (≈25 yr)
       decorr_cut: 0.368    # autocorrelation cutoff (≈1/e) for decorrelation window
       decorr_max: 30       # maximum decorrelation lag to search (days)
+      deseasonalize_for_decorr: true  # subtract the day-of-year mean before estimating the declustering lag (POT and fits use the raw series)
       fit_method: Lmoments
 
     bias_correction: # GRDC bias correction of GloFAS
@@ -214,11 +220,10 @@ boundary_forcings:
 testing: # Diagnostic-only side branch
   upstream_boundary_check:
     effective_period_fraction: 0.5   # fraction of surge period_hr used as effective tidal period
-    channel_manning_n: 0.030            # assumed channel roughness
     amplitude_threshold_fraction: 0.05   # march upstream until amplitude decays
                                           # below this fraction of its LOCAL
                                           # (per-mouth) starting value
-    surge_rp: 100                        # surge return period (yr) used as the per-mouth wave
+    surge_rp_yr: 100                        # surge return period (yr) used as the per-mouth wave
                                           # amplitude (A0) for this check -- independent of any
                                           # scenario's own design RP. Must be a COAST-RP tabulated
                                           # value: 1,2,5,10,25,50,100,250,500,1000.
@@ -226,17 +231,17 @@ testing: # Diagnostic-only side branch
 # ── SFINCS model build & run (rules 13, 14, 15) ─────────────────────────────
 sfincs:
   boundary_setup: # rule 13
-    waterlevel_buffer_m: 25000   # search radius for matching surge boundary stations to the
-                                  # nearest waterlevel boundary cell (m)
+    water_level_buffer_m: 25000   # search radius for matching surge boundary stations to the
+                                  # nearest water-level boundary cell (m)
     outflow_buffer_m: 500.0      # buffer radius (m) around each delta-outline outflow point
-    # mode/design_rp_river_yr/design_rp_surge_yr are no longer set here --
+    # mode/river_rp_yr/surge_rp_yr are no longer set here --
     # derived per-scenario from config/scenarios.yml (see scenario_params in
     # 00_common.smk): both RPs set -> compound; exactly one set -> that
     # driver alone (river_only/coastal_only); both null -> invalid.
-    flat_boundary_point_spacing_m: 5000   # boundary-point spacing along the waterlevel mask, used only when mode="river_only"
+    flat_boundary_point_spacing_m: 5000   # boundary-point spacing along the water-level mask, used only when mode="river_only"
     compound:
       lag_hr: 0 # Shifts the river discharge timeseries relative to the surge timeseries
-    slr_ramp_hours: 24  # the spin-up is shared by all scenarios and has no SLR, so a scenario's
+    slr_ramp_hr: 24  # the spin-up is shared by all scenarios and has no SLR, so a scenario's
                         # slr_m would otherwise hit the restart as a step at the event start (a 0.34 m
                         # step overtopped ~1670 of 1789 coastal weir segments in basin 2433835 within
                         # the first hour). The SLR term instead rises linearly from 0 over this many
@@ -285,7 +290,7 @@ sfincs:
   spinup: # Spin-up simulation with constant forcings
     enabled: true                # run a spin-up + create a restart file before the main event run
     spinup_days: 1               # days of constant bankfull forcing to reach steady river state
-    boundary_ramp_hours: 6.0     # the spin-up sea is held at each station's calm-sea level (the event lead-in's own level; the river stays at RP=1); the boundary ramps linearly from the sea's starting level (rounded basin mean) to those station levels over this many hours -- normally identical, but a step at the boundary sends a front in that can overtop the coastal dike (basin 2433835: a 0.30 m step gave up to +1.1 m at a 0.40 m crest)
+    boundary_ramp_hr: 6.0     # the spin-up sea is held at each station's calm-sea level (the event lead-in's own level; the river stays at RP=1); the boundary ramps linearly from the sea's starting level (rounded basin mean) to those station levels over this many hours -- normally identical, but a step at the boundary sends a front in that can overtop the coastal dike (basin 2433835: a 0.30 m step gave up to +1.1 m at a 0.40 m crest)
     dthisout_s: 3600              # obs-point output interval during spinup (s) — for validation plot
     dtmapout_s: 3600              # map snapshot interval during spinup (s) — controls animation frame count
 

@@ -128,6 +128,7 @@ def main() -> None:
         print("Skipped reaches (not modified) -- resolve and re-run:")
         for reach_id, reason in skipped:
             print(f"  {reach_id}: {reason}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

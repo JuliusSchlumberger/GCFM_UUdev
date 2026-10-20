@@ -9,14 +9,15 @@ is a living document for a two-person project, not a fixed policy.
 
 Unlike a typical app with independent modules, `workflow/` is one Snakemake
 DAG made of **numbered, ordered pipeline stages** (`workflow/rules/00_*.smk`
-through `16_*.smk`, each with a matching `workflow/scripts/NN_*.py`), sharing
+through `19_*.smk`, each except `00_common.smk` with matching
+`workflow/scripts/NN*_*.py`), sharing
 one config schema (`config/config.yml`) and one shared library
 (`workflow/src/*.py`). There usually isn't a clean "your folder vs. my
 folder" split — plan branches around that:
 
 - **Adding a new pipeline stage** (a new rule number): claim the number
   first (message the other person / open a draft PR early) so we don't both
-  end up writing "rule 17". Insert it in true topological order, not just
+  end up writing "rule 20". Insert it in true topological order, not just
   appended at the end — see the rule docstrings for how existing rules
   reason about DAG position (e.g. why rule 10 can't run earlier than it
   does despite operating on elevation).
@@ -32,21 +33,14 @@ folder" split — plan branches around that:
 ## Branching model
 
 - `main` is always the current, working state of the model. Nobody pushes to
-  `main` directly — all changes land via pull request (PR). The repo is now
-  public, so GitHub branch protection rules are available for free — this
-  needs to be turned on explicitly (it isn't automatic just from making the
-  repo public); until it is, nothing actually blocks a direct push to `main`,
-  so treat the PR-only rule as a personal discipline commitment for now. To
-  enable real enforcement: repo **Settings → Branches → Add branch
-  protection rule**, branch name pattern `main`, enable "Require a pull
-  request before merging" and "Require status checks to pass before merging"
-  (select the CI job(s) from `.github/workflows/ci.yml`). Once set up, a
-  green CI run + checked-off PR checklist becomes an actual merge
-  requirement, not just a convention.
+  `main` directly — all changes land via pull request (PR). GitHub enforces
+  this only with a branch protection rule (repo **Settings → Branches → Add
+  branch protection rule**, pattern `main`, "Require a pull request before
+  merging" and "Require status checks to pass before merging" with the CI
+  job from `.github/workflows/ci.yml`); without one it is a team rule.
 - Create one branch per pipeline stage or task, off the latest `main`:
   `feature/<short-description>` (e.g. `feature/discharge-eva`) for new rules
-  or capabilities, `fix/<short-description>` for bug fixes. `adaptation_
-  modelling` and `improve_base_model` are the two current working branches.
+  or capabilities, `fix/<short-description>` for bug fixes.
 - Keep branches short-lived (days, not weeks). Open a PR early — even as a
   draft — if you want feedback before the work is finished. A long-lived
   branch against a DAG this interconnected accumulates conflicts fast.
@@ -59,16 +53,14 @@ folder" split — plan branches around that:
 ## Step-by-step: branch, work, sync, push, PR
 
 Concrete commands for the whole cycle, from creating your branch through
-opening the PR. `adaptation_modelling` and `improve_base_model` already
-exist as the two working branches for this project — substitute your actual
-branch name below.
+opening the PR. Substitute your branch name for `feature/my-change`.
 
 **1. Create your branch, off the latest `main`:**
 
 ```bash
 git checkout main
 git pull origin main
-git checkout -b adaptation_modelling   # or: git checkout adaptation_modelling, if it already exists
+git checkout -b feature/my-change   # or: git checkout feature/my-change, if it already exists
 ```
 
 **2. Work on it** — edit files, then stage and commit as usual:
@@ -100,19 +92,19 @@ breaks anyone else's copy of the branch).
 **4. Push your branch to GitHub:**
 
 ```bash
-git push -u origin adaptation_modelling
+git push -u origin feature/my-change
 ```
 
 The `-u` is only needed the first time you push this branch — it links your
-local branch to `origin/adaptation_modelling` so plain `git push`/`git pull`
+local branch to `origin/feature/my-change` so plain `git push`/`git pull`
 work afterward without naming the branch each time.
 
 **5. Open the pull request.** After `git push`, the terminal prints a direct
 link, e.g.:
 
 ```
-remote: Create a pull request for 'adaptation_modelling' on GitHub by visiting:
-remote:      https://github.com/JuliusSchlumberger/GCFM_UUdev/pull/new/adaptation_modelling
+remote: Create a pull request for 'feature/my-change' on GitHub by visiting:
+remote:      https://github.com/<owner>/<repo>/pull/new/feature/my-change
 ```
 
 Open that link (or go to the repo on GitHub — it shows a "Compare & pull
@@ -136,8 +128,10 @@ configures how the built model consumes it. Before adding a new key:
 - Add an inline comment explaining *why* the value is what it is or *why*
   it's grouped where it is — matching the existing comment style in the
   file — not just what it does.
+- Every key is required: the code has no defaults, so a new key must be set
+  in the yml before the code reads it.
 - If you rename or move a key, `grep` for the old path across `workflow/`,
-  `tests/`, and this repo's Claude Code memory file (see below) — config
+  `tools/`, `analysis/`, `tests/` and `Reference_memory.txt` — config
   key renames are the easiest thing to half-finish, since a stale reference
   won't fail until that specific code path runs.
 
@@ -147,15 +141,18 @@ configures how the built model consumes it. Before adding a new key:
       target) complete without errors — this catches DAG/config errors but
       **not** broken imports (see below).
 - [ ] If you renamed or deleted anything in `workflow/src/`, verify every
-      `from src.X import Y` across `workflow/scripts/`, `workflow/src/`, and
-      `tests/` still resolves. `ast.parse`/a dry-run will NOT catch this —
-      a broken import only fails the first time that specific script
+      `from src.X import Y` across `workflow/scripts/`, `workflow/src/`,
+      `tools/`, `analysis/` and `tests/` still resolves. `ast.parse`/a
+      dry-run will NOT catch this — a broken import only fails the first time that specific script
       actually executes, which can be well after it's merged. A quick way to
       check: try importing every touched module directly with `workflow/` on
       `sys.path`.
+- [ ] `python tests/check_code_health.py` passes (syntax + `src` import
+      resolution; CI does not run it).
+- [ ] `pytest` passes (synthetic unit tests in `tests/unit`; CI runs them).
 - [ ] Pre-commit hooks pass (`pre-commit run --all-files` — see below).
-      This covers formatting/lint (ruff) and docstring style (pydocstyle,
-      Google style) automatically.
+      This covers formatting/lint (ruff), type checks (pyright) and
+      docstring style (pydocstyle) automatically.
 - [ ] New config entries are documented inline in `config.yml` (see "Config
       changes" above), and new data sources are documented in
       `config/data_catalogue.yml` following the existing entry format.
@@ -168,18 +165,24 @@ configures how the built model consumes it. Before adding a new key:
 - **Type checking**: [`pyright`](https://github.com/microsoft/pyright), via
   pre-commit. Currently informational (`typeCheckingMode = "off"` in
   `pyproject.toml`) — flags obvious issues without blocking on strict typing.
-- **Docstrings**: Google style (`Args:` / `Returns:`), checked by
-  `pydocstyle` where present — see `pyproject.toml`'s `add_ignore` list.
-  Docstrings are **not mandatory on every function** (missing-docstring
-  rules D102/D103 are deliberately ignored); the convention actually in use:
-  - `workflow/src/*.py` (shared library functions): thorough Google-style
-    docstrings, since these are called across multiple rules.
+- **Docstrings**: one imperative summary line (max ~80 characters). Add
+  lines only for what the signature cannot say: units, datums, sign
+  conventions, assumptions, valid ranges, the method or paper implemented,
+  side effects. No `Args:`/`Returns:` sections that repeat the type hints;
+  when a section is needed, use Google style (`pydocstyle` runs with the
+  Google convention; `pyproject.toml`'s `add_ignore` skips missing-docstring
+  and missing-argument checks, so neither is required). No docstrings on
+  private helpers, trivial wrappers or tests unless an assumption is
+  non-obvious.
+  - `workflow/src/*.py` (shared library): public functions get the summary
+    line plus the non-obvious facts above.
   - `workflow/rules/*.smk`: the rule's own triple-quoted docstring explains
     *why* it sits where it does in the DAG, not what the script does
     line-by-line — see almost any existing rule for the pattern.
   - `workflow/scripts/*.py` (pipeline-step scripts): a short module
-    docstring is enough; `workflow/scripts/` is excluded from the
-    pydocstyle pre-commit hook entirely. Inline comments only where the
+    docstring is enough; `workflow/scripts/` is excluded from every
+    pre-commit hook (top-level `exclude` in `.pre-commit-config.yaml`),
+    so ruff and pydocstyle do not check it there. Inline comments only where the
     *why* isn't obvious from the code (matching the project's general
     "don't restate what the code does" convention).
 - Naming: `snake_case` for functions/variables, `PascalCase` for classes,
@@ -196,19 +199,11 @@ configures how the built model consumes it. Before adding a new key:
   ```
 
   or update an existing one with `mamba env update -f environment.yml --prune`.
-- **`hydromt-sfincs` needs a separate editable install from source** — the
-  version this project depends on isn't just `pip install`-able from
-  `environment.yml` alone. After creating the environment, clone and install
-  it per [README.md](README.md):
-
-  ```bash
-  git clone https://github.com/Deltares/hydromt_sfincs.git
-  pip install -e hydromt_sfincs
-  ```
-
-  (see also Deltares's own [dev install guide](https://deltares.github.io/hydromt_sfincs/latest/dev_guide/dev_install.html#dev-env)
-  if you need to set up a from-scratch dev environment rather than adding
-  the editable install to `hmt_sfincs_dev`.)
+- `hydromt-sfincs` is pinned to `2.0.0rc2` in the `pip:` section of
+  `environment.yml`, so the command above installs it; no source clone is
+  needed. `workflow/src/hydromt_sfincs_patch.py` holds a runtime fix for
+  that release (float32 subgrid write buffers), called by the scripts that
+  write a SFINCS model (rules 10, 13, 18a).
 - If your work needs a new package, install it into `hmt_sfincs_dev`
   locally, then `git add environment.yml` (even without editing it) and
   commit. The `sync-environment-yml` pre-commit hook
@@ -263,7 +258,7 @@ variable if one is unset:
 
 They are read in `workflow/src/io.py` (`local_path`, `load_catalogue`) and
 `workflow/rules/00_common.smk`; the standalone scripts in `tools/` and
-`tests/` read the same variables directly.
+`analysis/` read the same variables directly.
 
 **PowerShell** (persists across sessions — set once, restart your terminal):
 
@@ -321,9 +316,8 @@ actual `git commit`** (e.g. some hooks silently don't run, or one fails with
 a "Python was not found" / exit-code-9009-style error): check
 `.git/hooks/pre-commit`'s `INSTALL_PYTHON` line — it hardcodes the exact
 interpreter path pre-commit was installed from at `pre-commit install` time.
-If it points at the wrong/an old conda env (this has happened once already
-on this repo — it was pointing at a stale, differently-named env), rerun
-`pre-commit install` from inside `hmt_sfincs_dev` to refresh it.
+If it points at the wrong or an old conda env, rerun `pre-commit install`
+from inside `hmt_sfincs_dev` to refresh it.
 
 ## Reference memory (optional, if you use Claude Code)
 

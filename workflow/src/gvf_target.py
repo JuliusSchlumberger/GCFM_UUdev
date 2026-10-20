@@ -43,7 +43,7 @@ conditioning would lift every upstream node to the higher level.
 from __future__ import annotations
 
 import logging
-from collections import defaultdict, deque
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 import geopandas as gpd
@@ -51,7 +51,8 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import LineString, Point
 from shapely.ops import linemerge
-from src.river_network import normalize_reach_id
+from src.io import require_keys
+from src.river_network import kahn_order, normalize_reach_id
 
 log = logging.getLogger(__name__)
 
@@ -147,25 +148,11 @@ def topological_order(
     reach_ids: list[str], downstream: dict[str, list[str]]
 ) -> list[str]:
     """Return reach ids upstream-first (Kahn); reaches on a cycle go last."""
-    indeg = {r: 0 for r in reach_ids}
-    for r in reach_ids:
-        for d in downstream.get(r, []):
-            indeg[d] += 1
-    queue = deque(r for r in reach_ids if indeg[r] == 0)
-    order: list[str] = []
-    while queue:
-        r = queue.popleft()
-        order.append(r)
-        for d in downstream.get(r, []):
-            indeg[d] -= 1
-            if indeg[d] == 0:
-                queue.append(d)
-    if len(order) < len(reach_ids):
-        rest = [r for r in reach_ids if r not in set(order)]
+    order, rest = kahn_order(reach_ids, lambda r: downstream.get(r, []))
+    if rest:
         log.warning(
             f"GVF network has a directed cycle through {len(rest)} reaches: {rest[:10]}"
         )
-        order += rest
     return order
 
 
@@ -203,11 +190,11 @@ def orient_downstream(
 
     reversed_ids = []
     new_geoms = []
-    for rid in rivers["reach_id"].map(normalize_reach_id):
-        line = lines[rid]
+    for reach_id in rivers["reach_id"].map(normalize_reach_id):
+        line = lines[reach_id]
         first, last = Point(line.coords[0]), Point(line.coords[-1])
-        dns = [lines[d] for d in downstream.get(rid, []) if d in lines]
-        ups = [lines[u] for u in upstream.get(rid, []) if u in lines]
+        dns = [lines[d] for d in downstream.get(reach_id, []) if d in lines]
+        ups = [lines[u] for u in upstream.get(reach_id, []) if u in lines]
         flip = False
         if dns:
             flip = min(g.distance(first) for g in dns) < min(
@@ -219,7 +206,7 @@ def orient_downstream(
             )
         if flip:
             line = LineString(list(line.coords)[::-1])
-            reversed_ids.append(rid)
+            reversed_ids.append(reach_id)
         new_geoms.append(line)
     rivers = rivers.set_geometry(
         gpd.GeoSeries(new_geoms, index=rivers.index, crs=rivers.crs)
@@ -270,14 +257,16 @@ def build_node_network(
         The node network.
     """
     structure_edges = set(structure_edges or ())
-    rids = [normalize_reach_id(r) for r in rivers["reach_id"]]
-    lines = dict(zip(rids, (_line(g) for g in rivers.geometry)))
-    downstream = {r: [d for d in downstream.get(r, []) if d in lines] for r in rids}
-    order = topological_order(rids, downstream)
+    reach_ids = [normalize_reach_id(r) for r in rivers["reach_id"]]
+    lines = dict(zip(reach_ids, (_line(g) for g in rivers.geometry)))
+    downstream = {
+        r: [d for d in downstream.get(r, []) if d in lines] for r in reach_ids
+    }
+    order = topological_order(reach_ids, downstream)
 
     # Reach ends that meet (no structure between them) become one node.
     uf = _UnionFind()
-    for r in rids:
+    for r in reach_ids:
         uf.find((r, "up"))
         uf.find((r, "dn"))
         for d in downstream[r]:
@@ -539,23 +528,10 @@ def smooth_on_network(
 
 def node_topological_order(net: GvfNetwork) -> list[int]:
     """Return node ids upstream-first along the directed node edges."""
-    edges = net.node_edges()
     succ: list[list[int]] = [[] for _ in range(net.n_nodes)]
-    indeg = np.zeros(net.n_nodes, dtype=int)
-    for a, b, _ in edges:
+    for a, b, _ in net.node_edges():
         succ[a].append(b)
-        indeg[b] += 1
-    queue = deque(np.flatnonzero(indeg == 0).tolist())
-    order: list[int] = []
-    while queue:
-        a = queue.popleft()
-        order.append(a)
-        for b in succ[a]:
-            indeg[b] -= 1
-            if indeg[b] == 0:
-                queue.append(b)
-    seen = set(order)
-    order += [i for i in range(net.n_nodes) if i not in seen]
+    order, _ = kahn_order(range(net.n_nodes), succ.__getitem__)
     return order
 
 
@@ -672,30 +648,6 @@ class GvfTargets:
     reach_level: dict[str, float]
     rising_edges: list[tuple[str, str, float]]
 
-    def to_frame(self) -> pd.DataFrame:
-        """Return one row per (reach, node) in downstream order."""
-        rows = []
-        net = self.net
-        for r in net.reach_ids:
-            for nid, ch in zip(net.reach_nodes[r], net.reach_chainage[r]):
-                rows.append(
-                    {
-                        "reach_id": r,
-                        "node_id": int(nid),
-                        "chainage_m": float(ch),
-                        "x": float(net.node_x[nid]),
-                        "y": float(net.node_y[nid]),
-                        "width": self.reach_width[r],
-                        "q": self.reach_q[r],
-                        "eta_raw": float(self.eta_raw[nid]),
-                        "eta_target": float(self.eta_target[nid]),
-                        "s_scale": float(self.s_scale[nid]),
-                        "node_class": self.node_class[nid],
-                        "owner": net.owner[nid],
-                    }
-                )
-        return pd.DataFrame(rows)
-
 
 def build_gvf_targets(
     rivers: gpd.GeoDataFrame,
@@ -719,13 +671,32 @@ def build_gvf_targets(
         sample_dem: Callable (x, y) -> merged (unconditioned) DEM at each node,
             NaN outside it.
         gebco_floor_m: Lowest level of the clamped GEBCO bathymetry
-            (``baseline_m - terrain.gebco_max_depth_m``).
+            (``calm_sea_level_m - terrain.gebco_max_depth_m``).
         cfg: The ``river_depth_modelling.gvf`` config block.
 
     Returns:
         The targets for src.gvf_solver.
     """
     from src.river_network import build_downstream_adjacency
+
+    where = "river_processing.river_depth_modelling.gvf"
+    require_keys(
+        cfg,
+        (
+            "step_threshold_m",
+            "structure_min_drop_m",
+            "structures",
+            "use_sword_obstructions",
+            "cut_rising_edges",
+            "node_spacing_m",
+            "target_smoothing_m",
+            "slope_floor",
+            "water_body",
+        ),
+        where,
+    )
+    wb = cfg["water_body"]
+    require_keys(wb, ("min_width_m", "sea_class_fraction"), f"{where}.water_body")
 
     downstream = build_downstream_adjacency(rivers)
     rivers, _ = orient_downstream(rivers, downstream)
@@ -734,10 +705,10 @@ def build_gvf_targets(
         rivers,
         downstream,
         reach_level,
-        step_threshold_m=float(cfg.get("step_threshold_m", 0.5)),
-        structure_min_drop_m=float(cfg.get("structure_min_drop_m", 0.2)),
-        manual=cfg.get("structures") or [],
-        use_sword_obstructions=bool(cfg.get("use_sword_obstructions", True)),
+        step_threshold_m=float(cfg["step_threshold_m"]),
+        structure_min_drop_m=float(cfg["structure_min_drop_m"]),
+        manual=cfg["structures"] or [],
+        use_sword_obstructions=bool(cfg["use_sword_obstructions"]),
     )
     for u, d, rise in rising:
         log.warning(
@@ -746,31 +717,31 @@ def build_gvf_targets(
     log.info(
         f"GVF target: {len(structures)} structure junction(s): {sorted(structures)[:20]}"
     )
-    if rising and bool(cfg.get("cut_rising_edges", True)):
+    if rising and bool(cfg["cut_rising_edges"]):
         structures = structures | {(u, d) for u, d, _ in rising}
         log.info(f"GVF target: {len(rising)} rising junction(s) cut like structures")
 
-    spacing = float(cfg.get("node_spacing_m", 500.0))
+    spacing = float(cfg["node_spacing_m"])
     net = build_node_network(rivers, downstream, spacing, structures)
     edges = net.node_edges()
 
     eta_raw = interpolate_node_targets(net, reach_level)
-    eta = smooth_on_network(
-        eta_raw, edges, float(cfg.get("target_smoothing_m", 5000.0)), spacing
-    )
+    eta = smooth_on_network(eta_raw, edges, float(cfg["target_smoothing_m"]), spacing)
     eta = enforce_non_increasing(net, eta)
 
     slope = smooth_on_network(
         node_slope(net, eta),
         edges,
-        float(cfg.get("target_smoothing_m", 5000.0)),
+        float(cfg["target_smoothing_m"]),
         spacing,
     )
-    s_scale = np.maximum(slope, float(cfg.get("slope_floor", 1.0e-5)))
+    s_scale = np.maximum(slope, float(cfg["slope_floor"]))
 
-    rid_norm = [normalize_reach_id(r) for r in rivers["reach_id"]]
+    reach_id_norm = [normalize_reach_id(r) for r in rivers["reach_id"]]
     reach_width = dict(
-        zip(rid_norm, pd.to_numeric(rivers["width"], errors="coerce").astype(float))
+        zip(
+            reach_id_norm, pd.to_numeric(rivers["width"], errors="coerce").astype(float)
+        )
     )
     node_width = np.zeros(net.n_nodes)
     node_cnt = np.zeros(net.n_nodes)
@@ -783,14 +754,13 @@ def build_gvf_targets(
     sea_fraction = np.asarray(
         sample_sea_fraction(net.node_x, net.node_y, node_width), dtype=float
     )
-    wb = cfg.get("water_body") or {}
     node_class = classify_nodes(
         node_width,
         sea_fraction,
         dem,
         gebco_floor_m,
-        min_width_m=float(wb.get("min_width_m", 1000.0)),
-        sea_class_fraction=float(wb.get("sea_class_fraction", 0.5)),
+        min_width_m=float(wb["min_width_m"]),
+        sea_class_fraction=float(wb["sea_class_fraction"]),
     )
     counts = pd.Series(node_class).value_counts().to_dict()
     log.info(

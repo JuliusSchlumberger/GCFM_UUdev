@@ -1,4 +1,4 @@
-"""Smoke tests for the quick-look figure renderer in src.quicklook."""
+"""Smoke tests for the quick-look figure renderer in quicklook.py."""
 
 from pathlib import Path
 
@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from quicklook import STAGES, render
 from shapely.geometry import LineString, Point, box
-from src.quicklook import STAGES, render
 
 FIGURES = Path(__file__).resolve().parents[2] / ".baseline" / "figures"
 CRS = "EPSG:32631"
@@ -32,7 +32,7 @@ def delta():
     )
     landuse = np.where(land, 40, 80).astype(float)
     landuse[(xx > 2500) & (xx < 3200) & (yy > 2600) & (yy < 3400)] = 50
-    manning = np.select([landuse == 80, landuse == 50], [0.02, 0.08], 0.04)
+    manning_n = np.select([landuse == 80, landuse == 50], [0.02, 0.08], 0.04)
     max_depth = np.clip(1.8 - elevation, 0.0, None) * land
     max_depth_adapted = np.where(xx < 2000, 0.0, max_depth)
     attribution = np.where(max_depth > 0, np.where(xx < 2000, 1, 2), 0).astype(float)
@@ -65,10 +65,10 @@ def delta():
     )
 
     t = pd.date_range("2020-01-01", periods=168, freq="h")
-    hours = np.arange(len(t))
-    tide = 0.8 * np.sin(2 * np.pi * hours / 12.42)
-    surge = 2.5 * np.exp(-(((hours - 84) / 10.0) ** 2))
-    discharge = 900 + 3000 * np.exp(-(((hours - 96) / 30.0) ** 2))
+    time_hr = np.arange(len(t))
+    tide = 0.8 * np.sin(2 * np.pi * time_hr / 12.42)
+    surge = 2.5 * np.exp(-(((time_hr - 84) / 10.0) ** 2))
+    discharge = 900 + 3000 * np.exp(-(((time_hr - 96) / 30.0) ** 2))
     flooded_km2 = np.clip(np.cumsum(np.maximum(surge - 1.0, 0)) * 2.0, 0, None)
 
     return {
@@ -78,7 +78,7 @@ def delta():
         "03_land_polygons": {"land_polygons": land_poly},
         "05a_elevation": {"elevation_m": da(elevation)},
         "05b_landuse": {"landuse": da(landuse), "sea_mask": da((~land).astype(float))},
-        "05c_roughness": {"manning": da(manning)},
+        "05c_roughness": {"manning": da(manning_n)},
         "06_river_network": {"river_network": river},
         "07_boundary_forcings": {
             "river_discharge": pd.Series(discharge, index=t),
@@ -96,7 +96,7 @@ def delta():
         },
         "09b_grid_align_landuse": {
             "landuse_on_grid": da(landuse),
-            "roughness_on_grid": da(manning),
+            "roughness_on_grid": da(manning_n),
         },
         "10_depth_estimation": {
             "river_burned_dem_m": da(elevation_burned),

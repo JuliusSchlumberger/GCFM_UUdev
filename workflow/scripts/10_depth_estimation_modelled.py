@@ -5,16 +5,16 @@ grid, production subgrid setup), all with the production weir geometry
 (src.protection_weir.build_coastal_protection_weir: coast and river banks in
 one water_like boundary). River forcing: a steady discharge at the protection
 RP (bankfull as fallback), ramped linearly from each crossing's bankfull over
-discharge_ramp_hours: a step to several times bankfull into a near-dry channel
+discharge_ramp_hr: a step to several times bankfull into a near-dry channel
 gives a startup shock that can oscillate for the whole run.
 
-Round 0 -- confined, un-excavated, calm sea at baseline_m. Every edge, coast
+Round 0 -- confined, un-excavated, calm sea at calm_sea_level_m. Every edge, coast
 too, at weir_crest_m (e.g. 1000 m): the confined level can exceed a low real
 coastal crest near the mouth and leak. Method modelled, per centerline cell
 (src.river_depth_calibration.compute_excavation_depth):
 
     rise   = period_max_water_level - DEM_at_cell
-    rivdph = excavation_fraction * max(rise, 0)
+    river_depth_m = excavation_fraction * max(rise, 0)
 
 then the mouth and no-dig rules. Method gvf: steady gradually-varied flow
 fitted to SWORD water levels at the mean discharge (src.gvf), no SFINCS run.
@@ -51,7 +51,7 @@ A centerline cell's water level is the MAX across its channel cross-section:
 the shorter of its row and column channel_mask runs, extended one cell each
 side to the land cell the weir sits on. Axis-aligned, not reach-normal.
 
-Mouth reaches (n_rch_dn == 0): the last cell gets rivdph=0 (bed = natural
+Mouth reaches (n_rch_dn == 0): the last cell gets river_depth_m=0 (bed = natural
 bathymetry). Upstream cells shallower than that bed are floored to it, walking
 upstream until a cell is already deeper or a reach has zero or several
 upstream neighbours. Delta-outline outflow points get a free outflow boundary
@@ -62,8 +62,8 @@ raster rule 13 uses; the subgrid uses native elevation_conditioned.tif. Rounds
 1-2 burn the channel once on the subgrid pixel grid; channel cells' main-grid
 dep is its per-cell mean. Rule 13 imports both rasters and the weir as-is.
 
-Outputs: river_network_depth_estimated holds per-reach MEDIAN rivdph and
-weir_crest_calibrated (summary only; production uses the per-edge weir file).
+Outputs: river_network_depth_estimated holds per-reach MEDIAN river_depth_m and
+weir_crest_calibrated_m (summary only; production uses the per-edge weir file).
 calib_root/round{i}/calibration_state.csv (not a declared output) holds the
 per-cell state of each round; weir_crest is NaN in round 0.
 """
@@ -81,15 +81,15 @@ import xarray as xr
 import yaml
 from affine import Affine
 from hydromt_sfincs import SfincsModel
-from scipy.ndimage import label as _ndimage_label
 from scipy.spatial import cKDTree
 from shapely.geometry import LineString, Point
 
-from src.protection_weir import LANDUSE_SEA, GridArrays, build_coastal_protection_weir, ocean_linked_wetland_mask
+from src.protection_weir import GridArrays, build_coastal_protection_weir, ocean_linked_wetland_mask
 from src.domain import load_domain
-from src.geometry import snap_points_into_region
 from src.grid import create_model_grid, load_grid_def
 from src.hydromt_sfincs_patch import use_float32_subgrid_write
+from src.io import require_keys
+from src.landuse import LANDUSE_SEA_CODE
 from src.log import setup_logging
 from src.plots import (
     animate_flood_progression,
@@ -102,14 +102,13 @@ from src.plots import (
     plot_wetland_dike_positions,
 )
 from src.postprocessing import compute_flood_progression, compute_max_inundation
-from src.raster import restrict_waterlevel_boundary_to_sea
+from src.raster import FLOAT_NODATA, dry_isolated_sea_cells, read_on_grid
 from src.river_burn import (
     build_centerline_cells_regular,
     build_channel_mask_regular,
     burn_river_channel,
     constrain_to_coarse_channel_mask,
     mean_elevation_on_coarse_grid,
-    snap_points_to_centerline_cells,
 )
 from src.river_depth_calibration import (
     build_calibration_seed_discharge,
@@ -127,8 +126,15 @@ from src.river_network import (
     normalize_reach_id,
     outflow_crossing_mask,
 )
-from src.sfincs_run import run_sfincs_subprocess, set_sfincs_inp_keys, write_weir_file
-from src.surge import ceil_crest, read_baseline_m, sinusoidal_wave, storm_tide_at_rp_interpolated, storm_tide_event
+from src.sfincs_run import (
+    create_active_mask,
+    place_discharge_points,
+    run_sfincs_subprocess,
+    set_sea_and_outflow_boundaries,
+    set_sfincs_inp_keys,
+    write_weir_file,
+)
+from src.surge import ceil_crest, read_calm_sea_level_m, sinusoidal_wave, storm_tide_at_rp_interpolated, storm_tide_event
 
 log = setup_logging(snakemake.log[0])
 use_float32_subgrid_write()
@@ -159,6 +165,7 @@ timeout_s   = int(snakemake.params.timeout_s)
 
 depth_method       = str(snakemake.params.depth_method)
 gvf_cfg            = dict(snakemake.params.gvf)
+channel_manning_n  = float(snakemake.params.channel_manning_n)
 if depth_method not in ("modelled", "gvf"):
     raise ValueError(f"river_depth_modelling.method must be modelled or gvf, got {depth_method!r}")
 elevation_merged_path = Path(snakemake.input.elevation_merged)
@@ -166,12 +173,17 @@ calibration_days   = float(snakemake.params.calibration_days)
 gebco_max_depth_m  = float(snakemake.params.gebco_max_depth_m)
 round0_level       = str(snakemake.params.round0_level)
 steady_cfg         = dict(snakemake.params.steady_state)
+require_keys(
+    steady_cfg,
+    ("median_dzs_3h_m", "p95_dzs_3h_m", "chunk_days", "max_days", "flow_balance_tol", "fail"),
+    "river_processing.river_depth_modelling.steady_state",
+)
 if round0_level not in ("end_of_run", "period_max"):
     raise ValueError(f"river_depth_modelling.round0_level must be end_of_run or period_max, got {round0_level!r}")
 # Forcing covers the longest round-0 run (continued until steady), so a
 # continuation never runs past the end of its own discharge/water-level series.
 forcing_days       = max(calibration_days, float(steady_cfg["max_days"]))
-discharge_ramp_hours = float(snakemake.params.discharge_ramp_hours)
+discharge_ramp_hr = float(snakemake.params.discharge_ramp_hr)
 weir_crest_m       = float(snakemake.params.weir_crest_m)
 weir_par1          = float(snakemake.params.weir_par1)
 excavation_fraction = float(snakemake.params.excavation_fraction)
@@ -188,7 +200,7 @@ animation_fps      = int(snakemake.params.animation_fps)
 active_mask_enabled = snakemake.params.active_mask_enabled
 active_mask_elevation_buffer_m = float(snakemake.params.active_mask_elevation_buffer_m)
 outflow_buffer_m = float(snakemake.params.outflow_buffer_m)
-waterlevel_buffer_m = float(snakemake.params.waterlevel_buffer_m)
+water_level_buffer_m = float(snakemake.params.water_level_buffer_m)
 
 calib_root.mkdir(parents=True, exist_ok=True)
 
@@ -198,12 +210,12 @@ rivers = gpd.read_file(river_network_path)
 protection_rp_yr = None
 with open(protection_levels_path) as f:
     protection = json.load(f)
-rp = protection.get("riverine_rp_yr")
-if rp is not None and np.isfinite(float(rp)):
-    protection_rp_yr = float(rp)
+rp_yr = protection.get("river_protection_rp_yr")
+if rp_yr is not None and np.isfinite(float(rp_yr)):
+    protection_rp_yr = float(rp_yr)
 # FLOPROS coastal RP for rounds 1-2's storm tide; None keeps the calm sea.
-coastal_rp_yr = protection.get("coastal_rp_yr")
-coastal_rp_yr = float(coastal_rp_yr) if coastal_rp_yr is not None and np.isfinite(float(coastal_rp_yr)) else None
+surge_protection_rp_yr = protection.get("surge_protection_rp_yr")
+surge_protection_rp_yr = float(surge_protection_rp_yr) if surge_protection_rp_yr is not None and np.isfinite(float(surge_protection_rp_yr)) else None
 
 with xr.open_dataset(river_forcing_path, decode_times=False) as river_ds:
     seed_q = build_calibration_seed_discharge(river_ds, protection_rp_yr)
@@ -232,18 +244,18 @@ log.info(
 # every production weir edge's crest. Rounds 0 and 1 use weir_crest_m instead.
 with xr.open_dataset(surge_forcing_path, decode_times=False) as _surge_ds:
     # Rounded to 1 cm, as production's zsini.
-    baseline_m = read_baseline_m(_surge_ds)
+    calm_sea_level_m = read_calm_sea_level_m(_surge_ds)
     coastal_protection_crest_m = (
         float(_surge_ds["coastal_protection_crest_m"].values)
         if "coastal_protection_crest_m" in _surge_ds else 0.0
     )
 log.info(
-    f"Coastal boundary baseline read from surge_forcing.nc: {baseline_m:+.4f} m, "
+    f"Coastal boundary baseline read from surge_forcing.nc: {calm_sea_level_m:+.4f} m, "
     f"real coastal protection crest: {coastal_protection_crest_m:+.4f} m"
 )
 
 # minimal SFINCS model (regular grid)
-resolution = float(snakemake.params.resolution)
+resolution_m = float(snakemake.params.resolution_m)
 
 delta_domain = gpd.read_file(domain_gpkg_path)
 
@@ -313,7 +325,7 @@ sf = SfincsModel(
 )
 create_model_grid(sf, load_grid_def(snakemake.input.sfincs_grid))
 log.info(
-    f"Calibration grid created from the shared grid definition: {resolution} m, "
+    f"Calibration grid created from the shared grid definition: {resolution_m} m, "
     f"rotation {sf.config.get('rotation')} deg"
 )
 
@@ -321,7 +333,7 @@ log.info(
 # raises NoDataException while it is unset.
 tref = datetime(2000, 1, 1)
 tstop = tref + timedelta(days=calibration_days)
-trstout_sec = int(calibration_days * 86400)
+trstout_s = int(calibration_days * 86400)
 # Forcing is built over forcing_days (round 0 may be continued up to
 # steady_state.max_days); each round's own run window is set in
 # _run_calibration_round.
@@ -329,8 +341,8 @@ forcing_tstop = tref + timedelta(days=forcing_days)
 sf.config.update({
     "tref": tref, "tstart": tref, "tstop": forcing_tstop,
     "dthisout": 3600, "dtmapout": 3600,
-    "dtmaxout": trstout_sec,
-    "trstout": trstout_sec, "dtrstout": 0,
+    "dtmaxout": trstout_s,
+    "trstout": trstout_s, "dtrstout": 0,
     "zsini": -9999.0,
 })
 
@@ -338,84 +350,36 @@ sf.config.update({
 # Same coarse background raster as rule 13.
 sf.elevation.create(elevation_list=[{"elevation": "local_elevation_conditioned_sfincs_grid"}])
 # Elevation ceiling on the active mask, as in rule 13.
-active_mask_kwargs = {}
+river_elevation_max_m = None
 if active_mask_enabled:
     with open(river_elevation_max_path) as f:
         river_elevation_max_m = float(json.load(f)["river_elevation_max_m"])
-    clip_elevation_m = river_elevation_max_m + active_mask_elevation_buffer_m
-    active_mask_kwargs = {"include_zmax": clip_elevation_m}
-sf.mask.create_active(include_polygon=delta_domain, **active_mask_kwargs)
-log.info(
-    "Active mask created: cells within delta polygon"
-    + (f" AND below {clip_elevation_m:.1f} m (river max {river_elevation_max_m:.1f} m + "
-       f"{active_mask_elevation_buffer_m:.1f} m buffer)" if active_mask_kwargs else "")
-)
+create_active_mask(sf, delta_domain, river_elevation_max_m, active_mask_elevation_buffer_m)
 
 # Water-level boundary on open sea only (landuse_on_grid == 200), as rule 13.
-# reset_bounds=False: create_active just built a fresh 0/1 mask, and hydromt's
-# create_boundary with reset_bounds=True and no polygon/elevation filter only
-# resets and returns -- it would set no boundary cells at all.
-sf.mask.create_boundary(btype="waterlevel", reset_bounds=False)
 with rasterio.open(landuse_on_grid_path) as _lu_src_bnd:
-    _bnd_mask, _n_bnd_on_land = restrict_waterlevel_boundary_to_sea(
-        sf.grid.data["mask"].values, _lu_src_bnd.read(1)
-    )
-if not (_bnd_mask == 2).any():
-    raise ValueError(
-        "No water-level boundary cell on open sea (landuse_on_grid == 200) at the "
-        "active-domain edge -- check the active mask and landuse_on_grid.tif."
-    )
-sf.grid.data["mask"].values[:] = _bnd_mask
-log.info(
-    f"Waterlevel boundary set: {int((_bnd_mask == 2).sum())} edge cell(s) on open sea -> mask=2 "
-    f"({_n_bnd_on_land} edge cell(s) on land use != 200 left as normal active cells)"
+    _landuse_bnd = _lu_src_bnd.read(1)
+set_sea_and_outflow_boundaries(
+    sf, _landuse_bnd, len(delta_outflow_gdf) if delta_outflow_enabled else 0, outflow_buffer_m
 )
 
-# reset_bounds=False overrides cells the water-level step claimed: an inland
-# truncation must not be forced to the coastal baseline. The buffer makes each
-# point capture at least one cell.
-if delta_outflow_enabled:
-    sf.mask.create_boundary(
-        btype="outflow", include_polygon="local_delta_outflow_points",
-        include_polygon_buffer=outflow_buffer_m, reset_bounds=False,
-    )
-    log.info(
-        f"Outflow boundary set: {len(delta_outflow_gdf)} delta-outline "
-        f"crossing(s), {outflow_buffer_m:.0f} m buffer -> mask=3"
-    )
-
-# spatially-varying zsini: sea cells start AT baseline_m, not bone-dry
+# spatially-varying zsini: sea cells start AT calm_sea_level_m, not bone-dry
 # Compared against sf.grid.data["dep"], not elevation_conditioned_sfincs_grid.tif,
 # which extends beyond the grid bounds. A coastal cell starting dry fills with
 # a transient spike above its settled level, which the run maximum would add
 # to its crest.
-with rasterio.open(landuse_on_grid_path) as _lu_src_zsini:
-    _lu_on_grid_zsini = _lu_src_zsini.read(1)
-if _lu_on_grid_zsini.shape != sf.grid.data["dep"].shape:
-    raise ValueError(
-        f"landuse_on_grid.tif shape {_lu_on_grid_zsini.shape} does not match this "
-        f"rule's own grid {sf.grid.data['dep'].shape} -- expected pixel-identical grids."
-    )
-_zsini_arr = np.where(_lu_on_grid_zsini == LANDUSE_SEA, np.float32(baseline_m), np.nan)
+_lu_on_grid_zsini = read_on_grid(landuse_on_grid_path, sf.grid.data["dep"].shape)
+_zsini_arr = np.where(_lu_on_grid_zsini == LANDUSE_SEA_CODE, np.float32(calm_sea_level_m), np.nan)
 
-# Isolated sea cells (not the main ocean component) below baseline_m start
+# Isolated sea cells (not the main ocean component) below calm_sea_level_m start
 # dry at dep, as in rule 13.
-_dep_zsini = sf.grid.data["dep"].values.astype(np.float32)
-_dep_nd_zsini = np.float32(sf.grid.data["dep"].rio.nodata or -9999.0)
-_dep_valid_zsini = np.where(np.isclose(_dep_zsini, _dep_nd_zsini), np.float32(1e6), _dep_zsini)
-_sea_cells_zsini = np.isclose(_zsini_arr, np.float32(baseline_m))
-_labeled_zsini, _n_zsini = _ndimage_label(_sea_cells_zsini)
-if _n_zsini > 0:
-    _sizes_zsini = np.bincount(_labeled_zsini.ravel())
-    _sizes_zsini[0] = 0
-    _main_label_zsini = int(np.argmax(_sizes_zsini))
-    _connected_zsini = _labeled_zsini == _main_label_zsini
-else:
-    _connected_zsini = np.zeros_like(_sea_cells_zsini)
-_isolated_wet_zsini = _sea_cells_zsini & ~_connected_zsini & (_dep_valid_zsini < np.float32(baseline_m))
-_n_fix_zsini = int(_isolated_wet_zsini.sum())
+_zsini_arr, _n_fix_zsini = dry_isolated_sea_cells(
+    _zsini_arr,
+    sf.grid.data["dep"].values,
+    sf.grid.data["dep"].rio.nodata or FLOAT_NODATA,
+    calm_sea_level_m,
+)
 if _n_fix_zsini > 0:
-    _zsini_arr = np.where(_isolated_wet_zsini, _dep_valid_zsini, _zsini_arr)
     log.info(f"zsini connectivity fix: {_n_fix_zsini} isolated wet sea-cell(s) set to dep")
 
 # Nearest: zsini is near-binary and the grids are identical. The mask must
@@ -427,7 +391,7 @@ _da_zsini = _da_zsini.rio.write_crs(sf.grid.data["dep"].rio.crs)
 _da_zsini = _da_zsini.rio.write_transform(sf.grid.data["dep"].raster.transform)
 _da_zsini.raster.set_nodata(np.nan)
 sf.initial_conditions.create(ini=_da_zsini, reproj_method="nearest")
-log.info("Initial conditions: spatially-varying zsini (sea cells start at baseline_m, land dry)")
+log.info("Initial conditions: spatially-varying zsini (sea cells start at calm_sea_level_m, land dry)")
 
 sf.roughness.create(roughness_list=[{"manning": "local_roughness"}])
 
@@ -439,14 +403,8 @@ sf.roughness.create(roughness_list=[{"manning": "local_roughness"}])
 rivers_utm = rivers.to_crs(sf.crs)
 grid = GridArrays.from_regular(sf.grid.data["dep"], sf.grid.data["mask"], sf.crs)
 channel_mask = build_channel_mask_regular(rivers_utm, "width", grid.shape, grid.transform)
-with rasterio.open(landuse_on_grid_path) as _lu_src:
-    landuse_on_grid = _lu_src.read(1)
-if landuse_on_grid.shape != grid.shape:
-    raise ValueError(
-        f"landuse_on_grid.tif shape {landuse_on_grid.shape} does not match this "
-        f"rule's own grid {grid.shape} -- expected pixel-identical grids."
-    )
-ocean_mask_grid = landuse_on_grid == LANDUSE_SEA
+landuse_on_grid = read_on_grid(landuse_on_grid_path, grid.shape)
+ocean_mask_grid = landuse_on_grid == LANDUSE_SEA_CODE
 
 # Written to file: compute_max_inundation/compute_flood_progression take a path.
 # Not weir-aware (no protected_pocket_mask before round 1).
@@ -454,14 +412,9 @@ _round_ocean_mask_path = calib_root / "ocean_mask_on_grid.tif"
 with rasterio.open(
     _round_ocean_mask_path, "w", driver="GTiff", dtype="float32", count=1,
     height=ocean_mask_grid.shape[0], width=ocean_mask_grid.shape[1],
-    crs=grid.crs, transform=grid.transform, nodata=-9999.0,
+    crs=grid.crs, transform=grid.transform, nodata=FLOAT_NODATA,
 ) as _dst:
-    _dst.write(np.where(ocean_mask_grid, np.float32(1.0), np.float32(-9999.0)), 1)
-
-# hydromt's *_points.create() silently drops points outside the unbuffered
-# region; snap_points_into_region nudges boundary points inward instead.
-region_wgs84 = sf.region.to_crs("EPSG:4326").geometry.union_all()
-buf_deg = float(resolution) / 111_000.0
+    _dst.write(np.where(ocean_mask_grid, np.float32(1.0), np.float32(FLOAT_NODATA)), 1)
 
 # Centerline calibration cells: every grid cell a reach's centerline crosses
 # Per cell from sfincs_map.nc, not observation points: a sparse point can miss
@@ -469,7 +422,7 @@ buf_deg = float(resolution) / 111_000.0
 cell_gdf = build_centerline_cells_regular(rivers_utm, grid.shape, grid.transform)
 if cell_gdf.empty:
     raise RuntimeError("No centerline calibration cells could be identified -- empty river network?")
-dem_at_cell = grid.bed_elevation[cell_gdf["row"].to_numpy(), cell_gdf["col"].to_numpy()]
+dem_at_cell = grid.bed_elevation_m[cell_gdf["row"].to_numpy(), cell_gdf["col"].to_numpy()]
 log.info(
     f"Centerline calibration cells: {len(cell_gdf)} across "
     f"{cell_gdf['reach_id'].nunique()} reach(es)"
@@ -556,9 +509,9 @@ with xr.open_dataset(river_forcing_path, decode_times=False) as river_ds:
     cross_lons = river_ds["longitude"].values[active]
     cross_lats = river_ds["latitude"].values[active]
     # Ramp start value.
-    cross_bankfull_q = river_ds["bankfull_discharge"].values[active]
+    cross_bankfull_q = river_ds["bankfull_discharge_m3s"].values[active]
 
-crossing_q = [reach_q.get(str(rid), np.nan) for rid in inside_ids]
+crossing_q = [reach_q.get(str(reach_id), np.nan) for reach_id in inside_ids]
 crossings_gdf = gpd.GeoDataFrame(
     {"index": range(len(crossing_q))},
     geometry=gpd.points_from_xy(cross_lons, cross_lats),
@@ -573,42 +526,33 @@ inside_ids_valid = np.asarray(inside_ids)[valid] if len(inside_ids) else [None] 
 if crossings_gdf.empty:
     raise RuntimeError("No discharge crossings resolved to a calibration discharge -- cannot calibrate")
 
-# Snap to the crossing reach's centerline cell: an unsnapped point can land in
-# a floodplain cell without conveyance (basin 4267691: 369 m water level in
-# round 0). Own reach first, else nearest cell of any reach.
-crossings_utm = snap_points_to_centerline_cells(
-    crossings_gdf.to_crs(sf.crs), cell_gdf, reach_ids=inside_ids_valid, resolution_m=resolution,
-)
-crossings_gdf = crossings_utm.to_crs("EPSG:4326")
-
-crossings_filt, cross_keep_mask = snap_points_into_region(crossings_gdf, region_wgs84, buf_deg)
-crossing_q = crossing_q[cross_keep_mask]
-crossing_bankfull_q = crossing_bankfull_q[cross_keep_mask]
-if crossings_filt.empty:
-    raise RuntimeError("All discharge crossings fall outside the active calibration region")
-
 # Linear ramp from bankfull to the calibration discharge, then flat: a step
 # into a near-dry channel oscillates for the whole run (basin 2433835:
 # multi-metre hourly swings at the seed cell). NaN bankfull ramps from 0.
-_ramp_hours = np.arange(n_steps) * (forcing_days * 24.0) / (n_steps - 1)
-_ramp_frac = np.clip(_ramp_hours / max(discharge_ramp_hours, 1e-6), 0.0, 1.0)[:, None]
+_ramp_time_hr = np.arange(n_steps) * (forcing_days * 24.0) / (n_steps - 1)
+_ramp_frac = np.clip(_ramp_time_hr / max(discharge_ramp_hr, 1e-6), 0.0, 1.0)[:, None]
 _bankfull_start = np.where(np.isfinite(crossing_bankfull_q), crossing_bankfull_q, 0.0)
 dis_values = _bankfull_start[None, :] + (crossing_q[None, :] - _bankfull_start[None, :]) * _ramp_frac
-dis_df = pd.DataFrame(dis_values, index=calib_times, columns=range(len(crossings_filt)))
-sf.discharge_points.create(timeseries=dis_df, locations=crossings_filt)
+dis_df = pd.DataFrame(dis_values, index=calib_times, columns=crossings_gdf["index"].to_numpy())
+
+# Snap to the crossing reach's centerline cell: an unsnapped point can land in
+# a floodplain cell without conveyance (basin 4267691: 369 m water level in
+# round 0). Own reach first, else nearest cell of any reach.
+crossings_filt = place_discharge_points(sf, crossings_gdf, dis_df, cell_gdf, inside_ids_valid, resolution_m)
+dis_df = dis_df[crossings_filt["index"].to_numpy()]
 log.info(
     f"Discharge forcing: {len(crossings_filt)} source point(s), ramped from bankfull to the full "
-    f"calibration discharge over {discharge_ramp_hours:.1f} h, held constant for the remaining "
-    f"{max(calibration_days * 24.0 - discharge_ramp_hours, 0.0):.1f} h"
+    f"calibration discharge over {discharge_ramp_hr:.1f} h, held constant for the remaining "
+    f"{max(calibration_days * 24.0 - discharge_ramp_hr, 0.0):.1f} h"
 )
 
 # For round 2's crest gap map.
 crossings_utm = crossings_filt.to_crs(grid.crs)
 
-# coastal water-level boundary (steady baseline_m)
+# coastal water-level boundary (steady calm_sea_level_m)
 sf.water_level.create_boundary_points_from_mask(bnd_dist=5000.0)
-sf.water_level.create_timeseries(shape="constant", offset=baseline_m)
-log.info(f"Water-level forcing: flat constant boundary at {baseline_m:+.4f} m (baseline_m)")
+sf.water_level.create_timeseries(shape="constant", offset=calm_sea_level_m)
+log.info(f"Water-level forcing: flat constant boundary at {calm_sea_level_m:+.4f} m (calm_sea_level_m)")
 
 
 def _resolve_map_cell_idx(map_nc_path: Path, x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -717,8 +661,10 @@ def _continue_until_steady(round_label: str, round_root: Path) -> dict:
             break
         rst = sorted(round_root.glob("sfincs.*.rst"), key=lambda p: p.stat().st_mtime)
         if not rst:
-            log.warning(f"[{round_label}] no restart file written -- cannot continue the run")
-            break
+            raise RuntimeError(
+                f"[{round_label}] not steady after {days:.1f} day(s) and no sfincs.*.rst restart "
+                f"file in {round_root} -- cannot continue the run to steady state"
+            )
         new_end = run_end + chunk
         set_sfincs_inp_keys(round_root / "sfincs.inp", {
             "rstfile": rst[-1].name, "inifile": None, "zsini": None,
@@ -777,8 +723,8 @@ def _run_calibration_round(round_label: str, round_root: Path, until_steady: boo
     period_max_zs is then the maximum over the LAST chunk."""
     sf.config.set("rstfile", None)
     sf.config.update({
-        "tstart": tref, "tstop": tstop, "trstout": trstout_sec, "dtrstout": 0,
-        "dtmaxout": trstout_sec, "zsini": -9999.0,
+        "tstart": tref, "tstop": tstop, "trstout": trstout_s, "dtrstout": 0,
+        "dtmaxout": trstout_s, "zsini": -9999.0,
     })
     sf.write()
     write_weir_file(sf)  # crests at 1 cm, not hydromt_sfincs' 0.1 m
@@ -863,21 +809,21 @@ def _set_weir(weir_gdf: gpd.GeoDataFrame, weir_diagnostics: dict, round_label: s
         log.warning(f"[{round_label}] Coastal protection weir: not applicable -- this round is not confined")
 
 
-def _update_reach_columns(rivdph: np.ndarray, weir_crest: np.ndarray | None = None) -> None:
-    # Median, so a mouth reach's forced rivdph=0 last cell does not skew it.
-    cell_state = cell_gdf[["reach_id"]].assign(rivdph=rivdph)
+def _update_reach_columns(river_depth_m: np.ndarray, weir_crest: np.ndarray | None = None) -> None:
+    # Median, so a mouth reach's forced river_depth_m=0 last cell does not skew it.
+    cell_state = cell_gdf[["reach_id"]].assign(river_depth_m=river_depth_m)
     if weir_crest is not None:
         cell_state = cell_state.assign(crest=weir_crest)
     reach_medians = cell_state.groupby("reach_id").median()
-    rivers["rivdph"] = rivers["reach_id"].astype(str).map(reach_medians["rivdph"])
+    rivers["river_depth_m"] = rivers["reach_id"].astype(str).map(reach_medians["river_depth_m"])
     if weir_crest is not None:
-        rivers["weir_crest_calibrated"] = rivers["reach_id"].astype(str).map(reach_medians["crest"])
-        rivers_utm["weir_crest_calibrated"] = rivers_utm["reach_id"].astype(str).map(reach_medians["crest"])
+        rivers["weir_crest_calibrated_m"] = rivers["reach_id"].astype(str).map(reach_medians["crest"])
+        rivers_utm["weir_crest_calibrated_m"] = rivers_utm["reach_id"].astype(str).map(reach_medians["crest"])
 
 
-def _write_calibration_state(round_root: Path, rivdph: np.ndarray, weir_crest: np.ndarray, zs: np.ndarray) -> None:
+def _write_calibration_state(round_root: Path, river_depth_m: np.ndarray, weir_crest: np.ndarray, zs: np.ndarray) -> None:
     cell_gdf.drop(columns="geometry").assign(
-        dem=dem_at_cell, rivdph=rivdph, weir_crest=weir_crest, zs=zs,
+        dem=dem_at_cell, river_depth_m=river_depth_m, weir_crest=weir_crest, zs=zs,
     ).to_csv(round_root / "calibration_state.csv", index=False)
 
 
@@ -901,7 +847,7 @@ def _round_diagnostics(
     plot_water_level_timeseries(
         final_times_s / 86400.0, final_zs[:, representative_cell_pos], str(paths["plot_water_level"]),
         day_markers=[(calibration_days, f"Day {calibration_days:.0f} (run end)")],
-        station_labels=[f"reach {rid}" for rid in representative_reach_ids],
+        station_labels=[f"reach {reach_id}" for reach_id in representative_reach_ids],
         basin_id=f"Basin {basin_id}", run_label=f"Depth calibration -- {round_label}",
     )
 
@@ -909,28 +855,27 @@ def _round_diagnostics(
         round_root, round_root, _round_ocean_mask_path, hmin=0.0,
     )
     if da_hmax is None:
-        log.warning(f"[{round_label}] No max inundation data available -- creating empty plot sentinel")
-        paths["plot_max_inundation"].touch()
-    else:
-        plot_max_inundation_map(
-            da_hmax, domain_poly, str(land_mask_path), str(river_network_path),
-            str(paths["plot_max_inundation"]),
-            basin_id=basin_id, run_label=f"calibration -- {round_label}",
-        )
+        raise RuntimeError(f"[{round_label}] no zsmax in the SFINCS output of {round_root}")
+    plot_max_inundation_map(
+        da_hmax, domain_poly, str(land_mask_path), str(river_network_path),
+        str(paths["plot_max_inundation"]),
+        basin_id=basin_id, run_label=f"calibration -- {round_label}",
+    )
 
     da_h = compute_flood_progression(round_root, _round_ocean_mask_path)
     if da_h is None:
-        log.warning(f"[{round_label}] compute_flood_progression returned None -- skipping flood animation")
-        paths["animation"].touch()
-    else:
-        animate_flood_progression(
-            da_h, domain_poly, str(land_mask_path), str(river_network_path),
-            str(paths["animation"]),
-            basin_id=basin_id, run_label=f"calibration -- {round_label}", fps=animation_fps,
-        )
+        raise RuntimeError(f"[{round_label}] no zs or zb in the SFINCS output of {round_root}")
+    animate_flood_progression(
+        da_h, domain_poly, str(land_mask_path), str(river_network_path),
+        str(paths["animation"]),
+        basin_id=basin_id, run_label=f"calibration -- {round_label}", fps=animation_fps,
+    )
 
     if round_idx == N_ROUNDS_AFTER_0:
-        if crest_gap_crest_on_grid is None:
+        # None when the production weir is not applicable (no ocean cells on
+        # the grid); all-NaN when it has no seaward edge. Both leave no crest to map.
+        if crest_gap_crest_on_grid is None or not np.isfinite(crest_gap_crest_on_grid).any():
+            log.warning(f"[{round_label}] no weir crest cells -- writing empty crest gap map sentinel")
             paths["crest_gap_map"].touch()
         else:
             plot_crest_gap_map(
@@ -1016,16 +961,16 @@ if depth_method == "gvf":
                 vals[vals == src.nodata] = np.nan
         return vals
 
-    def _sample_sea_fraction(x, y, width):
+    def _sample_sea_fraction(x, y, width_m):
         # Share of sea class (200) over a disc of the channel width (21 points).
         offs = np.linspace(-0.5, 0.5, 5)
         disc = [(a, b) for a in offs for b in offs if a * a + b * b <= 0.25]
         src, to_src = _sampler(snakemake.input.landuse)
         out = np.zeros(len(x))
         with src:
-            for k, (xk, yk, wk) in enumerate(zip(x, y, width)):
+            for k, (xk, yk, wk) in enumerate(zip(x, y, width_m)):
                 px, py = to_src.transform([xk + a * wk for a, _ in disc], [yk + b * wk for _, b in disc])
-                out[k] = np.mean(np.array([v[0] for v in src.sample(zip(px, py))]) == LANDUSE_SEA)
+                out[k] = np.mean(np.array([v[0] for v in src.sample(zip(px, py))]) == LANDUSE_SEA_CODE)
         return out
 
     _outflow_ids = (
@@ -1038,9 +983,10 @@ if depth_method == "gvf":
         _offset,
         _sample_sea_fraction,
         _sample_dem,
-        sea_level_m=baseline_m,
-        gebco_floor_m=baseline_m - gebco_max_depth_m,
+        sea_level_m=calm_sea_level_m,
+        gebco_floor_m=calm_sea_level_m - gebco_max_depth_m,
         outflow_reaches=_outflow_ids,
+        manning_n=channel_manning_n,
         cfg=gvf_cfg,
     )
 
@@ -1076,7 +1022,7 @@ if depth_method == "gvf":
 
     _update_reach_columns(rivdph_current)
     _write_calibration_state(
-        round_root, rivdph=np.zeros(len(cell_gdf)), weir_crest=np.full(len(cell_gdf), np.nan), zs=round0_zs,
+        round_root, river_depth_m=np.zeros(len(cell_gdf)), weir_crest=np.full(len(cell_gdf), np.nan), zs=round0_zs,
     )
 else:
     _create_subgrid([{"elevation": "local_elevation_conditioned"}], round_label)
@@ -1088,20 +1034,20 @@ else:
         lines, names = [], []
         _ends = [r for r in rivers["reach_id"].map(normalize_reach_id) if not adjacency.get(r)]
         _anchor_cells = []
-        for rid in _ends:
-            c = cell_gdf[cell_gdf["reach_id"].map(normalize_reach_id) == rid]
+        for reach_id in _ends:
+            c = cell_gdf[cell_gdf["reach_id"].map(normalize_reach_id) == reach_id]
             if not c.empty:
-                _anchor_cells.append((f"mouth {rid}", c.loc[c["along_m"].idxmax()]))
+                _anchor_cells.append((f"mouth {reach_id}", c.loc[c["along_m"].idxmax()]))
         if delta_outflow_enabled:
             _cells_xy = np.column_stack([cell_gdf["x"], cell_gdf["y"]])
             for k, pt in enumerate(delta_outflow_gdf.to_crs(sf.crs).geometry):
                 j = int(np.argmin(np.hypot(_cells_xy[:, 0] - pt.x, _cells_xy[:, 1] - pt.y)))
                 _anchor_cells.append((f"outflow {k}", cell_gdf.iloc[j]))
-        _lines_by_rid = {normalize_reach_id(r): g for r, g in zip(rivers_utm["reach_id"], rivers_utm.geometry)}
-        _width_by_rid = {normalize_reach_id(r): float(w) for r, w in zip(rivers_utm["reach_id"], rivers_utm["width"])}
+        _lines_by_reach_id = {normalize_reach_id(r): g for r, g in zip(rivers_utm["reach_id"], rivers_utm.geometry)}
+        _width_by_reach_id = {normalize_reach_id(r): float(w) for r, w in zip(rivers_utm["reach_id"], rivers_utm["width"])}
         for name, cell in _anchor_cells:
-            rid = normalize_reach_id(cell["reach_id"])
-            line = _lines_by_rid.get(rid)
+            reach_id = normalize_reach_id(cell["reach_id"])
+            line = _lines_by_reach_id.get(reach_id)
             if line is None:
                 continue
             s = line.project(Point(cell["x"], cell["y"]))
@@ -1109,7 +1055,7 @@ else:
             tx, ty = b.x - a.x, b.y - a.y
             norm = float(np.hypot(tx, ty)) or 1.0
             nx_, ny_ = -ty / norm, tx / norm
-            half = max(0.75 * _width_by_rid.get(rid, resolution), 1.5 * resolution)
+            half = max(0.75 * _width_by_reach_id.get(reach_id, resolution_m), 1.5 * resolution_m)
             lines.append(LineString([(cell["x"] - nx_ * half, cell["y"] - ny_ * half), (cell["x"] + nx_ * half, cell["y"] + ny_ * half)]))
             names.append(name)
         return gpd.GeoDataFrame({"name": names}, geometry=lines, crs=sf.crs)
@@ -1142,7 +1088,7 @@ else:
             _problems.append(f"flow imbalance {100 * _imbalance:.1f}% > {100 * float(steady_cfg['flow_balance_tol']):.0f}%")
     if _problems:
         _msg = f"[{round_label}] " + "; ".join(_problems)
-        if bool(steady_cfg.get("fail", False)):
+        if bool(steady_cfg["fail"]):
             raise RuntimeError(_msg + " (river_depth_modelling.steady_state.fail is true)")
         log.warning(_msg + " -- continuing (river_depth_modelling.steady_state.fail is false)")
 
@@ -1162,7 +1108,7 @@ else:
     )
 
     # Mouth (n_rch_dn == 0; is_delta_outflow is unreliable): the last cell is
-    # natural bathymetry (rivdph=0), a physical constraint. A channel does not
+    # natural bathymetry (river_depth_m=0), a physical constraint. A channel does not
     # get shallower before the sea, so beds shallower than that are floored to
     # it, walking upstream and stopping for good at the first cell already
     # deeper; a blanket min() would deepen unrelated upstream reaches.
@@ -1173,22 +1119,22 @@ else:
         along_m_arr = cell_gdf["along_m"].to_numpy()
         reach_id_arr = cell_gdf["reach_id"].to_numpy()
         reach_cell_pos: dict[str, np.ndarray] = {
-            rid: (pos := np.flatnonzero(reach_id_arr == rid))[np.argsort(along_m_arr[pos])]  # upstream -> downstream
-            for rid in cell_gdf["reach_id"].unique()
+            reach_id: (pos := np.flatnonzero(reach_id_arr == reach_id))[np.argsort(along_m_arr[pos])]  # upstream -> downstream
+            for reach_id in cell_gdf["reach_id"].unique()
         }
         downstream_adjacency = build_downstream_adjacency(rivers)
         upstream_of: dict[str, list[str]] = {}
-        for rid, dn_list in downstream_adjacency.items():
+        for reach_id, dn_list in downstream_adjacency.items():
             for dn in dn_list:
-                upstream_of.setdefault(dn, []).append(rid)
+                upstream_of.setdefault(dn, []).append(reach_id)
 
-        for mouth_rid in cell_gdf.loc[cell_is_mouth_reach, "reach_id"].unique():
-            reach_pos = reach_cell_pos[mouth_rid]
+        for mouth_reach_id in cell_gdf.loc[cell_is_mouth_reach, "reach_id"].unique():
+            reach_pos = reach_cell_pos[mouth_reach_id]
             last_pos = reach_pos[-1]
             coastal_endpoint_bed = dem_at_cell[last_pos]
             rivdph_current[last_pos] = 0.0
 
-            current_rid = mouth_rid
+            current_reach_id = mouth_reach_id
             cell_positions = reach_pos[-2::-1]  # this reach's own cells, excl. coastal endpoint, downstream -> upstream
             found_intersection = False
             while not found_intersection:
@@ -1201,11 +1147,11 @@ else:
                         break
                 if found_intersection:
                     break
-                upstream_rids = upstream_of.get(current_rid, [])
-                if len(upstream_rids) != 1:
+                upstream_reach_ids = upstream_of.get(current_reach_id, [])
+                if len(upstream_reach_ids) != 1:
                     break  # no further single upstream reach (headwater or confluence) -- stop clamping
-                current_rid = upstream_rids[0]
-                cell_positions = reach_cell_pos[current_rid][::-1]  # next reach, downstream -> upstream
+                current_reach_id = upstream_reach_ids[0]
+                cell_positions = reach_cell_pos[current_reach_id][::-1]  # next reach, downstream -> upstream
     else:
         log.warning(f"[{round_label}] No mouth (outlet) reach found")
 
@@ -1215,21 +1161,21 @@ else:
     # depth (basin 1248635: beds around -18 m on 36 reaches).
     _cell_rows = cell_gdf["row"].to_numpy()
     _cell_cols = cell_gdf["col"].to_numpy()
-    _sea_cell = landuse_on_grid[_cell_rows, _cell_cols] == LANDUSE_SEA
-    _gebco_floor_cell = dem_at_cell <= (baseline_m - gebco_max_depth_m + 0.1)
+    _sea_cell = landuse_on_grid[_cell_rows, _cell_cols] == LANDUSE_SEA_CODE
+    _gebco_floor_cell = dem_at_cell <= (calm_sea_level_m - gebco_max_depth_m + 0.1)
     _no_dig = (_sea_cell | _gebco_floor_cell) & (rivdph_current > 0)
     if _no_dig.any():
         log.info(
             f"[{round_label}] No excavation on {int(_no_dig.sum()):,} of {len(cell_gdf):,} centreline cell(s): "
             f"{int((_sea_cell & (rivdph_current > 0)).sum()):,} land-use sea, "
             f"{int((_gebco_floor_cell & (rivdph_current > 0)).sum()):,} at the GEBCO depth limit "
-            f"(<= {baseline_m - gebco_max_depth_m + 0.1:+.2f} m)"
+            f"(<= {calm_sea_level_m - gebco_max_depth_m + 0.1:+.2f} m)"
         )
         rivdph_current = np.where(_no_dig, 0.0, rivdph_current)
 
     _update_reach_columns(rivdph_current)
     _write_calibration_state(
-        round_root, rivdph=np.zeros(len(cell_gdf)), weir_crest=np.full(len(cell_gdf), np.nan), zs=round0_zs,
+        round_root, river_depth_m=np.zeros(len(cell_gdf)), weir_crest=np.full(len(cell_gdf), np.nan), zs=round0_zs,
     )
     _round_diagnostics(0, round_root, final_zs, final_times_s, confinement_weir_gdf)
     rivbed_cell = dem_at_cell - rivdph_current
@@ -1243,13 +1189,13 @@ if depth_method == "gvf":
 
     _depth_segments = depth_segments(gvf_run, crs=sf.crs)
     _depth_label = "Water depth at mean discharge (m)"
-    _depth_title = f"Basin {basin_id}: river depth from GVF (SWORD wse, GloFAS mean Q, n = {gvf_cfg['manning_channel']})"
+    _depth_title = f"Basin {basin_id}: river depth from GVF (SWORD wse, GloFAS mean Q, n = {channel_manning_n})"
 else:
     _depth_segments = cell_depth_segments(
         cell_gdf, rivdph_current,
         {normalize_reach_id(r): float(w) for r, w in zip(rivers_utm["reach_id"], rivers_utm["width"])},
     )
-    _depth_label = "Excavated depth below the conditioned DEM, rivdph (m)"
+    _depth_label = "Excavated depth below the conditioned DEM, river_depth_m (m)"
     _depth_title = f"Basin {basin_id}: river depth from round 0 (excavation_fraction {excavation_fraction:g})"
 plot_river_depth_width(
     _depth_segments,
@@ -1261,7 +1207,7 @@ plot_river_depth_width(
 )
 
 # excavation (shared by rounds 1 and 2)
-# One anchor per centerline cell: rivbed = DEM_at_cell - rivdph.
+# One anchor per centerline cell: rivbed = DEM_at_cell - river_depth_m.
 zbed_anchors = cell_gdf.assign(rivbed=rivbed_cell)
 
 # Burned on the subgrid's own pixel grid: hydromt resampling another grid leaks
@@ -1269,7 +1215,6 @@ zbed_anchors = cell_gdf.assign(rivbed=rivbed_cell)
 # MINIMUM sub-pixel elevation, so a few leaked pixels deepen a whole cell.
 # natural_dem_path floors the burn: anchor interpolation can overshoot.
 # Rule 13 uses this raster unresampled.
-NODATA = np.float32(-9999.0)
 subgrid_transform = grid.transform * Affine.scale(1.0 / nr_subgrid_pixels)
 subgrid_shape = (grid.shape[0] * nr_subgrid_pixels, grid.shape[1] * nr_subgrid_pixels)
 burned_arr_subgrid, transform_subgrid, terrain_subgrid, stats_subgrid = burn_river_channel(
@@ -1289,26 +1234,26 @@ with rasterio.open(
     river_burned_subgrid_path, "w", driver="GTiff", dtype="float32",
     width=burned_arr_subgrid.shape[1], height=burned_arr_subgrid.shape[0],
     count=1, crs=sf.crs, transform=transform_subgrid,
-    nodata=float(NODATA), compress="deflate", tiled=True,
+    nodata=FLOAT_NODATA, compress="deflate", tiled=True,
 ) as dst:
-    dst.write(np.where(np.isnan(burned_arr_subgrid), NODATA, burned_arr_subgrid).astype(np.float32), 1)
+    dst.write(np.where(np.isnan(burned_arr_subgrid), FLOAT_NODATA, burned_arr_subgrid).astype(np.float32), 1)
 # Channel Manning n on the same pixels (method gvf: the solver's n, so SFINCS
 # sees the channel the bed was fitted for); all nodata for method modelled.
 _channel_n = (
-    np.where(np.isfinite(burned_arr_subgrid), np.float32(gvf_cfg["manning_channel"]), NODATA)
-    if depth_method == "gvf" else np.full(burned_arr_subgrid.shape, NODATA, dtype=np.float32)
+    np.where(np.isfinite(burned_arr_subgrid), np.float32(channel_manning_n), np.float32(FLOAT_NODATA))
+    if depth_method == "gvf" else np.full(burned_arr_subgrid.shape, FLOAT_NODATA, dtype=np.float32)
 )
 with rasterio.open(
     snakemake.output.river_roughness_subgrid, "w", driver="GTiff", dtype="float32",
     width=_channel_n.shape[1], height=_channel_n.shape[0],
     count=1, crs=sf.crs, transform=transform_subgrid,
-    nodata=float(NODATA), compress="deflate", tiled=True,
+    nodata=FLOAT_NODATA, compress="deflate", tiled=True,
 ) as dst:
     dst.write(_channel_n.astype(np.float32), 1)
 log.info(
     f"Written: {snakemake.output.river_roughness_subgrid} "
-    f"({int((_channel_n != NODATA).sum()):,} channel pixel(s) at n = "
-    f"{gvf_cfg['manning_channel'] if depth_method == 'gvf' else '-'})"
+    f"({int((_channel_n != FLOAT_NODATA).sum()):,} channel pixel(s) at n = "
+    f"{channel_manning_n if depth_method == 'gvf' else '-'})"
 )
 del _channel_n
 log.info(
@@ -1344,12 +1289,12 @@ excavated_subgrid_elevation_list = [
 # River and surge both at protection RP is conservative near the mouth.
 # Shape (src.surge.storm_tide_event, as rule 13): average tide plus the RP's surge
 # shape, peak midway between ramp end and run end, blended in linearly from
-# baseline_m over the ramp. Without hydrograph components: a half-cosine over
+# calm_sea_level_m over the ramp. Without hydrograph components: a half-cosine over
 # surge period_hr starting at ramp end.
-if coastal_rp_yr is not None:
-    _surge_hours = np.arange(0.0, calibration_days * 24.0 + 1e-9, 0.25)
+if surge_protection_rp_yr is not None:
+    _surge_time_hr = np.arange(0.0, calibration_days * 24.0 + 1e-9, 0.25)
     with xr.open_dataset(surge_forcing_path, decode_times=False) as _sds:
-        coastal_design_peaks = storm_tide_at_rp_interpolated(_sds, coastal_rp_yr)
+        coastal_design_peaks = storm_tide_at_rp_interpolated(_sds, surge_protection_rp_yr)
         surge_period_hr = float(_sds.attrs["period_hr"])
         _surge_stations = gpd.GeoDataFrame(
             {"index": range(_sds.sizes["station"])},
@@ -1358,44 +1303,44 @@ if coastal_rp_yr is not None:
         )
         _tidal = "hg_tide_m" in _sds
         if _tidal:
-            _surge_peak_hr = discharge_ramp_hours + (calibration_days * 24.0 - discharge_ramp_hours) / 2.0
+            _surge_peak_hr = discharge_ramp_hr + (calibration_days * 24.0 - discharge_ramp_hr) / 2.0
             _event = storm_tide_event(
-                _sds, _surge_hours - _surge_peak_hr, coastal_design_peaks, rp_yr=coastal_rp_yr
+                _sds, _surge_time_hr - _surge_peak_hr, coastal_design_peaks, rp_yr=surge_protection_rp_yr
             )
     if _tidal:
         _w = (
-            np.clip(_surge_hours / discharge_ramp_hours, 0.0, 1.0)
-            if discharge_ramp_hours > 0 else np.ones_like(_surge_hours)
+            np.clip(_surge_time_hr / discharge_ramp_hr, 0.0, 1.0)
+            if discharge_ramp_hr > 0 else np.ones_like(_surge_time_hr)
         )
-        _surge_wl = ((1.0 - _w) * baseline_m + _w * _event).T
+        _surge_wl = ((1.0 - _w) * calm_sea_level_m + _w * _event).T
         _wave_desc = (
             f"average tide + surge, peak at {_surge_peak_hr:.1f} h "
-            f"(blended in from {baseline_m:+.2f} m over the first {discharge_ramp_hours:.1f} h)"
+            f"(blended in from {calm_sea_level_m:+.2f} m over the first {discharge_ramp_hr:.1f} h)"
         )
     else:
-        if discharge_ramp_hours + surge_period_hr > calibration_days * 24.0:
+        if discharge_ramp_hr + surge_period_hr > calibration_days * 24.0:
             raise ValueError(
                 f"calibration run ({calibration_days * 24.0:.0f} h) too short for the storm tide: "
-                f"discharge ramp {discharge_ramp_hours:.0f} h + surge period {surge_period_hr:.0f} h -- "
+                f"discharge ramp {discharge_ramp_hr:.0f} h + surge period {surge_period_hr:.0f} h -- "
                 f"increase river_depth_modelling.calibration_days"
             )
         _surge_wl = np.stack([
-            sinusoidal_wave(baseline_m, float(peak), _surge_hours, discharge_ramp_hours / 24.0, surge_period_hr)
+            sinusoidal_wave(calm_sea_level_m, float(peak), _surge_time_hr, discharge_ramp_hr / 24.0, surge_period_hr)
             for peak in coastal_design_peaks
         ], axis=1)
         _wave_desc = (
-            f"{surge_period_hr:.0f} h half-cosine from {baseline_m:+.2f} m starting at {discharge_ramp_hours:.1f} h "
+            f"{surge_period_hr:.0f} h half-cosine from {calm_sea_level_m:+.2f} m starting at {discharge_ramp_hr:.1f} h "
             f"(no storm-tide hydrograph components in surge_forcing.nc)"
         )
     sf.water_level.create(
         timeseries=pd.DataFrame(
-            _surge_wl, index=pd.DatetimeIndex([tref + timedelta(hours=float(h)) for h in _surge_hours]),
+            _surge_wl, index=pd.DatetimeIndex([tref + timedelta(hours=float(h)) for h in _surge_time_hr]),
             columns=range(len(_surge_stations)),
         ),
-        locations=_surge_stations, buffer=waterlevel_buffer_m, merge=False,
+        locations=_surge_stations, buffer=water_level_buffer_m, merge=False,
     )
     log.info(
-        f"Rounds 1-2 coastal forcing: RP {coastal_rp_yr:.1f} storm tide at {len(_surge_stations)} station(s), "
+        f"Rounds 1-2 coastal forcing: RP {surge_protection_rp_yr:.1f} storm tide at {len(_surge_stations)} station(s), "
         f"peak {coastal_design_peaks.min():+.2f}..{coastal_design_peaks.max():+.2f} m "
         f"(boundary series {_surge_wl.min():+.2f}..{_surge_wl.max():+.2f} m), {_wave_desc}"
     )
@@ -1425,7 +1370,7 @@ log.info(
     f"(+{weir_freeboard_m:.2f} m freeboard)"
 )
 _update_reach_columns(rivdph_current, weir_crest_cell)
-_write_calibration_state(round_root, rivdph=rivdph_current, weir_crest=weir_crest_cell, zs=period_max_zs_1)
+_write_calibration_state(round_root, river_depth_m=rivdph_current, weir_crest=weir_crest_cell, zs=period_max_zs_1)
 _round_diagnostics(1, round_root, final_zs, final_times_s, confinement_weir_gdf)
 
 # round 2: verification with the real production weir
@@ -1454,7 +1399,7 @@ if final_weir_diagnostics.get("edge_water_side_mask") is not None:
             f"[{round_label}] Verified: no edge water-side cell exceeds its own crest "
             f"({int(_edge_mask.sum()):,} cell(s) checked)"
         )
-_write_calibration_state(round_root, rivdph=rivdph_current, weir_crest=weir_crest_cell, zs=period_max_zs_2)
+_write_calibration_state(round_root, river_depth_m=rivdph_current, weir_crest=weir_crest_cell, zs=period_max_zs_2)
 _round_diagnostics(2, round_root, final_zs, final_times_s, weir_gdf, crest_gap_crest_on_grid=edge_crest_on_grid)
 
 # canonical production outputs: burned river channel + weir
@@ -1462,9 +1407,9 @@ with rasterio.open(
     snakemake.output.river_burned_dem_sfincs_grid, "w", driver="GTiff", dtype="float32",
     width=burned_arr_sfincs.shape[1], height=burned_arr_sfincs.shape[0],
     count=1, crs=sf.crs, transform=grid.transform,
-    nodata=float(NODATA), compress="deflate",
+    nodata=FLOAT_NODATA, compress="deflate",
 ) as dst:
-    dst.write(np.where(np.isnan(burned_arr_sfincs), NODATA, burned_arr_sfincs).astype(np.float32), 1)
+    dst.write(np.where(np.isnan(burned_arr_sfincs), FLOAT_NODATA, burned_arr_sfincs).astype(np.float32), 1)
 log.info(
     f"Written: {snakemake.output.river_burned_dem_sfincs_grid} "
     f"({int(np.isfinite(burned_arr_sfincs).sum()):,} channel cell(s))"
@@ -1489,12 +1434,12 @@ log.info(f"Written: {snakemake.output.coastal_protection_weir} ({len(weir_gdf)} 
 _protected_pocket_mask = final_weir_diagnostics.get(
     "protected_pocket_mask", np.zeros(landuse_on_grid.shape, dtype=bool)
 )
-_sea_cells_on_grid = (landuse_on_grid == LANDUSE_SEA) & ~_protected_pocket_mask
-_sea_cells_arr = np.where(_sea_cells_on_grid, np.float32(1.0), np.float32(-9999.0))
+_sea_cells_on_grid = (landuse_on_grid == LANDUSE_SEA_CODE) & ~_protected_pocket_mask
+_sea_cells_arr = np.where(_sea_cells_on_grid, np.float32(1.0), np.float32(FLOAT_NODATA))
 _sea_cells_profile = {
     "driver": "GTiff", "height": _sea_cells_arr.shape[0], "width": _sea_cells_arr.shape[1],
     "count": 1, "dtype": "float32", "crs": grid.crs, "transform": grid.transform,
-    "nodata": -9999.0,
+    "nodata": FLOAT_NODATA,
 }
 Path(snakemake.output.zsini_sea_cells).parent.mkdir(parents=True, exist_ok=True)
 with rasterio.open(snakemake.output.zsini_sea_cells, "w", **_sea_cells_profile) as _dst:
@@ -1511,12 +1456,19 @@ log.info(
 visuals_dir = Path(snakemake.output.plot_calibration).parent
 visuals_dir.mkdir(parents=True, exist_ok=True)
 seed_ids = sorted(
-    {normalize_reach_id(rid) for rid, s in zip(rivers["reach_id"], rivers["is_seed"]) if bool(s) is True} - {None}
+    {normalize_reach_id(reach_id) for reach_id, s in zip(rivers["reach_id"], rivers["is_seed"]) if bool(s) is True} - {None}
 )
 if not seed_ids:
     log.warning("No is_seed reach found -- skipping seed-to-mouth round-profile diagnostics")
+if depth_method == "gvf":
+    _round0_level_label = "water level, GVF steady"
+elif round0_level == "end_of_run":
+    _round0_level_label = "water level, end of run"
+else:
+    _round0_level_label = "water level, period max"
+_water_level_labels = [_round0_level_label] + ["water level, period max"] * N_ROUNDS_AFTER_0
 for _seed in seed_ids:
-    _path_rids, _profiles_by_round = gather_calibration_round_profile(
+    _path_reach_ids, _profiles_by_round = gather_calibration_round_profile(
         calib_root, rivers_utm, _seed, N_ROUNDS_AFTER_0
     )
     plot_calibration_round_profiles(
@@ -1524,14 +1476,14 @@ for _seed in seed_ids:
         n_rounds=N_ROUNDS_AFTER_0,
         output_subplots_path=str(visuals_dir / f"round_profiles_seed{_seed}_subplots.png"),
         output_combined_path=str(visuals_dir / f"round_profiles_seed{_seed}_combined.png"),
-        round_titles=ROUND_TITLES,
+        round_titles=ROUND_TITLES, water_level_labels=_water_level_labels,
     )
     pd.concat(
         [df.assign(round=i) for i, df in _profiles_by_round.items()], ignore_index=True
     ).to_csv(visuals_dir / f"round_profiles_seed{_seed}.csv", index=False)
-    log.info(f"Seed {_seed}: round-profile diagnostics written (path of {len(_path_rids)} reach(es))")
+    log.info(f"Seed {_seed}: round-profile diagnostics written (path of {len(_path_reach_ids)} reach(es))")
 
-n_missing = rivers["rivdph"].isna().sum()
+n_missing = rivers["river_depth_m"].isna().sum()
 if n_missing:
     log.warning(f"{n_missing} reach(es) missing a calibrated depth (no centerline cell?) -- left as NaN")
 

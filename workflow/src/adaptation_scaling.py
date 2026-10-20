@@ -3,9 +3,9 @@
 Entry point: resolve_forcing_params. Markers are left by strategy_def_for()
 (00_common.smk) and resolved from the baseline run and the skeleton weir:
 
-  max_coastal_waterlevel  scale x max of the baseline sfincs.bzs (all points, all times)
+  max_coastal_water_level  scale x max of the baseline sfincs.bzs (all points, all times)
   max_discharge           scale x max of the baseline sfincs.dis (all sources, all times)
-  max_river_waterlevel    scale x max baseline zsmax in the grid cells along the
+  max_river_water_level    scale x max baseline zsmax in the grid cells along the
                           measure's own `locations` polyline (first zsmax output
                           step dropped: it holds the restart start-up shock,
                           e.g. 2.33 m at hour 0 in basin 2433835/coast_500)
@@ -27,8 +27,7 @@ import geopandas as gpd
 import numpy as np
 import shapely
 import xarray as xr
-from shapely.geometry import LineString
-from src.sfincs_run import parse_sfincs_inp
+from src.sfincs_run import parse_sfincs_inp, read_weir_file
 
 # Same tolerance as merge_weir_preserve_unmatched (src/protection_weir.py):
 # baseline weir segments within this distance of the new polyline are the
@@ -46,37 +45,31 @@ def _max_of_timeseries_file(path: Path, what: str) -> float:
     return float(data[:, 1:].max())
 
 
-def read_weir_file(path: str | Path) -> gpd.GeoDataFrame:
-    """Read an ASCII sfincs.weir into one row per segment; `elevation` = highest crest.
+def read_polyline(locations: Path | gpd.GeoDataFrame, crs) -> gpd.GeoDataFrame:
+    """Return polyline ``locations`` as single LineStrings in ``crs``, minus empty geometries.
 
-    Every segment this repo writes has the same crest on both vertices.
-    No CRS is set; the caller sets it.
+    Empty geometries are rows whose geometry was deleted in QGIS but kept as
+    attributes. Raises ValueError when ``locations`` has no CRS or holds a
+    geometry that is not a (Multi)LineString.
     """
-    lines = [ln for ln in Path(path).read_text().splitlines() if ln.strip()]
-    geoms, crests, i = [], [], 0
-    while i < len(lines):
-        n_pts = int(lines[i + 1].split()[0])
-        pts = np.array(
-            [[float(v) for v in ln.split()] for ln in lines[i + 2 : i + 2 + n_pts]]
-        )
-        geoms.append(LineString(pts[:, :2]))
-        crests.append(float(pts[:, 2].max()))
-        i += 2 + n_pts
-    return gpd.GeoDataFrame({"elevation": crests}, geometry=geoms)
-
-
-def _read_polyline(locations: Path, crs) -> shapely.Geometry:
-    gdf = gpd.read_file(locations)
+    if isinstance(locations, gpd.GeoDataFrame):
+        gdf, name = locations, "polyline"
+    else:
+        gdf, name = gpd.read_file(locations), str(locations)
     if gdf.crs is None:
-        raise ValueError(f"{locations} has no CRS")
-    return gdf.to_crs(crs).geometry.union_all()
+        raise ValueError(f"{name} has no CRS")
+    gdf = gdf[~gdf.geometry.is_empty & gdf.geometry.notna()]
+    gdf = gdf.explode(index_parts=True).reset_index(drop=True)
+    if not gdf.geometry.type.eq("LineString").all():
+        raise ValueError("Weirs must be of type LineString.")
+    return gdf[["geometry"]].to_crs(crs)
 
 
 def _current_protection(
     locations: Path, skeleton_weir: Path, crs, where: str, log
 ) -> dict:
     weir = read_weir_file(skeleton_weir)
-    line = _read_polyline(locations, crs)
+    line = read_polyline(locations, crs).geometry.union_all()
     # Segment MIDPOINT vs the polyline, as merge_weir_preserve_unmatched does --
     # a segment merely touching the polyline at one endpoint is not "on" it.
     midpoints = shapely.line_interpolate_point(
@@ -103,16 +96,16 @@ def _current_protection(
     return {"current": True, "fill_crest": fill_crest}
 
 
-def _max_river_waterlevel(
+def _max_river_water_level(
     locations: Path,
     map_nc: Path,
-    dx: float,
+    dx_m: float,
     crs,
     where: str,
     log,
     buffer_cells: int = 1,
 ) -> float:
-    line = _read_polyline(locations, crs)
+    line = read_polyline(locations, crs).geometry.union_all()
     with xr.open_dataset(map_nc) as ds:
         zsmax = ds["zsmax"]
         tdim = next(d for d in zsmax.dims if "time" in d)
@@ -121,7 +114,7 @@ def _max_river_waterlevel(
         zsmax = zsmax.max(tdim).values  # NaN = never wet
         x, y = ds["x"].values, ds["y"].values  # cell centres (rotated grid OK)
     near = shapely.dwithin(
-        shapely.points(x.ravel(), y.ravel()), line, (buffer_cells + 0.5) * dx
+        shapely.points(x.ravel(), y.ravel()), line, (buffer_cells + 0.5) * dx_m
     )
     vals = zsmax.ravel()[near]
     if not np.isfinite(vals).any():
@@ -152,7 +145,7 @@ def resolve_forcing_params(
     baseline_sfincs_root = Path(baseline_sfincs_root)
     inp = parse_sfincs_inp(baseline_sfincs_root / "sfincs.inp")
     crs = f"EPSG:{int(float(inp['epsg']))}"
-    dx = float(inp["dx"])
+    dx_m = float(inp["dx"])
     cache: dict[tuple, float] = {}
 
     out = copy.deepcopy(strategy_def)
@@ -175,7 +168,7 @@ def resolve_forcing_params(
 
             key = (kind, str(locations))
             if key not in cache:
-                if kind == "max_coastal_waterlevel":
+                if kind == "max_coastal_water_level":
                     cache[key] = _max_of_timeseries_file(
                         baseline_sfincs_root / "sfincs.bzs", where
                     )
@@ -183,9 +176,9 @@ def resolve_forcing_params(
                     cache[key] = _max_of_timeseries_file(
                         baseline_sfincs_root / "sfincs.dis", where
                     )
-                elif kind == "max_river_waterlevel":
-                    cache[key] = _max_river_waterlevel(
-                        locations, Path(baseline_map_nc), dx, crs, where, log
+                elif kind == "max_river_water_level":
+                    cache[key] = _max_river_water_level(
+                        locations, Path(baseline_map_nc), dx_m, crs, where, log
                     )
                 else:
                     raise ValueError(f"{where}: unknown from_forcing kind {kind!r}")

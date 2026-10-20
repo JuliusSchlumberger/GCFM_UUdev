@@ -22,11 +22,11 @@ def _network(reaches: dict[str, dict]) -> gpd.GeoDataFrame:
     width matter to the code under test.
     """
     rows = []
-    for k, (rid, spec) in enumerate(reaches.items()):
+    for k, (reach_id, spec) in enumerate(reaches.items()):
         dn = spec.get("dn", [])
         rows.append(
             {
-                "reach_id": rid,
+                "reach_id": reach_id,
                 "rch_id_dn": "[" + ", ".join(dn) + "]",
                 "width": float(spec.get("width", 100.0)),
                 "geometry": LineString([(k * 1000.0, 0.0), (k * 1000.0 + 900.0, 0.0)]),
@@ -39,3 +39,31 @@ def _network(reaches: dict[str, dict]) -> gpd.GeoDataFrame:
 def network():
     """Return the factory that builds a synthetic reach table from a dict."""
     return _network
+
+
+@pytest.fixture(scope="session")
+def gvf_cfg() -> dict:
+    """Return a complete ``river_depth_modelling.gvf`` block on a coarse test grid."""
+    return {
+        "node_spacing_m": 500,
+        "target_smoothing_m": 3000,
+        "step_threshold_m": 0.5,
+        "structure_min_drop_m": 0.2,
+        "use_sword_obstructions": True,
+        "cut_rising_edges": True,
+        "structures": [],
+        "slope_floor": 1.0e-5,
+        "mouth_level_tol_m": 0.5,
+        "q_min_m3s": 1.0,
+        "h_min_m": 0.5,
+        "h_max_m": 30.0,
+        "froude_cap": 0.95,
+        "water_body": {"min_width_m": 1000.0, "sea_class_fraction": 0.5},
+        "nudging": {"alpha": 1.0, "passes": 3},
+        "least_squares": {
+            "apply": "all",
+            "rmse_tol_m": 0.10,
+            "rho_m": 0.05,
+            "prior_weight_m": 0.05,
+        },
+    }

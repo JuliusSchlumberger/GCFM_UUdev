@@ -8,9 +8,9 @@ Output
 ------
 storm_tide_hydrographs.nc, per station:
     average_tide (station, time_hr)            m, local MSL, high water at t=0
-    surge_shape  (station, return_period, time_hr)   0..1, peak = 1 at t=0
+    surge_shape  (station, rp_yr, time_hr)     0..1, peak = 1 at t=0
     shape_n_events / shape_window_m / shape_mode / shape_event_surge_m /
-    shape_dur50_hr (station, return_period)    which events each shape is
+    shape_dur50_hr (station, rp_yr)            which events each shape is
                                                built from, and how wide it is
 plus a diagnostic figure.
 
@@ -28,6 +28,7 @@ import numpy as np
 import xarray as xr
 
 from src.log import setup_logging
+from src.plots import save_figure
 from src.storm_tide_hydrograph import station_hydrograph_components
 from src.surge import _COASTRP_RPS
 
@@ -38,7 +39,7 @@ min_events = int(snakemake.params.min_events)
 match_window_m = float(snakemake.params.match_window_m)
 match_on = str(snakemake.params.match_on)
 max_match_km = float(snakemake.params.max_match_km)
-rps = np.array(_COASTRP_RPS, dtype=float)
+rps_yr = np.array(_COASTRP_RPS, dtype=float)
 
 gtsm = xr.open_dataset(snakemake.input.gtsm_hourly).load()
 lons, lats = gtsm["longitude"].values, gtsm["latitude"].values
@@ -46,8 +47,8 @@ lons, lats = gtsm["longitude"].values, gtsm["latitude"].values
 # COAST-RP return levels at the same stations (local MSL).
 with xr.open_dataset(snakemake.input.surge_data) as c:
     cx, cy = c["station_x_coordinate"].values, c["station_y_coordinate"].values
-    table = np.stack([c[f"storm_tide_rp_{int(rp):04d}"].values for rp in rps], axis=1).astype(float)
-levels = np.full((len(lons), len(rps)), np.nan)
+    table = np.stack([c[f"storm_tide_rp_{int(rp_yr):04d}"].values for rp_yr in rps_yr], axis=1).astype(float)
+levels = np.full((len(lons), len(rps_yr)), np.nan)
 for i, (lon, lat) in enumerate(zip(lons, lats)):
     d = np.hypot((cx - lon) * np.cos(np.radians(lat)), cy - lat) * 111.0
     j = int(np.nanargmin(d))
@@ -72,7 +73,7 @@ for i in range(gtsm.sizes["station"]):
     log.info(
         f"station {int(one['gtsm_station'])}: high water {r['high_water_m']:+.2f} m, "
         f"{r['n_candidate_events']} events (highest {r['max_peak_m']:.2f} m); hours above half the peak per RP "
-        f"{[f'{int(rp)}: {d:.0f} ({m})' for rp, d, m in zip(rps, r['dur50_hr'], r['mode'])]}"
+        f"{[f'{int(rp_yr)}: {d:.0f} ({m})' for rp_yr, d, m in zip(rps_yr, r['dur50_hr'], r['mode'])]}"
     )
 
 
@@ -85,26 +86,26 @@ out = xr.Dataset(
     {
         "average_tide": (("station", "time_hr"), stack("tide"),
                          {"units": "m", "long_name": "average tide signal, local MSL, high water at time_hr=0"}),
-        "surge_shape": (("station", "return_period", "time_hr"), stack("shape"),
+        "surge_shape": (("station", "rp_yr", "time_hr"), stack("shape"),
                         {"units": "1", "long_name": "normalised surge hydrograph per return period, peak=1 at time_hr=0"}),
-        "storm_tide_level": (("station", "return_period"), levels,
+        "storm_tide_level": (("station", "rp_yr"), levels,
                              {"units": "m", "long_name": "COAST-RP storm-tide level (local MSL)"}),
-        "shape_n_events": (("station", "return_period"), stack("n_events"),
+        "shape_n_events": (("station", "rp_yr"), stack("n_events"),
                            {"long_name": "events the shape is averaged over"}),
-        "shape_window_m": (("station", "return_period"), stack("window_m"),
+        "shape_window_m": (("station", "rp_yr"), stack("window_m"),
                            {"units": "m", "long_name": "half-width of the peak window those events lie in"}),
-        "shape_mode": (("station", "return_period"), stack("mode").astype(str),
+        "shape_mode": (("station", "rp_yr"), stack("mode").astype(str),
                        {"long_name": "window | widened (nearest events) | above_record (largest events)"}),
-        "shape_event_surge_m": (("station", "return_period"), stack("surge_peak_m"),
+        "shape_event_surge_m": (("station", "rp_yr"), stack("surge_peak_m"),
                                 {"units": "m", "long_name": "median surge peak of those events"}),
-        "shape_dur50_hr": (("station", "return_period"), stack("dur50_hr"),
+        "shape_dur50_hr": (("station", "rp_yr"), stack("dur50_hr"),
                            {"units": "h", "long_name": "time the shape stays above 0.5"}),
         "high_water_m": (("station",), np.array([r["high_water_m"] for r in results]),
                          {"units": "m", "long_name": "high water of the average tide"}),
     },
     coords={
         "time_hr": ("time_hr", time_hr, {"units": "hours", "long_name": "hours relative to the surge peak / tidal high water"}),
-        "return_period": ("return_period", rps, {"units": "yr"}),
+        "rp_yr": ("rp_yr", rps_yr, {"units": "yr"}),
         "longitude": ("station", lons),
         "latitude": ("station", lats),
         "gtsm_station": ("station", gtsm["gtsm_station"].values),
@@ -119,7 +120,7 @@ out = xr.Dataset(
 )
 Path(snakemake.output.hydrographs).parent.mkdir(parents=True, exist_ok=True)
 out.to_netcdf(snakemake.output.hydrographs)
-log.info(f"Written: {snakemake.output.hydrographs} ({len(results)} station(s), {len(rps)} return periods)")
+log.info(f"Written: {snakemake.output.hydrographs} ({len(results)} station(s), {len(rps_yr)} return periods)")
 
 # Diagnostic figure: the station nearest the domain (first)
 INK, INK2, MUTED, SURFACE, GRID = "#0b0b0b", "#52514e", "#898781", "#fcfcfb", "#e6e5e1"
@@ -127,12 +128,12 @@ RAMP = ["#b7d3f6", "#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#0d366b"]  # one
 shown = [1, 10, 50, 100, 250, 1000]
 r0 = results[0]
 fig, ax = plt.subplots(1, 3, figsize=(16, 4.6), facecolor=SURFACE)
-for rp, color in zip(shown, RAMP):
-    j = int(np.flatnonzero(rps == rp)[0])
+for rp_yr, color in zip(shown, RAMP):
+    j = int(np.flatnonzero(rps_yr == rp_yr)[0])
     ax[0].plot(time_hr, r0["shape"][j], color=color, lw=1.8,
-               label=f"RP {rp}: {r0['dur50_hr'][j]:.0f} h, {r0['n_events'][j]} events ({r0['mode'][j]})")
+               label=f"RP {rp_yr}: {r0['dur50_hr'][j]:.0f} h, {r0['n_events'][j]} events ({r0['mode'][j]})")
     amp = max(levels[0, j] - r0["high_water_m"], 0.0)
-    ax[2].plot(time_hr, r0["tide"] + amp * r0["shape"][j], color=color, lw=1.6, label=f"RP {rp}: {levels[0, j]:.2f} m")
+    ax[2].plot(time_hr, r0["tide"] + amp * r0["shape"][j], color=color, lw=1.6, label=f"RP {rp_yr}: {levels[0, j]:.2f} m")
 ax[1].plot(time_hr, r0["tide"], color="#2a78d6", lw=1.8)
 titles = ("Surge shape per return period (hours above half the peak)", "Average tide", "Storm tide = tide + scaled surge")
 ylabels = ("normalised surge", "m above local mean sea level", "m above local mean sea level")
@@ -154,6 +155,5 @@ fig.suptitle(
     fontsize=11, x=0.01, ha="left", color=INK,
 )
 fig.tight_layout(rect=(0, 0, 1, 0.94))
-Path(snakemake.output.plot).parent.mkdir(parents=True, exist_ok=True)
-fig.savefig(snakemake.output.plot, dpi=140, facecolor=SURFACE)
+save_figure(fig, snakemake.output.plot, dpi=140, facecolor=SURFACE)
 log.info(f"Written: {snakemake.output.plot}")

@@ -5,11 +5,17 @@ from __future__ import annotations
 import logging
 import re
 from collections import deque
+from collections.abc import Callable, Hashable, Iterable, Sequence
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
+import shapely
+from rasterio.features import geometry_mask
+from rasterio.windows import Window
+from rasterio.windows import transform as window_transform
+from scipy.interpolate import interp1d
 from shapely.geometry import LineString, Point
 from src.geometry import pick_utm_crs
 
@@ -24,8 +30,8 @@ _BOUNDARY_BLEND_EPS_M = 1.0
 
 def _junction_value(
     reach_data: dict[str, tuple[object, np.ndarray, np.ndarray]],
-    up_rid: str,
-    dn_rid: str,
+    up_reach_id: str,
+    dn_reach_id: str,
 ) -> float | None:
     """Mean of the upstream reach's last anchor and the downstream reach's first.
 
@@ -35,8 +41,8 @@ def _junction_value(
     src.river_burn.burn_river_channel, calibrated weir crest in src.river_burn's
     smoothed-crest profiles).
     """
-    up_entry = reach_data.get(up_rid)
-    dn_entry = reach_data.get(dn_rid)
+    up_entry = reach_data.get(up_reach_id)
+    dn_entry = reach_data.get(dn_reach_id)
     if up_entry is None or dn_entry is None:
         return None
     _, up_along, up_vals = up_entry
@@ -48,15 +54,48 @@ def _junction_value(
     return (up_val + dn_val) / 2.0
 
 
-def normalize_reach_id(x) -> str | None:
-    """Normalize a SWORD reach_id value (int/float/str) to a canonical string, or None if NA."""
-    if pd.isna(x):
+def normalize_reach_id(x: object) -> str | None:
+    """Normalize a SWORD reach_id value (int/float/str) to a canonical string, or None if NA.
+
+    None, NaN, pd.NA, NaT and the strings "nan", "none", "<na>", "" (any case) are
+    NA. Numeric values and numeric strings become str(int(float(x))), so "1e5" ->
+    "100000"; anything else, including "inf", is returned stripped.
+    """
+    if pd.api.types.is_scalar(x) and pd.isna(x):
+        return None
+    s = str(x).strip()
+    if s.lower() in ("nan", "none", "<na>", ""):
         return None
     try:
-        return str(int(float(x)))
-    except (ValueError, TypeError):
-        s = str(x).strip()
-        return s if s else None
+        return str(int(float(s)))
+    except (ValueError, OverflowError):
+        return s
+
+
+def kahn_order(
+    nodes: Sequence[Hashable], successors: Callable[[Hashable], Iterable[Hashable]]
+) -> tuple[list, list]:
+    """Return (nodes upstream-first, nodes on a directed cycle); cycle nodes end the order.
+
+    FIFO Kahn: ties keep ``nodes`` order and successor order, so the result is
+    deterministic. In-degree counts every edge, including repeated ones. A
+    successor missing from ``nodes`` raises KeyError.
+    """
+    indeg = {n: 0 for n in nodes}
+    for n in nodes:
+        for d in successors(n):
+            indeg[d] += 1
+    queue = deque(n for n in nodes if indeg[n] == 0)
+    order = []
+    while queue:
+        n = queue.popleft()
+        order.append(n)
+        for d in successors(n):
+            indeg[d] -= 1
+            if indeg[d] == 0:
+                queue.append(d)
+    on_cycle = [n for n in nodes if indeg[n] > 0]
+    return order + on_cycle, on_cycle
 
 
 def _as_linestring(geom):
@@ -80,11 +119,11 @@ def collect_downstream_main_paths(
     visited: set[str] = set()
     queue: deque[str] = deque(seed_reach_ids)
     while queue:
-        rid = queue.popleft()
-        if rid in visited:
+        reach_id = queue.popleft()
+        if reach_id in visited:
             continue
-        visited.add(rid)
-        for dn_id in adjacency.get(rid, []):
+        visited.add(reach_id)
+        for dn_id in adjacency.get(reach_id, []):
             if dn_id not in visited:
                 queue.append(dn_id)
 
@@ -107,9 +146,9 @@ def build_downstream_adjacency(
 
     all_ids = {normalize_reach_id(x) for x in rivers["reach_id"]} - {None}
     adjacency: dict[str, list[str]] = {}
-    for rid_raw, dn_raw in zip(rivers["reach_id"], rivers["rch_id_dn"]):
-        rid = normalize_reach_id(rid_raw)
-        if rid is None:
+    for reach_id_raw, dn_raw in zip(rivers["reach_id"], rivers["rch_id_dn"]):
+        reach_id = normalize_reach_id(reach_id_raw)
+        if reach_id is None:
             continue
         dn_ids: list[str] = []
         if pd.notna(dn_raw):
@@ -119,7 +158,7 @@ def build_downstream_adjacency(
                     normed = normalize_reach_id(token.strip())
                     if normed and normed in all_ids:
                         dn_ids.append(normed)
-        adjacency[rid] = dn_ids
+        adjacency[reach_id] = dn_ids
     return adjacency
 
 
@@ -149,22 +188,22 @@ def fix_tjunction_tails(
     metric_crs = pick_utm_crs(rivers) if rivers.crs.is_geographic else rivers.crs
     rivers_m = rivers.to_crs(metric_crs)
 
-    rid_to_idx: dict[str, int] = {}
-    rid_to_geom: dict[str, LineString] = {}
+    reach_id_to_idx: dict[str, int] = {}
+    reach_id_to_geom: dict[str, LineString] = {}
     for idx, row in rivers_m.iterrows():
-        rid = normalize_reach_id(row.get(reach_id_col))
-        if rid is None:
+        reach_id = normalize_reach_id(row.get(reach_id_col))
+        if reach_id is None:
             continue
         geom = _as_linestring(row.geometry)
         if geom is not None and geom.length > 0:
-            rid_to_idx[rid] = idx
-            rid_to_geom[rid] = geom
+            reach_id_to_idx[reach_id] = idx
+            reach_id_to_geom[reach_id] = geom
 
     junctions: list[tuple[str, str, float]] = []  # (rid_a, rid_b, junction_along_m)
-    for rid_b, geom_b in rid_to_geom.items():
+    for reach_id_b, geom_b in reach_id_to_geom.items():
         start_b = Point(geom_b.coords[0])
-        for rid_a, geom_a in rid_to_geom.items():
-            if rid_a == rid_b:
+        for reach_id_a, geom_a in reach_id_to_geom.items():
+            if reach_id_a == reach_id_b:
                 continue
             if start_b.distance(geom_a) > snap_tolerance_m:
                 continue
@@ -172,7 +211,7 @@ def fix_tjunction_tails(
                 continue
             if start_b.distance(Point(geom_a.coords[0])) <= endpoint_tolerance_m:
                 continue
-            junctions.append((rid_a, rid_b, geom_a.project(start_b)))
+            junctions.append((reach_id_a, reach_id_b, geom_a.project(start_b)))
 
     if not junctions:
         log.info("fix_tjunction_tails: no T-junctions found")
@@ -182,8 +221,8 @@ def fix_tjunction_tails(
 
     new_geom_m: dict[str, LineString] = {}  # only modified reaches
 
-    for rid_a, rid_b, junction_along in junctions:
-        geom_a = new_geom_m.get(rid_a, rid_to_geom[rid_a])
+    for reach_id_a, reach_id_b, junction_along in junctions:
+        geom_a = new_geom_m.get(reach_id_a, reach_id_to_geom[reach_id_a])
         true_end_a = Point(geom_a.coords[-1])
 
         tail = _substring(geom_a, junction_along, geom_a.length)
@@ -193,37 +232,37 @@ def fix_tjunction_tails(
             or trimmed_a.is_empty
             or trimmed_a.geom_type != "LineString"
         ):
-            log.warning(f"fix_tjunction_tails: could not trim A={rid_a}; skipping")
+            log.warning(f"fix_tjunction_tails: could not trim A={reach_id_a}; skipping")
             continue
-        new_geom_m[rid_a] = trimmed_a
+        new_geom_m[reach_id_a] = trimmed_a
 
-        best_rid_c, best_dist_c = None, float("inf")
-        for rid_c, geom_c in rid_to_geom.items():
-            if rid_c in (rid_a, rid_b):
+        best_reach_id_c, best_dist_c = None, float("inf")
+        for reach_id_c, geom_c in reach_id_to_geom.items():
+            if reach_id_c in (reach_id_a, reach_id_b):
                 continue
             d = true_end_a.distance(Point(geom_c.coords[0]))
             if d < best_dist_c:
-                best_dist_c, best_rid_c = d, rid_c
+                best_dist_c, best_reach_id_c = d, reach_id_c
 
-        if best_rid_c is None or best_dist_c > max_search_radius_m:
+        if best_reach_id_c is None or best_dist_c > max_search_radius_m:
             log.warning(
                 f"fix_tjunction_tails: no reach C found within {max_search_radius_m:.0f}m "
-                f"of A={rid_a} endpoint (best={best_dist_c:.1f}m) — tail discarded"
+                f"of A={reach_id_a} endpoint (best={best_dist_c:.1f}m) — tail discarded"
             )
             continue
 
-        geom_c = new_geom_m.get(best_rid_c, rid_to_geom[best_rid_c])
+        geom_c = new_geom_m.get(best_reach_id_c, reach_id_to_geom[best_reach_id_c])
         tail_coords = list(tail.coords)
         c_coords = list(geom_c.coords)
         merged = tail_coords + (
             c_coords[1:] if tail_coords[-1] == c_coords[0] else c_coords
         )
         if len(merged) >= 2:
-            new_geom_m[best_rid_c] = LineString(merged)
+            new_geom_m[best_reach_id_c] = LineString(merged)
 
         log.info(
-            f"  A={rid_a} trimmed at {junction_along:.1f}m; "
-            f"tail ({tail.length:.1f}m) prepended to C={best_rid_c}"
+            f"  A={reach_id_a} trimmed at {junction_along:.1f}m; "
+            f"tail ({tail.length:.1f}m) prepended to C={best_reach_id_c}"
         )
 
     if not new_geom_m:
@@ -236,7 +275,7 @@ def fix_tjunction_tails(
 
     out = rivers.copy()
     for _, row in modified_gdf.iterrows():
-        idx = rid_to_idx.get(row["rid"])
+        idx = reach_id_to_idx.get(row["rid"])
         if idx is not None:
             out.at[idx, "geometry"] = row["geometry"]
 
@@ -363,65 +402,54 @@ def accumulate_discharge(
     bifurcation unless every arm is excluded. 0.0 for reaches not downstream
     of any seed.
     """
-    rids = [normalize_reach_id(r) for r in rivers["reach_id"]]
-    if len(rids) == 0:
+    reach_ids = [normalize_reach_id(r) for r in rivers["reach_id"]]
+    if len(reach_ids) == 0:
         log.warning(
             "accumulate_discharge: river network is empty; returning zero-length array"
         )
         return np.zeros(0)
     excluded = {normalize_reach_id(r) for r in (excluded_arms or set())}
-    widths = rivers["width"].to_numpy(dtype=float)
-    reach_to_idx = {r: i for i, r in enumerate(rids) if r is not None}
+    widths_m = rivers["width"].to_numpy(dtype=float)
+    reach_to_idx = {r: i for i, r in enumerate(reach_ids) if r is not None}
 
     down: dict[int, list[int]] = {
-        i: [reach_to_idx[d] for d in adjacency.get(rid, []) if d in reach_to_idx]
-        for i, rid in enumerate(rids)
+        i: [reach_to_idx[d] for d in adjacency.get(reach_id, []) if d in reach_to_idx]
+        for i, reach_id in enumerate(reach_ids)
     }
-    n_up = np.zeros(len(rids), dtype=int)
+    n_up = np.zeros(len(reach_ids), dtype=int)
     for dns in down.values():
         for d in dns:
             n_up[d] += 1
 
-    q = np.zeros(len(rids))
-    for rid, val in seed_q.items():
-        rid = normalize_reach_id(rid)
-        if rid in reach_to_idx:
-            q[reach_to_idx[rid]] += float(val)
+    q = np.zeros(len(reach_ids))
+    for reach_id, val in seed_q.items():
+        reach_id = normalize_reach_id(reach_id)
+        if reach_id in reach_to_idx:
+            q[reach_to_idx[reach_id]] += float(val)
     seeds_with_inflow = [
-        rid
-        for rid in seed_q
-        if normalize_reach_id(rid) in reach_to_idx
-        and n_up[reach_to_idx[normalize_reach_id(rid)]] > 0
+        reach_id
+        for reach_id in seed_q
+        if normalize_reach_id(reach_id) in reach_to_idx
+        and n_up[reach_to_idx[normalize_reach_id(reach_id)]] > 0
     ]
 
-    # Kahn: pass a reach on only once all upstream reaches have delivered.
-    remaining = n_up.copy()
-    queue = deque(i for i in range(len(rids)) if remaining[i] == 0)
-    order: list[int] = []
-    while queue:
-        i = queue.popleft()
-        order.append(i)
-        for d in down[i]:
-            remaining[d] -= 1
-            if remaining[d] == 0:
-                queue.append(d)
-    on_cycle = [i for i in range(len(rids)) if remaining[i] > 0]
+    # A reach passes discharge on only once all upstream reaches have delivered.
+    order, on_cycle = kahn_order(range(len(reach_ids)), down.__getitem__)
     if on_cycle:
         log.warning(
             f"accumulate_discharge: {len(on_cycle)} reach(es) on a directed cycle "
-            f"(e.g. {[rids[i] for i in on_cycle[:5]]}) -- processed last, with only "
+            f"(e.g. {[reach_ids[i] for i in on_cycle[:5]]}) -- processed last, with only "
             "the inflow from outside the cycle"
         )
-        order.extend(on_cycle)
 
-    inflow = np.zeros(len(rids))
+    inflow = np.zeros(len(reach_ids))
     for i in order:
         dns = down[i]
         if not dns or q[i] <= 0:
             continue
-        w_dn = widths[dns].copy()
+        w_dn = widths_m[dns].copy()
         if len(dns) > 1 and excluded:
-            keep = np.array([rids[d] not in excluded for d in dns])
+            keep = np.array([reach_ids[d] not in excluded for d in dns])
             if keep.any():
                 w_dn = np.where(keep, w_dn, 0.0)
                 if w_dn.sum() <= 0:
@@ -432,16 +460,16 @@ def accumulate_discharge(
             q[d] += q[i] * share
             inflow[d] += q[i] * share
 
-    for rid in seeds_with_inflow:
-        idx = reach_to_idx[normalize_reach_id(rid)]
+    for reach_id in seeds_with_inflow:
+        idx = reach_to_idx[normalize_reach_id(reach_id)]
         log.warning(
-            f"accumulate_discharge: seed reach {rid} also has upstream reaches in the "
-            f"network -- its own boundary discharge {float(seed_q[rid]):.1f} m3/s is added "
+            f"accumulate_discharge: seed reach {reach_id} also has upstream reaches in the "
+            f"network -- its own boundary discharge {float(seed_q[reach_id]):.1f} m3/s is added "
             f"to {inflow[idx]:.1f} m3/s of in-network inflow (total {q[idx]:.1f} m3/s); "
             "check that the forcing at that crossing does not already include that flow"
         )
     log.info(
-        f"Flow accumulation: {int((q > 0).sum())}/{len(rids)} reach(es) with Q > 0, "
+        f"Flow accumulation: {int((q > 0).sum())}/{len(reach_ids)} reach(es) with Q > 0, "
         f"{len([r for r in seed_q if normalize_reach_id(r) in reach_to_idx])} seed reach(es), "
         f"max Q = {q.max():.2f} m3 s-1"
     )
@@ -473,10 +501,10 @@ def identify_delta_outflow_points(
     delta_outline = delta_geom.boundary
 
     downstream_adj = build_downstream_adjacency(rivers)
-    mouth_ids = {rid for rid, dns in downstream_adj.items() if not dns}
+    mouth_ids = {reach_id for reach_id, dns in downstream_adj.items() if not dns}
 
     rivers = rivers.copy()
-    rids = rivers["reach_id"].apply(normalize_reach_id)
+    reach_ids = rivers["reach_id"].apply(normalize_reach_id)
     is_seed = (
         rivers["is_seed"].fillna(False).astype(bool)
         if "is_seed" in rivers.columns
@@ -484,11 +512,13 @@ def identify_delta_outflow_points(
     )
     crosses_outline = rivers.geometry.intersects(delta_outline)
 
-    is_bifurcation = rids.map(lambda rid: len(downstream_adj.get(rid, [])) > 1)
+    is_bifurcation = reach_ids.map(
+        lambda reach_id: len(downstream_adj.get(reach_id, [])) > 1
+    )
     qualifying_mask = (
         crosses_outline.to_numpy()
         & ~np.asarray(is_seed)
-        & ~rids.isin(mouth_ids)
+        & ~reach_ids.isin(mouth_ids)
         & ~is_bifurcation.to_numpy()
     )
     rivers["is_delta_outflow"] = qualifying_mask
@@ -501,7 +531,9 @@ def identify_delta_outflow_points(
         return rivers, empty_points
 
     records = []
-    for rid, geom in zip(rids[qualifying_mask], rivers.geometry[qualifying_mask]):
+    for reach_id, geom in zip(
+        reach_ids[qualifying_mask], rivers.geometry[qualifying_mask]
+    ):
         crossing = geom.intersection(delta_outline)
         points = list(crossing.geoms) if hasattr(crossing, "geoms") else [crossing]
         for pt in points:
@@ -509,7 +541,7 @@ def identify_delta_outflow_points(
                 continue
             # A tangential intersection can be a LineString: use its centroid.
             pt = pt if isinstance(pt, Point) else pt.centroid
-            records.append({"reach_id": rid, "geometry": pt})
+            records.append({"reach_id": reach_id, "geometry": pt})
 
     outflow_points = gpd.GeoDataFrame(records, crs=rivers.crs)
     log.info(
@@ -534,9 +566,9 @@ def remove_reaches_with_missing_width(
     obscured imagery).
     """
     rivers = rivers.copy()
-    width = rivers["width"].to_numpy(dtype=float)
+    width_m = rivers["width"].to_numpy(dtype=float)
     max_width = rivers["max_width"].to_numpy(dtype=float)
-    width_missing = np.isclose(width, nodata_value)
+    width_missing = np.isclose(width_m, nodata_value)
     max_width_missing = np.isclose(max_width, nodata_value)
 
     only_width_missing = width_missing & ~max_width_missing
@@ -554,30 +586,30 @@ def remove_reaches_with_missing_width(
 
     both_missing = width_missing & max_width_missing
     bad_ids = {
-        normalize_reach_id(rid)
-        for rid in rivers.loc[both_missing, "reach_id"]
-        if normalize_reach_id(rid) is not None
+        normalize_reach_id(reach_id)
+        for reach_id in rivers.loc[both_missing, "reach_id"]
+        if normalize_reach_id(reach_id) is not None
     }
     if not bad_ids:
         return rivers
 
     downstream_adj = build_downstream_adjacency(rivers)
-    upstream_adj: dict[str, list[str]] = {rid: [] for rid in downstream_adj}
-    for rid, dns in downstream_adj.items():
+    upstream_adj: dict[str, list[str]] = {reach_id: [] for reach_id in downstream_adj}
+    for reach_id, dns in downstream_adj.items():
         for dn in dns:
-            upstream_adj.setdefault(dn, []).append(rid)
+            upstream_adj.setdefault(dn, []).append(reach_id)
 
     to_remove: set[str] = set()
-    for rid in bad_ids:
-        to_remove.add(rid)
-        cur = rid
+    for reach_id in bad_ids:
+        to_remove.add(reach_id)
+        cur = reach_id
         while len(downstream_adj.get(cur, [])) == 1:
             nxt = downstream_adj[cur][0]
             if len(upstream_adj.get(nxt, [])) != 1 or nxt in to_remove:
                 break
             to_remove.add(nxt)
             cur = nxt
-        cur = rid
+        cur = reach_id
         while len(upstream_adj.get(cur, [])) == 1:
             prev = upstream_adj[cur][0]
             if len(downstream_adj.get(prev, [])) != 1 or prev in to_remove:
@@ -608,30 +640,30 @@ def enforce_mouth_width_monotonic(
     fall below the new width.
     """
     downstream_adj = build_downstream_adjacency(rivers)
-    upstream_adj: dict[str, list[str]] = {rid: [] for rid in downstream_adj}
-    for rid, dns in downstream_adj.items():
+    upstream_adj: dict[str, list[str]] = {reach_id: [] for reach_id in downstream_adj}
+    for reach_id, dns in downstream_adj.items():
         for dn in dns:
-            upstream_adj.setdefault(dn, []).append(rid)
+            upstream_adj.setdefault(dn, []).append(reach_id)
 
     rivers = rivers.copy()
-    rids = rivers["reach_id"].apply(normalize_reach_id)
-    width_by_rid = dict(zip(rids, rivers[width_column]))
+    reach_ids = rivers["reach_id"].apply(normalize_reach_id)
+    width_by_reach_id = dict(zip(reach_ids, rivers[width_column]))
 
-    mouth_ids = [rid for rid, dns in downstream_adj.items() if not dns]
+    mouth_ids = [reach_id for reach_id, dns in downstream_adj.items() if not dns]
     n_raised = 0
-    for rid in mouth_ids:
-        ups = upstream_adj.get(rid, [])
+    for reach_id in mouth_ids:
+        ups = upstream_adj.get(reach_id, [])
         upstream_width = max(
             (
-                width_by_rid[u]
+                width_by_reach_id[u]
                 for u in ups
-                if u in width_by_rid and pd.notna(width_by_rid[u])
+                if u in width_by_reach_id and pd.notna(width_by_reach_id[u])
             ),
             default=None,
         )
         if upstream_width is None:
             continue
-        mouth_mask = rids == rid
+        mouth_mask = reach_ids == reach_id
         mouth_width = rivers.loc[mouth_mask, width_column].iloc[0]
         if pd.notna(mouth_width) and mouth_width < upstream_width:
             rivers.loc[mouth_mask, width_column] = upstream_width
@@ -757,16 +789,85 @@ def _sample_line_cells(
     return cells
 
 
+def clamped_profile(along: np.ndarray, values: np.ndarray) -> Callable:
+    """Return a linear interpolator of values over along, held constant beyond its ends.
+
+    Clamped rather than extrapolated: a buffer around a line extends past the
+    line's endpoints, where the local slope would overshoot.
+    """
+    if len(along) == 1:
+        _const = values[0]
+
+        def interp(x, _v=_const):
+            return np.full(np.shape(x), _v, dtype=float)
+
+        return interp
+    return interp1d(
+        along,
+        values,
+        kind="linear",
+        bounds_error=False,
+        fill_value=(values[0], values[-1]),
+    )
+
+
+def line_window_cells(
+    footprint,
+    line: LineString,
+    transform,
+    shape: tuple[int, int],
+    cell_mask: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Return (rows, cols, along_m) of grid cells in footprint, None if there are none.
+
+    Cells are those footprint touches (all_touched=True), or, with cell_mask
+    (boolean, `shape`), the set cells within footprint's bounding window.
+    rows/cols index the full grid; along_m is the distance of each cell
+    centre's projection from line's start. The window is built from the
+    transformed bounds corners, so a positive-y-scale (SFINCS) transform works.
+    """
+    bminx, bminy, bmaxx, bmaxy = footprint.bounds
+    corners = [(bminx, bminy), (bmaxx, bminy), (bminx, bmaxy), (bmaxx, bmaxy)]
+    inv_transform = ~transform
+    cols_c, rows_c = zip(*(inv_transform * c for c in corners))
+    col_off = max(0, int(np.floor(min(cols_c))))
+    row_off = max(0, int(np.floor(min(rows_c))))
+    col_stop = min(shape[1], int(np.ceil(max(cols_c))))
+    row_stop = min(shape[0], int(np.ceil(max(rows_c))))
+    if col_stop <= col_off or row_stop <= row_off:
+        return None
+    window = Window(col_off, row_off, col_stop - col_off, row_stop - row_off)
+    win_transform = window_transform(window, transform)
+    if cell_mask is not None:
+        inside = cell_mask[row_off:row_stop, col_off:col_stop]
+    else:
+        inside = geometry_mask(
+            [footprint],
+            out_shape=(row_stop - row_off, col_stop - col_off),
+            transform=win_transform,
+            invert=True,
+            all_touched=True,
+        )
+    if not inside.any():
+        return None
+
+    rows_idx, cols_idx = np.where(inside)
+    xs, ys = rasterio.transform.xy(win_transform, rows_idx, cols_idx)
+    pts = shapely.points(np.asarray(xs), np.asarray(ys))
+    along = shapely.line_locate_point(line, pts)
+    return rows_idx + row_off, cols_idx + col_off, along
+
+
 def trace_widest_path(rivers: gpd.GeoDataFrame, seed: str) -> list[str]:
     """Return reach ids from `seed` downstream, taking the widest arm at bifurcations.
 
     Width, not SWORD's main_path_id/is_mainstem_edge, which can be unreliable.
     """
     adjacency = build_downstream_adjacency(rivers)
-    width_by_rid = {
-        normalize_reach_id(rid): w
-        for rid, w in zip(rivers["reach_id"], rivers["width"])
-        if normalize_reach_id(rid) is not None
+    width_by_reach_id = {
+        normalize_reach_id(reach_id): w
+        for reach_id, w in zip(rivers["reach_id"], rivers["width"])
+        if normalize_reach_id(reach_id) is not None
     }
     path = [seed]
     seen = {seed}
@@ -778,7 +879,7 @@ def trace_widest_path(rivers: gpd.GeoDataFrame, seed: str) -> list[str]:
         if len(candidates) == 1:
             nxt = candidates[0]
         else:
-            nxt = max(candidates, key=lambda c: width_by_rid.get(c, -np.inf))
+            nxt = max(candidates, key=lambda c: width_by_reach_id.get(c, -np.inf))
         if nxt in seen:
             break
         path.append(nxt)
@@ -789,7 +890,7 @@ def trace_widest_path(rivers: gpd.GeoDataFrame, seed: str) -> list[str]:
 
 def compute_seed_path_offsets(
     rivers: gpd.GeoDataFrame,
-    path_rids: list[str],
+    path_reach_ids: list[str],
 ) -> dict[str, float]:
     """Return {reach_id: distance (m) from the path start to the reach's upstream end}.
 
@@ -798,17 +899,17 @@ def compute_seed_path_offsets(
     """
     metric_crs = pick_utm_crs(rivers) if rivers.crs.is_geographic else rivers.crs
     rivers_m = rivers.to_crs(metric_crs)
-    length_by_rid: dict[str, float] = {}
+    length_by_reach_id: dict[str, float] = {}
     for row in rivers_m.itertuples(index=False):
-        rid = normalize_reach_id(getattr(row, "reach_id"))
-        if rid is None:
+        reach_id = normalize_reach_id(getattr(row, "reach_id"))
+        if reach_id is None:
             continue
         line = _as_linestring(row.geometry)
-        length_by_rid[rid] = line.length if line is not None else 0.0
+        length_by_reach_id[reach_id] = line.length if line is not None else 0.0
 
     offsets: dict[str, float] = {}
     cumulative = 0.0
-    for rid in path_rids:
-        offsets[rid] = cumulative
-        cumulative += length_by_rid.get(rid, 0.0)
+    for reach_id in path_reach_ids:
+        offsets[reach_id] = cumulative
+        cumulative += length_by_reach_id.get(reach_id, 0.0)
     return offsets

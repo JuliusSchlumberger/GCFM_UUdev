@@ -8,8 +8,8 @@ from rasterio.transform import from_origin
 from rasterio.warp import transform_bounds
 from src.landuse import (
     LANDUSE_NODATA,
+    LANDUSE_SEA_CODE,
     ROUGHNESS_NODATA,
-    SEA_CODE,
     aggregate_manning,
     landuse_to_manning,
     read_roughness_lookup,
@@ -18,12 +18,12 @@ from src.landuse import (
     write_roughness_raster,
 )
 
-SRC_CODES = (40, 50, 80, SEA_CODE)
+SRC_CODES = (40, 50, 80, LANDUSE_SEA_CODE)
 SRC_NODATA = 0
 N_PX = 20
 RES_DEG = 0.001
 LON0, LAT0 = 4.0, 52.0
-MANNING = {40: 0.035, 50: 0.10, 80: 0.02, SEA_CODE: 0.02}
+MANNING = {40: 0.035, 50: 0.10, 80: 0.02, LANDUSE_SEA_CODE: 0.02}
 
 
 def _lc100(tmp_path, nodata_corner=True):
@@ -84,13 +84,13 @@ def test_lc100_source_keeps_codes_and_maps_nodata(tmp_path):
         arr = src.read(1)
         assert src.crs.to_epsg() == 4326
         assert src.nodata == LANDUSE_NODATA
-        assert src.tags()["sea_code"] == str(SEA_CODE)
+        assert src.tags()["sea_code"] == str(LANDUSE_SEA_CODE)
     assert arr.dtype == np.uint8
     assert arr.shape == codes.shape
     assert set(np.unique(arr)) <= set(SRC_CODES) | {LANDUSE_NODATA}
     np.testing.assert_array_equal(arr == LANDUSE_NODATA, codes == SRC_NODATA)
     np.testing.assert_array_equal(arr[codes != SRC_NODATA], codes[codes != SRC_NODATA])
-    assert stats["sea_px"] == int((codes == SEA_CODE).sum())
+    assert stats["sea_px"] == int((codes == LANDUSE_SEA_CODE).sum())
     assert meta["nodata"] == LANDUSE_NODATA
 
 

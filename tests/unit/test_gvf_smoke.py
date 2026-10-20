@@ -15,8 +15,7 @@ from src.gvf import (
 )
 
 CRS = "EPSG:32631"
-CFG = {"node_spacing_m": 500, "target_smoothing_m": 3000, "manning_channel": 0.03}
-H_MIN, H_MAX = 0.5, 30.0
+H_MAX = 30.0
 
 
 def _rivers() -> gpd.GeoDataFrame:
@@ -37,7 +36,7 @@ def _rivers() -> gpd.GeoDataFrame:
 
 
 @pytest.fixture(scope="module")
-def gvf_run() -> GvfRun:
+def gvf_run(gvf_cfg) -> GvfRun:
     return run_gvf(
         _rivers(),
         {"1": 400.0, "2": 400.0},
@@ -47,14 +46,15 @@ def gvf_run() -> GvfRun:
         sea_level_m=0.0,
         gebco_floor_m=-10.0,
         outflow_reaches=set(),
-        cfg=CFG,
+        manning_n=0.03,
+        cfg=gvf_cfg,
     )
 
 
 def test_mean_seed_discharge_uses_active_crossings_and_max_per_reach():
     ds = xr.Dataset(
         {
-            "mean_discharge": ("crossing", [10.0, 30.0, 99.0]),
+            "mean_discharge_m3s": ("crossing", [10.0, 30.0, 99.0]),
             "inside_reach_id": ("crossing", ["5", "5", "6"]),
             "longitude": ("crossing", [4.0, 4.1, 4.2]),
             "latitude": ("crossing", [51.0, 51.1, 51.2]),
@@ -77,8 +77,8 @@ def test_depth_segments_cover_reaches_with_positive_depth(gvf_run):
     assert seg.crs == CRS
     assert (seg["depth"] > 0).all()
     assert not seg["fallback"].any()
-    for rid, line in zip(_rivers()["reach_id"], _rivers().geometry):
-        assert seg.loc[seg["reach_id"] == rid].length.sum() == pytest.approx(
+    for reach_id, line in zip(_rivers()["reach_id"], _rivers().geometry):
+        assert seg.loc[seg["reach_id"] == reach_id].length.sum() == pytest.approx(
             line.length
         )
 

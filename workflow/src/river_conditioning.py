@@ -11,28 +11,25 @@ Two passes, writing a new raster:
    flat rectangular burn (rule 11b) lacks. Where buffers overlap at a junction
    the lower value wins.
 
-Needs only topology and width (not rivdph), so it runs before rule
+Needs only topology and width (not river_depth_m), so it runs before rule
 modelled_depth_estimation and before burn_river_rect (build_sfincs).
 """
 
 from __future__ import annotations
 
 import logging
-from collections import deque
 from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
 import rasterio
-import shapely
-from rasterio.features import geometry_mask
-from rasterio.windows import Window
-from rasterio.windows import transform as window_transform
-from scipy.interpolate import interp1d
 from src.river_network import (
     _as_linestring,
     _sample_line_cells,
     build_downstream_adjacency,
+    clamped_profile,
+    kahn_order,
+    line_window_cells,
     normalize_reach_id,
 )
 
@@ -69,35 +66,27 @@ def enforce_river_monotonicity(
     )
     rivers_proj["reach_id_norm"] = rivers_proj["reach_id"].apply(normalize_reach_id)
 
-    line_by_rid: dict[str, object] = {}
-    width_by_rid: dict[str, float] = {}
+    line_by_reach_id: dict[str, object] = {}
+    width_by_reach_id: dict[str, float] = {}
     for row in rivers_proj.itertuples(index=False):
-        rid = row.reach_id_norm
+        reach_id = row.reach_id_norm
         g = _as_linestring(row.geometry)
         if g is not None and g.length > 0:
-            line_by_rid[rid] = g
+            line_by_reach_id[reach_id] = g
         w = getattr(row, width_column, np.nan)
         if w is not None and np.isfinite(w) and w > 0:
-            width_by_rid[rid] = float(w)
+            width_by_reach_id[reach_id] = float(w)
 
     downstream_adj = build_downstream_adjacency(rivers)
-    upstream_adj: dict[str, list[str]] = {rid: [] for rid in downstream_adj}
-    for rid, dns in downstream_adj.items():
+    upstream_adj: dict[str, list[str]] = {reach_id: [] for reach_id in downstream_adj}
+    for reach_id, dns in downstream_adj.items():
         for dn in dns:
-            upstream_adj.setdefault(dn, []).append(rid)
+            upstream_adj.setdefault(dn, []).append(reach_id)
 
-    in_degree = {rid: len(parents) for rid, parents in upstream_adj.items()}
-    queue: deque[str] = deque(rid for rid, d in in_degree.items() if d == 0)
-    topo_order: list[str] = []
-    while queue:
-        rid = queue.popleft()
-        topo_order.append(rid)
-        for dn in downstream_adj.get(rid, []):
-            in_degree[dn] -= 1
-            if in_degree[dn] == 0:
-                queue.append(dn)
     # Reaches on a cycle go last.
-    topo_order.extend(rid for rid, d in in_degree.items() if d > 0)
+    topo_order, _ = kahn_order(
+        list(upstream_adj), lambda reach_id: downstream_adj.get(reach_id, [])
+    )
 
     # Pass 1: centreline running minimum.
     end_min: dict[str, float] = {}
@@ -106,13 +95,13 @@ def enforce_river_monotonicity(
     centerline_max_m = -np.inf
     reach_profile: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
-    for rid in topo_order:
-        line = line_by_rid.get(rid)
+    for reach_id in topo_order:
+        line = line_by_reach_id.get(reach_id)
         if line is None:
             continue
 
         # Start from the lowest upstream end so no reach rises above any parent.
-        parents = upstream_adj.get(rid, [])
+        parents = upstream_adj.get(reach_id, [])
         parent_mins = [end_min[p] for p in parents if p in end_min]
         running_min: float = float(min(parent_mins)) if parent_mins else np.inf
 
@@ -137,11 +126,11 @@ def enforce_river_monotonicity(
             along_list.append(c["along_m"])
             val_list.append(running_min)
 
-        end_min[rid] = running_min if running_min != np.inf else 0.0
+        end_min[reach_id] = running_min if running_min != np.inf else 0.0
         if n_mod > 0:
-            n_modified_by_reach[rid] = n_mod
+            n_modified_by_reach[reach_id] = n_mod
         if along_list:
-            reach_profile[rid] = (np.asarray(along_list), np.asarray(val_list))
+            reach_profile[reach_id] = (np.asarray(along_list), np.asarray(val_list))
             centerline_max_m = max(centerline_max_m, max(val_list))
 
     n_total = sum(n_modified_by_reach.values())
@@ -160,61 +149,23 @@ def enforce_river_monotonicity(
     )
     touched = np.zeros(elevation_arr.shape, dtype=bool)
     full_shape = elevation_arr.shape
-    inv_transform = ~transform
     n_width_modified = 0
     n_width_checked = 0
 
-    for rid in topo_order:
-        line = line_by_rid.get(rid)
-        width = width_by_rid.get(rid)
-        if line is None or width is None or rid not in reach_profile:
+    for reach_id in topo_order:
+        line = line_by_reach_id.get(reach_id)
+        width_m = width_by_reach_id.get(reach_id)
+        if line is None or width_m is None or reach_id not in reach_profile:
             continue
-        along_arr, val_arr = reach_profile[rid]
-        if len(along_arr) == 1:
-            _const = float(val_arr[0])
-
-            def interp(s, _v=_const):
-                return np.full(np.shape(s), _v, dtype=float)
-        else:
-            interp = interp1d(
-                along_arr,
-                val_arr,
-                kind="linear",
-                bounds_error=False,
-                fill_value=(float(val_arr[0]), float(val_arr[-1])),
-            )
-
-        buf_poly = line.buffer(width / 2.0)
-        bminx, bminy, bmaxx, bmaxy = buf_poly.bounds
-        corners = [(bminx, bminy), (bmaxx, bminy), (bminx, bmaxy), (bmaxx, bmaxy)]
-        cols_c, rows_c = zip(*(inv_transform * c for c in corners))
-        col_off = max(0, int(np.floor(min(cols_c))))
-        row_off = max(0, int(np.floor(min(rows_c))))
-        col_stop = min(full_shape[1], int(np.ceil(max(cols_c))))
-        row_stop = min(full_shape[0], int(np.ceil(max(rows_c))))
-        if col_stop <= col_off or row_stop <= row_off:
+        along_arr, val_arr = reach_profile[reach_id]
+        interp = clamped_profile(along_arr, val_arr)
+        buf_poly = line.buffer(width_m / 2.0)
+        cells = line_window_cells(buf_poly, line, transform, full_shape)
+        if cells is None:
             continue
-        window = Window(col_off, row_off, col_stop - col_off, row_stop - row_off)
-        win_transform = window_transform(window, transform)
-        win_shape = (int(window.height), int(window.width))
-        inside = geometry_mask(
-            [buf_poly],
-            out_shape=win_shape,
-            transform=win_transform,
-            invert=True,
-            all_touched=True,
-        )
-        if not inside.any():
-            continue
-
-        rows_idx, cols_idx = np.where(inside)
-        xs, ys = rasterio.transform.xy(win_transform, rows_idx, cols_idx)
-        pts = shapely.points(np.asarray(xs), np.asarray(ys))
-        pts_along = shapely.line_locate_point(line, pts)
+        abs_rows, abs_cols, pts_along = cells
         target_vals = np.asarray(interp(pts_along), dtype=float)
 
-        abs_rows = rows_idx + row_off
-        abs_cols = cols_idx + col_off
         keep = ~orig_is_nodata[abs_rows, abs_cols]
         if not keep.any():
             continue

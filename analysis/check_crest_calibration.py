@@ -20,7 +20,7 @@ Figure (figs/crest_calibration_check/{basin_id}_crest_margin.png): weir
 segments coloured by margin (map) + margin histogram per segment type.
 
 Usage:
-    conda run -n hmt_sfincs_dev python tests/check_crest_calibration.py [basin_id]
+    conda run -n hmt_sfincs_dev python analysis/check_crest_calibration.py [basin_id]
 """
 
 from __future__ import annotations
@@ -40,19 +40,19 @@ import pandas as pd
 import rasterio
 import xarray as xr
 import yaml
+from _common import REPO_ROOT, basin_id_from_argv  # noqa: E402
 from affine import Affine
 from matplotlib.collections import LineCollection
 from scipy.spatial import cKDTree
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
-from src.protection_weir import LANDUSE_SEA, OCEAN_WETLAND_CLASSES
-from src.sfincs_run import parse_sfincs_inp
+sys.path.insert(0, str(REPO_ROOT / "workflow"))
+from src.landuse import LANDUSE_SEA_CODE, OCEAN_WETLAND_CLASSES
+from src.sfincs_run import parse_sfincs_inp, read_weir_file
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-BASIN_ID = sys.argv[1] if len(sys.argv) > 1 else "2433835"
+BASIN_ID = basin_id_from_argv()
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
     config = yaml.safe_load(fh)
@@ -93,7 +93,7 @@ with rasterio.open(landuse_path) as src:
     landuse = src.read(1)
 if landuse.shape != (nmax, mmax):
     raise ValueError(f"landuse_on_grid {landuse.shape} vs model grid {(nmax, mmax)}")
-ocean = landuse == LANDUSE_SEA
+ocean = landuse == LANDUSE_SEA_CODE
 wetland = np.isin(landuse, OCEAN_WETLAND_CLASSES)
 
 # per-segment water level on both sides
@@ -168,18 +168,13 @@ else:
 # crests as SFINCS read them (round2/sfincs.weir)
 # hydromt drops segments outside the active region, so segments are matched by
 # midpoint; a dropped one next to an active cell is a real gap in the weir.
+# One crest per segment: this repo writes the same crest on every vertex.
+weir_file = read_weir_file(round2 / "sfincs.weir")
 file_mid, file_z = [], []
-with open(round2 / "sfincs.weir") as fh:
-    lines = [ln for ln in fh.read().splitlines() if ln.strip()]
-i = 0
-while i < len(lines):
-    n_rows = int(lines[i + 1].split()[0])
-    pts = np.array(
-        [[float(v) for v in ln.split()[:3]] for ln in lines[i + 2 : i + 2 + n_rows]]
-    )
-    file_mid.append((pts[:-1, :2] + pts[1:, :2]) / 2)
-    file_z.append((pts[:-1, 2] + pts[1:, 2]) / 2)
-    i += 2 + n_rows
+for geom, crest_m in zip(weir_file.geometry, weir_file["elevation"]):
+    pts = np.asarray(geom.coords)
+    file_mid.append((pts[:-1] + pts[1:]) / 2)
+    file_z.append(np.full(len(pts) - 1, crest_m))
 file_mid, file_z = np.concatenate(file_mid), np.concatenate(file_z)
 gpkg_mid = np.array(
     [g.interpolate(0.5, normalized=True).coords[0][:2] for g in weir.geometry]

@@ -13,6 +13,7 @@ from src.io import (
     local_path,
     raw_input_path,
     read_geometry,
+    require_keys,
 )
 
 
@@ -64,3 +65,9 @@ def test_read_geometry_round_trips_gpkg(tmp_path):
     assert back.crs == gdf.crs
     assert back["id"].tolist() == [1, 2]
     assert back.geometry.geom_equals(gdf.geometry).all()
+
+
+def test_require_keys_names_every_missing_key_path():
+    require_keys({"a": 1, "b": None}, ("a", "b"), "block")
+    with pytest.raises(KeyError, match=r"block\.b, block\.c"):
+        require_keys({"a": 1}, ("a", "b", "c"), "block")

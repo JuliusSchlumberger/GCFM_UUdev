@@ -6,6 +6,7 @@ meta:
   # environment variable. Set it once in PowerShell, then restart your terminal:
   #   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
 
+# The pipeline reads only name, file_path and attributes; other per-dataset fields are documentation.
 datasets:
   - name: delta_polygons
     description: Dataset of manually drawn polygons representing the delta areas globally based on earth-observation data. The polygons are drawn using five defined points as a first approximation of the geomorphologically active deltaic zone.
@@ -24,26 +25,6 @@ datasets:
           with other datasets in the Edmonds et al. (2020) study.
         example: 200412
     primary_key: BasinID2
-    spatial_extent: global
-
-  - name: river_basins
-    description: Dataset of river basins globally, used to identify the upstream drainage area for each delta basin.
-    source: "HydroBASINS (https://www.hydrosheds.org/page/hydrobasins). Lehner, B., Grill G. (2013). Global river hydrography and network routing: baseline data and new approaches to study the world’s large river systems. Hydrological Processes, 27(15). 2171-2186. https://doi.org/10.1002/hyp.9740"
-    file_format: shapefile
-    file_path: HydroBASINS/hybas_global_merged_lev06.shp
-    geometry_type: Polygon
-    crs:
-      epsg: 4326
-      name: WGS 84
-      units: degrees
-    attributes:
-      - name: HYBAS_ID
-        type: integer
-        description: >
-          Unique identifier of the river basin, used as the primary key to join
-          with other datasets in the HydroBASINS dataset.
-        example: 1234567890
-    primary_key: HYBAS_ID
     spatial_extent: global
 
   - name: fathomdem
@@ -114,58 +95,6 @@ datasets:
       only supported coastal topography source (workflow/scripts/
       05a_get_elevation.py, workflow/src/raster.py find_fathomdem_tiles) —
       see the description's centimeters-unit caveat.
-
-  - name: deltadtm_mask
-    # NOT USED by the pipeline since 2026-10-09: rule 05a now takes sea/land
-    # from the land use (200 = sea) instead. Entry kept for reference.
-    # DeltaDTM's own validity/classification mask, used ONLY to identify
-    # ocean pixels so FathomDEM's known-bad seaward extension (it is a
-    # terrestrial DEM, not bathymetry, and reports spurious near-zero/
-    # shallow "elevation" over open water instead of nodata) can be
-    # excluded before the FathomDEM/GEBCO merge in 05a_get_elevation.py.
-    #
-    # IMPORTANT: this is a 4-class mask (0/1/2/3, +nodata=255), NOT the
-    # simple binary "1=valid land, 0=no-data" scheme some other projects'
-    # copies of this dataset use:
-    #   1        -> ocean/water
-    #   0        -> land outside DeltaDTM's own delta-lowland coverage
-    #               (real hills/inland terrain)
-    #   2        -> land, DeltaDTM's own reliable-data class
-    #   3        -> mostly land but a "leaky" transition class, likely a
-    #               coastal/tidal-flat zone
-    #   255 (nodata) -> no source tile coverage at all; NOT reliably
-    #               ocean (DeltaDTM's tile footprint doesn't necessarily
-    #               reach as far inland as this pipeline's domains do) --
-    #               deliberately NOT treated as ocean, unlike value 1.
-    # Only value 1 is used to clip FathomDEM (see clip_ocean_from_topo in
-    # workflow/src/raster.py).
-    description: >
-      DeltaDTM (Pronk et al. 2024) validity/classification mask, global
-      VRT mosaic of 1 arcsec per-tile GeoTIFFs. Used here purely to
-      identify ocean pixels for FathomDEM ocean-clipping -- NOT to gate
-      the actual DeltaDTM elevation values (this pipeline does not use
-      DeltaDTM's own elevation product).
-    source: "Pronk, M., Hooijer, A., Eilander, D., et al. (2024). DeltaDTM: A global coastal digital terrain model. Earth System Science Data, 16, 2343-2360. https://doi.org/10.5194/essd-16-2343-2024. Data: https://doi.org/10.5281/zenodo.7296982"
-    provider: gdal
-    file_format: VRT (GDAL virtual mosaic over per-tile GeoTIFFs)
-    file_path: DeltaDTM_masks/deltadtm_mask.vrt
-    crs:
-      epsg: 4326
-      name: WGS 84
-      units: degrees
-    raster_properties:
-      data_type: Byte
-      nodata_value: 255
-      band_count: 1
-      pixel_size_arcsec: 1
-    coverage:
-      spatial_extent: Coastal deltas and their immediate surroundings only
-        (not global) -- large gaps expected far from any delta.
-    notes: >
-      Used by workflow/scripts/05a_get_elevation.py (via
-      src.raster.clip_ocean_from_topo) right after FathomDEM is loaded
-      onto the UTM working grid, before the GEBCO hard-merge step.
-
 
   - name: river_network
     # SWORD (SWOT River Database) v17c, "unpublished" custom export, reach-

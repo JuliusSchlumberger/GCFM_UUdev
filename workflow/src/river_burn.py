@@ -28,7 +28,6 @@ from rasterio.features import rasterize as rio_rasterize
 from rasterio.transform import from_origin
 from rasterio.windows import Window
 from rasterio.windows import transform as window_transform
-from scipy.interpolate import interp1d
 from src.grid import cell_size_m
 from src.raster import reproject_nan_aware
 from src.river_network import (
@@ -36,19 +35,12 @@ from src.river_network import (
     _as_linestring,
     _junction_value,
     build_downstream_adjacency,
+    clamped_profile,
+    line_window_cells,
     normalize_reach_id,
 )
 
 log = logging.getLogger(__name__)
-
-
-def _windows_intersect(a: Window, b: Window) -> bool:
-    return not (
-        a.col_off + a.width <= b.col_off
-        or b.col_off + b.width <= a.col_off
-        or a.row_off + a.height <= b.row_off
-        or b.row_off + b.height <= a.row_off
-    )
 
 
 def burn_river_channel(
@@ -173,11 +165,11 @@ def burn_river_channel(
     # burnable reach can borrow a junction value from such a neighbour.
     reach_data: dict[str, tuple[object, np.ndarray, np.ndarray]] = {}
     for row in rivers_proj.itertuples(index=False):
-        rid = normalize_reach_id(row.reach_id)
+        reach_id = normalize_reach_id(row.reach_id)
         line = _as_linestring(row.geometry)
-        if rid is None or line is None or line.length == 0:
+        if reach_id is None or line is None or line.length == 0:
             continue
-        zbed_reach = zbed_proj[zbed_proj["_reach_id"] == rid]
+        zbed_reach = zbed_proj[zbed_proj["_reach_id"] == reach_id]
         if len(zbed_reach) == 0:
             continue
         zbed_points = shapely.points(
@@ -186,40 +178,43 @@ def burn_river_channel(
         along = shapely.line_locate_point(line, zbed_points)
         rivbed_vals = zbed_reach["rivbed"].to_numpy(dtype=float)
         order = np.argsort(along)
-        reach_data[rid] = (line, along[order], rivbed_vals[order])
+        reach_data[reach_id] = (line, along[order], rivbed_vals[order])
 
     downstream_adj = build_downstream_adjacency(rivers_proj)
-    upstream_adj: dict[str, list[str]] = {rid: [] for rid in downstream_adj}
-    for rid, dns in downstream_adj.items():
+    upstream_adj: dict[str, list[str]] = {reach_id: [] for reach_id in downstream_adj}
+    for reach_id, dns in downstream_adj.items():
         for dn in dns:
-            upstream_adj.setdefault(dn, []).append(rid)
+            upstream_adj.setdefault(dn, []).append(reach_id)
 
     output = np.full((height_px, width_px), np.nan, dtype=np.float32)
-    full_window = Window(0, 0, width_px, height_px)
-    inv_out_transform = ~out_transform
     n_reaches_burned = 0
     n_reaches_skipped = 0
     n_pixels_burned = 0
     n_boundaries_blended = 0
 
     for row in rivers_proj.itertuples(index=False):
-        rid = normalize_reach_id(row.reach_id)
-        width = getattr(row, width_column, np.nan)
-        if rid is None or pd.isna(width) or width <= 0 or rid not in reach_data:
+        reach_id = normalize_reach_id(row.reach_id)
+        width_m = getattr(row, width_column, np.nan)
+        if (
+            reach_id is None
+            or pd.isna(width_m)
+            or width_m <= 0
+            or reach_id not in reach_data
+        ):
             n_reaches_skipped += 1
             continue
-        line, along, rivbed_vals = reach_data[rid]
+        line, along, rivbed_vals = reach_data[reach_id]
 
         # Junction values from direct neighbours only, averaged over several.
         up_vals = [
             v
-            for u in upstream_adj.get(rid, [])
-            if (v := _junction_value(reach_data, u, rid)) is not None
+            for u in upstream_adj.get(reach_id, [])
+            if (v := _junction_value(reach_data, u, reach_id)) is not None
         ]
         dn_vals = [
             v
-            for d in downstream_adj.get(rid, [])
-            if (v := _junction_value(reach_data, rid, d)) is not None
+            for d in downstream_adj.get(reach_id, [])
+            if (v := _junction_value(reach_data, reach_id, d)) is not None
         ]
         up_val = float(np.mean(up_vals)) if up_vals else None
         dn_val = float(np.mean(dn_vals)) if dn_vals else None
@@ -234,87 +229,30 @@ def burn_river_channel(
             n_boundaries_blended += 1
         along, rivbed_vals = np.asarray(ext_along), np.asarray(ext_rivbed)
 
-        if len(along) == 1:
-            _const = rivbed_vals[0]
-
-            def interp(x, _v=_const):
-                return np.full(np.shape(x), _v, dtype=float)
-        else:
-            # Clamp beyond the anchor range rather than extrapolate: the buffer
-            # extends past the line's endpoints and the local slope overshoots.
-            interp = interp1d(
-                along,
-                rivbed_vals,
-                kind="linear",
-                bounds_error=False,
-                fill_value=(rivbed_vals[0], rivbed_vals[-1]),
-            )
-
+        interp = clamped_profile(along, rivbed_vals)
         buf_poly = _flush_capped_buffer(
-            line, float(width), clip_start=bool(getattr(row, "is_seed", False))
+            line, float(width_m), clip_start=bool(getattr(row, "is_seed", False))
         )
-        # Corner-based window: windows.from_bounds raises "Bounds and transform
-        # are inconsistent" for a positive-y-scale (SFINCS) transform.
-        bminx, bminy, bmaxx, bmaxy = buf_poly.bounds
-        corners = [(bminx, bminy), (bmaxx, bminy), (bminx, bmaxy), (bmaxx, bmaxy)]
-        cols_corners, rows_corners = zip(*(inv_out_transform * c for c in corners))
-        col_off = int(np.floor(min(cols_corners)))
-        row_off = int(np.floor(min(rows_corners)))
-        col_stop = int(np.ceil(max(cols_corners)))
-        row_stop = int(np.ceil(max(rows_corners)))
-        window = Window(col_off, row_off, col_stop - col_off, row_stop - row_off)
-        if not _windows_intersect(window, full_window):
+        # all_touched=True as in build_channel_mask_regular; the default
+        # (centre inside) would narrow the footprint vs the weir corridor.
+        cells = line_window_cells(
+            buf_poly, line, out_transform, (height_px, width_px), channel_mask
+        )
+        if cells is None:
             n_reaches_skipped += 1
             continue
-        window = window.intersection(full_window)
-        if window.width <= 0 or window.height <= 0:
-            n_reaches_skipped += 1
-            continue
-
-        win_transform = window_transform(window, out_transform)
-        win_shape = (int(window.height), int(window.width))
-        if channel_mask is not None:
-            inside = channel_mask[
-                window.row_off : window.row_off + win_shape[0],
-                window.col_off : window.col_off + win_shape[1],
-            ]
-        else:
-            # all_touched=True as in build_channel_mask_regular; the default
-            # (centre inside) would narrow the footprint vs the weir corridor.
-            inside = geometry_mask(
-                [buf_poly],
-                out_shape=win_shape,
-                transform=win_transform,
-                invert=True,
-                all_touched=True,
-            )
-        if not inside.any():
-            n_reaches_skipped += 1
-            continue
-
-        rows_idx, cols_idx = np.where(inside)
-        xs, ys = rasterio.transform.xy(win_transform, rows_idx, cols_idx)
-        pts = shapely.points(np.asarray(xs), np.asarray(ys))
-        pts_along = shapely.line_locate_point(line, pts)
+        rows_idx, cols_idx, pts_along = cells
         rivbed_at_pts = np.asarray(interp(pts_along), dtype=float)
 
-        row_off, col_off = int(window.row_off), int(window.col_off)
-        terrain_win = terrain[
-            row_off : row_off + win_shape[0], col_off : col_off + win_shape[1]
-        ]
-        output_win = output[
-            row_off : row_off + win_shape[0], col_off : col_off + win_shape[1]
-        ]
-
-        terrain_at_pts = terrain_win[rows_idx, cols_idx]
+        terrain_at_pts = terrain[rows_idx, cols_idx]
         has_terrain = np.isfinite(terrain_at_pts)
         burned_vals = np.where(
             has_terrain, np.minimum(terrain_at_pts, rivbed_at_pts), rivbed_at_pts
         )
-        output_win[rows_idx, cols_idx] = burned_vals
+        output[rows_idx, cols_idx] = burned_vals
 
         n_reaches_burned += 1
-        n_pixels_burned += int(inside.sum())
+        n_pixels_burned += len(rows_idx)
 
     stats = {
         "n_reaches_burned": n_reaches_burned,
@@ -406,15 +344,15 @@ def constrain_to_coarse_channel_mask(
 def _channel_buffer_polygons(rivers: gpd.GeoDataFrame, width_column: str) -> list:
     polys = []
     for row in rivers.itertuples(index=False):
-        width = getattr(row, width_column, np.nan)
-        if pd.isna(width) or width <= 0:
+        width_m = getattr(row, width_column, np.nan)
+        if pd.isna(width_m) or width_m <= 0:
             continue
         line = _as_linestring(row.geometry)
         if line is None or line.length == 0:
             continue
         polys.append(
             _flush_capped_buffer(
-                line, float(width), clip_start=bool(getattr(row, "is_seed", False))
+                line, float(width_m), clip_start=bool(getattr(row, "is_seed", False))
             )
         )
     return polys
@@ -462,9 +400,9 @@ def build_centerline_cells_regular(
     records: list[dict] = []
 
     for row in rivers.itertuples(index=False):
-        rid = normalize_reach_id(row.reach_id)
+        reach_id = normalize_reach_id(row.reach_id)
         line = _as_linestring(row.geometry)
-        if rid is None or line is None or line.length == 0:
+        if reach_id is None or line is None or line.length == 0:
             continue
 
         bminx, bminy, bmaxx, bmaxy = line.bounds
@@ -500,7 +438,7 @@ def build_centerline_cells_regular(
         for i in order:
             records.append(
                 {
-                    "reach_id": rid,
+                    "reach_id": reach_id,
                     "row": row_off_i + int(rows_idx[i]),
                     "col": col_off_i + int(cols_idx[i]),
                     "along_m": float(along[i]),
@@ -541,19 +479,19 @@ def _half_plane_beyond(
 
 def _flush_capped_buffer(
     line: shapely.LineString,
-    width: float,
+    width_m: float,
     clip_start: bool = False,
     clip_end: bool = False,
 ) -> shapely.Polygon:
     # Flat cut at a seed: the round cap would enclose cells that
     # build_centerline_cells_regular never samples, inside the same confined
     # pocket as the injection cell. A degenerate end segment keeps its round cap.
-    buf = line.buffer(width / 2.0)
+    buf = line.buffer(width_m / 2.0)
     if not clip_start and not clip_end:
         return buf
     coords = list(line.coords)
     minx, miny, maxx, maxy = buf.bounds
-    big = (maxx - minx) + (maxy - miny) + width  # safely larger than buf's own extent
+    big = (maxx - minx) + (maxy - miny) + width_m  # safely larger than buf's own extent
     if clip_start and len(coords) >= 2 and coords[0] != coords[1]:
         buf = buf.intersection(_half_plane_beyond(coords[0], coords[1], big))
     if clip_end and len(coords) >= 2 and coords[-1] != coords[-2]:
@@ -592,8 +530,8 @@ def snap_points_to_centerline_cells(
     all_xy = centerline_cells[["x", "y"]].to_numpy()
     all_rowcol = centerline_cells[["row", "col"]].to_numpy()
     by_reach: dict[str, np.ndarray] = {
-        rid: idx.to_numpy()
-        for rid, idx in centerline_cells.groupby("reach_id").groups.items()
+        reach_id: idx.to_numpy()
+        for reach_id, idx in centerline_cells.groupby("reach_id").groups.items()
     }
     if reach_ids is None:
         reach_ids = [None] * len(points)
@@ -602,9 +540,11 @@ def snap_points_to_centerline_cells(
     snapped_rowcol = np.empty((len(points), 2), dtype=int)
     snap_dist_m = np.empty(len(points), dtype=float)
 
-    for i, (pt, rid) in enumerate(zip(points.geometry, reach_ids)):
-        norm_rid = normalize_reach_id(rid) if rid is not None else None
-        candidate_idx = by_reach.get(norm_rid) if norm_rid is not None else None
+    for i, (pt, reach_id) in enumerate(zip(points.geometry, reach_ids)):
+        norm_reach_id = normalize_reach_id(reach_id) if reach_id is not None else None
+        candidate_idx = (
+            by_reach.get(norm_reach_id) if norm_reach_id is not None else None
+        )
         if candidate_idx is None or len(candidate_idx) == 0:
             candidate_idx = np.arange(len(centerline_cells))
 

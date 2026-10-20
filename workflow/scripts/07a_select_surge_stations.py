@@ -1,6 +1,6 @@
 """Write the COAST-RP stations forcing the sea boundary; run by rule select_surge_stations.
 
-Same selection as rule 07 (src.surge.select_surge_stations). Rounded JSON, so an
+Rule 07 reloads these stations (src.surge.load_selected_stations). Rounded JSON, so an
 unchanged domain rewrites identical content and Snakemake's checksum of small
 input files does not re-trigger the GTSM extraction (rule extract_gtsm_series).
 

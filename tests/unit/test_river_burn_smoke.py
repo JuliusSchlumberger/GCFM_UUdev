@@ -38,12 +38,12 @@ def _rivers() -> gpd.GeoDataFrame:
 
 def _anchors() -> gpd.GeoDataFrame:
     xs = np.arange(25.0, 280.0, 20.0)
-    rid = np.where(xs <= 145.0, "1", "2")
+    reach_id = np.where(xs <= 145.0, "1", "2")
     # One anchor far above the terrain: the burn must not raise the bed there.
     rivbed = 4.0 - 0.01 * xs
     rivbed[3] = 50.0
     return gpd.GeoDataFrame(
-        {"reach_id": rid, "rivbed": rivbed},
+        {"reach_id": reach_id, "rivbed": rivbed},
         geometry=[Point(x, Y_RIVER) for x in xs],
         crs=CRS,
     )

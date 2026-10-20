@@ -38,7 +38,7 @@ matches the target:
    normal depth h_p on the target slope: where
    the target is (nearly) flat, as in a tidal delta whose SWORD levels sit in
    0.1 m steps near sea level, the level says almost nothing about the depth
-   and the fit would otherwise run to ``h_max``.
+   and the fit would otherwise run to ``h_max_m``.
 
 Reaches with no discharge (``q <= q_min_m3s``: tidal side channels, canals
 given no share at a bifurcation) cannot be inverted: without flow the level
@@ -206,7 +206,7 @@ class GvfProblem:
     def __init__(
         self,
         targets: GvfTargets,
-        n: float,
+        manning_n: float,
         sea_level_m: float,
         mouth_reaches: set[str],
         froude_cap: float = 0.95,
@@ -217,8 +217,8 @@ class GvfProblem:
 
         Args:
             targets: Output of src.gvf_target.build_gvf_targets.
-            n: Channel Manning n (the same value is written into SFINCS).
-            sea_level_m: Mean sea level in the model datum (``baseline_m``).
+            manning_n: Channel Manning n (the same value is written into SFINCS).
+            sea_level_m: Mean sea level in the model datum (``calm_sea_level_m``).
             mouth_reaches: Network ends that discharge to the sea; other ends
                 keep their target level.
             froude_cap: Largest Froude number allowed.
@@ -227,7 +227,7 @@ class GvfProblem:
         """
         self.t = targets
         self.net = targets.net
-        self.n = float(n)
+        self.n = float(manning_n)
         self.sea_level_m = float(sea_level_m)
         self.mouth_reaches = set(mouth_reaches)
         self.froude_cap = froude_cap
@@ -332,7 +332,7 @@ class GvfResult:
     reach_rmse: dict[str, float]
 
 
-def initial_bed(problem: GvfProblem, h_min: float, h_max: float) -> np.ndarray:
+def initial_bed(problem: GvfProblem, h_min_m: float, h_max_m: float) -> np.ndarray:
     """Slot beds from the Manning normal depth on the target slope (DEM on fixed nodes)."""
     t = problem.t
     node, reach = problem.slot_node, problem.slot_reach
@@ -344,7 +344,7 @@ def initial_bed(problem: GvfProblem, h_min: float, h_max: float) -> np.ndarray:
             problem.n,
             float(t.s_scale[node[k]]),
         )
-        z[k] = t.eta_target[node[k]] - np.clip(h, h_min, h_max)
+        z[k] = t.eta_target[node[k]] - np.clip(h, h_min_m, h_max_m)
     fixed = (problem.slot_class != NODE_INVERT) & np.isfinite(t.dem[node])
     z[fixed] = t.dem[node][fixed]
     return z
@@ -364,7 +364,7 @@ def _reach_rmse(problem: GvfProblem, solve: NetworkSolve) -> dict[str, float]:
     return out
 
 
-def prior_depth(problem: GvfProblem, h_min: float, h_max: float) -> np.ndarray:
+def prior_depth(problem: GvfProblem, h_min_m: float, h_max_m: float) -> np.ndarray:
     """Per slot, the Manning normal depth on the target slope, within bounds."""
     t = problem.t
     node, reach = problem.slot_node, problem.slot_reach
@@ -379,26 +379,28 @@ def prior_depth(problem: GvfProblem, h_min: float, h_max: float) -> np.ndarray:
             for k in range(len(node))
         ]
     )
-    return np.clip(h, h_min, h_max)
+    return np.clip(h, h_min_m, h_max_m)
 
 
-def fit_width_depth(width: np.ndarray, depth: np.ndarray) -> tuple[float, float]:
+def fit_width_depth(width_m: np.ndarray, depth_m: np.ndarray) -> tuple[float, float]:
     """Fit h = c w^b (log-log least squares), b kept within [0, 1].
 
     Falls back to b = 0, c = median depth with fewer than 3 points.
     """
-    ok = np.isfinite(width) & np.isfinite(depth) & (width > 0) & (depth > 0)
+    ok = np.isfinite(width_m) & np.isfinite(depth_m) & (width_m > 0) & (depth_m > 0)
     if ok.sum() < 3:
-        return (float(np.median(depth[ok])) if ok.any() else 1.0), 0.0
-    b = float(np.clip(np.polyfit(np.log(width[ok]), np.log(depth[ok]), 1)[0], 0.0, 1.0))
-    a = float(np.median(np.log(depth[ok]) - b * np.log(width[ok])))
+        return (float(np.median(depth_m[ok])) if ok.any() else 1.0), 0.0
+    b = float(
+        np.clip(np.polyfit(np.log(width_m[ok]), np.log(depth_m[ok]), 1)[0], 0.0, 1.0)
+    )
+    a = float(np.median(np.log(depth_m[ok]) - b * np.log(width_m[ok])))
     return float(np.exp(a)), b
 
 
 def invert_bed(
     problem: GvfProblem,
-    h_min: float = 0.5,
-    h_max: float = 30.0,
+    h_min_m: float = 0.5,
+    h_max_m: float = 30.0,
     nudging_alpha: float = 1.0,
     nudging_passes: int = 3,
     lsq_apply: str = "flagged",
@@ -411,7 +413,7 @@ def invert_bed(
 
     Args:
         problem: The network problem.
-        h_min, h_max: Depth bounds below the target level.
+        h_min_m, h_max_m: Depth bounds (m) below the target level.
         nudging_alpha: Nudging gain.
         nudging_passes: Number of nudging passes (0: none).
         lsq_apply: ``"all"``, ``"flagged"`` (reaches whose RMSE after
@@ -427,10 +429,10 @@ def invert_bed(
     t = problem.t
     node = problem.slot_node
     inv = problem.slot_class == NODE_INVERT
-    lb = t.eta_target[node] - h_max
-    ub = t.eta_target[node] - h_min
-    z = initial_bed(problem, h_min, h_max)
-    h_prior = prior_depth(problem, h_min, h_max)
+    lb = t.eta_target[node] - h_max_m
+    ub = t.eta_target[node] - h_min_m
+    z = initial_bed(problem, h_min_m, h_max_m)
+    h_prior = prior_depth(problem, h_min_m, h_max_m)
 
     for _ in range(int(nudging_passes)):
         eta_s = problem.slot_eta(problem.forward(z))
@@ -479,9 +481,9 @@ def invert_bed(
             if per_reach
             else (1.0, 0.0)
         )
-        width = np.array([t.reach_width[r] for r in problem.slot_reach])
+        width_m = np.array([t.reach_width[r] for r in problem.slot_reach])
         z[no_flow] = t.eta_target[node][no_flow] - np.clip(
-            c * width[no_flow] ** b, h_min, h_max
+            c * width_m[no_flow] ** b, h_min_m, h_max_m
         )
         log.info(
             f"GVF: {int(no_flow.sum())} no-flow slot(s), depth = {c:.3f} * width^{b:.2f}"

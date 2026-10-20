@@ -36,24 +36,27 @@ from rasterio.enums import Resampling
 from rasterio.features import geometry_mask as rio_geom_mask
 from rasterio.fill import fillnodata
 from rasterio.mask import mask as rio_mask
-from rasterio.merge import merge as rio_merge_mem
 from rasterio.transform import from_origin as _rast_from_origin
 from shapely.geometry import box as _box
 
 from src.domain import load_domain
-from src.landuse import SEA_CODE, warp_landuse_to_grid
+from src.landuse import LANDUSE_SEA_CODE, warp_landuse_to_grid
 from src.log import setup_logging
 from src.plots import plot_elevation_merged
 from src.profiling import ScriptProfiler
 from src.raster import (
+    FLOAT_NODATA,
     _tile_intersects,
     blend_coast,
     compute_geoid_offset_arr,
     find_fathomdem_tiles,
+    latlon_dims,
     merge_tiled_raster,
+    merge_tiles,
     open_water_mask,
     reproject_nan_aware,
 )
+from src.surge import load_mdt
 
 log = setup_logging(snakemake.log[0])
 
@@ -142,7 +145,7 @@ dem_meta = dict(
     driver="GTiff", dtype="float32",
     width=w_utm, height=h_utm, count=1,
     crs=utm_crs, transform=transform_utm,
-    nodata=-9999.0, compress="deflate", tiled=True,
+    nodata=FLOAT_NODATA, compress="deflate", tiled=True,
 )
 
 with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tf:
@@ -155,7 +158,7 @@ try:
         topo_nodata = src.nodata
         # Mask before reprojection: tile edges (meridians/parallels) curve in
         # UTM and would show as NaN strips.
-        _nd = float(topo_nodata) if topo_nodata is not None else -9999.0
+        _nd = float(topo_nodata) if topo_nodata is not None else FLOAT_NODATA
         _masked, _masked_transform = rio_mask(
             src, [domain_poly.__geo_interface__],
             crop=False, nodata=_nd, all_touched=True,
@@ -189,13 +192,13 @@ with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tf:
 try:
     warp_landuse_to_grid(landuse_source_path, dem_meta, _tmp_landuse)
     with rasterio.open(_tmp_landuse) as _lu_src:
-        sea_mask = _lu_src.read(1) == SEA_CODE
+        sea_mask = _lu_src.read(1) == LANDUSE_SEA_CODE
 finally:
     os.unlink(_tmp_landuse)
 n_sea_clipped = int((sea_mask & ~np.isnan(topo_utm)).sum())
 topo_utm[sea_mask] = np.nan
 log.info(
-    f"Sea clip (land use {SEA_CODE}): {n_sea_clipped:,} FathomDEM px reset to NaN "
+    f"Sea clip (land use {LANDUSE_SEA_CODE}): {n_sea_clipped:,} FathomDEM px reset to NaN "
     f"({(~np.isnan(topo_utm)).sum():,} valid px remaining) — "
     "GEBCO will fill these at the step 4 merge"
 )
@@ -250,21 +253,9 @@ if bathymetry_path.is_dir():
             f"No GEBCO tiles found overlapping domain in {bathymetry_path}"
         )
     log.info(f"  {len(candidates)} GEBCO tile(s) overlap domain")
-    open_ds = [rasterio.open(p) for p in candidates]
-    try:
-        # target_aligned_pixels: keep GEBCO on its OWN pixel lattice. With
-        # bare bounds, rasterio starts the output grid at the bounds' corner
-        # and resamples (nearest) onto it -- shifting the ~450 m GEBCO field
-        # by up to half a pixel depending on where the clipping box happens
-        # to start, i.e. a different sea bed for a different box.
-        gebco_data, gebco_transform = rio_merge_mem(
-            open_ds, bounds=wgs84_bounds, target_aligned_pixels=True
-        )
-        gebco_nodata = open_ds[0].nodata
-        gebco_crs    = open_ds[0].crs
-    finally:
-        for ds in open_ds:
-            ds.close()
+    gebco_data, gebco_transform, _gebco_meta = merge_tiles(candidates, wgs84_bounds)
+    gebco_nodata = _gebco_meta["nodata"]
+    gebco_crs    = _gebco_meta["crs"]
     gebco_arr = gebco_data[0].astype(np.float32)
     if gebco_nodata is not None:
         gebco_arr[gebco_arr == np.float32(gebco_nodata)] = np.nan
@@ -280,7 +271,7 @@ if bathymetry_path.is_dir():
     )
 else:
     with rasterio.open(bathymetry_path) as src:
-        _nd_g = float(src.nodata) if src.nodata is not None else -9999.0
+        _nd_g = float(src.nodata) if src.nodata is not None else FLOAT_NODATA
         _g_masked, _g_transform = rio_mask(
             src, [domain_poly.__geo_interface__],
             crop=False, nodata=_nd_g, all_touched=True,
@@ -298,39 +289,19 @@ log.info(f"GEBCO valid: {(~np.isnan(gebco_utm)).sum():,} px")
 # 3. GEBCO datum correction (add MDT: MSL → GOCO06s)
 # H_GOCO06s = H_MSL + MDT (HYBRID-CNES-CLS22), as rule 07 does for COAST-RP.
 # Applied to every valid GEBCO pixel: the merge may fall back to GEBCO on land.
-import xarray as xr
-
 gebco_before_mdt = gebco_utm.copy()   # snapshot before correction for the delta plot
 valid_gebco = ~np.isnan(gebco_utm)
 
 log.info(f"Loading MDT (variable='{mdt_variable}') from {mdt_path} …")
-lon_min, lat_min, lon_max, lat_max = wgs84_bounds
-margin = mdt_load_margin_deg
-
-with xr.open_dataset(mdt_path) as mdt_ds:
-    mdt_da = mdt_ds[mdt_variable]
-    lat_dim = next(d for d in mdt_da.dims if "lat" in d.lower())
-    lon_dim = next(d for d in mdt_da.dims if "lon" in d.lower())
-    for extra in [d for d in mdt_da.dims if d not in (lat_dim, lon_dim)]:
-        mdt_da = mdt_da.isel({extra: 0})
-    if float(mdt_da[lon_dim].max()) > 180:
-        mdt_da = mdt_da.assign_coords(
-            {lon_dim: xr.where(mdt_da[lon_dim] > 180,
-                               mdt_da[lon_dim] - 360, mdt_da[lon_dim])}
-        ).sortby(lon_dim)
-    mdt_clip = mdt_da.sel({
-        lat_dim: slice(lat_min - margin, lat_max + margin),
-        lon_dim: slice(lon_min - margin, lon_max + margin),
-    })
-    mdt_np   = mdt_clip.values.astype(np.float32)
-    mdt_lats = mdt_clip[lat_dim].values
-    mdt_lons = mdt_clip[lon_dim].values
+mdt_clip = load_mdt(mdt_path, mdt_variable, bbox=wgs84_bounds, margin_deg=mdt_load_margin_deg)
+lat_dim, lon_dim = latlon_dims(mdt_clip)
+# load_mdt returns ascending latitude; flip to north-up.
+mdt_np   = mdt_clip.transpose(lat_dim, lon_dim).values[::-1].astype(np.float32)
+mdt_lats = mdt_clip[lat_dim].values[::-1]
+mdt_lons = mdt_clip[lon_dim].values
 
 dlat = float(np.abs(mdt_lats[0] - mdt_lats[1]))
 dlon = float(np.abs(mdt_lons[0] - mdt_lons[1]))
-if mdt_lats[0] < mdt_lats[-1]:   # ensure north-up
-    mdt_np   = mdt_np[::-1]
-    mdt_lats = mdt_lats[::-1]
 mdt_transform_wgs = _rast_from_origin(
     float(mdt_lons[0]) - dlon / 2,
     float(mdt_lats[0]) + dlat / 2,
@@ -461,11 +432,10 @@ log.info(
 del _remaining
 
 # 5. Write outputs
-NODATA = np.float32(-9999.0)
 out_elev_path.parent.mkdir(parents=True, exist_ok=True)
 
 with rasterio.open(out_elev_path, "w", **dem_meta) as dst:
-    dst.write(np.where(np.isnan(merged), NODATA, merged).astype(np.float32), 1)
+    dst.write(np.where(np.isnan(merged), FLOAT_NODATA, merged).astype(np.float32), 1)
 log.info(f"Written: {out_elev_path}")
 
 # 6. Diagnostic plots
@@ -483,7 +453,6 @@ from src.plots import plot_datum_correction_delta
 out_plot_datum_path = str(plots_dir / "05a_elevation_datum_correction.png")
 plot_datum_correction_delta(
     delta          = delta_correction,
-    utm_crs_str    = domain_crs_str,
     wgs84_bounds   = wgs84_bounds,
     land_polygons_path  = str(land_polygons_path),
     output_path    = out_plot_datum_path,
@@ -499,7 +468,6 @@ log.info(f"Plot written: {out_plot_datum_path}")
 out_plot_gebco_datum_path = str(plots_dir / "05a_elevation_gebco_correction.png")
 plot_datum_correction_delta(
     delta          = gebco_delta_correction,
-    utm_crs_str    = domain_crs_str,
     wgs84_bounds   = wgs84_bounds,
     land_polygons_path  = str(land_polygons_path),
     output_path    = out_plot_gebco_datum_path,

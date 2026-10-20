@@ -17,15 +17,15 @@ from src.log import setup_logging
 
 log = setup_logging(snakemake.log[0])
 
-resolution = float(snakemake.params.resolution)
+resolution_m = float(snakemake.params.resolution_m)
 
 delta_domain = gpd.read_file(snakemake.input.domain_gpkg)
 with open(snakemake.input.spec_basins_meta) as fh:
     grid_frame = json.load(fh)["grid_frame"]
 
-grid_def = build_grid_def(delta_domain, grid_frame, resolution)
+grid_def = build_grid_def(delta_domain, grid_frame, resolution_m)
 log.info(
-    f"Shared SFINCS grid: {grid_def['nmax']}x{grid_def['mmax']} cells @ {resolution} m, "
+    f"Shared SFINCS grid: {grid_def['nmax']}x{grid_def['mmax']} cells @ {resolution_m} m, "
     f"CRS={grid_def['crs']}, origin ({grid_def['x0']:.0f}, {grid_def['y0']:.0f}), "
     f"rotation {grid_def['rotation']:.3f} deg"
 )

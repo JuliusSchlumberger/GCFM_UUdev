@@ -54,7 +54,7 @@ def test_rotated_frame_covers_domain_and_grid_covers_frame():
     outline = frame_footprint(frame)
     assert outline.buffer(1.0).contains(domain.union_all())
 
-    grid_def = build_grid_def(domain, frame, resolution=500.0)
+    grid_def = build_grid_def(domain, frame, resolution_m=500.0)
     assert grid_def["mmax"] * 500.0 >= frame["length_x_m"]
     assert grid_def["nmax"] * 500.0 >= frame["length_y_m"]
     assert grid_def["epsg"] == 32631
@@ -68,7 +68,7 @@ def test_rotated_frame_covers_domain_and_grid_covers_frame():
 def test_grid_def_json_round_trip_restores_transform_and_shape(tmp_path):
     domain = _rotated_domain()
     grid_def = build_grid_def(
-        domain, fit_grid_frame(domain, rotated=True), resolution=500.0
+        domain, fit_grid_frame(domain, rotated=True), resolution_m=500.0
     )
     path = tmp_path / "grid.json"
     path.write_text(json.dumps(grid_def))

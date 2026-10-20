@@ -13,21 +13,13 @@ import rioxarray as rxr
 from hydromt_sfincs import SfincsModel
 from rasterio.features import geometry_mask
 from shapely.ops import polygonize, unary_union
+from src.adaptation_measures import _is_current_protection, validate_measure_params
 from src.grid import cell_area_m2
 
 # Types of flooding attribution classes (used in the attribution mask)
 # 1 = river-only
 # 2 = coastal-only
 # 3 = compound
-
-
-def _is_current_protection(elevation) -> bool:
-    """True for the {"current": True, "fill_crest": ...} form of `current_protection`.
-
-    Current protection never clears a flood class (nor "holds" in the joint
-    compound check): the baseline flood map already contains today's levees.
-    """
-    return isinstance(elevation, dict) and bool(elevation.get("current"))
 
 
 def _crest_label(elevation) -> str:
@@ -50,9 +42,9 @@ def apply_offshore_barrier(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     mod = SfincsModel(root=scenario_root, mode="r")
-    wl = mod.get_component("water_level")
-    wl.read()
-    max_wl = float(wl.data["bzs"].max())
+    water_level_component = mod.get_component("water_level")
+    water_level_component.read()
+    max_water_level_m = float(water_level_component.data["bzs"].max())
 
     with rasterio.open(flood_map_path) as src:
         flood, prof = src.read(1), src.profile
@@ -61,7 +53,7 @@ def apply_offshore_barrier(
     if not mask_path.exists():
         raise FileNotFoundError(f"Attribution mask not found at {mask_path}")
 
-    if elevation >= max_wl:
+    if elevation >= max_water_level_m:
         with rasterio.open(
             mask_path
         ) as attr_src:  # opens attribution mask which labels each pixel by flood source
@@ -69,11 +61,11 @@ def apply_offshore_barrier(
                 np.isin(attr_src.read(1), [2, 3]), prof["nodata"], flood
             )  # if barrier height exceeds surge, the pixels in 2 are replaced with nodata
         print(
-            f"  Barrier sufficient (H={elevation}m >= Surge={max_wl:.2f}m) = all coastal flooding removed"
+            f"  Barrier sufficient (H={elevation}m >= Surge={max_water_level_m:.2f}m) = all coastal flooding removed"
         )
     else:  # if the barrier is overtopped, we keep all flooding
         print(
-            f"  Barrier overtopped (H={elevation}m < Surge={max_wl:.2f}m) = full risk"
+            f"  Barrier overtopped (H={elevation}m < Surge={max_water_level_m:.2f}m) = full risk"
         )
 
     prof.update(dtype="float32")
@@ -106,28 +98,28 @@ def apply_river_levee(
     mod = SfincsModel(root=scenario_root, mode="r")
 
     # River water level (observation points)
-    riv_wl = mod.get_component("output")
-    riv_wl.read()
-    max_river_wl = float(riv_wl.data["point_zs"].max())
+    output_component = mod.get_component("output")
+    output_component.read()
+    max_river_water_level_m = float(output_component.data["point_zs"].max())
 
     river_current = _is_current_protection(elevation)
-    river_holds = (not river_current) and elevation >= max_river_wl
+    river_holds = (not river_current) and elevation >= max_river_water_level_m
 
     coastal_measure = (strategy_measures or {}).get("coastal_levee")
     if coastal_measure is not None:
         coastal_elevation = coastal_measure["elevation"]
-        wl = mod.get_component("water_level")
-        wl.read()
-        max_coastal_wl = float(wl.data["bzs"].max())
+        water_level_component = mod.get_component("water_level")
+        water_level_component.read()
+        max_coastal_water_level_m = float(water_level_component.data["bzs"].max())
         coastal_holds = (not _is_current_protection(coastal_elevation)) and float(
             coastal_elevation
-        ) >= max_coastal_wl
+        ) >= max_coastal_water_level_m
         compound_holds = river_holds and coastal_holds
         print(
             f"  Joint compound check: river {'holds' if river_holds else 'overtopped'} "
-            f"(H={_crest_label(elevation)} vs river WL={max_river_wl:.2f}m), coastal "
+            f"(H={_crest_label(elevation)} vs river WL={max_river_water_level_m:.2f}m), coastal "
             f"{'holds' if coastal_holds else 'overtopped'} "
-            f"(H={_crest_label(coastal_elevation)} vs surge={max_coastal_wl:.2f}m) "
+            f"(H={_crest_label(coastal_elevation)} vs surge={max_coastal_water_level_m:.2f}m) "
             f"-> compound flooding {'removed' if compound_holds else 'kept at risk'}"
         )
     else:
@@ -152,7 +144,7 @@ def apply_river_levee(
                 np.isin(attr_src.read(1), classes_to_clear), prof["nodata"], flood
             )
         print(
-            f"  Levee sufficient (H={elevation}m >= river water level ={max_river_wl:.2f}m) = all river flooding removed"
+            f"  Levee sufficient (H={elevation}m >= river water level ={max_river_water_level_m:.2f}m) = all river flooding removed"
         )
     elif river_current:  # today's levee is already in the baseline flood map
         print(
@@ -160,7 +152,7 @@ def apply_river_levee(
         )
     else:  # if the levee is overtopped, we keep all flooding
         print(
-            f"  Levee overtopped (H={elevation}m < river water level={max_river_wl:.2f}m) = full risk"
+            f"  Levee overtopped (H={elevation}m < river water level={max_river_water_level_m:.2f}m) = full risk"
         )
 
     prof.update(dtype="float32", nodata=prof.get("nodata", np.nan))
@@ -367,9 +359,9 @@ def apply_coastal_levee(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     mod = SfincsModel(root=scenario_root, mode="r")
-    wl = mod.get_component("water_level")
-    wl.read()
-    max_wl = float(wl.data["bzs"].max())
+    water_level_component = mod.get_component("water_level")
+    water_level_component.read()
+    max_water_level_m = float(water_level_component.data["bzs"].max())
 
     with rasterio.open(flood_map_path) as src:
         flood, prof = src.read(1), src.profile
@@ -389,7 +381,7 @@ def apply_coastal_levee(
         print(
             "  Coastal levee at current protection = no change to the baseline flooding"
         )
-    elif elevation >= max_wl:
+    elif elevation >= max_water_level_m:
         with rasterio.open(
             mask_path
         ) as attr_src:  # opens attribution mask which labels each pixel by flood source
@@ -402,11 +394,13 @@ def apply_coastal_levee(
             else ""
         )
         print(
-            f"  Levee sufficient (H={elevation}m >= Surge={max_wl:.2f}m) = all coastal flooding removed"
+            f"  Levee sufficient (H={elevation}m >= Surge={max_water_level_m:.2f}m) = all coastal flooding removed"
             f"{compound_note}"
         )
     else:  # if the levee is overtopped, we keep all flooding
-        print(f"  Levee overtopped (H={elevation}m < Surge={max_wl:.2f}m) = full risk")
+        print(
+            f"  Levee overtopped (H={elevation}m < Surge={max_water_level_m:.2f}m) = full risk"
+        )
 
     prof.update(dtype="float32")
     with rasterio.open(out_path, "w", **prof) as dst:
@@ -444,7 +438,7 @@ def _river_flood_duration_s(scenario_root: str) -> float:
     Within tstart..tstop of the scenario's sfincs.inp; the start level is what the
     spin-up leaves (bankfull for a river RP scenario). Counted while any discharge
     point exceeds its own start level. 0 when there is no discharge forcing or it
-    never rises (e.g. river_rp Mean or Null).
+    never rises (e.g. river_rp_yr Mean or Null).
     """
     import pandas as pd
 
@@ -481,7 +475,7 @@ def apply_pumps(
     Pumped volume = discharge [m3/s] x the river flood-wave duration
     (_river_flood_duration_s), not the whole run: flood water does not drain within
     the run and the run includes calm lead-in/tail hours. 0 when the discharge
-    never rises (e.g. river_rp Mean). The volume is removed from classes 1 and 3
+    never rises (e.g. river_rp_yr Mean). The volume is removed from classes 1 and 3
     via _uniform_layer_depth, so partial pump capacities give partial relief.
     scenario_root: sfincs/ root (sfincs.inp/.dis); attribution_mask.tif is in its parent.
     """
@@ -716,8 +710,7 @@ def apply_retreat(
 
     The flood map is copied unchanged. The deepest-flooded `retreat_fraction` of
     urban AND flooded cells move from `urban_code` to `target_code` (landuse only,
-    no subgrid rebuild; dep_subgrid is preprocessing-only in measures.yml), and the
-    new raster is returned as `landuse_path`. No risk_metrics.csv is written:
+    no subgrid rebuild), and the new raster is returned as `landuse_path`. No risk_metrics.csv is written:
     18b_adapt_post.py computes every metric once, at the end of the measure chain,
     from the final flood and landuse rasters.
     """
@@ -773,33 +766,6 @@ selected_measures = {
     # "dike_ring": apply_dike_ring,
     "retreat": apply_retreat,
 }
-
-
-def validate_measure_params(
-    measure_type: str, params: dict, method: str, measure_def: dict
-) -> None:
-    """Check params against config/measures.yml bounds and required_for; raise ValueError."""
-    param_specs = measure_def.get("params", {})
-    for name, spec in param_specs.items():
-        required_for = spec.get("required_for", [])
-        if method in required_for and name not in params:
-            raise ValueError(
-                f"Measure '{measure_type}': param '{name}' is required for method "
-                f"'{method}' (config/measures.yml) but was not provided."
-            )
-        if (
-            name in params
-            and spec.get("min") is not None
-            and spec.get("max") is not None
-        ):
-            value = params[name]
-            if isinstance(value, (int, float)) and not (
-                spec["min"] <= value <= spec["max"]
-            ):
-                raise ValueError(
-                    f"Measure '{measure_type}': param '{name}'={value} is out of bounds "
-                    f"[{spec['min']}, {spec['max']}] (config/measures.yml)."
-                )
 
 
 def dispatch_rules(

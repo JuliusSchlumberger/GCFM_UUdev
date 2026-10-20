@@ -1,26 +1,22 @@
 """Download and unzip hourly GTSM reanalysis water levels from the Copernicus CDS.
 
 Needs CDS API credentials (cdsapi); resumable: extracted years are skipped.
+Exits non-zero if any archive was corrupt.
 """
 
 import os
+import sys
 import zipfile
 from pathlib import Path
 
 import cdsapi
 
-dataset = "sis-water-level-change-timeseries-cmip6"
-# GCFM_RAW_DATA_ROOT is machine-specific; see CONTRIBUTING.md "Local machine paths".
-out_dir = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "GTSM_storm_tide_hourly"
-out_dir.mkdir(parents=True, exist_ok=True)
-
-variables = ["storm_surge_residual", "total_water_level"]
-years = [str(y) for y in range(1950, 2025)]
-months = [f"{m:02d}" for m in range(1, 13)]
+DATASET = "sis-water-level-change-timeseries-cmip6"
+VARIABLES = ["storm_surge_residual", "total_water_level"]
+YEARS = [str(y) for y in range(1950, 2025)]
+MONTHS = [f"{m:02d}" for m in range(1, 13)]
 
 DELETE_ZIP_AFTER_EXTRACT = False
-
-client = cdsapi.Client()
 
 
 def extract(zip_path: Path, dest: Path) -> bool:
@@ -39,39 +35,59 @@ def extract(zip_path: Path, dest: Path) -> bool:
         return False
 
 
-for var in variables:
-    extract_dir = out_dir / var
-    extract_dir.mkdir(parents=True, exist_ok=True)
+def main() -> None:
+    # GCFM_RAW_DATA_ROOT is machine-specific; see CONTRIBUTING.md "Local machine paths".
+    out_dir = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "GTSM_storm_tide_hourly"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    for year in years:
-        target = out_dir / f"{var}_{year}.zip"
-        done_marker = extract_dir / f".{var}_{year}.extracted"
+    client = cdsapi.Client()
+    failed: list[str] = []
 
-        if done_marker.exists():
-            print(f"skip {target.name} (already extracted)")
-            continue
+    for var in VARIABLES:
+        extract_dir = out_dir / var
+        extract_dir.mkdir(parents=True, exist_ok=True)
 
-        # Temporary name: an interrupted transfer never looks like a finished zip.
-        if not target.exists():
-            tmp = target.with_suffix(".zip.part")
-            request = {
-                "variable": [var],
-                "experiment": "reanalysis",
-                "temporal_aggregation": ["hourly"],
-                "year": [year],
-                "month": months,
-                "version": ["v3"],
-            }
-            print(f"requesting {target.name}")
-            client.retrieve(dataset, request).download(str(tmp))
-            tmp.replace(target)
+        for year in YEARS:
+            target = out_dir / f"{var}_{year}.zip"
+            done_marker = extract_dir / f".{var}_{year}.extracted"
 
-        print(f"extracting {target.name}")
-        if not extract(target, extract_dir):
-            # Removed so the next run fetches it again.
-            target.unlink(missing_ok=True)
-            continue
+            if done_marker.exists():
+                print(f"skip {target.name} (already extracted)")
+                continue
 
-        done_marker.touch()
-        if DELETE_ZIP_AFTER_EXTRACT:
-            target.unlink()
+            # Temporary name: an interrupted transfer never looks like a finished zip.
+            if not target.exists():
+                tmp = target.with_suffix(".zip.part")
+                request = {
+                    "variable": [var],
+                    "experiment": "reanalysis",
+                    "temporal_aggregation": ["hourly"],
+                    "year": [year],
+                    "month": MONTHS,
+                    "version": ["v3"],
+                }
+                print(f"requesting {target.name}")
+                client.retrieve(DATASET, request).download(str(tmp))
+                tmp.replace(target)
+
+            print(f"extracting {target.name}")
+            if not extract(target, extract_dir):
+                # Removed so the next run fetches it again.
+                target.unlink(missing_ok=True)
+                failed.append(target.name)
+                continue
+
+            done_marker.touch()
+            if DELETE_ZIP_AFTER_EXTRACT:
+                target.unlink()
+
+    if failed:
+        print(
+            f"{len(failed)} archive(s) corrupt, re-run to fetch again: {', '.join(failed)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

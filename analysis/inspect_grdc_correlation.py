@@ -8,8 +8,8 @@ delta_polygons (as BASINS in Snakemake); basins without river_forcing.nc
 (rule 04) are skipped.
 
 Usage:
-    python tests/inspect_grdc_correlation.py              # all delta basins
-    python tests/inspect_grdc_correlation.py 4267691 ...  # only these basins
+    python analysis/inspect_grdc_correlation.py              # all delta basins
+    python analysis/inspect_grdc_correlation.py 4267691 ...  # only these basins
 """
 
 import logging
@@ -19,13 +19,22 @@ from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import xarray as xr
 import yaml
+from _common import REPO_ROOT  # noqa: E402
+from shapely.geometry import Polygon
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
+sys.path.insert(0, str(REPO_ROOT / "workflow"))
 from src.domain import load_domain
-from src.extreme_values import compute_grdc_correlation, plot_grdc_overview
+from src.extreme_values import (
+    _plot_overlap_timeseries,
+    _plot_raw_scatter,
+    _plot_seasonal_scatter,
+    compute_grdc_correlation,
+)
 from src.io import catalogue_entry, load_catalogue, raw_input_path, read_geometry
+from src.plots import map_background, save_figure
 from src.river_forcing import (
     find_nearest_grdc_station,
     load_grdc_series,
@@ -33,8 +42,139 @@ from src.river_forcing import (
 )
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
+log = logging.getLogger(__name__)
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+
+def plot_grdc_overview(
+    domain_poly: Polygon,
+    land_polygons_path: str,
+    river_gdf: gpd.GeoDataFrame,
+    crossings_gdf: gpd.GeoDataFrame,
+    grdc_stations: gpd.GeoDataFrame,
+    highlight_crossing_idx: int,
+    highlight_station_id: int,
+    diagnostics: dict,
+    output_path: str | Path,
+    label: str = "",
+) -> None:
+    """Render a 2x2 GRDC-vs-GloFAS correlation overview figure (raw overlap only).
+
+    diagnostics comes from compute_grdc_correlation, so no bias correction is
+    needed. All geometries WGS84; crossings_gdf needs a bool has_glofas
+    column; land_polygons_path is the land mask (land use != 200) background.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    g_ov = np.asarray(diagnostics["glofas_overlap"], dtype=float)
+    r_ov = np.asarray(diagnostics["grdc_overlap"], dtype=float)
+    t_ov = pd.to_datetime(diagnostics["glofas_overlap_times"])
+    tail_mask = diagnostics["tail_mask"]
+    tail_pct = diagnostics["tail_percentile"]
+    r_raw = diagnostics["correlation_raw"]
+    r_raw_full = diagnostics["correlation_full_raw"]
+    n_overlap = diagnostics["grdc_overlap_days"]
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 11))
+    fig.suptitle(
+        f"GRDC-GloFAS correlation — {label}  (station {highlight_station_id}, {n_overlap} d overlap)",
+        fontsize=13,
+        y=0.98,
+    )
+
+    ax = axes[0, 0]
+    station_pt = grdc_stations.loc[
+        grdc_stations["id"] == highlight_station_id, "geometry"
+    ].iloc[0]
+    crossing_pt = crossings_gdf.geometry.iloc[highlight_crossing_idx]
+
+    map_background(ax, domain_poly, land_polygons_path, margin_frac=0.15)
+    bx, by = domain_poly.exterior.xy
+    ax.plot(bx, by, color="black", linewidth=2, zorder=2, label="Model domain")
+
+    # Widen the view if the matched GRDC station falls outside the domain bbox.
+    xlim = (min(ax.get_xlim()[0], station_pt.x), max(ax.get_xlim()[1], station_pt.x))
+    ylim = (min(ax.get_ylim()[0], station_pt.y), max(ax.get_ylim()[1], station_pt.y))
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
+    map_bounds = (xlim[0], ylim[0], xlim[1], ylim[1])
+
+    river_gdf.plot(ax=ax, color="steelblue", linewidth=0.8, zorder=1)
+
+    if not crossings_gdf.empty:
+        active = crossings_gdf["has_glofas"].astype(bool)
+        if active.any():
+            crossings_gdf[active].plot(
+                ax=ax,
+                color="limegreen",
+                markersize=40,
+                zorder=3,
+                label="Crossing (active)",
+            )
+        if (~active).any():
+            crossings_gdf[~active].plot(
+                ax=ax,
+                color="grey",
+                markersize=40,
+                marker="x",
+                zorder=3,
+                label="Crossing (inactive)",
+            )
+
+    grdc_in_view = grdc_stations.cx[
+        map_bounds[0] : map_bounds[2], map_bounds[1] : map_bounds[3]
+    ]
+    if not grdc_in_view.empty:
+        grdc_in_view.plot(
+            ax=ax,
+            color="purple",
+            markersize=70,
+            marker="*",
+            zorder=3,
+            alpha=0.7,
+            label="GRDC station",
+        )
+
+    ax.scatter(
+        [crossing_pt.x],
+        [crossing_pt.y],
+        s=180,
+        facecolors="none",
+        edgecolors="red",
+        linewidths=2,
+        zorder=4,
+        label="This crossing",
+    )
+    ax.scatter(
+        [station_pt.x],
+        [station_pt.y],
+        s=180,
+        facecolors="none",
+        edgecolors="orange",
+        linewidths=2,
+        zorder=4,
+        label="Matched GRDC station",
+    )
+
+    ax.set_title("Domain context")
+    ax.legend(loc="best", fontsize=7)
+
+    lims = (0.0, float(max(g_ov.max(), r_ov.max())) * 1.05)
+    _plot_raw_scatter(
+        axes[0, 1], g_ov, r_ov, r_raw, r_raw_full, tail_mask, tail_pct, lims
+    )
+    _plot_seasonal_scatter(axes[1, 0], g_ov, r_ov, t_ov, lims)
+    _plot_overlap_timeseries(axes[1, 1], t_ov, g_ov, r_ov, r_raw)
+
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    save_figure(fig, output_path, dpi=130)
+    log.info(f"Wrote GRDC overview plot: {output_path}")
+
+
 # GCFM_RAW_DATA_ROOT is machine-specific; see CONTRIBUTING.md "Local machine paths".
 GRDC_PATH = Path(os.environ["GCFM_RAW_DATA_ROOT"]) / "GRDC/GRDC-Daily.nc"
 

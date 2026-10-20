@@ -2,7 +2,7 @@
 import json
 import os
 
-from src.io import load_catalogue, catalogue_entry,read_geometry, raw_input_path, local_path
+from src.io import load_catalogue, catalogue_entry,read_geometry, raw_input_path, local_path, require_keys
 from src.io import general_path as _gen_path
 from src.river_forcing import derive_forcing_mode
 import geopandas as gpd
@@ -87,7 +87,7 @@ def grid_resolution_m(basin_id):
 _GRID_ROTATED_OVERRIDES = {
     int(_b): _r for _b, _r in (_GRID_CFG.get("rotated_overrides") or {}).items()
 }
-for _label, _r in [("rotated", _GRID_CFG.get("rotated", False))] + [
+for _label, _r in [("rotated", _GRID_CFG["rotated"])] + [
     (f"rotated_overrides[{_b}]", _r) for _b, _r in _GRID_ROTATED_OVERRIDES.items()
 ]:
     if not isinstance(_r, bool):
@@ -95,7 +95,7 @@ for _label, _r in [("rotated", _GRID_CFG.get("rotated", False))] + [
 
 def grid_rotated(basin_id):
     """Return whether a basin's grid is rotated: its override, else the default."""
-    return bool(_GRID_ROTATED_OVERRIDES.get(int(basin_id), _GRID_CFG.get("rotated", False)))
+    return bool(_GRID_ROTATED_OVERRIDES.get(int(basin_id), _GRID_CFG["rotated"]))
 
 
 # ── storm-tide event window ──
@@ -147,53 +147,54 @@ if "default" not in SCENARIO_DEFS:
 for _name, _s in SCENARIO_DEFS.items():
     if not _re.fullmatch(r"[A-Za-z0-9_-]+", _name):
         raise ValueError(f"scenario name {_name!r} invalid (use letters/digits/_/- only)")
-    _srp, _rrp = _s.get("surge_rp"), _s.get("river_rp")
+    _srp, _rrp = _s.get("surge_rp_yr"), _s.get("river_rp_yr")
     _srp_is_tide = isinstance(_srp, str) and _srp.strip().lower() == "tide"
     if _srp is not None and not _srp_is_tide and _srp not in _SURGE_RPS:
         raise ValueError(
-            f"{_name}: surge_rp must be 'Tide', null, or a COAST-RP "
+            f"{_name}: surge_rp_yr must be 'Tide', null, or a COAST-RP "
             f"tabulated value {_SURGE_RPS}"
         )
     _rrp_is_mean = isinstance(_rrp, str) and _rrp.strip().lower() == "mean"
     if _rrp is not None and not _rrp_is_mean and not _RIVER_RP_MIN <= _rrp <= _RIVER_RP_MAX:
         raise ValueError(
-            f"{_name}: river_rp must be 'Mean', null, or in "
+            f"{_name}: river_rp_yr must be 'Mean', null, or in "
             f"[{_RIVER_RP_MIN}, {_RIVER_RP_MAX}] yr"
         )
-    _dm = _s.get("discharge_multiplier", 1.0)
+    require_keys(_s, ("discharge_multiplier", "slr_m"), f"{config['scenarios_file']}: {_name}")
+    _dm = _s["discharge_multiplier"]
     if not _dm > 0:
         raise ValueError(f"{_name}: discharge_multiplier must be > 0")
 
 def scenario_params(name):
-    """Return a scenario's mode, surge_rp, river_rp, discharge_multiplier and slr_m.
+    """Return a scenario's mode, surge_rp_yr, river_rp_yr, discharge_multiplier and slr_m.
 
-    discharge_multiplier (default 1.0) and slr_m (m, default 0.0) are
-    per-scenario and read only by build_sfincs/adapt_build_forcing_pre, so
-    changing them invalidates only that scenario.
+    discharge_multiplier and slr_m (m) are per-scenario and read only by
+    build_sfincs/adapt_build_forcing_pre, so changing them invalidates only
+    that scenario.
     """
     s = SCENARIO_DEFS[name]
-    river_rp, surge_rp = s.get("river_rp"), s.get("surge_rp")
+    river_rp_yr, surge_rp_yr = s.get("river_rp_yr"), s.get("surge_rp_yr")
     try:
-        mode = derive_forcing_mode(river_rp, surge_rp)
+        mode = derive_forcing_mode(river_rp_yr, surge_rp_yr)
     except ValueError as e:
         raise ValueError(f"scenario {name!r}: {e}") from e
     return {
         "mode": mode,
-        "surge_rp": surge_rp,
-        "river_rp": river_rp,
-        "discharge_multiplier": s.get("discharge_multiplier", 1.0),
-        "slr_m": s.get("slr_m", 0.0),
+        "surge_rp_yr": surge_rp_yr,
+        "river_rp_yr": river_rp_yr,
+        "discharge_multiplier": s["discharge_multiplier"],
+        "slr_m": s["slr_m"],
     }
 
 def attribution_counterparts(scenario):
     """Return the (river_only, coastal_only) sibling scenarios with matching RPs.
 
-    Siblings have river_rp=X & surge_rp=None, and surge_rp=Y & river_rp=None.
+    Siblings have river_rp_yr=X & surge_rp_yr=None, and surge_rp_yr=Y & river_rp_yr=None.
     Raises ValueError if scenarios.yml has no exact match; RPs are never guessed.
     """
 
-    river_rp = SCENARIO_DEFS[scenario]["river_rp"]
-    surge_rp = SCENARIO_DEFS[scenario]["surge_rp"]
+    river_rp_yr = SCENARIO_DEFS[scenario]["river_rp_yr"]
+    surge_rp_yr = SCENARIO_DEFS[scenario]["surge_rp_yr"]
 
     def _find(rp_key, other_key, rp_val):
         matches = [n for n, s in SCENARIO_DEFS.items()
@@ -205,8 +206,8 @@ def attribution_counterparts(scenario):
             )
         return matches[0]
 
-    river_only = _find("river_rp", "surge_rp", river_rp)
-    coastal_only = _find("surge_rp", "river_rp", surge_rp)
+    river_only = _find("river_rp_yr", "surge_rp_yr", river_rp_yr)
+    coastal_only = _find("surge_rp_yr", "river_rp_yr", surge_rp_yr)
     return river_only, coastal_only
 
 
@@ -228,7 +229,7 @@ RST_FNAME   = f"sfincs.{_spinup_end.strftime('%Y%m%d.%H%M%S')}.rst"
 
 
 
-# ---- Adding adaptation wildcard (tests/KL_check_adaptation_scaling.py slices this file from here)
+# ---- Adding adaptation wildcard (analysis/check_adaptation_scaling.py slices this file from here)
 with open(config["adaptation"]["strategies_file"]) as _f:
     STRATEGY_DEFS_RAW = _yaml.safe_load(_f) or {}
 
@@ -236,7 +237,9 @@ with open(config["adaptation"]["strategies_file"]) as _f:
 ADAPT_CATALOGUE_ROOT = CATALOGUE["meta"]["root"]
 
 with open(config["adaptation"]["measures_file"]) as _f:
-    MEASURES_DEFS = (_yaml.safe_load(_f) or {}).get("adaptation_measures", {})
+    _MEASURES_RAW = _yaml.safe_load(_f) or {}
+require_keys(_MEASURES_RAW, ("adaptation_measures",), config["adaptation"]["measures_file"])
+MEASURES_DEFS = _MEASURES_RAW["adaptation_measures"]
 
 
 # adaptation_strategies.yml holds strategy families written at scale 1; each
@@ -254,13 +257,16 @@ with open(config["adaptation"]["measures_file"]) as _f:
 #   {fixed: x}                     x, never scaled
 
 _STRATEGY_EVENTS = ("coastal", "river", "compound")
-_DERIVED_PARAMS = {"max_coastal_waterlevel", "max_river_waterlevel", "max_discharge"}
+_DERIVED_PARAMS = {"max_coastal_water_level", "max_river_water_level", "max_discharge"}
 _UNSCALED_DERIVED_PARAMS = {"current_protection"}
-_STRATEGY_SCALES = STRATEGY_DEFS_RAW.get("scales", [0.4, 0.9, 1.0])
+require_keys(STRATEGY_DEFS_RAW, ("scales",), config["adaptation"]["strategies_file"])
+_STRATEGY_SCALES = STRATEGY_DEFS_RAW["scales"]
+for _m, _mdef in MEASURES_DEFS.items():
+    require_keys(_mdef, ("params",), f"{config['adaptation']['measures_file']}: adaptation_measures.{_m}")
 _SCALABLE_PARAMS = {
     (_m, _p)
     for _m, _mdef in MEASURES_DEFS.items()
-    for _p, _spec in (_mdef.get("params") or {}).items()
+    for _p, _spec in _mdef["params"].items()
     if isinstance(_spec, dict) and _spec.get("scale")
 }
 
@@ -268,17 +274,18 @@ def _scale_tag(scale):
     """0.4 -> '04', 0.9 -> '09', 1.0 -> '1'."""
     return f"{scale:g}".replace(".", "")
 
-STRATEGY_FAMILIES = {k: v for k, v in STRATEGY_DEFS_RAW.items() if k not in ("meta", "scales")}
+STRATEGY_FAMILIES = {k: v for k, v in STRATEGY_DEFS_RAW.items() if k != "scales"}
 if not STRATEGY_FAMILIES:
-    raise ValueError(f"{config['adaptation']['strategies_file']} defines no strategies (besides 'meta'/'scales')")
+    raise ValueError(f"{config['adaptation']['strategies_file']} defines no strategies (besides 'scales')")
 
 
 STRATEGY_DEFS = {}
 for _fam, _fdef in STRATEGY_FAMILIES.items():
-    for _m in (_fdef or {}).get("measures", {}):
+    require_keys(_fdef or {}, ("measures",), f"{config['adaptation']['strategies_file']}: {_fam}")
+    for _m in _fdef["measures"]:
         if _m not in MEASURES_DEFS:
             raise ValueError(f"strategy {_fam!r}: measure {_m!r} not defined in {config['adaptation']['measures_file']}")
-    for _s in _fdef.get("scales", _STRATEGY_SCALES):
+    for _s in _STRATEGY_SCALES:
         _name = f"{_fam}_{_scale_tag(_s)}"
         if not _re.fullmatch(r"[A-Za-z0-9_-]+", _name):
             raise ValueError(f"strategy name {_name!r} invalid (use letters/digits/_/- only)")
@@ -357,7 +364,7 @@ for _strategy in STRATEGY_DEFS:
 
 
 def adaptation_input_path(rel):
-    """Resolve a measure's locations/dep_subgrid path against the raw-data root."""
+    """Resolve a measure's locations path against the raw-data root."""
     return str(Path(ADAPT_CATALOGUE_ROOT) / rel)
 
 def strategy_measure_input_paths(strategy):
@@ -365,7 +372,7 @@ def strategy_measure_input_paths(strategy):
     paths = []
     for _measure_params in STRATEGY_DEFS[strategy]["measures"].values():
         for _k, _v in _measure_params.items():
-            if _k in ("locations", "dep_subgrid") and isinstance(_v, str):
+            if _k == "locations" and isinstance(_v, str):
                 paths.append(adaptation_input_path(_v))
     return paths
 
@@ -376,7 +383,7 @@ def water_retention_excess_volume_input(wildcards):
     Conditional so other strategies do not require rule attribution_mask and
     its river-only/coastal-only sibling scenarios, which not every scenario has.
     """
-    if {"water_retention", "water_retention_greening"} & set(STRATEGY_DEFS[wildcards.strategy]["measures"]):
+    if "water_retention" in STRATEGY_DEFS[wildcards.strategy]["measures"]:
         return results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/baseline_excess_volume.json")
     return []
 
@@ -411,3 +418,50 @@ wildcard_constraints:
     basin_id = r"\d+",
     scenario = r"|".join(sorted(SCENARIO_DEFS)),
     strategy = r"|".join(sorted(STRATEGY_DEFS)) if STRATEGY_DEFS else r"(?!)",
+
+
+def build_sfincs_params():
+    """Return the params shared by rules build_sfincs and adapt_build_forcing_pre."""
+    return dict(
+        resolution_m       = lambda wildcards: grid_resolution_m(wildcards.basin_id),
+        tref               = config["sfincs"]["simulation"]["tref"],
+        dtmapout           = config["sfincs"]["simulation"]["dtmapout"],
+        dtmaxout           = config["sfincs"]["simulation"]["dtmaxout"],
+        dthisout           = config["sfincs"]["simulation"]["dthisout"],
+        storevelmax        = config["sfincs"]["simulation"]["storevelmax"],
+        storetwet          = config["sfincs"]["simulation"]["storetwet"],
+        include_rstart     = config["sfincs"]["spinup"]["enabled"],
+        spinup_days        = config["sfincs"]["spinup"]["spinup_days"],
+        rst_fname          = RST_FNAME,
+        # river_only boundary 0.5 m below terrain.gebco_max_depth_m (the deepest
+        # clamped bed), so the coastal boundary is always dry.
+        river_only_flat_level_m = -(config["terrain"]["gebco_max_depth_m"] + 0.5),
+        # Derived from which of the scenario's surge_rp_yr/river_rp_yr are set.
+        forcing_mode       = lambda wildcards: scenario_params(wildcards.scenario)["mode"],
+        river_rp_yr        = lambda wildcards: scenario_params(wildcards.scenario)["river_rp_yr"],
+        surge_rp_yr        = lambda wildcards: scenario_params(wildcards.scenario)["surge_rp_yr"],
+        compound_lag_hr    = config["sfincs"]["boundary_setup"]["compound"]["lag_hr"],
+        # Per-scenario discharge scaling (default 1.0), applied here only, so
+        # changing it reruns just this scenario's build and event run.
+        discharge_multiplier = lambda wildcards: scenario_params(wildcards.scenario)["discharge_multiplier"],
+        # Real GloFAS flood event or synthetic wave; changing it only rebuilds scenarios.
+        river_event        = config["boundary_forcings"]["river"]["event_hydrograph"],
+        # Target global-mean SLR (m) × surge_forcing.nc's dimensionless
+        # slr_fingerprint; per-scenario and applied here only, like discharge_multiplier.
+        slr_enabled        = config["boundary_forcings"]["surge"]["slr"]["enabled"],
+        slr_m              = lambda wildcards: scenario_params(wildcards.scenario)["slr_m"],
+        # SLR ramps in over the event's first hours (the shared spin-up has none).
+        slr_ramp_hr        = config["sfincs"]["boundary_setup"]["slr_ramp_hr"],
+        flat_boundary_point_spacing_m = config["sfincs"]["boundary_setup"]["flat_boundary_point_spacing_m"],
+        water_level_buffer_m = config["sfincs"]["boundary_setup"]["water_level_buffer_m"],
+    )
+
+
+def run_event_params():
+    """Return the params shared by rules run_event and adapt_run_event_pre."""
+    return dict(
+        sfincs_exe                 = sfincs_exe_path,
+        timeout_s                  = config["sfincs"]["simulation"]["timeout_s"],
+        min_inundation_depth_m     = config["sfincs"]["sanity_checks"]["min_inundation_depth_m"],
+        animation_fps              = config["sfincs"]["sanity_checks"]["animation_fps"],
+    )

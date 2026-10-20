@@ -1,6 +1,7 @@
 """I/O utilities for loading the data catalogue and reading spatial datasets."""
 
 import os
+from collections.abc import Iterable
 from pathlib import Path
 
 import geopandas as gpd
@@ -29,6 +30,15 @@ def local_path(var: str) -> str:
             f'See CONTRIBUTING.md "Local machine paths".'
         )
     return value
+
+
+def require_keys(cfg: dict, keys: Iterable[str], where: str) -> None:
+    """Raise KeyError naming ``where.<key>`` for every key missing from cfg."""
+    missing = [k for k in keys if k not in cfg]
+    if missing:
+        raise KeyError(
+            "missing config key(s): " + ", ".join(f"{where}.{k}" for k in missing)
+        )
 
 
 def load_catalogue(catalogue_path: Path) -> dict:

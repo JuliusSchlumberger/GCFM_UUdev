@@ -1,4 +1,4 @@
-"""Check workflow/scripts, workflow/src and tests/*.py for syntax and src imports.
+"""Check workflow scripts/src, tests/ and analysis/ for syntax and src imports.
 
 Catches broken `from src.X import Y` (X not importable, Y missing), which
 neither ast.parse nor `snakemake -n` reports. No dry-run: that needs every
@@ -67,6 +67,7 @@ def main() -> int:
         glob.glob(str(REPO_ROOT / "workflow/scripts/*.py"))
         + glob.glob(str(REPO_ROOT / "workflow/src/*.py"))
         + glob.glob(str(REPO_ROOT / "tests/*.py"))
+        + glob.glob(str(REPO_ROOT / "analysis/*.py"))
     )
 
     errors = check_syntax(files) + check_src_imports(files)

@@ -17,7 +17,7 @@ from src.adaptation_method_pre import dispatch_rules
 from src.adaptation_scaling import resolve_forcing_params
 from src.hydromt_sfincs_patch import use_float32_subgrid_write
 from src.log import setup_logging
-from src.sfincs_run import parse_sfincs_inp, forward_geometry_files, write_weir_file
+from src.sfincs_run import parse_sfincs_inp, write_sfincs_inp, write_weir_file
 
 log = setup_logging(snakemake.log[0])
 use_float32_subgrid_write()
@@ -31,8 +31,8 @@ adaptation_root = Path(snakemake.params.adaptation_root)
 skeleton_root = Path(snakemake.params.skeleton_root)
 adapted_root = Path(snakemake.params.adapted_root)
 
-# Resolve params derived from this scenario's baseline run (max_coastal_waterlevel,
-# max_discharge, max_river_waterlevel, current_protection).
+# Resolve params derived from this scenario's baseline run (max_coastal_water_level,
+# max_discharge, max_river_water_level, current_protection).
 strategy_def = resolve_forcing_params(
     snakemake.params.strategy_def,
     baseline_sfincs_root=snakemake.params.baseline_sfincs_root,
@@ -59,7 +59,6 @@ COMPONENT_FILEKEY = {
     "weirs": "weirfile",
     "drainage_structures": "drnfile",
     "subgrid": "sbgfile",  
-    # "storage_volume": "volfile", # used for water_retention_greening 
 }
 
 COMPONENT_OF_MEASURE = {
@@ -67,7 +66,6 @@ COMPONENT_OF_MEASURE = {
     "pumps": ("drainage_structures",),
     "nbs_land_reclamation": ("subgrid",),
     "water_retention": ("subgrid", "weirs"),
-    # "water_retention_greening": ("storage_volume",), # unused, see adaptation_method_pre.py
     "river_levee": ("weirs",),
     "coastal_levee": ("weirs",),
     # "dike_ring" : ("weirs",),  # unused, see adaptation_method_pre.py
@@ -81,7 +79,7 @@ applied = set()  # a measure can skip itself (water_retention)
 for measure_type, raw_params in strategy_def["measures"].items():
     measure_def = measures_def[measure_type]
     resolved = {
-        k: (str(adaptation_root /v) if k in ("locations", "dep_subgrid") and isinstance(v, str) else v)
+        k: (str(adaptation_root /v) if k == "locations" and isinstance(v, str) else v)
         for k, v in raw_params.items()
     }
     # retreat/urban_raising pick eligible cells from the baseline flood map
@@ -92,7 +90,7 @@ for measure_type, raw_params in strategy_def["measures"].items():
         resolved["dep_subgrid"] = str(skeleton_root / "subgrid" / "dep_subgrid.tif")
         resolved["roughness_native_path"] = str(snakemake.input.roughness_native)
 
-    if measure_type in ("water_retention"): # also "water_retention_greening" here if used
+    if measure_type in ("water_retention",):
         # baseline_excess_volume comes from rule attribution_mask, per basin x scenario.
         with open(snakemake.input.baseline_excess_volume) as fh:
             resolved["baseline_excess_volume"] = json.load(fh)["baseline_excess_volume"]
@@ -163,11 +161,6 @@ if "weirs" in touched:
     write_weir_file(sf)  # crests at 1 cm, not hydromt_sfincs' 0.1 m
 if "drainage_structures" in touched:
     sf.drainage_structures.write()
-if "storage_volume" in touched:
-    # data_vars=["vol"]: an unrestricted sf.grid.write() rewrites every grid
-    # map. It also writes sfincs.ind unconditionally; harmless, the mask is
-    # unchanged.
-    sf.grid.write(data_vars=["vol"])
 if "subgrid" in touched:
     sf.subgrid.write()
 else:
@@ -182,15 +175,10 @@ else:
             dst_subgrid_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src_file, dst_subgrid_dir / fname)
 
-# 5. Forward untouched file entries from the skeleton by relative path
-exclude_keys = {COMPONENT_FILEKEY[c] for c in touched}
-geometry_lines = forward_geometry_files(skeleton_cfg, skeleton_root, adapted_root, exclude=exclude_keys)
-scalar_ines = [f"{k:<20} = {v}" for k, v in skeleton_cfg.items() if not k.endswith("file")]
-
-for key in exclude_keys:
-    val = sf.config.get(key)
-    if val: 
-        geometry_lines.append(f"{key:<20} = {val}")
-
-with open(adapted_root / "sfincs.inp", "w") as fh:
-    fh.write("\n".join(scalar_ines + geometry_lines) + "\n")
+# 5. Forward untouched file entries from the skeleton by relative path; no
+# rstfile or forcing entries (the event run adds its own).
+touched_files = {key: sf.config.get(key) for c, key in COMPONENT_FILEKEY.items() if c in touched}
+write_sfincs_inp(
+    adapted_root / "sfincs.inp", skeleton_cfg, skeleton_root, {}, touched_files,
+    exclude_files=frozenset(touched_files),
+)

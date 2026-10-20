@@ -16,6 +16,7 @@ from hydromt_sfincs import SfincsModel
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from _common import label
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
@@ -118,11 +119,6 @@ STYLE = {
 }
 
 
-def label(s):
-    """Return a name as a title-case label."""
-    return s.replace("_", " ").title()
-
-
 METRIC_INFO = [
     ("flooded_area_km2", "residual flood extent", (0, 2), [0, 0.25, 0.5, 1, 1.5, 2]),
     (
@@ -217,18 +213,18 @@ i_main = np.nanargmax(rp_table[:, -1])
 # plot 1: all return periods
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5), facecolor="white")
 
-ax1.plot(river_ds["return_period"].values, rp_table[i_main], color="#1b4965")
+ax1.plot(river_ds["rp_yr"].values, rp_table[i_main], color="#1b4965")
 ax1.set_xscale("log")
 ax1.set_xlabel("Return period (years)")
 ax1.set_ylabel("Discharge (m3/s)")
 ax1.set_title("River discharge")
 
-table_rp = surge_ds["table_rp"].values
+rp_yr = surge_ds["rp_yr"].values
 storm_tide_table = surge_ds["storm_tide_rp_table"].values
 lons, lats = surge_ds["longitude"].values, surge_ds["latitude"].values
 for i in range(storm_tide_table.shape[0]):
     ax2.plot(
-        table_rp,
+        rp_yr,
         storm_tide_table[i],
         marker="o",
         markersize=3,
@@ -346,18 +342,18 @@ for basin_id, color in zip(COMPARE_BASINS, BASIN_COLORS * len(COMPARE_BASINS)):
         rp_table = rds["discharge_rp_table"].values[active]
         i_main = np.nanargmax(rp_table[:, -1])
         ax1.plot(
-            rds["return_period"].values,
+            rds["rp_yr"].values,
             rp_table[i_main],
             color=color,
             label=basin_label,
         )
 
     with xr.open_dataset(forcing_dir / "surge_forcing.nc", decode_times=False) as sds:
-        table_rp = sds["table_rp"].values
+        rp_yr = sds["rp_yr"].values
         storm_tide_table = sds["storm_tide_rp_table"].values
         for i in range(storm_tide_table.shape[0]):
             ax2.plot(
-                table_rp,
+                rp_yr,
                 storm_tide_table[i],
                 color=color,
                 lw=1,

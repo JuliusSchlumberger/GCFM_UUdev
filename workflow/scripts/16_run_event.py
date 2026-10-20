@@ -16,8 +16,6 @@ from pathlib import Path
 from typing import cast
 
 import geopandas as gpd
-import numpy as np
-import pandas as pd
 from shapely.geometry import Polygon
 
 from src.log import setup_logging
@@ -26,6 +24,7 @@ from src.postprocessing import (
     compute_flood_progression,
     compute_flood_timeseries_stats,
     compute_max_inundation,
+    inundation_stats,
 )
 from src.sfincs_run import run_sfincs_subprocess
 
@@ -70,33 +69,27 @@ da_hmax, da_dep = compute_max_inundation(
     sfincs_root, skeleton_root, sea_mask_path, hmin=min_inundation_depth_m,
 )
 if da_hmax is None or da_dep is None:
-    log.warning("Could not compute max inundation depth (missing 'zsmax' or bed level) — skipping")
-    plot_ratio_path.touch()
-else:
-    n_land    = int(da_dep.notnull().sum().item())
-    n_flooded = int(da_hmax.notnull().sum().item())
-    frac      = n_flooded / n_land if n_land > 0 else 0.0
+    raise RuntimeError(f"No 'zsmax' or bed level in the SFINCS event output of {sfincs_root}")
+_stats    = inundation_stats(da_hmax, da_dep)
+n_land    = _stats["n_land"]
+n_flooded = _stats["n_flooded"]
+frac      = _stats["frac"]
+flooded_km2 = _stats["flooded_km2"]
+land_km2    = _stats["land_km2"]
 
-    try:
-        res = abs(da_dep.raster.res[0] * da_dep.raster.res[1])  # rotation-aware
-    except Exception:
-        res = np.nan
-    flooded_km2 = n_flooded * res / 1e6
-    land_km2    = n_land    * res / 1e6
+log.info(
+    f"[Check 1] Inundation ratio  hmin={min_inundation_depth_m} m  "
+    f"flooded={n_flooded:,}/{n_land:,} pixels ({frac:.2%})  "
+    f"area={flooded_km2:.1f}/{land_km2:.1f} km²"
+)
 
-    log.info(
-        f"[Check 1] Inundation ratio  hmin={min_inundation_depth_m} m  "
-        f"flooded={n_flooded:,}/{n_land:,} pixels ({frac:.2%})  "
-        f"area={flooded_km2:.1f}/{land_km2:.1f} km²"
-    )
-
-    plot_inundation_check(
-        da_hmax, min_inundation_depth_m, n_flooded, n_land,
-        str(land_polygons_path), str(river_network_path),
-        str(plot_ratio_path), basin_id=basin_id,
-        run_label="event",
-    )
-    log.info(f"Inundation ratio plot written: {plot_ratio_path}")
+plot_inundation_check(
+    da_hmax, min_inundation_depth_m, n_flooded, n_land,
+    str(land_polygons_path), str(river_network_path),
+    str(plot_ratio_path), basin_id=basin_id,
+    run_label="event",
+)
+log.info(f"Inundation ratio plot written: {plot_ratio_path}")
 
 # ── flood progression: animation + per-timestep area/volume CSV ──
 animation_out_path = Path(snakemake.output.animation_flood_progress)
@@ -105,52 +98,40 @@ animation_out_path.parent.mkdir(parents=True, exist_ok=True)
 
 da_h = compute_flood_progression(sfincs_root, sea_mask_path)
 if da_h is None:
-    log.warning(
-        "compute_flood_progression returned None (no 'zs' in sfincs_map.nc) — "
-        "skipping flood animation and flood-timeseries CSV"
-    )
-    animation_out_path.touch()
-    pd.DataFrame(columns=["time", "flooded_area_km2", "flood_volume_m3"]).to_csv(
-        csv_out_path, index=False
+    raise RuntimeError(f"No 'zs' or 'zb' in the SFINCS event output of {sfincs_root}")
+animate_flood_progression(
+    da_h, domain_poly,
+    str(land_polygons_path), str(river_network_path),
+    str(animation_out_path),
+    basin_id=basin_id,
+    run_label="event",
+    fps=animation_fps,
+)
+log.info(f"Flood animation written: {animation_out_path}")
+
+# Free da_h: the celltree-based rasterize_like below needs the memory.
+del da_h
+gc.collect()
+
+# At the subgrid-downscaled resolution of compute_max_inundation, one
+# frame at a time; da_h is mesh resolution and unmasked.
+df = compute_flood_timeseries_stats(
+    sfincs_root, skeleton_root, sea_mask_path, min_inundation_depth_m,
+)
+if df is None:
+    raise RuntimeError(f"No 'zs' in the SFINCS event output of {sfincs_root}")
+csv_out_path.parent.mkdir(parents=True, exist_ok=True)
+df.to_csv(csv_out_path, index=False)
+
+if len(df):
+    i_peak = int(df["flood_volume_m3"].idxmax())
+    log.info(
+        f"Flood timeseries written: {csv_out_path} ({len(df)} step(s)). "
+        f"Peak total flood volume {df['flood_volume_m3'].iloc[i_peak]:.3e} m³ "
+        f"(area {df['flooded_area_km2'].iloc[i_peak]:.2f} km²) at "
+        f"t={df['time'].iloc[i_peak]}"
     )
 else:
-    animate_flood_progression(
-        da_h, domain_poly,
-        str(land_polygons_path), str(river_network_path),
-        str(animation_out_path),
-        basin_id=basin_id,
-        run_label="event",
-        fps=animation_fps,
-    )
-    log.info(f"Flood animation written: {animation_out_path}")
-
-    # Free da_h: the celltree-based rasterize_like below needs the memory.
-    del da_h
-    gc.collect()
-
-    # At the subgrid-downscaled resolution of compute_max_inundation, one
-    # frame at a time; da_h is mesh resolution and unmasked.
-    df = compute_flood_timeseries_stats(
-        sfincs_root, skeleton_root, sea_mask_path, min_inundation_depth_m,
-    )
-    if df is None:
-        log.warning(
-            "compute_flood_timeseries_stats returned None (missing zs or "
-            "bed level) — writing empty CSV"
-        )
-        df = pd.DataFrame(columns=["time", "flooded_area_km2", "flood_volume_m3"])
-    csv_out_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(csv_out_path, index=False)
-
-    if len(df):
-        i_peak = int(df["flood_volume_m3"].idxmax())
-        log.info(
-            f"Flood timeseries written: {csv_out_path} ({len(df)} step(s)). "
-            f"Peak total flood volume {df['flood_volume_m3'].iloc[i_peak]:.3e} m³ "
-            f"(area {df['flooded_area_km2'].iloc[i_peak]:.2f} km²) at "
-            f"t={df['time'].iloc[i_peak]}"
-        )
-    else:
-        log.warning("Flood timeseries is empty — no output timesteps found")
+    log.warning("Flood timeseries is empty — no output timesteps found")
 
 log.info("Done")

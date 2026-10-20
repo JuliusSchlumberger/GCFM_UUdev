@@ -66,3 +66,14 @@ def test_uniform_layer_depth_is_monotonic_in_volume():
     depths = np.array([0.2, 0.4, 1.5])
     ds = [_uniform_layer_depth(depths, v, 1.0) for v in np.linspace(0, 3, 13)]
     assert np.all(np.diff(ds) >= 0)
+
+
+def test_bool_param_rejects_non_bool_value():
+    spec = {
+        "params": {
+            "merge": {"min": None, "max": None, "type": "bool", "required_for": []}
+        }
+    }
+    validate_measure_params("coastal_levee", {"merge": False}, METHOD, spec)
+    with pytest.raises(ValueError, match="'merge'.*true or false"):
+        validate_measure_params("coastal_levee", {"merge": "no"}, METHOD, spec)

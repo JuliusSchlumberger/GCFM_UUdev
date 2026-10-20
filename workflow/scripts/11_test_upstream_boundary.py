@@ -7,7 +7,7 @@ Wave-propagation distance = min(kinematic, attenuation):
     T_eff = effective_period_fraction × surge_period_hr × 3600  [s]
     c     = sqrt(g × (depth_mouth + A0))                         [m s⁻¹]
     v     = Q_bf / (W × D)                                       [m s⁻¹]
-    depth_mouth = rivdph as calculated, no config floor; a mouth without
+    depth_mouth = river_depth_m as calculated, no config floor; a mouth without
     usable depth or velocity is skipped.
   attenuation: march upstream along the mainstem (largest
   bankfull_discharge_acc branch at each confluence):
@@ -17,7 +17,7 @@ Wave-propagation distance = min(kinematic, attenuation):
     this into dA/dx = -k·A², which does not converge for low-amplitude mouths.
     Stops when A < amplitude_threshold_fraction · A0 or the network runs out.
 
-A0 is the rp_level of the mouth's own nearest CoastRP station, not the domain
+A0 is the storm_tide_at_rp_m of the mouth's own nearest CoastRP station, not the domain
 max (stations can vary 5-10x along one basin's coastline). c ≤ v marks the
 mouth as blocked (marker, no circle). Mouths are reaches whose rch_id_dn
 targets are absent from the network; forcing points are has_glofas=1
@@ -26,7 +26,6 @@ radius is flagged too close.
 """
 
 import math
-from pathlib import Path
 
 import geopandas as gpd
 import matplotlib
@@ -43,7 +42,7 @@ from shapely.geometry import box as shapely_box, Polygon as ShapelyPolygon
 
 from src.domain import load_domain
 from src.log import setup_logging
-from src.plots import map_background
+from src.plots import map_background, save_figure
 from src.profiling import ScriptProfiler
 from src.river_network import _as_linestring, build_downstream_adjacency, normalize_reach_id
 from src.surge import lookup_storm_tide_at_rp
@@ -65,7 +64,7 @@ eff_frac      = float(snakemake.params.effective_period_fraction)
 period_hr     = float(snakemake.params.surge_period_hr)
 channel_n     = float(snakemake.params.channel_manning_n)
 amp_thresh_frac = float(snakemake.params.amplitude_threshold_fraction)
-surge_rp      = snakemake.params.surge_rp
+surge_rp_yr      = snakemake.params.surge_rp_yr
 T_eff_s       = eff_frac * period_hr * 3600.0
 log.info(
     f"Parameters:"
@@ -74,9 +73,9 @@ log.info(
     f"\n  T_eff = {eff_frac} × {period_hr} h × 3600 s/h = {T_eff_s:.0f} s  ({T_eff_s/3600:.2f} h)"
     f"\n  channel_manning_n           = {channel_n}"
     f"\n  amplitude_threshold_fraction = {amp_thresh_frac}"
-    f"\n  surge_rp                    = {surge_rp} yr"
+    f"\n  surge_rp_yr                    = {surge_rp_yr} yr"
     f"\n  g                           = {G} m/s²"
-    f"\n  depth/velocity: calculated per mouth (rivdph; Q_bf/(W×D)), no config floor"
+    f"\n  depth/velocity: calculated per mouth (river_depth_m; Q_bf/(W×D)), no config floor"
 )
 
 # ── domain ──
@@ -86,27 +85,27 @@ wgs84_bounds, domain_crs, domain_poly = load_domain(
 log.info(f"Domain: {wgs84_bounds}, CRS: {domain_crs}")
 
 # ── surge stations (per-station amplitude, not a domain-wide max) ──
-# Looked up at testing.upstream_boundary_check.surge_rp, independent of rule
+# Looked up at testing.upstream_boundary_check.surge_rp_yr, independent of rule
 # 07's station-selection RP and of any scenario's design surge RP.
 with xr.open_dataset(snakemake.input.surge_forcing, decode_times=False) as surge_ds:
     station_lons = surge_ds["longitude"].values.astype(float)
     station_lats = surge_ds["latitude"].values.astype(float)
-    station_rp   = lookup_storm_tide_at_rp(surge_ds, surge_rp).astype(float)
+    station_storm_tide_m = lookup_storm_tide_at_rp(surge_ds, surge_rp_yr).astype(float)
 log.info(
-    f"Surge stations: {len(station_rp)}, rp_level range "
-    f"[{station_rp.min():.3f}, {station_rp.max():.3f}] m "
+    f"Surge stations: {len(station_storm_tide_m)}, storm_tide_at_rp_m range "
+    f"[{station_storm_tide_m.min():.3f}, {station_storm_tide_m.max():.3f}] m "
     f"(each mouth uses its own nearest station, not the domain max)"
 )
 
 
-def _nearest_station_rp(lon: float, lat: float) -> tuple[float, float]:
-    """Return (rp_level, distance_m) of the CoastRP station nearest (lon, lat)."""
+def _nearest_station_storm_tide(lon: float, lat: float) -> tuple[float, float]:
+    """Return (storm_tide_at_rp_m, distance_m) of the CoastRP station nearest (lon, lat)."""
     _, _, dists = GEOD.inv(
         np.full(len(station_lons), lon), np.full(len(station_lats), lat),
         station_lons, station_lats,
     )
     i = int(np.argmin(dists))
-    return float(station_rp[i]), float(dists[i])
+    return float(station_storm_tide_m[i]), float(dists[i])
 
 
 # ── helpers ──
@@ -126,9 +125,7 @@ def _placeholder(output_path: str, message: str) -> None:
     ax.text(0.5, 0.5, message, ha="center", va="center",
             transform=ax.transAxes, fontsize=12, color="grey")
     ax.set_axis_off()
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=100, bbox_inches="tight")
-    plt.close(fig)
+    save_figure(fig, output_path, dpi=100, bbox_inches="tight")
 
 
 # ── river network ──
@@ -146,28 +143,28 @@ if rivers.empty:
 
 rivers = rivers.copy()
 rivers["_rid"] = rivers["reach_id"].apply(normalize_reach_id)
-by_rid = {r["_rid"]: r for _, r in rivers.iterrows() if r["_rid"] is not None}
-log.info(f"River network: {len(rivers)} reaches, {len(by_rid)} unique IDs")
+by_reach_id = {r["_rid"]: r for _, r in rivers.iterrows() if r["_rid"] is not None}
+log.info(f"River network: {len(rivers)} reaches, {len(by_reach_id)} unique IDs")
 
 # Inverted to upstream adjacency for the attenuation march.
 downstream_adj = build_downstream_adjacency(rivers)
-upstream_adj: dict[str, list[str]] = {rid: [] for rid in downstream_adj}
-for rid, dns in downstream_adj.items():
+upstream_adj: dict[str, list[str]] = {reach_id: [] for reach_id in downstream_adj}
+for reach_id, dns in downstream_adj.items():
     for dn in dns:
-        upstream_adj.setdefault(dn, []).append(rid)
+        upstream_adj.setdefault(dn, []).append(reach_id)
 
 # Reach lengths in the domain's working UTM CRS.
 rivers_proj = rivers.to_crs(domain_crs)
-by_rid_proj = {r["_rid"]: r for _, r in rivers_proj.iterrows() if r["_rid"] is not None}
+by_reach_id_proj = {r["_rid"]: r for _, r in rivers_proj.iterrows() if r["_rid"] is not None}
 
 
-def _reach_length_m(rid: str) -> float:
-    g = _as_linestring(by_rid_proj[rid].geometry)
+def _reach_length_m(reach_id: str) -> float:
+    g = _as_linestring(by_reach_id_proj[reach_id].geometry)
     return g.length if g is not None else 0.0
 
 
 # ── river mouths ──
-mouth_ids = [rid for rid, dns in downstream_adj.items() if not dns]
+mouth_ids = [reach_id for reach_id, dns in downstream_adj.items() if not dns]
 
 if not mouth_ids:
     _placeholder(
@@ -180,13 +177,13 @@ if not mouth_ids:
 log.info(f"River mouths identified: {len(mouth_ids)}")
 
 
-def _mainstem_upstream(rid: str) -> str | None:
+def _mainstem_upstream(reach_id: str) -> str | None:
     """Return the upstream neighbour with the largest bankfull_discharge_acc, or None."""
-    ups = upstream_adj.get(rid, [])
+    ups = upstream_adj.get(reach_id, [])
     if not ups:
         return None
     def _q(u):
-        qv = by_rid[u].get("bankfull_discharge_acc", np.nan)
+        qv = by_reach_id[u].get("bankfull_discharge_acc", np.nan)
         return float(qv) if qv is not None and np.isfinite(float(qv)) else -1.0
     return max(ups, key=_q)
 
@@ -200,36 +197,36 @@ n_skipped_no_depth = 0
 n_skipped_no_velocity = 0
 
 for i, mrid in enumerate(mouth_ids):
-    row = by_rid[mrid]
+    row = by_reach_id[mrid]
     reach_id_str = mrid
     centroid = row.geometry.interpolate(0.5, normalized=True)
 
     # Calculated depth and velocity only, no config floor.
-    depth = float(row.get("rivdph", np.nan) or np.nan)
-    if not np.isfinite(depth):
+    depth_m = float(row.get("river_depth_m", np.nan) or np.nan)
+    if not np.isfinite(depth_m):
         log.warning(
             f"Mouth {i+1}/{len(mouth_ids)} — reach_id={reach_id_str}: "
-            f"no calculated river depth (rivdph is NaN) — skipping"
+            f"no calculated river depth (river_depth_m is NaN) — skipping"
         )
         n_skipped_no_depth += 1
         continue
 
-    width = float(row.get("width", np.nan) or np.nan)
+    width_m = float(row.get("width", np.nan) or np.nan)
     q_bf  = float(row.get("bankfull_discharge_acc", np.nan) or np.nan)
-    if not (np.isfinite(width) and width > 0 and np.isfinite(q_bf) and q_bf >= 0):
+    if not (np.isfinite(width_m) and width_m > 0 and np.isfinite(q_bf) and q_bf >= 0):
         log.warning(
             f"Mouth {i+1}/{len(mouth_ids)} — reach_id={reach_id_str}: "
             f"no calculated flow velocity "
-            f"(width={'NaN' if not np.isfinite(width) else f'{width:.0f} m'}, "
+            f"(width={'NaN' if not np.isfinite(width_m) else f'{width_m:.0f} m'}, "
             f"Q_bf={'NaN' if not np.isfinite(q_bf) else f'{q_bf:.1f} m³/s'}) — skipping"
         )
         n_skipped_no_velocity += 1
         continue
-    v = q_bf / (width * depth)
+    v = q_bf / (width_m * depth_m)
 
-    A0, station_dist_m = _nearest_station_rp(centroid.x, centroid.y)
+    A0, station_dist_m = _nearest_station_storm_tide(centroid.x, centroid.y)
 
-    c0  = math.sqrt(G * (depth + A0))
+    c0  = math.sqrt(G * (depth_m + A0))
     net = c0 - v
     if net <= 0:
         log.info(
@@ -238,13 +235,13 @@ for i, mrid in enumerate(mouth_ids):
         )
         mouths_data.append({
             "lon": centroid.x, "lat": centroid.y, "radius_m": 0.0, "blocked": True,
-            "celerity": c0, "v": v, "depth": depth, "reach_id": reach_id_str, "A0": A0,
+            "celerity": c0, "v": v, "depth": depth_m, "reach_id": reach_id_str, "A0": A0,
         })
         continue
     kinematic_dist = T_eff_s * net
 
     # U0 is fixed at the mouth for the whole march; see module docstring.
-    U0 = c0 * A0 / depth
+    U0 = c0 * A0 / depth_m
     A = A0
     cum_dist = 0.0
     cur = mrid
@@ -257,7 +254,7 @@ for i, mrid in enumerate(mouth_ids):
         if nxt is None or nxt in visited:
             stop_reason = "ran out of upstream network"
             break
-        h = float(by_rid[nxt].get("rivdph", np.nan) or np.nan)
+        h = float(by_reach_id[nxt].get("river_depth_m", np.nan) or np.nan)
         if not np.isfinite(h) or h <= 0:
             stop_reason = "invalid depth on next reach"
             break
@@ -287,8 +284,8 @@ for i, mrid in enumerate(mouth_ids):
     log.info(
         f"Mouth {i+1}/{len(mouth_ids)} — reach_id={reach_id_str}"
         f" @ ({centroid.y:.4f}°N, {centroid.x:.4f}°E)"
-        f"\n  nearest station: {station_dist_m/1000:.1f} km away, rp_level={A0:.2f} m"
-        f"\n  depth: {depth:.2f} m,  velocity: Q/(W×D) = {q_bf:.1f}/({width:.0f}×{depth:.2f}) = {v:.3f} m/s"
+        f"\n  nearest station: {station_dist_m/1000:.1f} km away, storm_tide_at_rp_m={A0:.2f} m"
+        f"\n  depth: {depth_m:.2f} m,  velocity: Q/(W×D) = {q_bf:.1f}/({width_m:.0f}×{depth_m:.2f}) = {v:.3f} m/s"
         f"\n  celerity: c = √(g×(d+A0)) = {c0:.3f} m/s,  net speed: c−v = {net:.3f} m/s"
         f"\n  kinematic distance   = {kinematic_dist/1000:.2f} km"
         f"\n  attenuation distance = {attenuation_dist/1000:.2f} km  ({steps} reach(es), {stop_reason})"
@@ -298,13 +295,13 @@ for i, mrid in enumerate(mouth_ids):
     mouths_data.append({
         "lon": centroid.x, "lat": centroid.y,
         "radius_m": radius_m, "blocked": False,
-        "celerity": c0, "v": v, "depth": depth,
+        "celerity": c0, "v": v, "depth": depth_m,
         "reach_id": reach_id_str, "A0": A0,
     })
 
 log.info(
     f"Mouths assessed: {len(mouths_data)}/{len(mouth_ids)} "
-    f"({n_skipped_no_depth} skipped: no rivdph, "
+    f"({n_skipped_no_depth} skipped: no river_depth_m, "
     f"{n_skipped_no_velocity} skipped: no width/Q_bf)"
 )
 
@@ -383,8 +380,8 @@ if reach_amplitude:
     amp_norm = Normalize(vmin=0.0, vmax=max(reach_amplitude.values()))
     cmap = matplotlib.colormaps[_AMPLITUDE_CMAP]
     segments, colors = [], []
-    for rid, amp in reach_amplitude.items():
-        g = _as_linestring(by_rid[rid].geometry)
+    for reach_id, amp in reach_amplitude.items():
+        g = _as_linestring(by_reach_id[reach_id].geometry)
         if g is None:
             continue
         segments.append(np.asarray(g.coords))
@@ -462,7 +459,7 @@ if tightest is not None:
     A_report = tightest_mp["A0"]
 else:
     title_main = "Upstream boundary check: no forcing point/mouth pair to compare"
-    A_report = float(station_rp.max())
+    A_report = float(station_storm_tide_m.max())
 min_depth_calc = min(mp["depth"] for mp in mouths_data)
 min_v_calc = min(mp["v"] for mp in mouths_data)
 ax.set_title(
@@ -476,8 +473,6 @@ ax.set_xlabel("Longitude (°)")
 ax.set_ylabel("Latitude (°)")
 ax.grid(True, alpha=0.25, linewidth=0.5)
 
-Path(snakemake.output.plot_upstream_check).parent.mkdir(parents=True, exist_ok=True)
-fig.savefig(snakemake.output.plot_upstream_check, dpi=130, bbox_inches="tight")
-plt.close(fig)
+save_figure(fig, snakemake.output.plot_upstream_check, dpi=130, bbox_inches="tight")
 profiler.stop()
 log.info(f"Written: {snakemake.output.plot_upstream_check}")

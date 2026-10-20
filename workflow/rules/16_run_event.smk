@@ -24,10 +24,7 @@ rule run_event:
         sfincs_root                = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),
         # The subgrid reference raster lives in the skeleton; sfincs_root only references it.
         skeleton_root              = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
-        sfincs_exe                 = sfincs_exe_path,
-        timeout_s                  = config["sfincs"]["simulation"]["timeout_s"],
-        min_inundation_depth_m     = config["sfincs"]["sanity_checks"]["min_inundation_depth_m"],
-        animation_fps              = config["sfincs"]["sanity_checks"]["animation_fps"],
+        **run_event_params(),
     # Whole --cores budget, as rule run_spinup.
     threads: workflow.cores
     log:

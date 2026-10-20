@@ -21,7 +21,7 @@ rule run_spinup:
     params:
         skeleton_root             = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         spin_up_root              = lambda wildcards: results_path(f"{wildcards.basin_id}/spin_up"),
-        resolution                = lambda wildcards: grid_resolution_m(wildcards.basin_id),
+        resolution_m              = lambda wildcards: grid_resolution_m(wildcards.basin_id),
         tref                      = config["sfincs"]["simulation"]["tref"],
         spinup_days               = config["sfincs"]["spinup"]["spinup_days"],
         sfincs_exe                = sfincs_exe_path,
@@ -29,8 +29,8 @@ rule run_spinup:
         dtmapout_s                = config["sfincs"]["spinup"]["dtmapout_s"],
         dthisout_s                = config["sfincs"]["spinup"]["dthisout_s"],
         timeout_s                 = config["sfincs"]["simulation"]["timeout_s"],
-        waterlevel_buffer_m       = config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
-        boundary_ramp_hours       = config["sfincs"]["spinup"]["boundary_ramp_hours"],
+        water_level_buffer_m      = config["sfincs"]["boundary_setup"]["water_level_buffer_m"],
+        boundary_ramp_hr          = config["sfincs"]["spinup"]["boundary_ramp_hr"],
     # Whole --cores budget: SFINCS multi-threads (OMP_NUM_THREADS), so other
     # jobs would only compete for CPU.
     threads: workflow.cores

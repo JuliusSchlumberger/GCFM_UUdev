@@ -169,7 +169,7 @@ rule adapt:
 
 rule preprocess:
     """
-    Run only the preprocessing pipeline (rules 01–12).
+    Run only the preprocessing pipeline (rules 01–11).
 
     Usage:  snakemake preprocess --cores N
     """

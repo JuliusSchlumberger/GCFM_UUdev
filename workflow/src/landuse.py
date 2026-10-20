@@ -44,19 +44,20 @@ import rasterio
 from affine import Affine
 from rasterio.warp import Resampling, reproject, transform_bounds
 from rasterio.windows import Window, from_bounds
-from src.raster import reproject_nan_aware
+from src.geometry import pick_utm_crs
+from src.raster import FLOAT_NODATA, reproject_nan_aware
 
 log = logging.getLogger(__name__)
 
 # LC100's "open sea" class; derived for WorldCover, which has no sea class.
-SEA_CODE = 200
+LANDUSE_SEA_CODE = 200
 # Classes that may be left outside the coastal protection when
 # river_depth_modelling.unprotected_ocean_wetlands is on: herbaceous wetland
 # (90), permanent water bodies (80), WorldCover mangroves (95, intertidal).
 OCEAN_WETLAND_CLASSES = (80, 90, 95)
 
 LANDUSE_NODATA = 255  # per-basin product's nodata, both sources
-ROUGHNESS_NODATA = -9999.0
+ROUGHNESS_NODATA = FLOAT_NODATA
 
 SOURCES = ("copernicus_lc100", "esa_worldcover")
 
@@ -177,7 +178,7 @@ def _river_barrier_mask(
         )
         return np.zeros(shape, dtype=bool)
 
-    rivers_m = rivers.to_crs(rivers.estimate_utm_crs())
+    rivers_m = rivers.to_crs(pick_utm_crs(rivers))
     widths = (
         rivers_m["width"].astype(float).fillna(0.0)
         if "width" in rivers_m.columns
@@ -299,7 +300,7 @@ def _write_worldcover_source(
             )
 
         lc_sea_coarse = (
-            _lc100_on_grid(lc100_path, transform_coarse, (ch, cw)) == SEA_CODE
+            _lc100_on_grid(lc100_path, transform_coarse, (ch, cw)) == LANDUSE_SEA_CODE
         )
         barrier_coarse = (
             _river_barrier_mask(
@@ -364,7 +365,7 @@ def _write_worldcover_source(
 
                 codes = blk.astype(np.uint8, copy=True)
                 codes[nodata_mask & ~sea] = LANDUSE_NODATA
-                codes[sea] = SEA_CODE
+                codes[sea] = LANDUSE_SEA_CODE
                 dst.write(codes, 1, window=Window(0, row0, w, nrows))
 
                 counts["sea_px"] += int(sea.sum())
@@ -373,7 +374,9 @@ def _write_worldcover_source(
                     (~water & ~nodata_mask & lc_sea_up).sum()
                 )
                 counts["nodata_px"] += int((codes == LANDUSE_NODATA).sum())
-            dst.update_tags(landuse_source="esa_worldcover", sea_code=str(SEA_CODE))
+            dst.update_tags(
+                landuse_source="esa_worldcover", sea_code=str(LANDUSE_SEA_CODE)
+            )
     stats.update(counts)
     return meta, stats
 
@@ -438,9 +441,9 @@ def write_landuse_source(
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out_path, "w", **meta) as dst:
         dst.write(codes, 1)
-        dst.update_tags(landuse_source=source, sea_code=str(SEA_CODE))
+        dst.update_tags(landuse_source=source, sea_code=str(LANDUSE_SEA_CODE))
     stats = {
-        "sea_px": int((codes == SEA_CODE).sum()),
+        "sea_px": int((codes == LANDUSE_SEA_CODE).sum()),
         "nodata_px": int((codes == LANDUSE_NODATA).sum()),
         "source_resolution_m": round(
             _pixel_size_m(transform, 0.5 * (wgs84_bounds[1] + wgs84_bounds[3])), 2

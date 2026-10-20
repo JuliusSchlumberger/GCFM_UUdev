@@ -45,3 +45,14 @@ def test_required_only_for_its_own_method():
 def test_resolved_current_protection_dict_skips_bounds_check():
     params = {"elevation": {"current": True, "fill_crest": 99.0}, "locations": "x"}
     validate_measure_params("coastal_levee", params, METHOD, MEASURE_DEF)
+
+
+def test_bool_param_rejects_non_bool_value():
+    spec = {
+        "params": {
+            "merge": {"min": None, "max": None, "type": "bool", "required_for": []}
+        }
+    }
+    validate_measure_params("coastal_levee", {"merge": False}, METHOD, spec)
+    with pytest.raises(ValueError, match="'merge'.*true or false"):
+        validate_measure_params("coastal_levee", {"merge": "no"}, METHOD, spec)

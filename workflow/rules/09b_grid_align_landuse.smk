@@ -25,7 +25,7 @@ rule grid_align_landuse:
         plot_roughness_on_grid   = results_path("{basin_id}/preprocessing_inputs/visuals/09b_roughness_on_grid.png"),
     params:
         roughness_aggregation = config["landuse"]["roughness_aggregation"],
-        resolution = lambda wildcards: grid_resolution_m(wildcards.basin_id),
+        resolution_m = lambda wildcards: grid_resolution_m(wildcards.basin_id),
     log:
         "logs/{basin_id}/09b_grid_align_landuse.log"
     script:

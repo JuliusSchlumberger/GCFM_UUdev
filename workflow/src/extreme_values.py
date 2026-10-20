@@ -20,14 +20,13 @@ import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pymannkendall as mk
 from pyextremes import EVA
 from scipy import stats
-from shapely.geometry import Polygon
-from src.plots import map_background, save_figure
+from src.io import require_keys
+from src.plots import save_figure
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +51,7 @@ class EVAResult:
     q_rp2_ci: tuple[float, float] = (np.nan, np.nan)
     q_rp100_ci: tuple[float, float] = (np.nan, np.nan)
 
-    # POT/GPD discharge at analyse_cell's protection_rp; NaN unless requested.
+    # POT/GPD discharge at analyse_cell's protection_rp_yr; NaN unless requested.
     q_protection: float = np.nan
 
     # POT diagnostics
@@ -79,11 +78,40 @@ class EVAResult:
     n_valid_days: int = 0
     record_years: float = np.nan
     ok: bool = False
+    # Set when the record is unusable by design (too short); the cell is skipped.
+    skip_reason: str = ""
     messages: list[str] = field(default_factory=list)
 
 
-def _c(cfg: dict, key: str, default):
-    return cfg.get(key, default)
+class EVAFitError(Exception):
+    """An EVA fit failed for a reason other than a documented skip."""
+
+
+# Numeric failures of a GEV/GPD fit; anything else (ImportError, ...) propagates.
+_FIT_ERRORS = (ValueError, RuntimeError, ArithmeticError)
+
+
+_BIAS_KEYS = ("enabled", "min_overlap_days", "tail_percentile")
+_THRESHOLD_KEYS = (
+    "threshold_start_pct",
+    "threshold_step_pct",
+    "threshold_max_pct",
+    "threshold_min_pct",
+    "threshold_max_iter",
+    "peaks_per_year_min",
+    "peaks_per_year_max",
+)
+_EVA_KEYS = (
+    "min_days",
+    "min_years_high_confidence",
+    "fit_method",
+    "bankfull_rp_yr",
+    "preview_rp_yr",
+    "ci_alpha",
+    "decorr_cut",
+    "decorr_max",
+    "deseasonalize_for_decorr",
+) + _THRESHOLD_KEYS
 
 
 def _to_series(times: np.ndarray, values: np.ndarray) -> pd.Series:
@@ -222,13 +250,14 @@ def bias_correct_discharge(
     tail_percentile). Skipped (input returned, diagnostics None) when disabled
     or the overlap is below min_overlap_days.
     """
+    require_keys(cfg, _BIAS_KEYS, "boundary_forcings.river.bias_correction")
     glofas_values = np.asarray(glofas_values, dtype=float)
 
-    if not bool(_c(cfg, "enabled", True)):
+    if not bool(cfg["enabled"]):
         return glofas_values, None
 
-    min_overlap_days = int(_c(cfg, "min_overlap_days", 730))
-    tail_percentile = float(_c(cfg, "tail_percentile", 90.0))
+    min_overlap_days = int(cfg["min_overlap_days"])
+    tail_percentile = float(cfg["tail_percentile"])
     diagnostics = compute_grdc_correlation(
         glofas_times,
         glofas_values,
@@ -297,9 +326,9 @@ def estimate_decorrelation_days(series: pd.Series, cutoff: float, max_lag: int) 
     return upper
 
 
-def _rv(eva_instance, rp: float) -> float:
+def _rv(eva_instance, rp_yr: float) -> float:
     # pyextremes returns a float or (value, lower, upper) depending on version.
-    result = eva_instance.get_return_value(rp)
+    result = eva_instance.get_return_value(rp_yr)
     if isinstance(result, (tuple, list, np.ndarray)) and len(result) >= 1:
         return float(result[0])
     return float(result)
@@ -323,18 +352,18 @@ def gpd_return_value_table(
     scale: float,
     shape: float,
     peaks_per_year: float,
-    return_periods: np.ndarray = STANDARD_RETURN_PERIODS_YR,
+    rps_yr: np.ndarray = STANDARD_RETURN_PERIODS_YR,
 ) -> np.ndarray:
     """Return discharge (m³/s) at each return period (yr) from an already-fitted GPD.
 
     shape is scipy's c; peaks_per_year is the declustered rate at threshold.
     All-NaN if any parameter is not finite.
     """
-    return_periods = np.asarray(return_periods, dtype=float)
+    rps_yr = np.asarray(rps_yr, dtype=float)
     inputs = (threshold, scale, shape, peaks_per_year)
     if not all(np.isfinite(v) for v in inputs):
-        return np.full(return_periods.shape, np.nan)
-    p = np.clip(1.0 - 1.0 / (peaks_per_year * return_periods), 0.0, None)
+        return np.full(rps_yr.shape, np.nan)
+    p = np.clip(1.0 - 1.0 / (peaks_per_year * rps_yr), 0.0, None)
     return threshold + stats.genpareto.ppf(p, shape, scale=scale)
 
 
@@ -343,7 +372,7 @@ def gpd_return_value_table(
 
 def _gev_boot_ci(
     amax: np.ndarray,
-    rp: float,
+    rp_yr: float,
     alpha: float,
     n_boot: int = 200,
     c0: float | None = None,
@@ -368,11 +397,11 @@ def _gev_boot_ci(
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 c, loc, scale = stats.genextreme.fit(sample, *fit_args, **fit_kwargs)
-            rl = float(stats.genextreme.ppf(1.0 - 1.0 / rp, c, loc=loc, scale=scale))
+            rl = float(stats.genextreme.ppf(1.0 - 1.0 / rp_yr, c, loc=loc, scale=scale))
             if np.isfinite(rl) and rl > 0:
                 boot.append(rl)
-        except Exception:
-            pass
+        except _FIT_ERRORS:
+            continue
     if len(boot) < 20:
         return np.nan, np.nan
     lo_p = (1.0 - alpha) / 2.0 * 100.0
@@ -384,7 +413,7 @@ def _gpd_boot_ci(
     exceedances: np.ndarray,
     threshold: float,
     ppy: float,
-    rp: float,
+    rp_yr: float,
     alpha: float,
     n_boot: int = 200,
     c0: float | None = None,
@@ -405,12 +434,12 @@ def _gpd_boot_ci(
                 c, _, scale = stats.genpareto.fit(
                     sample, *fit_args, floc=0, **fit_kwargs
                 )
-            p = max(0.0, 1.0 - 1.0 / (ppy * rp))
+            p = max(0.0, 1.0 - 1.0 / (ppy * rp_yr))
             rl = float(threshold + stats.genpareto.ppf(p, c, scale=scale))
             if np.isfinite(rl) and rl > 0:
                 boot.append(rl)
-        except Exception:
-            pass
+        except _FIT_ERRORS:
+            continue
     if len(boot) < 20:
         return np.nan, np.nan
     lo_p = (1.0 - alpha) / 2.0 * 100.0
@@ -427,19 +456,18 @@ def _search_threshold(
 ):
     # Bidirectional search from threshold_start_pct: raise the percentile while
     # ppy > ppy_max, lower it (down to threshold_min_pct) while ppy < ppy_min.
-    # If the band is never reached, the last attempt is returned flagged
-    # 'reject: ppy<min' (too few peaks, typical of slow large rivers) or
-    # 'reject: ppy>max'.
-    thr_start = float(_c(cfg, "threshold_start_pct", 90.0))
-    thr_step = float(_c(cfg, "threshold_step_pct", 1.0))
-    thr_max = float(_c(cfg, "threshold_max_pct", 99.5))
-    thr_min = float(_c(cfg, "threshold_min_pct", 50.0))
-    max_iter = int(_c(cfg, "threshold_max_iter", 30))
-    ppy_min = float(_c(cfg, "peaks_per_year_min", 1.0))
-    ppy_max = float(_c(cfg, "peaks_per_year_max", 5.0))
+    # Raises EVAFitError if the band is never reached ('reject: ppy<min', too
+    # few peaks, typical of slow large rivers, or 'reject: ppy>max').
+    thr_start = float(cfg["threshold_start_pct"])
+    thr_step = float(cfg["threshold_step_pct"])
+    thr_max = float(cfg["threshold_max_pct"])
+    thr_min = float(cfg["threshold_min_pct"])
+    max_iter = int(cfg["threshold_max_iter"])
+    ppy_min = float(cfg["peaks_per_year_min"])
+    ppy_max = float(cfg["peaks_per_year_max"])
 
     pct = float(np.clip(thr_start, thr_min, thr_max))
-    last_eva = last_choice = None
+    last_choice = None
 
     for it in range(1, max_iter + 1):
         thr = float(np.percentile(s.values, pct))
@@ -459,7 +487,7 @@ def _search_threshold(
             f"pct={pct:.1f} thr={thr:.2f} peaks/yr={ppy:.2f} "
             f"(target [{ppy_min:.1f}, {ppy_max:.1f}]) → {status}"
         )
-        last_eva, last_choice = eva, (thr, ppy, status)
+        last_choice = (thr, ppy, status)
 
         if status == "good":
             return eva, last_choice
@@ -474,12 +502,12 @@ def _search_threshold(
                 break
         pct = next_pct
 
-    log.warning(
-        f"{tag}threshold search exhausted {max_iter} iters without reaching "
-        f"the [{ppy_min:.1f}, {ppy_max:.1f}] peaks/yr band; "
-        f"using last attempt (flagged reject)"
+    raise EVAFitError(
+        f"{tag}POT threshold search ended without reaching the "
+        f"[{ppy_min:.1f}, {ppy_max:.1f}] peaks/yr band "
+        f"(last: pct={pct:.1f} peaks/yr={last_choice[1]:.2f} → {last_choice[2]}); "
+        f"adjust threshold_min_pct/threshold_max_pct or peaks_per_year_min/max"
     )
-    return last_eva, last_choice
 
 
 def analyse_cell(
@@ -487,16 +515,18 @@ def analyse_cell(
     values: np.ndarray,
     eva_cfg: dict,
     label: str = "",
-    protection_rp: float | None = None,
+    protection_rp_yr: float | None = None,
 ) -> EVAResult:
     """Run the full EVA on one cell's daily discharge series (may contain NaN).
 
     eva_cfg: config["boundary_forcings"]["river"]["eva"]. values are already
-    bias-corrected by the caller where a GRDC match exists. protection_rp
+    bias-corrected by the caller where a GRDC match exists. protection_rp_yr
     (yr): also evaluate the fitted POT/GPD there into q_protection (no pipeline
-    rule passes it). On failure of either model NaN fields remain and ok is
-    False; a bad cell never aborts a domain.
+    rule passes it). A record that is too short sets skip_reason; a numeric
+    fit failure leaves NaN fields and ok False (eva_active_flags decides).
+    Raises EVAFitError if the POT threshold search does not reach the band.
     """
+    require_keys(eva_cfg, _EVA_KEYS, "boundary_forcings.river.eva")
     res = EVAResult()
     s = _to_series(times, values)
     res.n_valid_days = int(s.size)
@@ -504,16 +534,16 @@ def analyse_cell(
 
     # ≈25 yr hard floor: RP100 extrapolates far beyond a short record; GloFAS v4
     # reanalysis runs from 1979 (~45 yr at most locations).
-    min_days = int(_c(eva_cfg, "min_days", 9131))
+    min_days = int(eva_cfg["min_days"])
     # Below this record length (yr) results are flagged reduced-confidence, not skipped.
-    min_years_hc = float(_c(eva_cfg, "min_years_high_confidence", 40.0))
-    fit_method = str(_c(eva_cfg, "fit_method", "Lmoments"))
-    rp_bf = float(_c(eva_cfg, "rp_bf", 2.0))
-    rp_fl = float(_c(eva_cfg, "rp_fl", 100.0))
-    ci_alpha = float(_c(eva_cfg, "ci_alpha", 0.95))
-    decorr_cut = float(_c(eva_cfg, "decorr_cut", 1.0 / np.e))
-    decorr_max = int(_c(eva_cfg, "decorr_max", 30))
-    deseasonalize = bool(_c(eva_cfg, "deseasonalize_for_decorr", True))
+    min_years_hc = float(eva_cfg["min_years_high_confidence"])
+    fit_method = str(eva_cfg["fit_method"])
+    bankfull_rp_yr = float(eva_cfg["bankfull_rp_yr"])
+    preview_rp_yr = float(eva_cfg["preview_rp_yr"])
+    ci_alpha = float(eva_cfg["ci_alpha"])
+    decorr_cut = float(eva_cfg["decorr_cut"])
+    decorr_max = int(eva_cfg["decorr_max"])
+    deseasonalize = bool(eva_cfg["deseasonalize_for_decorr"])
 
     if s.size < min_days:
         msg = (
@@ -522,12 +552,14 @@ def analyse_cell(
         )
         log.warning(msg)
         res.messages.append(msg)
+        res.skip_reason = "record too short"
         return res
 
     record_years = (s.index[-1] - s.index[0]).days / 365.2425
     res.record_years = record_years
     if record_years <= 0:
         res.messages.append(f"{tag}degenerate time span; skipping")
+        res.skip_reason = "degenerate time span"
         return res
 
     if record_years < min_years_hc:
@@ -539,7 +571,7 @@ def analyse_cell(
         log.info(msg)
         res.messages.append(msg)
 
-    # AMAX/GEV for bankfull (rp_bf), POT/GPD for flood (rp_fl). The bankfull
+    # AMAX/GEV for bankfull (bankfull_rp_yr), POT/GPD for flood (preview_rp_yr). The bankfull
     # ≈ 1.5-2 yr convention (Leopold & Wolman) is defined on annual maxima;
     # RP100 is better constrained by all over-threshold peaks. The two come
     # from different estimators, so RP100 < RP2 is not a valid sanity check.
@@ -550,7 +582,7 @@ def analyse_cell(
         res.amax_n_blocks = int(len(eva_bm.extremes))
         eva_bm.fit_model(fit_method)
         # No alpha: it makes pyextremes spawn worker processes.
-        res.q_rp2 = _rv(eva_bm, rp_bf)
+        res.q_rp2 = _rv(eva_bm, bankfull_rp_yr)
         gev_params = eva_bm.model.fit_parameters
         res.gev_shape = float(gev_params.get("c", np.nan))
 
@@ -566,12 +598,16 @@ def analyse_cell(
         # CI reflects AMAX sampling variability only, conditional on the block definition.
         res.q_rp2_ci = _gev_boot_ci(
             amax,
-            rp_bf,
+            bankfull_rp_yr,
             ci_alpha,
             c0=gev_params.get("c"),
             loc0=gev_params.get("loc"),
             scale0=gev_params.get("scale"),
         )
+        if not np.all(np.isfinite(res.q_rp2_ci)):
+            res.messages.append(
+                f"{tag}GEV bootstrap CI undefined (too few valid refits)"
+            )
 
         # Mann-Kendall on AMAX without FDR correction: 1-6 locations per delta,
         # and annual maxima are near-independent as MK assumes. A trend biases
@@ -584,7 +620,7 @@ def analyse_cell(
             res.sen_slope = float(mkr.slope)
         else:
             res.messages.append(f"{tag}too few AMAX blocks for trend test")
-    except Exception as e:
+    except _FIT_ERRORS as e:
         msg = f"{tag}AMAX/GEV fit failed: {e}"
         log.warning(msg)
         res.messages.append(msg)
@@ -614,9 +650,9 @@ def analyse_cell(
             res.pot_threshold_status = status
 
             eva_pot.fit_model(fit_method)
-            res.q_rp100 = _rv(eva_pot, rp_fl)
-            if protection_rp is not None:
-                res.q_protection = _rv(eva_pot, protection_rp)
+            res.q_rp100 = _rv(eva_pot, preview_rp_yr)
+            if protection_rp_yr is not None:
+                res.q_protection = _rv(eva_pot, protection_rp_yr)
             gpd_params = eva_pot.model.fit_parameters
             # pyextremes picks "genpareto" or "expon" by AIC; "expon" is the GPD
             # with c = 0, so a missing "c" means shape 0, not a failed fit.
@@ -646,11 +682,15 @@ def analyse_cell(
                 exceedances,
                 res.pot_threshold,
                 ppy,
-                rp_fl,
+                preview_rp_yr,
                 ci_alpha,
                 c0=gpd_params.get("c"),
                 scale0=gpd_params.get("scale"),
             )
+            if not np.all(np.isfinite(res.q_rp100_ci)):
+                res.messages.append(
+                    f"{tag}GPD bootstrap CI undefined (too few valid refits)"
+                )
             try:
                 res.pot_ks_pvalue = float(eva_pot.test_ks().pvalue)
                 if res.pot_ks_pvalue < 0.05:
@@ -658,9 +698,9 @@ def analyse_cell(
                         f"{tag}KS test p={res.pot_ks_pvalue:.3f} < 0.05 — "
                         f"GPD fit does not pass goodness-of-fit at α=0.05"
                     )
-            except Exception:
-                pass
-    except Exception as e:
+            except _FIT_ERRORS as e:
+                res.messages.append(f"{tag}KS goodness-of-fit test failed: {e}")
+    except _FIT_ERRORS as e:
         msg = f"{tag}POT/GPD fit failed: {e}"
         log.warning(msg)
         res.messages.append(msg)
@@ -668,6 +708,33 @@ def analyse_cell(
     # ok = both estimators finite; advisory messages do not affect it.
     res.ok = np.isfinite(res.q_rp2) and np.isfinite(res.q_rp100)
     return res
+
+
+def eva_active_flags(evas: list[tuple[str, EVAResult]]) -> list[bool]:
+    """Return per-crossing active flags for (label, EVAResult) pairs.
+
+    A documented skip (skip_reason, e.g. record too short) leaves the crossing
+    inactive with a warning. Raises EVAFitError naming every crossing whose
+    fit failed otherwise, or if EVAs were run and none is usable.
+    """
+    failed = [(label, r) for label, r in evas if not r.ok and not r.skip_reason]
+    if failed:
+        details = "\n".join(
+            f"  {label}: q_rp2={r.q_rp2:.4g} q_rp100={r.q_rp100:.4g}; "
+            + ("; ".join(r.messages) or "no message")
+            for label, r in failed
+        )
+        raise EVAFitError(f"EVA failed for {len(failed)} crossing(s):\n{details}")
+    for label, r in evas:
+        if not r.ok:
+            log.warning(f"  {label}: EVA skipped ({r.skip_reason}) — crossing inactive")
+    flags = [bool(r.ok) for _, r in evas]
+    if evas and not any(flags):
+        raise EVAFitError(
+            f"None of {len(evas)} crossing(s) with a GloFAS cell has a usable EVA: "
+            + ", ".join(f"{label} ({r.skip_reason})" for label, r in evas)
+        )
+    return flags
 
 
 def plot_cell_diagnostics(
@@ -683,9 +750,9 @@ def plot_cell_diagnostics(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fit_method = str(_c(eva_cfg, "fit_method", "Lmoments"))
-    rp_bf = float(_c(eva_cfg, "rp_bf", 2.0))
-    rp_fl = float(_c(eva_cfg, "rp_fl", 100.0))
+    fit_method = str(eva_cfg["fit_method"])
+    bankfull_rp_yr = float(eva_cfg["bankfull_rp_yr"])
+    preview_rp_yr = float(eva_cfg["preview_rp_yr"])
 
     res = analyse_cell(times, values, eva_cfg, label=label)
     s = _to_series(times, values)
@@ -693,7 +760,7 @@ def plot_cell_diagnostics(
     fig, axes = plt.subplots(2, 2, figsize=(14, 11))
     fig.suptitle(f"GloFAS EVA diagnostics — {label}", fontsize=13, y=0.98)
 
-    # POT (RP=rp_fl)
+    # POT (RP=preview_rp_yr)
     try:
         if np.isfinite(res.pot_threshold):
             eva_pot = EVA(data=s)
@@ -711,11 +778,11 @@ def plot_cell_diagnostics(
                 f"POT/GPD  thr={res.pot_threshold:.1f}  r={int(res.pot_r_days)}d  "
                 f"{res.pot_peaks_per_year:.1f} pk/yr  [{res.pot_threshold_status}]"
             )
-            axes[0, 1].axvline(rp_fl, ls=":", c="k", lw=1)
-    except Exception as e:
+            axes[0, 1].axvline(preview_rp_yr, ls=":", c="k", lw=1)
+    except _FIT_ERRORS as e:
         axes[0, 0].text(0.5, 0.5, f"POT plot failed:\n{e}", ha="center", va="center")
 
-    # AMAX (RP=rp_bf)
+    # AMAX (RP=bankfull_rp_yr)
     try:
         if res.amax_n_blocks:
             eva_bm = EVA(data=s)
@@ -726,9 +793,9 @@ def plot_cell_diagnostics(
                 ax=axes[1, 0],
             )
             axes[1, 0].set_title(f"AMAX/GEV  ({res.amax_n_blocks} blocks)")
-            axes[1, 0].axvline(rp_bf, ls=":", c="k", lw=1)
+            axes[1, 0].axvline(bankfull_rp_yr, ls=":", c="k", lw=1)
             _plot_decade_trend(axes[1, 1], eva_bm.extremes, res)
-    except Exception as e:
+    except _FIT_ERRORS as e:
         axes[1, 0].text(0.5, 0.5, f"AMAX plot failed:\n{e}", ha="center", va="center")
 
     # pyextremes' plot_extremes() calls fig.autofmt_xdate(), which assumes a
@@ -998,133 +1065,3 @@ def plot_bias_correction(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     save_figure(fig, output_path, dpi=130)
     log.info(f"Wrote bias-correction diagnostic plot: {output_path}")
-
-
-def plot_grdc_overview(
-    domain_poly: Polygon,
-    land_polygons_path: str,
-    river_gdf: gpd.GeoDataFrame,
-    crossings_gdf: gpd.GeoDataFrame,
-    grdc_stations: gpd.GeoDataFrame,
-    highlight_crossing_idx: int,
-    highlight_station_id: int,
-    diagnostics: dict,
-    output_path: str | Path,
-    label: str = "",
-) -> None:
-    """Render a 2x2 GRDC-vs-GloFAS correlation overview figure (raw overlap only).
-
-    diagnostics comes from compute_grdc_correlation, so no bias correction is
-    needed. All geometries WGS84; crossings_gdf needs a bool has_glofas
-    column; land_polygons_path is the land mask (land use != 200) background.
-    """
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    g_ov = np.asarray(diagnostics["glofas_overlap"], dtype=float)
-    r_ov = np.asarray(diagnostics["grdc_overlap"], dtype=float)
-    t_ov = pd.to_datetime(diagnostics["glofas_overlap_times"])
-    tail_mask = diagnostics["tail_mask"]
-    tail_pct = diagnostics["tail_percentile"]
-    r_raw = diagnostics["correlation_raw"]
-    r_raw_full = diagnostics["correlation_full_raw"]
-    n_overlap = diagnostics["grdc_overlap_days"]
-
-    fig, axes = plt.subplots(2, 2, figsize=(13, 11))
-    fig.suptitle(
-        f"GRDC-GloFAS correlation — {label}  (station {highlight_station_id}, {n_overlap} d overlap)",
-        fontsize=13,
-        y=0.98,
-    )
-
-    ax = axes[0, 0]
-    station_pt = grdc_stations.loc[
-        grdc_stations["id"] == highlight_station_id, "geometry"
-    ].iloc[0]
-    crossing_pt = crossings_gdf.geometry.iloc[highlight_crossing_idx]
-
-    map_background(ax, domain_poly, land_polygons_path, margin_frac=0.15)
-    bx, by = domain_poly.exterior.xy
-    ax.plot(bx, by, color="black", linewidth=2, zorder=2, label="Model domain")
-
-    # Widen the view if the matched GRDC station falls outside the domain bbox.
-    xlim = (min(ax.get_xlim()[0], station_pt.x), max(ax.get_xlim()[1], station_pt.x))
-    ylim = (min(ax.get_ylim()[0], station_pt.y), max(ax.get_ylim()[1], station_pt.y))
-    ax.set_xlim(xlim)
-    ax.set_ylim(ylim)
-    map_bounds = (xlim[0], ylim[0], xlim[1], ylim[1])
-
-    river_gdf.plot(ax=ax, color="steelblue", linewidth=0.8, zorder=1)
-
-    if not crossings_gdf.empty:
-        active = crossings_gdf["has_glofas"].astype(bool)
-        if active.any():
-            crossings_gdf[active].plot(
-                ax=ax,
-                color="limegreen",
-                markersize=40,
-                zorder=3,
-                label="Crossing (active)",
-            )
-        if (~active).any():
-            crossings_gdf[~active].plot(
-                ax=ax,
-                color="grey",
-                markersize=40,
-                marker="x",
-                zorder=3,
-                label="Crossing (inactive)",
-            )
-
-    grdc_in_view = grdc_stations.cx[
-        map_bounds[0] : map_bounds[2], map_bounds[1] : map_bounds[3]
-    ]
-    if not grdc_in_view.empty:
-        grdc_in_view.plot(
-            ax=ax,
-            color="purple",
-            markersize=70,
-            marker="*",
-            zorder=3,
-            alpha=0.7,
-            label="GRDC station",
-        )
-
-    ax.scatter(
-        [crossing_pt.x],
-        [crossing_pt.y],
-        s=180,
-        facecolors="none",
-        edgecolors="red",
-        linewidths=2,
-        zorder=4,
-        label="This crossing",
-    )
-    ax.scatter(
-        [station_pt.x],
-        [station_pt.y],
-        s=180,
-        facecolors="none",
-        edgecolors="orange",
-        linewidths=2,
-        zorder=4,
-        label="Matched GRDC station",
-    )
-
-    ax.set_title("Domain context")
-    ax.legend(loc="best", fontsize=7)
-
-    lims = (0.0, float(max(g_ov.max(), r_ov.max())) * 1.05)
-    _plot_raw_scatter(
-        axes[0, 1], g_ov, r_ov, r_raw, r_raw_full, tail_mask, tail_pct, lims
-    )
-    _plot_seasonal_scatter(axes[1, 0], g_ov, r_ov, t_ov, lims)
-    _plot_overlap_timeseries(axes[1, 1], t_ov, g_ov, r_ov, r_raw)
-
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    save_figure(fig, output_path, dpi=130)
-    log.info(f"Wrote GRDC overview plot: {output_path}")

@@ -46,7 +46,7 @@ from shapely.geometry import LineString  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
-from src.adaptation_lines import (  # noqa: E402
+from adaptation_lines import (  # noqa: E402
     KIND_COAST,
     KIND_ESTUARY,
     KIND_RIVER,
@@ -56,8 +56,11 @@ from src.adaptation_lines import (  # noqa: E402
     protected_land,
     relabel_estuary,
 )
-from src.landuse import SEA_CODE  # noqa: E402
+from src.grid import load_grid_def  # noqa: E402
+from src.landuse import LANDUSE_SEA_CODE  # noqa: E402
+from src.plots import save_figure  # noqa: E402
 from src.protection_weir import GridArrays, ocean_linked_wetland_mask  # noqa: E402
+from src.raster import read_on_grid  # noqa: E402
 from src.river_burn import build_channel_mask_regular  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -66,18 +69,6 @@ for _name in ("hydromt", "hydromt_sfincs"):
     logging.getLogger(_name).setLevel(logging.WARNING)
 
 KIND_COLOURS = {KIND_COAST: "black", KIND_ESTUARY: "0.6", KIND_RIVER: "purple"}
-
-
-def _read_grid_raster(path: Path, like=None):
-    with rasterio.open(path) as src:
-        arr, transform, crs, nodata = src.read(1), src.transform, src.crs, src.nodata
-    if like is not None:
-        shape, ref = like
-        if arr.shape != shape or not transform.almost_equals(ref, precision=1e-6):
-            raise ValueError(
-                f"{path} is not on the model grid ({arr.shape} vs {shape})"
-            )
-    return arr, transform, crs, nodata
 
 
 def _plot(path, weir, closure, pump, estuary, seaward, transform, report, basin_id):
@@ -153,8 +144,7 @@ def _plot(path, weir, closure, pump, estuary, seaward, transform, report, basin_
         fontsize=8,
     )
     fig.tight_layout()
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
+    save_figure(fig, path, dpi=120)
 
 
 def main() -> None:
@@ -184,12 +174,9 @@ def main() -> None:
     config = yaml.safe_load((REPO_ROOT / "config" / "config.yml").read_text())
     rdm = config["river_processing"]["river_depth_modelling"]
 
-    landuse, transform, crs, _ = _read_grid_raster(
-        domain / f"{bid}_landuse_on_grid.tif"
-    )
-    mask, *_ = _read_grid_raster(
-        skeleton / "gis" / "mask.tif", like=(landuse.shape, transform)
-    )
+    with rasterio.open(domain / f"{bid}_landuse_on_grid.tif") as src:
+        landuse, transform, crs = src.read(1), src.transform, src.crs
+    mask = read_on_grid(skeleton / "gis" / "mask.tif", landuse.shape, transform)
     valid = mask > 0
     # The weir as the model holds it (and as levee measures merge against):
     # hydromt_sfincs drops rule-10 segments outside the model region.
@@ -202,9 +189,9 @@ def main() -> None:
         crs=sf.crs,
     ).to_crs(crs)
     rivers = gpd.read_file(domain / f"{bid}_river_network_clean.gpkg").to_crs(crs)
-    grid_def = json.loads((domain / f"{bid}_sfincs_grid.json").read_text())
+    grid_def = load_grid_def(domain / f"{bid}_sfincs_grid.json")
 
-    seaward = landuse == SEA_CODE
+    seaward = landuse == LANDUSE_SEA_CODE
     if rdm.get("unprotected_ocean_wetlands", False):
         grid = GridArrays(
             crs,

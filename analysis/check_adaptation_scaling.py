@@ -6,7 +6,7 @@ without Snakemake, printing the crest/discharge values an 18a/18b job would use
 and the resolver's log lines.
 
 Usage (repo root, hmt_sfincs_dev env):
-    python tests/check_adaptation_scaling.py D:/GCFM_UU/results/2433835_V5_bigpoly_manual coast_500 river_500
+    python analysis/check_adaptation_scaling.py D:/GCFM_UU/results/2433835_V5_bigpoly_manual coast_500 river_500
 """
 
 import logging
@@ -15,10 +15,11 @@ import sys
 from pathlib import Path
 
 import yaml
+from _common import REPO_ROOT as REPO
 
-REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "workflow"))
 from src.adaptation_scaling import resolve_forcing_params  # noqa: E402
+from src.io import require_keys  # noqa: E402
 
 RAW_DATA_ROOT = "D:/GCFM_UU/raw_data"
 
@@ -40,6 +41,7 @@ def load_strategy_expansion():
         "_yaml": yaml,
         "_re": re,
         "Path": Path,
+        "require_keys": require_keys,
         "SCENARIO_DEFS": scenario_defs,
         "CATALOGUE": {"meta": {"root": RAW_DATA_ROOT}},
         "config": {

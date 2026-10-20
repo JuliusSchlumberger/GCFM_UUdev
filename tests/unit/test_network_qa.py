@@ -2,6 +2,7 @@
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 from shapely.geometry import LineString
@@ -10,6 +11,8 @@ from src.river_network import (
     build_downstream_adjacency,
     canal_excluded_arms,
     fix_width_max_width_order,
+    kahn_order,
+    normalize_reach_id,
     outflow_crossing_mask,
     outward_seed_reaches,
 )
@@ -113,3 +116,53 @@ def test_outflow_crossing_mask(network):
     )
     assert outflow_crossing_mask(ds, net).tolist() == [False, True, True]
     assert not outflow_crossing_mask(ds, net.drop(columns="seed_flows_out")).any()
+
+
+def test_kahn_order_puts_every_reach_after_its_upstream_reaches():
+    dn = {"a": ["c"], "b": ["c"], "c": ["d", "e"], "d": [], "e": []}
+    order, on_cycle = kahn_order(list(dn), dn.__getitem__)
+    pos = {n: i for i, n in enumerate(order)}
+    assert on_cycle == []
+    assert sorted(order) == sorted(dn)
+    assert all(pos[u] < pos[d] for u, ds in dn.items() for d in ds)
+    assert order[:2] == ["a", "b"]  # ties keep input order
+
+
+def test_kahn_order_appends_cycle_nodes_last_in_input_order():
+    dn = {0: [1], 1: [2], 2: [1], 3: []}
+    order, on_cycle = kahn_order(range(4), dn.__getitem__)
+    assert on_cycle == [1, 2]
+    assert order == [0, 3, 1, 2]
+
+
+def test_kahn_order_rejects_successor_outside_nodes():
+    with pytest.raises(KeyError):
+        kahn_order(["a"], lambda n: ["zz"])
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, None),
+        (float("nan"), None),
+        (np.float64("nan"), None),
+        (pd.NA, None),
+        (pd.NaT, None),
+        ("nan", None),
+        (" NaN ", None),
+        ("None", None),
+        ("<NA>", None),
+        ("", None),
+        ("   ", None),
+        (21406100011, "21406100011"),
+        (21406100011.0, "21406100011"),
+        ("21406100011.0", "21406100011"),
+        (" 21406100011 ", "21406100011"),
+        ("1e5", "100000"),
+        (float("inf"), "inf"),
+        ("-inf", "-inf"),
+        (" abc ", "abc"),
+    ],
+)
+def test_normalize_reach_id_edge_cases(raw, expected):
+    assert normalize_reach_id(raw) == expected

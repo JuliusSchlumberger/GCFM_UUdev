@@ -4,10 +4,11 @@ import numpy as np
 import rasterio
 
 from src.domain import load_domain
-from src.landuse import warp_landuse_to_grid
+from src.landuse import LANDUSE_SEA_CODE, warp_landuse_to_grid
 from src.log import setup_logging
 from src.plots import plot_landuse, plot_sea_mask
 from src.profiling import ScriptProfiler
+from src.raster import FLOAT_NODATA
 
 log = setup_logging(snakemake.log[0])
 
@@ -46,20 +47,19 @@ with rasterio.open(snakemake.output.spec_landuse) as lu_src:
 
 # Sea mask: landuse==200 only -> 1.0 (sea), else nodata; cells without
 # elevation data are excluded. Classification only, no water level: zsini
-# (sea cells = baseline_m) is built in rule build_sfincs (13). Landuse-only so
+# (sea cells = calm_sea_level_m) is built in rule build_sfincs (13). Landuse-only so
 # it matches src.protection_weir's ocean_mask (landuse==200); landuse 80
 # (inland water) at tidal flats/lagoons is not sea.
 lu_arr = data[0] if data.ndim == 3 else data
-NODATA = np.float32(-9999.0)
-sea_mask = lu_arr == 200
-sea_mask_arr = np.where(sea_mask, np.float32(1.0), NODATA).astype(np.float32)
+sea_mask = lu_arr == LANDUSE_SEA_CODE
+sea_mask_arr = np.where(sea_mask, np.float32(1.0), FLOAT_NODATA).astype(np.float32)
 
 if elevation_nodata is not None:
-    sea_mask_arr[elevation_arr == np.float32(elevation_nodata)] = NODATA
-sea_mask_arr[~np.isfinite(elevation_arr)] = NODATA
+    sea_mask_arr[elevation_arr == np.float32(elevation_nodata)] = FLOAT_NODATA
+sea_mask_arr[~np.isfinite(elevation_arr)] = FLOAT_NODATA
 
 sea_mask_meta = ref_meta.copy()
-sea_mask_meta.update(nodata=float(NODATA))
+sea_mask_meta.update(nodata=FLOAT_NODATA)
 
 n_water = int((sea_mask_arr == 1.0).sum())
 log.info(f"sea_mask: {n_water:,} sea px (landuse==200 only, no OSM land-polygon input)")

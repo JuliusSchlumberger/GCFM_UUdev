@@ -1,11 +1,11 @@
 # The menu: What measures exist and what are their parameters?
 # static definition of what measures exist and their allowed scales (never changes per run)
+# Per param: min/max (null = unbounded), scale (multiplied by the strategy scale),
+# type: bool (must be true/false), required_for (methods that need it).
 
 adaptation_measures:
   # Advance
   offshore_barrier:
-    type: offshore_barrier
-    description: Offshore barrier to reduce wave height and storm surge
     params:
       elevation:
         min: 0.1
@@ -18,8 +18,6 @@ adaptation_measures:
         required_for: [preprocessing]
 
   pumps:
-    type: pumps
-    description: Pumps to remove river discharge
     params:
       discharge:
         min: 0
@@ -34,8 +32,6 @@ adaptation_measures:
 
   # NBS Protect-open
   nbs_land_reclamation:
-    type: nbs_land_reclamation
-    description: Extension of coastline by land reclamation seaward
     params:
       distance: # in metres
         min: 0
@@ -61,8 +57,6 @@ adaptation_measures:
 
 
   water_retention:
-    type: water_retention
-    description: Water retention area in floodplain to store excess river discharge during flood events
     params:
       storage_fraction: # fraction
         min: 0
@@ -76,8 +70,6 @@ adaptation_measures:
 
   # Greys protect-open
   river_levee:
-    type: river_levee
-    description: River levee along rivers
     params:
       elevation:
         min: 0.1
@@ -88,10 +80,13 @@ adaptation_measures:
         min: null
         max: null # path, data source name, or GeoDataFrame with the levee polyline(s)
         required_for: [preprocessing]
+      merge: # false: replace matched baseline weir segments, keep the rest; true: append
+        min: null
+        max: null
+        type: bool
+        required_for: []
 
   # storm_surge_barrier:
-  #     type: storm_surge_barrier
-  #     description: Closed storm surge barrier at river mouth
   #     params:
   #       sill_elevation:
   #         min: 0.1
@@ -113,8 +108,6 @@ adaptation_measures:
 
   # Protect-closed
   coastal_levee:
-    type : levee
-    description: Coastal levee along entire coast, drawn from a user-supplied polyline geojson.
     params:
       elevation:
         min: 0.1
@@ -125,11 +118,14 @@ adaptation_measures:
         min: null
         max: null # path, data source name, or GeoDataFrame with the levee polyline(s)
         required_for: [preprocessing]
+      merge: # false: replace matched baseline weir segments, keep the rest; true: append
+        min: null
+        max: null
+        type: bool
+        required_for: []
 
   # Accommodate
   # dike_ring:
-  #   type: dike_ring
-  #   description: Dike ring around areas (e.g. cities)
   #   params:
   #     elevation:
   #       min: 0.1
@@ -141,8 +137,6 @@ adaptation_measures:
   #       required_for: [preprocessing, postprocessing]
 
   urban_raising:
-    type: urban_raising
-    description: Raise the DEM at flooded urban cells (delta-wide) by their full flood depth or a fraction of it
     params:
       raise_fraction:
         min: 0.1
@@ -153,15 +147,9 @@ adaptation_measures:
 
   # Retreat
   retreat:
-    type: planned relocation outside flooded areas
-    description: Retreat from flooded areas
     params:
       retreat_fraction:
         min: 0
         max: 1 # fraction of population retreated from flooded areas
         scale : true
         required_for: [postprocessing, preprocessing]
-      dep_subgrid:
-        min: null
-        max: null # path, data source name, or GeoDataFrame with the subgrid raster
-        required_for: [preprocessing]

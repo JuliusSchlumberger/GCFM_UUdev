@@ -73,12 +73,12 @@ def _resolve_rp(
     max_rp_yr: float,
 ) -> tuple[float, str]:
     if pd.notna(own_value):
-        rp, source = float(own_value), "flopros"
+        rp_yr, source = float(own_value), "flopros"
     elif pd.notna(other_value):
-        rp, source = float(other_value), "flopros_other_hazard_fallback"
+        rp_yr, source = float(other_value), "flopros_other_hazard_fallback"
     else:
-        rp, source = float(default_rp_yr), "default"
-    return min(rp, float(max_rp_yr)), source
+        rp_yr, source = float(default_rp_yr), "default"
+    return min(rp_yr, float(max_rp_yr)), source
 
 
 def identify_dominant_protection(
@@ -94,7 +94,7 @@ def identify_dominant_protection(
     Dominant = largest pixel count inside the polygon (EPSG:4326). A missing
     FLOPROS value falls back to the other hazard's, then to default_rp_yr;
     both are capped at max_rp_yr. With no valid pixels, both use default_rp_yr.
-    Returns a flat JSON-serialisable dict; 'riverine_rp_yr'/'coastal_rp_yr'
+    Returns a flat JSON-serialisable dict; 'river_protection_rp_yr'/'surge_protection_rp_yr'
     are always populated.
     """
     counts, n_valid = _dominant_geounit_pixel_counts(
@@ -112,12 +112,12 @@ def identify_dominant_protection(
             "pixel_count": 0,
             "pixel_fraction": 0.0,
             "n_geounits_in_delta": 0,
-            "riverine_rp_raw": None,
-            "coastal_rp_raw": None,
-            "riverine_rp_yr": float(default_rp_yr),
-            "coastal_rp_yr": float(default_rp_yr),
-            "riverine_source": "default",
-            "coastal_source": "default",
+            "river_protection_rp_raw_yr": None,
+            "surge_protection_rp_raw_yr": None,
+            "river_protection_rp_yr": float(default_rp_yr),
+            "surge_protection_rp_yr": float(default_rp_yr),
+            "river_protection_source": "default",
+            "surge_protection_source": "default",
         }
 
     dominant_id = max(counts, key=counts.get)
@@ -133,10 +133,10 @@ def identify_dominant_protection(
         float(row["Coastal"]) if row is not None and pd.notna(row["Coastal"]) else None
     )
 
-    riverine_rp, riverine_source = _resolve_rp(
+    river_protection_rp_yr, river_protection_source = _resolve_rp(
         riverine_raw, coastal_raw, default_rp_yr, max_rp_yr
     )
-    coastal_rp, coastal_source = _resolve_rp(
+    surge_protection_rp_yr, surge_protection_source = _resolve_rp(
         coastal_raw, riverine_raw, default_rp_yr, max_rp_yr
     )
 
@@ -147,8 +147,8 @@ def identify_dominant_protection(
         f"identify_dominant_protection: dominant geounit {dominant_id} ({dominant_iso}), "
         f"{dominant_count}/{n_valid} px ({100 * dominant_count / n_valid:.1f}%) of "
         f"{len(counts)} geounit(s) in delta polygon -- "
-        f"riverine RP={riverine_rp:.1f} yr ({riverine_source}), "
-        f"coastal RP={coastal_rp:.1f} yr ({coastal_source})"
+        f"riverine RP={river_protection_rp_yr:.1f} yr ({river_protection_source}), "
+        f"coastal RP={surge_protection_rp_yr:.1f} yr ({surge_protection_source})"
     )
 
     return {
@@ -157,10 +157,10 @@ def identify_dominant_protection(
         "pixel_count": int(dominant_count),
         "pixel_fraction": float(dominant_count / n_valid),
         "n_geounits_in_delta": len(counts),
-        "riverine_rp_raw": riverine_raw,
-        "coastal_rp_raw": coastal_raw,
-        "riverine_rp_yr": riverine_rp,
-        "coastal_rp_yr": coastal_rp,
-        "riverine_source": riverine_source,
-        "coastal_source": coastal_source,
+        "river_protection_rp_raw_yr": riverine_raw,
+        "surge_protection_rp_raw_yr": coastal_raw,
+        "river_protection_rp_yr": river_protection_rp_yr,
+        "surge_protection_rp_yr": surge_protection_rp_yr,
+        "river_protection_source": river_protection_source,
+        "surge_protection_source": surge_protection_source,
     }

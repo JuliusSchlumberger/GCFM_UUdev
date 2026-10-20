@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import math
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -30,7 +29,6 @@ EXPECTED_DTYPE = "uint8"  # Byte
 EXPECTED_EPSG = 4326
 TILE_DEG = 3  # WorldCover tiles are 3x3 degrees
 TILE_GLOB = "ESA_WorldCover_*_Map.tif"
-TILE_RE = re.compile(r"_(?P<ns>[NS])(?P<lat>\d{2})(?P<ew>[EW])(?P<lon>\d{3})_Map\.tif$")
 
 CATALOGUE_NAME = "land_use_esa_worldcover"
 
@@ -107,14 +105,14 @@ def check_delta_coverage(
             for lat, lon in tiles_for_bounds(bounds)
             if not (tile_dir / tile_name(lat, lon)).is_file()
         ]
-        basin = getattr(row, id_col, "?")
+        basin_id = getattr(row, id_col, "?")
         if missing:
             incomplete += 1
             print(
-                f"  basin {basin}: MISSING {len(missing)} tile(s): {', '.join(missing)}"
+                f"  basin {basin_id}: MISSING {len(missing)} tile(s): {', '.join(missing)}"
             )
         else:
-            print(f"  basin {basin}: complete")
+            print(f"  basin {basin_id}: complete")
     if incomplete:
         print(
             f"\n  {incomplete} delta(s) not fully covered. Ocean gaps are harmless "

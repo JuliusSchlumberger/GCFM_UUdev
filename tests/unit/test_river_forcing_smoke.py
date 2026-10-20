@@ -26,15 +26,15 @@ def _river_ds() -> xr.Dataset:
     table = np.array([[100.0, 200.0, 400.0, 600.0], [10.0, 30.0, 50.0, 80.0]])
     return xr.Dataset(
         {
-            "discharge_rp_table": (("crossing", "return_period"), table),
-            "mean_discharge": ("crossing", [50.0, 5.0]),
-            "bankfull_discharge": ("crossing", [150.0, 20.0]),
+            "discharge_rp_table": (("crossing", "rp_yr"), table),
+            "mean_discharge_m3s": ("crossing", [50.0, 5.0]),
+            "bankfull_discharge_m3s": ("crossing", [150.0, 20.0]),
             "has_glofas": ("crossing", [1, 1]),
             "inside_reach_id": ("crossing", ["11", "12"]),
             "longitude": ("crossing", [4.0, 4.1]),
             "latitude": ("crossing", [51.0, 51.1]),
         },
-        coords={"time": times, "return_period": RPS},
+        coords={"time": times, "rp_yr": RPS},
         attrs={"lead_days": LEAD_DAYS, "period_hr": PERIOD_HR},
     )
 
@@ -57,7 +57,10 @@ def test_has_downstream_in_domain_parses_list_strings():
 def test_discharge_at_rp_increases_with_return_period_and_hits_table_nodes():
     table = _river_ds()["discharge_rp_table"].values
     q = np.stack(
-        [interpolate_discharge_at_rp(table, RPS, rp) for rp in (2, 5, 10, 50, 100)]
+        [
+            interpolate_discharge_at_rp(table, RPS, rp_yr)
+            for rp_yr in (2, 5, 10, 50, 100)
+        ]
     )
     assert q.shape == (5, 2)
     assert np.all(np.diff(q, axis=0) > 0)
@@ -73,19 +76,27 @@ def test_design_discharge_matrix_shape_non_negative_and_peaks_at_design_q():
     assert q.shape == (2, ds.sizes["time"])
     assert np.all(q >= 0)
     np.testing.assert_allclose(q.max(axis=1), [400.0, 50.0])
-    np.testing.assert_allclose(q[:, 0], ds["mean_discharge"].values)
+    np.testing.assert_allclose(q[:, 0], ds["mean_discharge_m3s"].values)
 
     np.testing.assert_allclose(
         build_design_discharge_matrix(ds, active, 100.0, 2.0), 2 * q
     )
     assert np.all(build_design_discharge_matrix(ds, active, None) == 0)
-    mean_q = build_design_discharge_matrix(ds, active, "Mean")
+    mean_discharge_m3s = build_design_discharge_matrix(ds, active, "Mean")
     np.testing.assert_allclose(
-        mean_q, ds["mean_discharge"].values[:, None] * np.ones_like(q)
+        mean_discharge_m3s, ds["mean_discharge_m3s"].values[:, None] * np.ones_like(q)
     )
     assert (
         build_design_discharge_matrix(ds, np.array([False, True]), 10.0).shape[0] == 1
     )
+
+
+def test_design_discharge_matrix_unknown_event_source_raises():
+    ds = _river_ds()
+    with pytest.raises(ValueError, match="glofas_event or cosine"):
+        build_design_discharge_matrix(
+            ds, np.array([True, True]), 100.0, event={"source": "cosin"}
+        )
 
 
 def test_load_and_snap_crossings_keep_largest_discharge_per_reach(tmp_path):
@@ -93,14 +104,14 @@ def test_load_and_snap_crossings_keep_largest_discharge_per_reach(tmp_path):
     ds["has_glofas"] = ("crossing", [1, 0])
     path = tmp_path / "river_forcing.nc"
     ds.to_netcdf(path)
-    crossings = load_forcing_crossings(path, "bankfull_discharge")
+    crossings = load_forcing_crossings(path, "bankfull_discharge_m3s")
     assert len(crossings) == 1 and crossings.crs == "EPSG:4326"
     assert snap_crossings_to_reaches(crossings) == {"11": 150.0}
 
     multi = gpd.GeoDataFrame(
         {
             "inside_reach_id": ["7", "7.0", "8", ""],
-            "bankfull_q": [5.0, 9.0, np.nan, 3.0],
+            "bankfull_discharge_m3s": [5.0, 9.0, np.nan, 3.0],
         },
         geometry=[Point(0, 0)] * 4,
         crs="EPSG:4326",

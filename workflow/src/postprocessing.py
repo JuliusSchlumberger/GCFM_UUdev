@@ -199,6 +199,26 @@ def compute_max_inundation(
     return da_hmax, da_dep
 
 
+def inundation_stats(da_hmax: xr.DataArray, da_dep: xr.DataArray) -> dict:
+    """Count flooded and land pixels of compute_max_inundation's output.
+
+    Returns n_land, n_flooded, frac (0.0 without land) and the areas
+    flooded_km2 and land_km2 (rotation-aware pixel area).
+    """
+    n_land = int(da_dep.notnull().sum().item())
+    n_flooded = int(da_hmax.notnull().sum().item())
+    frac = n_flooded / n_land if n_land > 0 else 0.0
+
+    res = abs(da_dep.raster.res[0] * da_dep.raster.res[1])  # rotation-aware
+    return {
+        "n_land": n_land,
+        "n_flooded": n_flooded,
+        "frac": frac,
+        "flooded_km2": n_flooded * res / 1e6,
+        "land_km2": n_land * res / 1e6,
+    }
+
+
 def compute_flood_progression(
     run_dir: str | Path,
     sea_mask_path: str | Path,
@@ -267,11 +287,8 @@ def compute_flood_timeseries_stats(
     da_sea_grid = da_sea.raster.reproject_like(da_dep, method="nearest").compute()
     water_mask = da_sea_grid == 1.0
 
-    try:
-        res_x, res_y = da_dep.raster.res  # rotation-aware, unlike rio.resolution()
-        pixel_area_m2 = abs(res_x * res_y)
-    except Exception:
-        pixel_area_m2 = np.nan
+    res_x, res_y = da_dep.raster.res  # rotation-aware, unlike rio.resolution()
+    pixel_area_m2 = abs(res_x * res_y)
 
     n_frames = da_zs_native.sizes["time"]
     times = da_zs_native["time"].values

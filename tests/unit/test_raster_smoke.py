@@ -6,19 +6,20 @@ import numpy as np
 import pytest
 import rasterio
 from rasterio.transform import from_origin
+from src.landuse import LANDUSE_SEA_CODE
 from src.raster import (
     blend_coast,
+    dry_isolated_sea_cells,
     find_fathomdem_tiles,
     merge_tiled_raster,
     open_water_mask,
     reproject_nan_aware,
-    restrict_waterlevel_boundary_to_sea,
+    restrict_water_level_boundary_to_sea,
     vectorize_land_from_landuse,
     vectorize_land_mask_on_grid,
 )
 
 UTM31N = "EPSG:32631"
-SEA = 200
 
 
 def _write(path, arr, transform, crs, nodata=None):
@@ -38,7 +39,7 @@ def _write(path, arr, transform, crs, nodata=None):
 
 
 def _landuse():
-    lu = np.full((20, 20), SEA, dtype=np.uint8)
+    lu = np.full((20, 20), LANDUSE_SEA_CODE, dtype=np.uint8)
     lu[:, :10] = 10
     lu[0, 0] = 255
     return lu
@@ -123,9 +124,9 @@ def test_vectorize_land_mask_on_grid_returns_wgs84_land(tmp_path):
 def test_restrict_waterlevel_boundary_moves_land_cells_only():
     mask = np.ones((4, 4), dtype=np.uint8)
     mask[0, :] = 2
-    lu = np.full((4, 4), SEA, dtype=np.uint8)
+    lu = np.full((4, 4), LANDUSE_SEA_CODE, dtype=np.uint8)
     lu[0, :2] = 10
-    out, n_moved = restrict_waterlevel_boundary_to_sea(mask, lu)
+    out, n_moved = restrict_water_level_boundary_to_sea(mask, lu)
     assert n_moved == 2
     assert out[0].tolist() == [1, 1, 2, 2]
     assert np.array_equal(out[1:], mask[1:])
@@ -134,7 +135,7 @@ def test_restrict_waterlevel_boundary_moves_land_cells_only():
 
 def test_restrict_waterlevel_boundary_rejects_shape_mismatch():
     with pytest.raises(ValueError):
-        restrict_waterlevel_boundary_to_sea(np.ones((3, 3)), np.ones((4, 4)))
+        restrict_water_level_boundary_to_sea(np.ones((3, 3)), np.ones((4, 4)))
 
 
 def test_open_water_mask_drops_narrow_creek_keeps_open_sea():
@@ -168,3 +169,32 @@ def test_blend_coast_zero_band_returns_input_unchanged():
     land[0] = True
     out, n_blended = blend_coast(merged, land, merged, pixel_size_m=1.0, blend_m=0.0)
     assert n_blended == 0 and out is merged
+
+
+def test_dry_isolated_sea_cells_dries_only_pockets_below_baseline():
+    calm_sea_level_m = 0.3
+    dep = np.full((20, 20), -1.0, dtype=np.float32)
+    sea = np.zeros((20, 20), bool)
+    sea[:, :8] = True  # open ocean, largest component
+    sea[2:4, 12:14] = True  # pocket below baseline
+    sea[15:17, 15:17] = True  # pocket above baseline
+    dep[15:17, 15:17] = 1.0
+    sea[10, 18] = True  # pocket cell with nodata bed
+    dep[10, 18] = -9999.0
+    zsini = np.where(sea, np.float32(calm_sea_level_m), np.nan)
+
+    out, n_dried = dry_isolated_sea_cells(zsini, dep, -9999.0, calm_sea_level_m)
+
+    assert n_dried == 4
+    np.testing.assert_array_equal(out[2:4, 12:14], dep[2:4, 12:14])
+    assert np.allclose(out[:, :8], calm_sea_level_m)
+    assert np.allclose(out[15:17, 15:17], calm_sea_level_m)
+    assert np.isclose(out[10, 18], calm_sea_level_m)
+    assert np.isnan(out[~sea]).all()
+
+
+def test_dry_isolated_sea_cells_without_sea_is_noop():
+    zsini = np.full((5, 5), np.nan)
+    out, n_dried = dry_isolated_sea_cells(zsini, np.zeros((5, 5)), -9999.0, 0.0)
+    assert n_dried == 0
+    assert np.isnan(out).all()

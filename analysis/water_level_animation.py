@@ -7,7 +7,7 @@ about -8 m behind a coastal levee + pumps. Only `pre` runs have a `zs` time
 series and their own sfincs.bzs; `post` writes a single max_flood_depth.tif.
 
 Edit the CONFIG block below and run directly:
-    python workflow/src/waterlevel_animation.py
+    python analysis/water_level_animation.py
 """
 
 import os
@@ -17,9 +17,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
+from _common import REPO_ROOT  # noqa: E402
 from matplotlib.animation import FFMpegWriter, FuncAnimation
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
+sys.path.insert(0, str(REPO_ROOT / "workflow"))
 
 from src.postprocessing import load_sfincs_output
 
@@ -49,7 +50,7 @@ sea_mask_path = (
     / "domain"
     / f"{BASIN_ID}_zsini_sea_cells_on_grid.tif"
 )
-out_path = sfincs_root.parent / "03_waterlevel_animation.mp4"
+out_path = sfincs_root.parent / "03_water_level_animation.mp4"
 
 
 def _load_h(run_dir):

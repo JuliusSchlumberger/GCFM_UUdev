@@ -4,8 +4,8 @@ import geopandas as gpd
 import numpy as np
 from affine import Affine
 from shapely.geometry import LineString
+from src.landuse import LANDUSE_SEA_CODE
 from src.protection_weir import (
-    LANDUSE_SEA,
     GridArrays,
     build_coastal_protection_weir,
     discard_small_components,
@@ -22,7 +22,7 @@ LAND = 40
 def _grid(n=N):
     return GridArrays(
         CRS,
-        bed_elevation=np.zeros((n, n), dtype=np.float32),
+        bed_elevation_m=np.zeros((n, n), dtype=np.float32),
         valid_mask=np.ones((n, n), dtype=bool),
         cell_size_m=DX,
         transform=Affine(DX, 0, 0, 0, -DX, n * DX),
@@ -31,7 +31,7 @@ def _grid(n=N):
 
 def _half_sea(n=N):
     landuse = np.full((n, n), LAND, dtype=np.uint8)
-    landuse[:, : n // 2] = LANDUSE_SEA
+    landuse[:, : n // 2] = LANDUSE_SEA_CODE
     return landuse
 
 
@@ -110,7 +110,7 @@ def test_wetland_linked_only_by_edge_to_sea():
     landuse = _half_sea()
     landuse[5, 10] = 90  # shares an edge with sea column 9
     landuse[15, 12] = 80  # isolated, inland
-    linked = ocean_linked_wetland_mask(landuse, landuse == LANDUSE_SEA, _grid())
+    linked = ocean_linked_wetland_mask(landuse, landuse == LANDUSE_SEA_CODE, _grid())
     assert linked[5, 10]
     assert not linked[15, 12]
     assert linked.sum() == 1

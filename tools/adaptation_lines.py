@@ -299,7 +299,7 @@ def mouth_closures(
     cell = float(np.hypot(transform.a, transform.d))
     closures, pumps, report = [], [], []
     for _, outlet in rivers[rivers["n_rch_dn"] == 0].iterrows():
-        rid = int(outlet["reach_id"])
+        reach_id = int(outlet["reach_id"])
         full, anchor, d_anchor = _outlet_centreline(rivers, outlet)
         p_up = full.interpolate(max(d_anchor - direction_length_m, 0.0))
         t = np.array([anchor.x - p_up.x, anchor.y - p_up.y])
@@ -321,11 +321,11 @@ def mouth_closures(
                 best = (total, ends, float(np.degrees(off)))
         if best is None:
             log.warning(
-                f"Outlet reach {rid}: no straight crossing within +-{max_tilt_deg:.0f} deg of "
+                f"Outlet reach {reach_id}: no straight crossing within +-{max_tilt_deg:.0f} deg of "
                 f"perpendicular reaches land on both sides within {max_half_length_m:.0f} m -- "
                 "no closure or pump written for this mouth"
             )
-            report.append({"reach_id": rid, "closed": False})
+            report.append({"reach_id": reach_id, "closed": False})
             continue
         _, ends, tilt = best
         p0, p1 = ends[1].coords[0], ends[0].coords[0]
@@ -339,7 +339,7 @@ def mouth_closures(
                 continue  # extension reaching past the land back into open water
             closures.append(
                 {
-                    "reach_id": rid,
+                    "reach_id": reach_id,
                     "cell_a": a,
                     "cell_b": b,
                     "geometry": _edge_line(a, b, transform),
@@ -347,10 +347,10 @@ def mouth_closures(
             )
             n_kept += 1
         pump = substring(full, max(d_anchor - pump_upstream_m, 0.0), full.length)
-        pumps.append({"reach_id": rid, "geometry": pump})
+        pumps.append({"reach_id": reach_id, "geometry": pump})
         report.append(
             {
-                "reach_id": rid,
+                "reach_id": reach_id,
                 "closed": True,
                 "anchor": [round(anchor.x, 1), round(anchor.y, 1)],
                 "crossing_m": round(length, 1),
@@ -363,7 +363,7 @@ def mouth_closures(
             }
         )
         log.info(
-            f"Outlet reach {rid}: closure {length:.0f} m across the mouth at "
+            f"Outlet reach {reach_id}: closure {length:.0f} m across the mouth at "
             f"({anchor.x:.0f}, {anchor.y:.0f}), {tilt:+.0f} deg from perpendicular, "
             f"{n_kept} grid edge(s); pump line {pump.length:.0f} m"
         )

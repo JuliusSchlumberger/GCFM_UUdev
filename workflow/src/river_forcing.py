@@ -11,36 +11,30 @@ import numpy as np
 import xarray as xr
 from shapely.geometry import Point, Polygon
 from src.extreme_values import EVAResult
+from src.raster import latlon_dims
+from src.river_network import normalize_reach_id
 from src.surge import sinusoidal_wave
 
 log = logging.getLogger(__name__)
 
 
-def derive_forcing_mode(river_rp: float | None | str, surge_rp: float | None) -> str:
+def derive_forcing_mode(
+    river_rp_yr: float | None | str, surge_rp_yr: float | None
+) -> str:
     """Return the SFINCS forcing mode from which design RPs a scenario sets.
 
-    Both -> "compound"; river_rp only -> "river_only"; surge_rp only ->
+    Both -> "compound"; river_rp_yr only -> "river_only"; surge_rp_yr only ->
     "coastal_only"; neither -> ValueError. Used by 00_common.smk's scenario_params.
     """
-    if river_rp is not None and surge_rp is not None:
+    if river_rp_yr is not None and surge_rp_yr is not None:
         return "compound"
-    if river_rp is not None:
+    if river_rp_yr is not None:
         return "river_only"
-    if surge_rp is not None:
+    if surge_rp_yr is not None:
         return "coastal_only"
     raise ValueError(
-        "both river_rp and surge_rp are null -- no forcing to drive the model with"
+        "both river_rp_yr and surge_rp_yr are null -- no forcing to drive the model with"
     )
-
-
-def _norm_reach_id(x) -> str | None:
-    s = str(x).strip()
-    if s.lower() in ("nan", "none", "<na>", ""):
-        return None
-    try:
-        return str(int(float(s)))
-    except (ValueError, OverflowError):
-        return s if s else None
 
 
 def has_downstream_in_domain(rch_id_dn_raw, domain_reach_ids: set[str]) -> bool:
@@ -53,7 +47,7 @@ def has_downstream_in_domain(rch_id_dn_raw, domain_reach_ids: set[str]) -> bool:
     if not s or s.lower() in ("nan", "none", "<na>"):
         return False
     for token in re.split(r"[,\s]+", s):
-        normed = _norm_reach_id(token.strip())
+        normed = normalize_reach_id(token.strip())
         if normed and normed in domain_reach_ids:
             return True
     return False
@@ -97,9 +91,9 @@ def resolve_inside_domain_reaches(
 
     reach_lookup: dict[str, pd.Series] = {}
     for _, row in river_gdf.iterrows():
-        rid = _norm_reach_id(row.get("reach_id"))
-        if rid:
-            reach_lookup[rid] = row
+        reach_id = normalize_reach_id(row.get("reach_id"))
+        if reach_id:
+            reach_lookup[reach_id] = row
 
     topo_attrs = [a for a in ("width", "max_width") if a in river_gdf.columns]
 
@@ -109,7 +103,7 @@ def resolve_inside_domain_reaches(
 
     for i, (_, crossing_row) in enumerate(crossings.iterrows()):
         start_id = (
-            _norm_reach_id(crossing_row.get("reach_id"))
+            normalize_reach_id(crossing_row.get("reach_id"))
             if "reach_id" in crossing_row.index
             else None
         )
@@ -134,7 +128,7 @@ def resolve_inside_domain_reaches(
                 break
             current = None
             for token in re.split(r"[,\s]+", dn_raw):
-                normed = _norm_reach_id(token.strip())
+                normed = normalize_reach_id(token.strip())
                 if normed:
                     current = normed
                     break
@@ -143,7 +137,7 @@ def resolve_inside_domain_reaches(
 
         if found_geom is not None and found_reach is not None:
             new_geoms.append(found_geom)
-            inside_reach_ids.append(_norm_reach_id(found_reach.get("reach_id")))
+            inside_reach_ids.append(normalize_reach_id(found_reach.get("reach_id")))
             for a in topo_attrs:
                 inside_attr_vals[a].append(found_reach.get(a))
         else:
@@ -181,8 +175,7 @@ def find_best_glofas_cell(
     """
     from pyproj import Transformer
 
-    lat_dim = "latitude" if "latitude" in glofas_clip.dims else "lat"
-    lon_dim = "longitude" if "longitude" in glofas_clip.dims else "lon"
+    lat_dim, lon_dim = latlon_dims(glofas_clip)
     time_dim = "valid_time" if "valid_time" in glofas_clip.dims else "time"
     lat_arr = glofas_clip[lat_dim].values  # (n_lat,)
     lon_arr = glofas_clip[lon_dim].values  # (n_lon,)
@@ -201,18 +194,18 @@ def find_best_glofas_cell(
     if not within.any():
         return None
 
-    mean_q = (
+    mean_discharge_m3s = (
         glofas_clip[variable]
         .mean(dim=time_dim, skipna=True)
         .transpose(lat_dim, lon_dim)
         .values
     )  # (n_lat, n_lon)
 
-    qualified = within & (mean_q >= min_mean_q)
+    qualified = within & (mean_discharge_m3s >= min_mean_q)
     if not qualified.any():
         return None
 
-    flat_best = int(np.argmax(np.where(qualified, mean_q, -np.inf)))
+    flat_best = int(np.argmax(np.where(qualified, mean_discharge_m3s, -np.inf)))
     i_lat, i_lon = divmod(flat_best, len(lon_arr))
     return i_lat, i_lon
 
@@ -347,8 +340,7 @@ def load_glofas_clip(
     lon_min, lat_min, lon_max, lat_max = bounds_wgs84
 
     def _spatial_slice(ds: xr.Dataset) -> xr.Dataset:
-        lat_dim = "latitude" if "latitude" in ds.dims else "lat"
-        lon_dim = "longitude" if "longitude" in ds.dims else "lon"
+        lat_dim, lon_dim = latlon_dims(ds)
         lat_vals = ds[lat_dim].values
         lat_desc = lat_vals[0] > lat_vals[-1]
         lat_slice = (
@@ -383,17 +375,17 @@ def load_glofas_clip(
 def build_river_dataset(
     crossings: gpd.GeoDataFrame,
     has_glofas: np.ndarray,
-    bankfull_q: np.ndarray,
+    bankfull_discharge_m3s: np.ndarray,
     discharge_rp_table: np.ndarray,
-    return_periods: np.ndarray,
+    rps_yr: np.ndarray,
     cell_lon: np.ndarray,
     cell_lat: np.ndarray,
     times: np.ndarray,
     lead_days: float,
     period_hr: float,
     results: list[EVAResult | None],
-    rp_bankfull: float,
-    mean_q: np.ndarray,
+    bankfull_rp_yr: float,
+    mean_discharge_m3s: np.ndarray,
     bias_corrected: np.ndarray,
     grdc_station_id: np.ndarray,
     grdc_correlation: np.ndarray,
@@ -402,22 +394,22 @@ def build_river_dataset(
     """Assemble river_forcing.nc: bankfull (AMAX/GEV), POT/GPD RP table, EVA diagnostics.
 
     The SFINCS discharge series is built later (rule 13,
-    build_design_discharge_matrix) from bankfull_discharge + a design RP
+    build_design_discharge_matrix) from bankfull_discharge_m3s + a design RP
     looked up in discharge_rp_table, so changing the RP needs no EVA rerun.
 
     Args:
-        discharge_rp_table: (n_crossing, n_return_period) discharge from the
+        discharge_rp_table: (n_crossing, n_rp) discharge from the
             POT/GPD fit (src.extreme_values.gpd_return_value_table); NaN row
             where GPD did not converge.
-        return_periods: Years, discharge_rp_table's second axis.
+        rps_yr: Years, discharge_rp_table's second axis.
         times, lead_days, period_hr: Stored for rule 13 to rebuild the
             sinusoidal wave.
         bias_corrected: int8, 1 if the GloFAS cell was GRDC bias-corrected before EVA.
         grdc_station_id: int64, matched GRDC 'id', -1 if none.
         grdc_correlation: Pearson r raw GloFAS vs GRDC over the overlap; NaN if uncorrected.
         grdc_overlap_days: Overlapping valid days used; NaN if uncorrected.
-        mean_q: Grand-mean discharge of the (possibly bias-corrected) series;
-            used for river_rp: "mean" in config/scenarios.yml.
+        mean_discharge_m3s: Grand-mean discharge of the (possibly bias-corrected) series;
+            used for river_rp_yr: "mean" in config/scenarios.yml.
     """
     n_cross = len(crossings)
 
@@ -447,7 +439,7 @@ def build_river_dataset(
     if "inside_reach_id" in crossings.columns:
         inside_reach_ids_arr = np.array(
             [
-                (_norm_reach_id(v) or "") if has_glofas[i] else ""
+                (normalize_reach_id(v) or "") if has_glofas[i] else ""
                 for i, v in enumerate(crossings["inside_reach_id"].values)
             ],
             dtype="U64",
@@ -458,7 +450,7 @@ def build_river_dataset(
     return xr.Dataset(
         {
             "discharge_rp_table": (
-                ["crossing", "return_period"],
+                ["crossing", "rp_yr"],
                 discharge_rp_table,
                 {
                     "units": "m3 s-1",
@@ -472,17 +464,17 @@ def build_river_dataset(
                 has_glofas.astype(np.int8),
                 {"long_name": "1 if crossing has a valid GloFAS EVA fit"},
             ),
-            "bankfull_discharge": (
+            "bankfull_discharge_m3s": (
                 ["crossing"],
-                bankfull_q,
+                bankfull_discharge_m3s,
                 {
                     "units": "m3 s-1",
-                    "long_name": f"bankfull discharge (AMAX/GEV, RP={rp_bankfull:g} yr)",
+                    "long_name": f"bankfull discharge (AMAX/GEV, RP={bankfull_rp_yr:g} yr)",
                 },
             ),
-            "mean_discharge": (
+            "mean_discharge_m3s": (
                 ["crossing"],
-                mean_q,
+                mean_discharge_m3s,
                 {
                     "units": "m3 s-1",
                     "long_name": "grand-mean discharge over the full GloFAS "
@@ -577,11 +569,11 @@ def build_river_dataset(
             "longitude": (["crossing"], cross_lons, {"units": "degrees_east"}),
             "latitude": (["crossing"], cross_lats, {"units": "degrees_north"}),
             "time": (["time"], times, {"units": "hours since simulation start"}),
-            "return_period": (
-                ["return_period"],
-                np.asarray(return_periods, dtype=float),
+            "rp_yr": (
+                ["rp_yr"],
+                np.asarray(rps_yr, dtype=float),
                 {
-                    "units": "years",
+                    "units": "yr",
                     "long_name": "return period axis for discharge_rp_table",
                 },
             ),
@@ -596,7 +588,7 @@ def build_river_dataset(
 
 def interpolate_discharge_at_rp(
     discharge_rp_table: np.ndarray,
-    return_period_axis: np.ndarray,
+    rps_yr: np.ndarray,
     target_rp_yr: float,
 ) -> np.ndarray:
     """Return per-crossing discharge (m^3 s^-1) at target_rp_yr, log-RP interpolated.
@@ -605,20 +597,20 @@ def interpolate_discharge_at_rp(
     badly skewed over the table's multi-order-of-magnitude span.
     """
     log_rp = np.log(target_rp_yr)
-    log_table_rps = np.log(return_period_axis)
+    log_rps_yr = np.log(rps_yr)
     n = discharge_rp_table.shape[0]
     return np.array(
-        [np.interp(log_rp, log_table_rps, discharge_rp_table[i]) for i in range(n)]
+        [np.interp(log_rp, log_rps_yr, discharge_rp_table[i]) for i in range(n)]
     )
 
 
 def real_flood_event_matrix(
     river_ds: xr.Dataset,
     active: np.ndarray,
-    design_rp_yr: float,
+    rp_yr: float,
     separation_days: int,
     n_largest: int,
-    min_ramp_hours: float,
+    min_ramp_hr: float,
     max_rise_per_hr: float,
 ) -> tuple[np.ndarray, dict]:
     """Return river discharge for one return period from real GloFAS flood events.
@@ -645,7 +637,7 @@ def real_flood_event_matrix(
     attrs["event_start_hr"] the discharge holds the mean (where the spin-up
     ends); it then blends linearly into the event over
 
-        ramp = max(min_ramp_hours, gap / (max_rise_per_hr x peak))
+        ramp = max(min_ramp_hr, gap / (max_rise_per_hr x peak))
 
     with gap = main inflow's event discharge at the start minus its mean and
     peak = its return level: a relative limit, so one value suits a 1,000 and
@@ -664,13 +656,13 @@ def real_flood_event_matrix(
     times = river_ds["time"].values.astype(float)
     q = river_ds["discharge_daily"].values[active].astype(float)  # (n_active, n_day)
     days = np.datetime64("1970-01-01") + river_ds["day"].values.astype("timedelta64[D]")
-    mean_q = river_ds["mean_discharge"].values[active]
-    main = int(np.nanargmax(river_ds["bankfull_discharge"].values[active]))
+    mean_discharge_m3s = river_ds["mean_discharge_m3s"].values[active]
+    main = int(np.nanargmax(river_ds["bankfull_discharge_m3s"].values[active]))
     target = float(
         interpolate_discharge_at_rp(
             river_ds["discharge_rp_table"].values[active][[main]],
-            river_ds["return_period"].values,
-            design_rp_yr,
+            river_ds["rp_yr"].values,
+            rp_yr,
         )[0]
     )
 
@@ -711,21 +703,21 @@ def real_flood_event_matrix(
         ]
     )
     start_q = float(np.interp(start_hr, times, event[main]))
-    gap = max(start_q - float(mean_q[main]), 0.0)
-    ramp_hours = max(float(min_ramp_hours), gap / (float(max_rise_per_hr) * target))
+    gap = max(start_q - float(mean_discharge_m3s[main]), 0.0)
+    ramp_hr = max(float(min_ramp_hr), gap / (float(max_rise_per_hr) * target))
     lead_up = max(peak_hr - start_hr, 0.0)
-    if ramp_hours > lead_up:
+    if ramp_hr > lead_up:
         log.warning(
-            f"river event ramp of {ramp_hours:.1f} h (gap {gap:,.0f} m3/s) exceeds the {lead_up:.0f} h "
+            f"river event ramp of {ramp_hr:.1f} h (gap {gap:,.0f} m3/s) exceeds the {lead_up:.0f} h "
             f"between the event start and the peak -- capped; raise max_rise_per_hr or the event window"
         )
-        ramp_hours = lead_up
+        ramp_hr = lead_up
     w = (
-        np.clip((times - start_hr) / ramp_hours, 0.0, 1.0)
-        if ramp_hours > 0
+        np.clip((times - start_hr) / ramp_hr, 0.0, 1.0)
+        if ramp_hr > 0
         else (times >= start_hr).astype(float)
     )
-    matrix = (1.0 - w) * mean_q[:, None] + w * event
+    matrix = (1.0 - w) * mean_discharge_m3s[:, None] + w * event
     info = {
         "mode": mode,
         "dates": [str(days[p]) for p in chosen],
@@ -733,7 +725,7 @@ def real_flood_event_matrix(
         "main": main,
         "target": target,
         "start_fraction": start_q / target,
-        "ramp_hours": ramp_hours,
+        "ramp_hr": ramp_hr,
     }
     return matrix, info
 
@@ -741,50 +733,55 @@ def real_flood_event_matrix(
 def build_design_discharge_matrix(
     river_ds: xr.Dataset,
     active: np.ndarray,
-    design_rp_yr: float | None | str,
+    rp_yr: float | None | str,
     discharge_multiplier: float = 1.0,
     event: dict | None = None,
 ) -> np.ndarray:
     """Return the (n_active, n_time) SFINCS discharge (m3 s-1) for a design RP.
 
-    Built at rule 13 from river_forcing.nc's mean_discharge + discharge_rp_table,
+    Built at rule 13 from river_forcing.nc's mean_discharge_m3s + discharge_rp_table,
     so changing the RP needs no EVA rerun (rule 07). Per active crossing:
-      1. Q_f at design_rp_yr, log-RP interpolated (interpolate_discharge_at_rp).
-      2. sinusoidal_wave(mean_q, Q_f, time, lead_days, period_hr). Riverine
+      1. Q_f at rp_yr, log-RP interpolated (interpolate_discharge_at_rp).
+      2. sinusoidal_wave(mean_discharge_m3s, Q_f, time, lead_days, period_hr). Riverine
          protection is NOT subtracted: the calibrated weirs represent it.
       3. Scale the entire built hydrograph (bankfull lead-in AND event peak
          alike) by discharge_multiplier, at build time, so river_forcing.nc,
          rule 10's calibration and the skeleton build are independent of it.
-         Equivalent to scaling bankfull_q and Q_f, as sinusoidal_wave is
+         Equivalent to scaling bankfull_discharge_m3s and Q_f, as sinusoidal_wave is
          affine in its two endpoints.
 
     Args:
         active: Boolean mask over crossings (typically has_glofas).
-        design_rp_yr: Years (a scenario's river_rp). None: river excluded,
-            zero discharge. "mean" (case-insensitive): constant mean_discharge.
+        rp_yr: Years (a scenario's river_rp_yr). None: river excluded,
+            zero discharge. "mean" (case-insensitive): constant mean_discharge_m3s.
         event: boundary_forcings.river.event_hydrograph. Source "glofas_event"
             builds a numeric RP from real GloFAS events
             (real_flood_event_matrix; needs discharge_daily); None or "cosine"
-            uses the synthetic wave.
+            uses the synthetic wave. Any other source raises ValueError.
     """
+    if event is not None and event["source"] not in ("glofas_event", "cosine"):
+        raise ValueError(
+            "boundary_forcings.river.event_hydrograph.source must be glofas_event or cosine, "
+            f"got {event['source']!r}"
+        )
     times = river_ds["time"].values
     table = river_ds["discharge_rp_table"].values[active]  # (n_active, n_rp)
-    table_rps = river_ds["return_period"].values
+    rps_yr = river_ds["rp_yr"].values
     lead_days = float(river_ds.attrs["lead_days"])
     period_hr = float(river_ds.attrs["period_hr"])
 
     n_active = int(active.sum())
     # Base flow = mean discharge (also the spin-up's), so an RP scenario
     # differs from a "mean" one only by its flood peak.
-    mean_q = river_ds["mean_discharge"].values[active]
-    lead_q = mean_q
-    if isinstance(design_rp_yr, str) and design_rp_yr.strip().lower() == "mean":
-        design_q = mean_q.copy()
-    elif design_rp_yr is None:
+    mean_discharge_m3s = river_ds["mean_discharge_m3s"].values[active]
+    lead_q = mean_discharge_m3s
+    if isinstance(rp_yr, str) and rp_yr.strip().lower() == "mean":
+        design_q = mean_discharge_m3s.copy()
+    elif rp_yr is None:
         design_q = np.zeros(n_active, dtype=float)
         lead_q = design_q
     else:
-        if event is not None and event.get("source") == "glofas_event" and n_active > 0:
+        if event is not None and event["source"] == "glofas_event" and n_active > 0:
             if "discharge_daily" not in river_ds:
                 raise ValueError(
                     "river event_hydrograph.source 'glofas_event' needs discharge_daily in "
@@ -793,23 +790,23 @@ def build_design_discharge_matrix(
             discharge_matrix, info = real_flood_event_matrix(
                 river_ds,
                 active,
-                float(design_rp_yr),
+                float(rp_yr),
                 separation_days=int(event["separation_days"]),
                 n_largest=int(event["n_largest"]),
-                min_ramp_hours=float(event["min_ramp_hours"]),
+                min_ramp_hr=float(event["min_ramp_hr"]),
                 max_rise_per_hr=float(event["max_rise_per_hr"]),
             )
             log.info(
-                f"River event RP {float(design_rp_yr):g}: real GloFAS flood(s) {info['dates']} "
+                f"River event RP {float(rp_yr):g}: real GloFAS flood(s) {info['dates']} "
                 f"({info['mode']}), main inflow scaled x{[round(s, 3) for s in info['scales']]} to "
                 f"{info['target']:,.0f} m3/s; at the event start it is at "
                 f"{100 * info['start_fraction']:.0f}% of the peak, ramped in from the mean over "
-                f"{info['ramp_hours']:.1f} h"
+                f"{info['ramp_hr']:.1f} h"
             )
             if discharge_multiplier != 1.0:
                 discharge_matrix = discharge_matrix * discharge_multiplier
             return discharge_matrix
-        design_q = interpolate_discharge_at_rp(table, table_rps, design_rp_yr)
+        design_q = interpolate_discharge_at_rp(table, rps_yr, rp_yr)
 
     discharge_matrix = np.full((n_active, len(times)), np.nan)
     for i in range(n_active):
@@ -828,8 +825,8 @@ def load_forcing_crossings(
     """Load active (has_glofas=1) crossing points (EPSG:4326) from river_forcing.nc.
 
     decode_times=False: the time unit "hours since simulation start" is not
-    CF-parseable. discharge_variable (e.g. 'bankfull_discharge') is returned
-    as column 'bankfull_q'. May be empty.
+    CF-parseable. discharge_variable (e.g. 'bankfull_discharge_m3s') is returned
+    as column 'bankfull_discharge_m3s'. May be empty.
     """
     with xr.open_dataset(forcing_path, decode_times=False) as ds:
         has_glofas = ds["has_glofas"].values.astype(bool)
@@ -840,12 +837,12 @@ def load_forcing_crossings(
 
     if not has_glofas.any():
         log.warning("No active GloFAS crossings found in river_forcing.nc")
-        cols = {"bankfull_q": []} if discharge_variable else {}
+        cols = {"bankfull_discharge_m3s": []} if discharge_variable else {}
         return gpd.GeoDataFrame(cols, geometry=[], crs="EPSG:4326")
 
     data = {}
     if discharge_variable and q_vals is not None:
-        data["bankfull_q"] = q_vals[has_glofas]
+        data["bankfull_discharge_m3s"] = q_vals[has_glofas]
     if inside_ids is not None:
         data["inside_reach_id"] = inside_ids[has_glofas].astype(str)
     return gpd.GeoDataFrame(
@@ -858,18 +855,18 @@ def load_forcing_crossings(
 def snap_crossings_to_reaches(
     crossings: gpd.GeoDataFrame,
 ) -> dict[str, float]:
-    """Return {reach_id: bankfull_q} per seed reach from crossings' inside_reach_id.
+    """Return {reach_id: bankfull_discharge_m3s} per seed reach from crossings' inside_reach_id.
 
     inside_reach_id is resolved in rule 07 and is empty for crossings that
     failed enters_domain or EVA convergence. Several crossings on one reach
-    keep the largest bankfull_q.
+    keep the largest bankfull_discharge_m3s.
     """
     if crossings.empty:
         return {}
 
-    if "bankfull_q" not in crossings.columns:
+    if "bankfull_discharge_m3s" not in crossings.columns:
         log.warning(
-            "snap_crossings_to_reaches: no 'bankfull_q' column — all crossings discarded"
+            "snap_crossings_to_reaches: no 'bankfull_discharge_m3s' column — all crossings discarded"
         )
         return {}
 
@@ -882,16 +879,39 @@ def snap_crossings_to_reaches(
 
     seed_q: dict[str, float] = {}
     for _, row in crossings.iterrows():
-        rid = _norm_reach_id(str(row.get("inside_reach_id", "") or ""))
-        q = row.get("bankfull_q", np.nan)
-        if not rid or not np.isfinite(float(q)):
+        reach_id = normalize_reach_id(str(row.get("inside_reach_id", "") or ""))
+        q = row.get("bankfull_discharge_m3s", np.nan)
+        if not reach_id or not np.isfinite(float(q)):
             continue
-        existing = seed_q.get(rid)
+        existing = seed_q.get(reach_id)
         if existing is None or float(q) > existing:
-            seed_q[rid] = float(q)
+            seed_q[reach_id] = float(q)
 
     if not seed_q:
         log.warning("No valid seed reaches found from inside_reach_ids")
     else:
         log.info(f"Mapped {len(crossings)} crossing(s) to {len(seed_q)} seed reach(es)")
     return seed_q
+
+
+def seed_discharge_by_reach(
+    river_ds, q: np.ndarray, active: np.ndarray
+) -> dict[str, float]:
+    """Return the largest discharge per seed reach ({reach_id: m3/s}).
+
+    q holds one discharge (m3/s) per active crossing of river_ds, in crossing
+    order. A dataset without inside_reach_id yields no seeds.
+    """
+    inside_ids = (
+        river_ds["inside_reach_id"].values[active]
+        if "inside_reach_id" in river_ds
+        else np.full(active.sum(), "", dtype=object)
+    )
+    crossings = gpd.GeoDataFrame(
+        {"bankfull_discharge_m3s": q, "inside_reach_id": inside_ids},
+        geometry=gpd.points_from_xy(
+            river_ds["longitude"].values[active], river_ds["latitude"].values[active]
+        ),
+        crs="EPSG:4326",
+    )
+    return snap_crossings_to_reaches(crossings)

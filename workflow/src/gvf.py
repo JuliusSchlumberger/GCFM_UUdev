@@ -18,6 +18,7 @@ from shapely.geometry import LineString, Point
 from shapely.ops import substring
 from src.gvf_solver import GvfProblem, GvfResult, invert_bed, slot_diagnostics
 from src.gvf_target import NODE_INVERT, NODE_NO_FLOW, GvfTargets, build_gvf_targets
+from src.io import require_keys
 from src.river_network import normalize_reach_id
 
 log = logging.getLogger(__name__)
@@ -29,19 +30,15 @@ def mean_seed_discharge(river_ds, active: np.ndarray) -> dict[str, float]:
     active: crossings that inject discharge (``has_glofas`` and not a seed that
     flows out, see src.river_network.outflow_crossing_mask).
     """
-    from src.river_forcing import snap_crossings_to_reaches
+    from src.river_forcing import seed_discharge_by_reach
 
-    crossings = gpd.GeoDataFrame(
-        {
-            "bankfull_q": river_ds["mean_discharge"].values[active],
-            "inside_reach_id": river_ds["inside_reach_id"].values[active],
-        },
-        geometry=gpd.points_from_xy(
-            river_ds["longitude"].values[active], river_ds["latitude"].values[active]
-        ),
-        crs="EPSG:4326",
+    if "inside_reach_id" not in river_ds:
+        raise KeyError(
+            "river_forcing dataset has no 'inside_reach_id' (written by rule 07)"
+        )
+    return seed_discharge_by_reach(
+        river_ds, river_ds["mean_discharge_m3s"].values[active], active
     )
-    return snap_crossings_to_reaches(crossings)
 
 
 def geoid_offset_at(
@@ -79,6 +76,7 @@ def run_gvf(
     sea_level_m: float,
     gebco_floor_m: float,
     outflow_reaches: set[str],
+    manning_n: float,
     cfg: dict,
 ) -> GvfRun:
     """Build the GVF target and invert the bed.
@@ -88,9 +86,10 @@ def run_gvf(
         datum_offset_m: Per reach (``rivers_m`` order), N_EGM2008 - N_GOCO06s.
         sample_sea_fraction: Callable (x, y, width) -> sea-class fraction.
         sample_dem: Callable (x, y) -> merged (unconditioned) DEM.
-        sea_level_m: Mean sea level in the model datum (``baseline_m``).
+        sea_level_m: Mean sea level in the model datum (``calm_sea_level_m``).
         gebco_floor_m: Lowest level of the clamped GEBCO bathymetry.
         outflow_reaches: Reaches flagged ``is_delta_outflow``; never a sea mouth.
+        manning_n: Channel Manning n (``river_processing.channel_manning_n``).
         cfg: The ``river_depth_modelling.gvf`` config block.
 
     A network end is a sea mouth unless it is a free outflow, and only if its
@@ -98,6 +97,26 @@ def run_gvf(
     ``mouth_level_tol_m`` of ``sea_level_m``; other ends keep their target
     level.
     """
+    where = "river_processing.river_depth_modelling.gvf"
+    require_keys(
+        cfg,
+        (
+            "mouth_level_tol_m",
+            "froude_cap",
+            "q_min_m3s",
+            "h_min_m",
+            "h_max_m",
+            "nudging",
+            "least_squares",
+        ),
+        where,
+    )
+    nud = cfg["nudging"]
+    ls = cfg["least_squares"]
+    require_keys(nud, ("alpha", "passes"), f"{where}.nudging")
+    require_keys(
+        ls, ("apply", "rmse_tol_m", "rho_m", "prior_weight_m"), f"{where}.least_squares"
+    )
     targets = build_gvf_targets(
         rivers_m,
         reach_q,
@@ -108,7 +127,7 @@ def run_gvf(
         cfg,
     )
     net = targets.net
-    tol = float(cfg.get("mouth_level_tol_m", 0.5))
+    tol = float(cfg["mouth_level_tol_m"])
     mouths: set[str] = set()
     for r in net.reach_ids:
         if net.downstream[r]:
@@ -128,24 +147,22 @@ def run_gvf(
 
     problem = GvfProblem(
         targets,
-        n=float(cfg["manning_channel"]),
+        manning_n=float(manning_n),
         sea_level_m=sea_level_m,
         mouth_reaches=mouths,
-        froude_cap=float(cfg.get("froude_cap", 0.95)),
-        q_min_m3s=float(cfg.get("q_min_m3s", 1.0)),
+        froude_cap=float(cfg["froude_cap"]),
+        q_min_m3s=float(cfg["q_min_m3s"]),
     )
-    ls = cfg.get("least_squares") or {}
-    nud = cfg.get("nudging") or {}
     result = invert_bed(
         problem,
-        h_min=float(cfg.get("h_min_m", 0.5)),
-        h_max=float(cfg.get("h_max_m", 30.0)),
-        nudging_alpha=float(nud.get("alpha", 1.0)),
-        nudging_passes=int(nud.get("passes", 3)),
-        lsq_apply=str(ls.get("apply", "all")),
-        rmse_tol_m=float(ls.get("rmse_tol_m", 0.10)),
-        rho_m=float(ls.get("rho_m", 0.05)),
-        prior_weight_m=float(ls.get("prior_weight_m", 0.05)),
+        h_min_m=float(cfg["h_min_m"]),
+        h_max_m=float(cfg["h_max_m"]),
+        nudging_alpha=float(nud["alpha"]),
+        nudging_passes=int(nud["passes"]),
+        lsq_apply=str(ls["apply"]),
+        rmse_tol_m=float(ls["rmse_tol_m"]),
+        rho_m=float(ls["rho_m"]),
+        prior_weight_m=float(ls["prior_weight_m"]),
     )
     diag = slot_diagnostics(problem, result)
     inv = diag["node_class"] == NODE_INVERT
@@ -172,11 +189,11 @@ def values_at_points(
     """
     net = run.targets.net
     out = np.full(len(x), np.nan)
-    rids = np.array([normalize_reach_id(r) for r in reach_ids], dtype=object)
-    for r in set(rids):
+    norm_reach_ids = np.array([normalize_reach_id(r) for r in reach_ids], dtype=object)
+    for r in set(norm_reach_ids):
         if r not in net.reach_line:
             continue
-        idx = np.flatnonzero(rids == r)
+        idx = np.flatnonzero(norm_reach_ids == r)
         line = net.reach_line[r]
         ch = np.array([line.project(Point(float(x[i]), float(y[i]))) for i in idx])
         out[idx] = np.interp(ch, net.reach_chainage[r], per_slot[net.reach_slots[r]])

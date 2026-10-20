@@ -11,11 +11,14 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
-from rasterio.mask import mask as rio_mask
 from rasterio.merge import merge as rio_merge
+from rasterio.transform import Affine
+from scipy import ndimage
 from shapely.geometry import box
 
 log = logging.getLogger(__name__)
+
+FLOAT_NODATA = -9999.0  # nodata of every float32 raster the pipeline writes
 
 
 def reproject_nan_aware(
@@ -96,6 +99,83 @@ def find_fathomdem_tiles(
     return tiles
 
 
+def merge_tiles(
+    tile_paths: list[str],
+    bounds: tuple[float, float, float, float],
+) -> tuple[np.ndarray, Affine, dict]:
+    """Merge raster tiles clipped to WGS84 bounds on the tiles' own pixel lattice.
+
+    Returns the (band, row, col) array, its transform and the first tile's
+    profile updated to the merged shape. Raises FileNotFoundError if
+    tile_paths is empty.
+    """
+    if not tile_paths:
+        raise FileNotFoundError("No raster tiles provided for merging")
+    open_ds = [rasterio.open(p) for p in tile_paths]
+    try:
+        dtype = open_ds[0].dtypes[0]
+        src_nodata = open_ds[0].nodata
+        # rasterio checks nodata with np.can_cast(float64 -> dtype, "safe"), which
+        # warns spuriously for float32 even when the value round-trips exactly.
+        merge_nodata = (
+            np.dtype(dtype).type(src_nodata) if src_nodata is not None else None
+        )
+        # Keep the tiles' own pixel lattice; with bare bounds rasterio resamples
+        # onto a grid starting at the bounds' corner, shifting data by up to half
+        # a pixel.
+        merged, transform = rio_merge(
+            open_ds,
+            bounds=bounds,
+            dtype=dtype,
+            nodata=merge_nodata,
+            target_aligned_pixels=True,
+        )
+        meta = open_ds[0].meta.copy()
+    finally:
+        for ds in open_ds:
+            ds.close()
+    meta.update(
+        {
+            "height": merged.shape[1],
+            "width": merged.shape[2],
+            "transform": transform,
+        }
+    )
+    return merged, transform, meta
+
+
+def latlon_dims(obj) -> tuple[str, str]:
+    """Return the (lat, lon) dimension names: the first dims containing "lat"/"lon".
+
+    Case-insensitive; raises StopIteration when either is missing.
+    """
+    lat_dim = next(d for d in obj.dims if "lat" in d.lower())
+    lon_dim = next(d for d in obj.dims if "lon" in d.lower())
+    return lat_dim, lon_dim
+
+
+def read_on_grid(
+    path: str | Path,
+    shape: tuple[int, int],
+    transform: Affine | None = None,
+) -> np.ndarray:
+    """Read band 1 of a raster that must be pixel-identical to the model grid.
+
+    Raises ValueError when the shape differs, or the transform when given.
+    """
+    with rasterio.open(path) as src:
+        arr, arr_transform = src.read(1), src.transform
+    if tuple(arr.shape) != tuple(shape) or (
+        transform is not None
+        and not arr_transform.almost_equals(transform, precision=1e-6)
+    ):
+        raise ValueError(
+            f"{Path(path).name} shape {arr.shape} does not match the model grid "
+            f"{tuple(shape)} -- expected pixel-identical grids."
+        )
+    return arr
+
+
 def merge_tiled_raster(
     tile_paths: list[str],
     bounds: tuple[float, float, float, float],
@@ -108,32 +188,7 @@ def merge_tiled_raster(
     if not tile_paths:
         raise FileNotFoundError("No raster tiles provided for merging")
     log.info(f"Merging {len(tile_paths)} tile(s)")
-    open_ds = [rasterio.open(p) for p in tile_paths]
-    dtype = open_ds[0].dtypes[0]
-    src_nodata = open_ds[0].nodata
-    # rasterio checks nodata with np.can_cast(float64 -> dtype, "safe"), which
-    # warns spuriously for float32 even when the value round-trips exactly.
-    merge_nodata = np.dtype(dtype).type(src_nodata) if src_nodata is not None else None
-    # Keep the tiles' own pixel lattice; with bare bounds rasterio resamples
-    # onto a grid starting at the bounds' corner, shifting data by up to half
-    # a pixel.
-    merged, transform = rio_merge(
-        open_ds,
-        bounds=bounds,
-        dtype=dtype,
-        nodata=merge_nodata,
-        target_aligned_pixels=True,
-    )
-    meta = open_ds[0].meta.copy()
-    meta.update(
-        {
-            "height": merged.shape[1],
-            "width": merged.shape[2],
-            "transform": transform,
-        }
-    )
-    for ds in open_ds:
-        ds.close()
+    merged, _, meta = merge_tiles(tile_paths, bounds)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out_path, "w", **meta) as dst:
         dst.write(merged)
@@ -158,6 +213,7 @@ def vectorize_land_from_landuse(
     from rasterio.features import shapes as rio_shapes
     from rasterio.windows import from_bounds
     from shapely.geometry import shape as shapely_shape
+    from src.landuse import LANDUSE_SEA_CODE
 
     with rasterio.open(landuse_path) as src:
         window = from_bounds(*wgs84_bounds, transform=src.transform)
@@ -178,7 +234,7 @@ def vectorize_land_from_landuse(
             f"{factor} (mode) to {out_shape[1]}x{out_shape[0]} px before tracing"
         )
 
-    land_bool = lu_arr != 200
+    land_bool = lu_arr != LANDUSE_SEA_CODE
     if nodata is not None:
         land_bool &= lu_arr != nodata
     land_bool_u8 = land_bool.astype(np.uint8)
@@ -203,11 +259,12 @@ def vectorize_land_mask_on_grid(landuse_on_grid_path: str | Path):
     import geopandas as gpd
     from rasterio.features import shapes as rio_shapes
     from shapely.geometry import shape as shapely_shape
+    from src.landuse import LANDUSE_SEA_CODE
 
     with rasterio.open(landuse_on_grid_path) as src:
         lu_arr = src.read(1)
         transform, crs, nodata = src.transform, src.crs, src.nodata
-    land = lu_arr != 200
+    land = lu_arr != LANDUSE_SEA_CODE
     if nodata is not None:
         land &= lu_arr != nodata
     land_u8 = land.astype(np.uint8)
@@ -219,7 +276,7 @@ def vectorize_land_mask_on_grid(landuse_on_grid_path: str | Path):
     return gpd.GeoDataFrame(geometry=geoms, crs=crs).to_crs("EPSG:4326")
 
 
-def restrict_waterlevel_boundary_to_sea(
+def restrict_water_level_boundary_to_sea(
     mask: np.ndarray, landuse_on_grid: np.ndarray
 ) -> tuple[np.ndarray, int]:
     """Turn water-level boundary cells (mask == 2) not on grid sea (200) into active cells (1).
@@ -230,92 +287,44 @@ def restrict_waterlevel_boundary_to_sea(
     raster and can disagree with the grid's land/sea split at the domain edge.
     Returns (new_mask, n_cells_moved_off_the_boundary).
     """
+    # Function-level: src.landuse imports src.raster.
+    from src.landuse import LANDUSE_SEA_CODE
+
     if mask.shape != landuse_on_grid.shape:
         raise ValueError(
             f"mask {mask.shape} and landuse_on_grid {landuse_on_grid.shape} are not the same grid"
         )
-    on_land = (mask == 2) & (landuse_on_grid != 200)
+    on_land = (mask == 2) & (landuse_on_grid != LANDUSE_SEA_CODE)
     out = mask.copy()
     out[on_land] = 1
     return out, int(on_land.sum())
 
 
-def reproject_to_reference_grid(
-    src_path: str | Path,
-    wgs84_bounds: tuple[float, float, float, float],
-    ref_meta: dict,
-    resampling=None,
-) -> tuple[np.ndarray, dict]:
-    """Clip a global raster to wgs84_bounds and reproject it onto ref_meta's grid.
+def dry_isolated_sea_cells(
+    zsini: np.ndarray, dep: np.ndarray, dep_nodata: float, calm_sea_level_m: float
+) -> tuple[np.ndarray, int]:
+    """Start sea cells outside the open ocean dry at bed level; return (zsini, n_dried).
 
-    ref_meta needs 'height', 'width', 'transform', 'crs'. resampling defaults
-    to nearest, so categorical land-use codes are never blended. Aligning
-    landuse (and roughness) with elevation_merged.tif/sea_mask.tif keeps one
-    land/sea split (landuse == 200) for all consumers. Returns (data, out_meta)
-    with the source dtype/nodata and a GeoTIFF meta dict.
+    Sea cells are those at ``calm_sea_level_m`` in ``zsini`` (NaN elsewhere). The open
+    ocean is the largest 4-connected sea component: domains are polygon clips in
+    a NaN-padded raster, so an edge-touching rule fails. Cells of other components
+    with dep < calm_sea_level_m would hold trapped water and are set to dep instead.
     """
-    from rasterio.warp import Resampling as _RS
-    from rasterio.warp import reproject as _rp
-
-    resampling = resampling if resampling is not None else _RS.nearest
-
-    with rasterio.open(src_path) as src:
-        src_nodata = src.nodata
-        src_dtype = src.dtypes[0]
-        src_crs = src.crs
-        geom = [box(*wgs84_bounds).__geo_interface__]
-        clipped, clipped_transform = rio_mask(src, geom, crop=True, all_touched=True)
-
-    fill = src_nodata if src_nodata is not None else 0
-    dst = np.full((ref_meta["height"], ref_meta["width"]), fill, dtype=src_dtype)
-    _rp(
-        source=clipped[0],
-        destination=dst,
-        src_transform=clipped_transform,
-        src_crs=src_crs,
-        dst_transform=ref_meta["transform"],
-        dst_crs=ref_meta["crs"],
-        src_nodata=src_nodata,
-        dst_nodata=src_nodata,
-        resampling=resampling,
-    )
-
-    out_meta = {
-        "driver": "GTiff",
-        "dtype": src_dtype,
-        "count": 1,
-        "height": ref_meta["height"],
-        "width": ref_meta["width"],
-        "crs": ref_meta["crs"],
-        "transform": ref_meta["transform"],
-        "nodata": src_nodata,
-    }
-    return dst, out_meta
-
-
-def clip_ocean_from_topo(
-    topo_utm: np.ndarray,
-    mask_path: str | Path,
-    wgs84_bounds: tuple[float, float, float, float],
-    ref_meta: dict,
-    ocean_value: int = 1,
-) -> tuple[np.ndarray, int, np.ndarray]:
-    """Set FathomDEM pixels to NaN where the DeltaDTM mask marks ocean.
-
-    FathomDEM is terrestrial and reports spurious near-zero elevation over open
-    water well past the coastline; NaN there lets the FathomDEM/GEBCO merge fall
-    back to GEBCO bathymetry. Only ocean_value (default 1) is ocean: classes
-    0, 2, 3 are land, and mask nodata (no DeltaDTM coverage) is not reliably
-    ocean (see ``deltadtm_mask`` in data_catalogue.yml). topo_utm is on the UTM
-    working grid of ref_meta and is not modified in place. Returns
-    (topo_clipped, n_clipped, ocean) with n_clipped counting formerly valid pixels.
-    """
-    mask_utm, _ = reproject_to_reference_grid(mask_path, wgs84_bounds, ref_meta)
-    ocean = mask_utm == ocean_value
-    topo_clipped = topo_utm.copy()
-    n_clipped = int((ocean & ~np.isnan(topo_clipped)).sum())
-    topo_clipped[ocean] = np.nan
-    return topo_clipped, n_clipped, ocean
+    dep = dep.astype(np.float32)
+    dep_valid = np.where(np.isclose(dep, np.float32(dep_nodata)), np.float32(1e6), dep)
+    sea = np.isclose(zsini, np.float32(calm_sea_level_m))
+    labeled, n_components = ndimage.label(sea)
+    if n_components > 0:
+        sizes = np.bincount(labeled.ravel())
+        sizes[0] = 0
+        connected = labeled == int(np.argmax(sizes))
+    else:
+        connected = np.zeros_like(sea)
+    isolated_wet = sea & ~connected & (dep_valid < np.float32(calm_sea_level_m))
+    n_dried = int(isolated_wet.sum())
+    if n_dried > 0:
+        zsini = np.where(isolated_wet, dep_valid, zsini)
+    return zsini, n_dried
 
 
 def open_water_mask(
@@ -423,8 +432,7 @@ def compute_geoid_offset_arr(
     da_egm = grid_egm.to_xarray()
     offset = (da_egm.values - da_goco.values).astype(np.float32)
 
-    lat_dim = next(d for d in da_goco.dims if "lat" in d.lower())
-    lon_dim = next(d for d in da_goco.dims if "lon" in d.lower())
+    lat_dim, lon_dim = latlon_dims(da_goco)
     lats = da_goco[lat_dim].values
     lons = da_goco[lon_dim].values
     half = len(lons) // 2

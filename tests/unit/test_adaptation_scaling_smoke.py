@@ -6,8 +6,9 @@ import geopandas as gpd
 import numpy as np
 import pytest
 import xarray as xr
-from shapely.geometry import LineString
-from src.adaptation_scaling import read_weir_file, resolve_forcing_params
+from shapely.geometry import LineString, MultiLineString, Polygon
+from src.adaptation_scaling import read_polyline, resolve_forcing_params
+from src.sfincs_run import read_weir_file
 
 CRS = "EPSG:32631"
 LOG = logging.getLogger("test")
@@ -90,7 +91,7 @@ def test_read_weir_file_one_row_per_segment_with_max_crest(baseline):
 
 @pytest.mark.parametrize(
     ("kind", "base"),
-    [("max_coastal_waterlevel", BZS_MAX), ("max_discharge", DIS_MAX)],
+    [("max_coastal_water_level", BZS_MAX), ("max_discharge", DIS_MAX)],
 )
 def test_scale_one_reproduces_baseline_peak_and_scaling_is_monotonic(
     baseline, kind, base
@@ -102,10 +103,10 @@ def test_scale_one_reproduces_baseline_peak_and_scaling_is_monotonic(
 
 
 def test_river_waterlevel_uses_cells_along_polyline_and_drops_first_step(baseline):
-    v = _resolve("max_river_waterlevel", 1.0, baseline, locations="levee.geojson")
+    v = _resolve("max_river_water_level", 1.0, baseline, locations="levee.geojson")
     assert v == pytest.approx(1.7)
     assert (
-        _resolve("max_river_waterlevel", 0.4, baseline, locations="levee.geojson") <= v
+        _resolve("max_river_water_level", 0.4, baseline, locations="levee.geojson") <= v
     )
 
 
@@ -132,3 +133,36 @@ def test_missing_baseline_forcing_file_is_reported(baseline):
     (baseline["baseline_sfincs_root"] / "sfincs.dis").unlink()
     with pytest.raises(FileNotFoundError, match="sfincs.dis"):
         _resolve("max_discharge", 1.0, baseline)
+
+
+def test_read_polyline_drops_empty_explodes_multi_and_reprojects():
+    gdf = gpd.GeoDataFrame(
+        geometry=[
+            LineString([(0, 0), (1, 0)]),
+            None,
+            LineString(),
+            MultiLineString([[(0, 1), (1, 1)], [(0, 2), (1, 2)]]),
+        ],
+        crs="EPSG:32631",
+    )
+    out = read_polyline(gdf, "EPSG:4326")
+    assert len(out) == 3
+    assert out.geometry.type.eq("LineString").all()
+    assert out.crs == "EPSG:4326"
+    assert list(out.columns) == ["geometry"]
+
+
+def test_read_polyline_requires_crs():
+    with pytest.raises(ValueError, match="has no CRS"):
+        read_polyline(
+            gpd.GeoDataFrame(geometry=[LineString([(0, 0), (1, 0)])]), "EPSG:32631"
+        )
+
+
+def test_read_polyline_rejects_polygons(tmp_path):
+    path = tmp_path / "area.geojson"
+    gpd.GeoDataFrame(
+        geometry=[Polygon([(0, 0), (1, 0), (1, 1)])], crs="EPSG:32631"
+    ).to_file(path)
+    with pytest.raises(ValueError, match="LineString"):
+        read_polyline(path, "EPSG:32631")

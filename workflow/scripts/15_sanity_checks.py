@@ -11,17 +11,15 @@ from pathlib import Path
 from typing import cast
 
 import geopandas as gpd
-import numpy as np
 from shapely.geometry import Polygon
 
 from src.log import setup_logging
 from src.plots import animate_flood_progression, plot_inundation_check
-from src.postprocessing import compute_flood_progression, compute_max_inundation
+from src.postprocessing import compute_flood_progression, compute_max_inundation, inundation_stats
 
 log = setup_logging(snakemake.log[0])
 
 # ── inputs / params ──
-sfincs_map_nc_path = Path(snakemake.input.sfincs_map_nc)
 sea_mask_path      = Path(snakemake.input.sea_mask)
 land_polygons_path = Path(snakemake.input.land_mask_on_grid)  # plot background
 river_network_path = Path(snakemake.input.clean_river_network)
@@ -43,69 +41,51 @@ plot_out_path.parent.mkdir(parents=True, exist_ok=True)
 basin_id   = spin_up_root.parent.name
 spinup_dir = spin_up_root
 
-# ── guard: empty sentinel from rule 14 ──
-if sfincs_map_nc_path.stat().st_size == 0:
-    log.warning(f"{sfincs_map_nc_path} is empty — SFINCS produced no map output; skipping")
-    plot_out_path.touch()
-else:
-    # The subgrid reference raster lives in skeleton_root; spin_up only
-    # references it by relative path.
-    da_hmax, da_dep = compute_max_inundation(
-        spinup_dir, skeleton_root, sea_mask_path,
-        hmin=threshold_m,
-    )
+# The subgrid reference raster lives in skeleton_root; spin_up only
+# references it by relative path.
+da_hmax, da_dep = compute_max_inundation(
+    spinup_dir, skeleton_root, sea_mask_path,
+    hmin=threshold_m,
+)
+if da_hmax is None or da_dep is None:
+    raise RuntimeError(f"No 'zsmax' or bed level in the SFINCS spin-up output of {spinup_dir}")
+log.info(f"da_hmax shape: {da_hmax.shape}")
 
-    if da_hmax is None or da_dep is None:
-        log.warning("Could not compute max inundation depth (missing 'zsmax' or bed level) — skipping")
-        plot_out_path.touch()
-    else:
-        log.info(f"da_hmax shape: {da_hmax.shape}")
+_stats    = inundation_stats(da_hmax, da_dep)
+n_land    = _stats["n_land"]
+n_flooded = _stats["n_flooded"]
+frac      = _stats["frac"]
+flooded_km2 = _stats["flooded_km2"]
+land_km2    = _stats["land_km2"]
 
-        n_land    = int(da_dep.notnull().sum().item())
-        n_flooded = int(da_hmax.notnull().sum().item())
-        frac      = n_flooded / n_land if n_land > 0 else 0.0
+log.info(
+    f"[Check 1] Inundation ratio  hmin={threshold_m} m  "
+    f"flooded={n_flooded:,}/{n_land:,} pixels ({frac:.2%})  "
+    f"area={flooded_km2:.1f}/{land_km2:.1f} km²"
+)
 
-        try:
-            res = abs(da_dep.raster.res[0] * da_dep.raster.res[1])  # rotation-aware
-        except Exception:
-            res = np.nan
-        flooded_km2 = n_flooded * res / 1e6
-        land_km2    = n_land    * res / 1e6
-
-        log.info(
-            f"[Check 1] Inundation ratio  hmin={threshold_m} m  "
-            f"flooded={n_flooded:,}/{n_land:,} pixels ({frac:.2%})  "
-            f"area={flooded_km2:.1f}/{land_km2:.1f} km²"
-        )
-
-        plot_inundation_check(
-            da_hmax, threshold_m, n_flooded, n_land,
-            str(land_polygons_path), str(river_network_path),
-            str(plot_out_path), basin_id=basin_id,
-        )
-        log.info(f"Inundation ratio plot written: {plot_out_path}")
+plot_inundation_check(
+    da_hmax, threshold_m, n_flooded, n_land,
+    str(land_polygons_path), str(river_network_path),
+    str(plot_out_path), basin_id=basin_id,
+)
+log.info(f"Inundation ratio plot written: {plot_out_path}")
 
 # ── animation: flood progression ──
-# Needs zs in sfincs_map.nc (finite dtmapout in the spin-up inp); None otherwise.
+# Needs zs in sfincs_map.nc (finite dtmapout in the spin-up inp).
 animation_out_path.parent.mkdir(parents=True, exist_ok=True)
-if sfincs_map_nc_path.stat().st_size == 0:
-    log.warning("sfincs_map.nc is empty — skipping flood animation")
-    animation_out_path.touch()
-else:
-    da_h = compute_flood_progression(spinup_dir, sea_mask_path)
-    if da_h is None:
-        log.warning(
-            "compute_flood_progression returned None (no 'zs' in sfincs_map.nc) — "
-            "re-run rule 14 to regenerate with dtmapout enabled"
-        )
-        animation_out_path.touch()
-    else:
-        animate_flood_progression(
-            da_h, domain_poly,
-            str(land_polygons_path), str(river_network_path),
-            str(animation_out_path),
-            basin_id=basin_id,
-            run_label="spinup",
-            fps=animation_fps,
-        )
-        log.info(f"Flood animation written: {animation_out_path}")
+da_h = compute_flood_progression(spinup_dir, sea_mask_path)
+if da_h is None:
+    raise RuntimeError(
+        f"No 'zs' or 'zb' in the SFINCS spin-up output of {spinup_dir}; "
+        f"rule 14 must run with dtmapout enabled"
+    )
+animate_flood_progression(
+    da_h, domain_poly,
+    str(land_polygons_path), str(river_network_path),
+    str(animation_out_path),
+    basin_id=basin_id,
+    run_label="spinup",
+    fps=animation_fps,
+)
+log.info(f"Flood animation written: {animation_out_path}")

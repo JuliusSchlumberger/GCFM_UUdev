@@ -32,10 +32,10 @@ N = 0.03
 def _reaches(spec: dict[str, dict]) -> gpd.GeoDataFrame:
     """Reaches from {id: {"xy": [(x, y), ...], "dn": [...], "wse": .., "width": ..}}."""
     rows = []
-    for rid, s in spec.items():
+    for reach_id, s in spec.items():
         rows.append(
             {
-                "reach_id": rid,
+                "reach_id": reach_id,
                 "rch_id_dn": "[" + ", ".join(s.get("dn", [])) + "]",
                 "width": float(s.get("width", 100.0)),
                 "wse": float(s.get("wse", 0.0)),
@@ -290,9 +290,9 @@ def test_orient_downstream_reverses_upstream_lines():
     assert out.geometry.iloc[1].coords[0] == (10000.0, 0.0)
 
 
-def test_target_builder_monotone_single_junction_value_and_datum():
+def test_target_builder_monotone_single_junction_value_and_datum(gvf_cfg):
     rivers = _reaches(_chain_spec())
-    cfg = {"node_spacing_m": 500, "target_smoothing_m": 3000}
+    cfg = gvf_cfg
     t0 = build_gvf_targets(
         rivers,
         {"1": 100.0, "2": 100.0, "3": 60.0, "4": 40.0},

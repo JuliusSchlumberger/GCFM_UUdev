@@ -5,6 +5,7 @@ from pathlib import Path
 import geopandas as gpd
 
 from src.domain import load_domain
+from src.io import require_keys
 from src.log import setup_logging
 from src.profiling import ScriptProfiler
 from src.river_forcing import load_forcing_crossings, snap_crossings_to_reaches
@@ -19,17 +20,10 @@ from src.river_network import (
     fix_tjunction_tails,
     identify_delta_outflow_points,
     normalize_channel_widths,
+    normalize_reach_id,
     outward_seed_reaches,
     remove_reaches_with_missing_width,
 )
-
-
-def _norm_id(x):
-    try:
-        return str(int(float(x)))
-    except (ValueError, TypeError):
-        s = str(x).strip()
-        return s if s else None
 
 log = setup_logging(snakemake.log[0])
 
@@ -70,9 +64,9 @@ log.info(f"Main-path traversal: {len(reachable)} reachable reaches out of {len(r
 
 # Filter
 
-rivers_clean = rivers[rivers["reach_id"].map(_norm_id).isin(reachable)].copy()
+rivers_clean = rivers[rivers["reach_id"].map(normalize_reach_id).isin(reachable)].copy()
 rivers_clean["linked_to_source"] = True
-rivers_clean["is_seed"] = rivers_clean["reach_id"].map(_norm_id).isin(set(seed_q.keys()))
+rivers_clean["is_seed"] = rivers_clean["reach_id"].map(normalize_reach_id).isin(set(seed_q.keys()))
 log.info(f"Retained {len(rivers_clean)}/{len(rivers)} reaches")
 
 # A seed reach fed from upstream reaches INSIDE the network is a branch SWORD
@@ -84,10 +78,10 @@ log.info(f"Retained {len(rivers_clean)}/{len(rivers)} reaches")
 _outward = outward_seed_reaches(
     rivers_clean, seed_q.keys(), build_downstream_adjacency(rivers_clean)
 )
-rivers_clean["seed_flows_out"] = rivers_clean["reach_id"].map(_norm_id).isin(_outward)
+rivers_clean["seed_flows_out"] = rivers_clean["reach_id"].map(normalize_reach_id).isin(_outward)
 if _outward:
     rivers_clean.loc[rivers_clean["seed_flows_out"], "is_seed"] = False
-    seed_q = {k: v for k, v in seed_q.items() if _norm_id(k) not in _outward}
+    seed_q = {k: v for k, v in seed_q.items() if normalize_reach_id(k) not in _outward}
     log.warning(
         f"Seed reach(es) fed from upstream reaches in the network, treated as outflow "
         f"(no inflow, free-outflow boundary): {sorted(_outward)}"
@@ -146,13 +140,14 @@ rivers_clean = enforce_mouth_width_monotonic(rivers_clean)
 # bifurcation; stored as 'zero_discharge_share' so rule 10 excludes the same arms.
 adjacency = build_downstream_adjacency(rivers_clean)
 _canal_cfg = dict(snakemake.params.canal_routing)
+require_keys(_canal_cfg, ("auto", "force_exclude", "force_include"), "river_processing.canal_routing")
 _excluded = canal_excluded_arms(
     rivers_clean, adjacency,
-    force_exclude=_canal_cfg.get("force_exclude") or [],
-    force_include=_canal_cfg.get("force_include") or [],
-    auto=bool(_canal_cfg.get("auto", True)),
+    force_exclude=_canal_cfg["force_exclude"] or [],
+    force_include=_canal_cfg["force_include"] or [],
+    auto=bool(_canal_cfg["auto"]),
 )
-rivers_clean["zero_discharge_share"] = rivers_clean["reach_id"].map(_norm_id).isin(_excluded)
+rivers_clean["zero_discharge_share"] = rivers_clean["reach_id"].map(normalize_reach_id).isin(_excluded)
 q_acc = accumulate_discharge(rivers_clean, seed_q, adjacency, excluded_arms=_excluded)
 rivers_clean["bankfull_discharge_acc"] = q_acc
 log.info(

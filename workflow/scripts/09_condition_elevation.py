@@ -14,6 +14,7 @@ from rasterio.warp import reproject
 from src.grid import load_grid_def
 from src.log import setup_logging
 from src.profiling import ScriptProfiler
+from src.raster import FLOAT_NODATA
 from src.river_conditioning import enforce_river_monotonicity
 
 log = setup_logging(snakemake.log[0])
@@ -21,7 +22,7 @@ profiler = ScriptProfiler(snakemake)
 enforce_river_monotonicity = profiler.wrap(enforce_river_monotonicity)
 
 # Conditioning reads topology/width only (reach_id, rch_id_dn, is_seed, width),
-# never rivdph, so it does not depend on depth estimation.
+# never river_depth_m, so it does not depend on depth estimation.
 
 rivers = gpd.read_file(snakemake.input.river_network)
 log.info(f"Loaded {len(rivers)} reaches from river_network_clean.gpkg")
@@ -55,7 +56,7 @@ with rasterio.open(snakemake.output.elevation_conditioned) as src:
     src_arr = src.read(1)
     src_transform = src.transform
     src_crs = src.crs
-    src_nodata = src.nodata if src.nodata is not None else -9999.0
+    src_nodata = src.nodata if src.nodata is not None else FLOAT_NODATA
     src_bounds = rasterio.transform.array_bounds(src.height, src.width, src_transform)
 
 # Cover the full native elevation extent, snapped to the grid phase, not just

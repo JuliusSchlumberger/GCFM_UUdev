@@ -35,7 +35,7 @@ rule build_sfincs_skeleton:
         roughness_on_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness_on_grid.tif"),
         # zsini's only source, on this model's grid; no reprojection.
         zsini_sea_cells   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
-        # Only baseline_m/coastal_protection_crest_m and bankfull_discharge/
+        # Only calm_sea_level_m/coastal_protection_crest_m and bankfull_discharge_m3s/
         # has_glofas (observation points); no forcing timeseries.
         surge_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         river_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
@@ -51,7 +51,7 @@ rule build_sfincs_skeleton:
         plot_roughness = results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/04_roughness.png"),
         plot_coastal_protection_weir = results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/07_coastal_protection_weir.png"),
     params:
-        resolution         = lambda wildcards: grid_resolution_m(wildcards.basin_id),
+        resolution_m       = lambda wildcards: grid_resolution_m(wildcards.basin_id),
         nr_subgrid_pixels  = config["sfincs"]["subgrid"]["nr_subgrid_pixels"],
         nr_levels          = config["sfincs"]["subgrid"]["nr_levels"],
         nrmax              = config["sfincs"]["subgrid"]["nrmax"],

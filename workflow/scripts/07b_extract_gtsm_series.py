@@ -27,7 +27,7 @@ if __name__ == "__main__":  # the parallel readers re-import this file
     lons = np.array([s["lon"] for s in stations])
     lats = np.array([s["lat"] for s in stations])
 
-    folders = {"waterlevel": snakemake.params.gtsm_waterlevel_dir, "surge": snakemake.params.gtsm_surge_dir}
+    folders = {"waterlevel": snakemake.params.gtsm_water_level_dir, "surge": snakemake.params.gtsm_surge_dir}
     gtsm_ids, gtsm_lon, gtsm_lat = station_coordinates(folders["surge"])
     idx, match_km = match_stations(lons, lats, gtsm_lon, gtsm_lat, float(snakemake.params.max_match_km))
     log.info(f"{len(stations)} surge station(s) matched to GTSM stations {gtsm_ids[idx].tolist()}")

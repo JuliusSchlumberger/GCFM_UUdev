@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from matplotlib.figure import Figure
+from src.plots import save_figure
 
 
 @dataclass(frozen=True)
@@ -192,5 +193,5 @@ def render(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{stage}_{scenario}.png"
-    fig.savefig(path, dpi=80)
+    save_figure(fig, path, dpi=80)
     return path

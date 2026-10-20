@@ -1,7 +1,7 @@
 """Compare per-station design storm tide per RP with the built coastal weir crest.
 
 Basin-level, needs no scenario run. Storm tide comes from surge_forcing.nc's
-COAST-RP table via src.surge.lookup_storm_tide_at_rp, as a scenario's surge_rp
+COAST-RP table via src.surge.lookup_storm_tide_at_rp, as a scenario's surge_rp_yr
 resolves. coastal_protection_crest_m is the flat per-basin FLOPROS design crest;
 plus freeboard_m, rounded up to 0.1 m, it is the floor of every built weir
 segment. Pure-coastal segments sit at that floor; segments holding back higher
@@ -9,8 +9,8 @@ river water (banks, the mouth) are higher, so the weir's max can be set by
 inland reaches unrelated to surge. Older results layouts are tried as fallbacks.
 
 Usage:
-    conda run -n hmt_sfincs_dev python tests/plot_surge_vs_dike_crest.py [basin_id] [scenario_surge_rp]
-    conda run -n hmt_sfincs_dev python tests/plot_surge_vs_dike_crest.py 2433835 500
+    conda run -n hmt_sfincs_dev python analysis/plot_surge_vs_dike_crest.py [basin_id] [scenario_surge_rp]
+    conda run -n hmt_sfincs_dev python analysis/plot_surge_vs_dike_crest.py 2433835 500
 """
 
 from __future__ import annotations
@@ -28,15 +28,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 import yaml
+from _common import REPO_ROOT, basin_id_from_argv, first_existing  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
+sys.path.insert(0, str(REPO_ROOT / "workflow"))
 from src.surge import ceil_crest, lookup_storm_tide_at_rp
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-BASIN_ID = sys.argv[1] if len(sys.argv) > 1 else "2433835"
+BASIN_ID = basin_id_from_argv()
 SCENARIO_SURGE_RP = float(sys.argv[2]) if len(sys.argv) > 2 else 500.0
 
 with open(REPO_ROOT / "config" / "config.yml") as fh:
@@ -51,16 +51,7 @@ FIGS_DIR.mkdir(parents=True, exist_ok=True)
 basin_dir = RESULTS_DIR / BASIN_ID
 
 
-def _first_existing(candidates: list[Path]) -> Path:
-    for p in candidates:
-        if p.exists():
-            return p
-    raise FileNotFoundError(
-        "None of the candidate paths exist:\n" + "\n".join(f"  {p}" for p in candidates)
-    )
-
-
-surge_forcing_path = _first_existing(
+surge_forcing_path = first_existing(
     [
         basin_dir / "preprocessing_inputs" / "forcing" / "surge_forcing.nc",
         basin_dir / "inputs" / "forcing" / "surge_forcing.nc",
@@ -80,16 +71,16 @@ weir_candidates = (
     + sorted(basin_dir.glob("runs/*/sfincs/*_coastal_protection_weir.gpkg"))
     + sorted(basin_dir.glob("scenarios/*/sfincs/*_coastal_protection_weir.gpkg"))
 )
-weir_path = _first_existing(weir_candidates)
+weir_path = first_existing(weir_candidates)
 log.info(f"coastal_protection_weir.gpkg: {weir_path}")
 
 # surge: per-station storm tide at every COAST-RP tabulated RP
-# surge_forcing.nc's rp_level/baseline_m are MDT-only (SLR is stored as a
+# surge_forcing.nc's storm_tide_at_rp_m/calm_sea_level_m are MDT-only (SLR is stored as a
 # dimensionless slr_fingerprint, see src.surge.apply_slr_fingerprint). The
 # "default" scenario's slr_m from scenarios.yml is applied as
 # 13_build_sfincs.py does at build time.
 surge_ds = xr.open_dataset(surge_forcing_path, decode_times=False)
-table_rps = surge_ds["table_rp"].values.astype(float)
+rps_yr = surge_ds["rp_yr"].values.astype(float)
 n_stations = surge_ds.sizes["station"]
 coastal_protection_crest_raw_m = float(surge_ds["coastal_protection_crest_m"].values)
 # The floor as built (src.protection_weir): + freeboard_m, rounded up to the
@@ -98,14 +89,17 @@ _freeboard_m = float(config["river_processing"]["river_depth_modelling"]["freebo
 coastal_protection_crest_m = float(
     ceil_crest(coastal_protection_crest_raw_m + _freeboard_m)
 )
-baseline_m = float(surge_ds["baseline_m"].values)
+calm_sea_level_m = float(surge_ds["calm_sea_level_m"].values)
 
 slr_cfg = config["boundary_forcings"]["surge"]["slr"]
 default_slr_m = float(SCENARIO_DEFS.get("default", {}).get("slr_m", 0.0))
 effective_slr_m = default_slr_m if slr_cfg["enabled"] else 0.0
 
 levels_by_rp = np.stack(
-    [lookup_storm_tide_at_rp(surge_ds, rp, slr_m=effective_slr_m) for rp in table_rps]
+    [
+        lookup_storm_tide_at_rp(surge_ds, rp_yr, slr_m=effective_slr_m)
+        for rp_yr in rps_yr
+    ]
 )  # (n_rp, n_station)
 rp_min = levels_by_rp.min(axis=1)
 rp_mean = levels_by_rp.mean(axis=1)
@@ -116,18 +110,20 @@ log.info(
     f"coastal crest floor as built: {coastal_protection_crest_m:+.2f} m (FLOPROS design crest "
     f"{coastal_protection_crest_raw_m:+.4f} m, MDT-only, +{_freeboard_m:.2f} m freeboard, rounded up to 0.1 m)"
 )
-log.info(f"baseline_m (mean sea level correction, MDT-only): {baseline_m:+.4f} m")
+log.info(
+    f"calm_sea_level_m (mean sea level correction, MDT-only): {calm_sea_level_m:+.4f} m"
+)
 log.info(
     f"SLR target applied (scenarios.yml 'default' slr_m): "
     f"{effective_slr_m:+.3f} m x per-station fingerprint "
     f"(enabled={slr_cfg['enabled']}) -- levels below already include this"
 )
 log.info("RP (yr)   min      mean     max      (storm tide level, m)")
-for rp, lo, mu, hi in zip(table_rps, rp_min, rp_mean, rp_max):
+for rp_yr, lo, mu, hi in zip(rps_yr, rp_min, rp_mean, rp_max):
     flag = (
         "  <-- exceeds coastal crest floor" if mu > coastal_protection_crest_m else ""
     )
-    log.info(f"{rp:>7.0f}   {lo:+.3f}   {mu:+.3f}   {hi:+.3f}{flag}")
+    log.info(f"{rp_yr:>7.0f}   {lo:+.3f}   {mu:+.3f}   {hi:+.3f}{flag}")
 
 # built weir crest
 weir_gdf = gpd.read_file(weir_path)
@@ -142,14 +138,14 @@ log.info(
 )
 
 # scenario RP under investigation
-if not np.any(np.isclose(table_rps, SCENARIO_SURGE_RP)):
+if not np.any(np.isclose(rps_yr, SCENARIO_SURGE_RP)):
     raise ValueError(
-        f"surge RP {SCENARIO_SURGE_RP} not tabulated in COAST-RP ({table_rps.tolist()})"
+        f"surge RP {SCENARIO_SURGE_RP} not tabulated in COAST-RP ({rps_yr.tolist()})"
     )
-scenario_idx = int(np.nonzero(np.isclose(table_rps, SCENARIO_SURGE_RP))[0][0])
+scenario_idx = int(np.nonzero(np.isclose(rps_yr, SCENARIO_SURGE_RP))[0][0])
 scenario_levels = levels_by_rp[scenario_idx]
 log.info(
-    f"\nAt the scenario's own surge_rp={SCENARIO_SURGE_RP:.0f}: storm tide "
+    f"\nAt the scenario's own surge_rp_yr={SCENARIO_SURGE_RP:.0f}: storm tide "
     f"[{scenario_levels.min():+.3f}, {scenario_levels.max():+.3f}] m "
     f"(mean {scenario_levels.mean():+.3f} m) vs. coastal crest floor "
     f"{coastal_protection_crest_m:+.4f} m -> margin "
@@ -166,7 +162,7 @@ fig, (ax_zoom, ax_ctx) = plt.subplots(
 
 # left panel: zoom on the coastal crest
 ax_zoom.fill_between(
-    table_rps,
+    rps_yr,
     rp_min,
     rp_max,
     color="steelblue",
@@ -174,7 +170,7 @@ ax_zoom.fill_between(
     label="Surge level across stations (min-max)",
 )
 ax_zoom.plot(
-    table_rps,
+    rps_yr,
     rp_mean,
     color="steelblue",
     marker="o",
@@ -195,7 +191,7 @@ ax_zoom.axvline(
     color="darkorange",
     linestyle=":",
     linewidth=1.8,
-    label=f"Scenario surge_rp = {SCENARIO_SURGE_RP:.0f}",
+    label=f"Scenario surge_rp_yr = {SCENARIO_SURGE_RP:.0f}",
 )
 ax_zoom.plot(
     [SCENARIO_SURGE_RP],
@@ -217,8 +213,8 @@ ax_zoom.annotate(
 )
 
 ax_zoom.set_xscale("log")
-ax_zoom.set_xticks(table_rps)
-ax_zoom.set_xticklabels([f"{int(rp)}" for rp in table_rps])
+ax_zoom.set_xticks(rps_yr)
+ax_zoom.set_xticklabels([f"{int(rp_yr)}" for rp_yr in rps_yr])
 _pad = max(0.05, 0.15 * (rp_max.max() - rp_min.min()))
 ax_zoom.set_ylim(
     min(rp_min.min(), coastal_protection_crest_m) - _pad,
