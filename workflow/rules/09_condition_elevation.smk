@@ -44,7 +44,6 @@ rule enforce_river_monotonicity:
         # active-cell mask's elevation ceiling (see enforce_river_monotonicity's
         # own docstring).
         river_elevation_max    = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_elevation_max.json"),
-        plot_conditioning      = results_path("{basin_id}/preprocessing_inputs/visuals/09_condition_elevation.png"),
     log:
         "logs/{basin_id}/09_condition_elevation.log"
     script:

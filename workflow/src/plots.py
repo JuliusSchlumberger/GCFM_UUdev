@@ -26,6 +26,7 @@ import matplotlib
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 import rasterio
@@ -1467,6 +1468,147 @@ def plot_clean_network_discharge(
 
 
 # ── rule 10 plots (modelled_depth_estimation) ──────────────────────────────
+
+
+def plot_river_depth_width(
+    segments: gpd.GeoDataFrame,
+    land_mask_path: str,
+    domain_outline,
+    output_path: str,
+    depth_label: str,
+    title: str,
+    lw_range: tuple[float, float] = (0.4, 6.0),
+) -> None:
+    """River network map: line colour = river depth, line width = channel width.
+
+    Args:
+        segments: Line segments in the model CRS with columns 'depth' (m),
+            'width' (m, the width used in the calculation) and optionally
+            'fallback' (bool: depth not estimated from the hydraulics, drawn
+            dashed).
+        land_mask_path: Land mask geopackage (see this module's docstring),
+            drawn underneath.
+        domain_outline: Shapely geometry of the model domain in the model CRS.
+        output_path: PNG path.
+        depth_label: Colour-bar label.
+        title: Figure title.
+        lw_range: Line width (points) of the narrowest and widest channel;
+            in between it scales with sqrt(width), so narrow channels stay
+            visible next to km-wide estuaries.
+    """
+    crs = segments.crs
+    xmin, ymin, xmax, ymax = domain_outline.bounds
+    pad = 0.03 * max(xmax - xmin, ymax - ymin)
+
+    fig, ax = plt.subplots(figsize=(11, 8))
+    ax.set_facecolor(
+        "#e6f0f7"
+    )  # open sea: light blue, so shallow (pale) channels stay visible
+    land = gpd.read_file(land_mask_path).to_crs(crs)
+    if not land.empty:
+        land.plot(ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
+    for poly in getattr(domain_outline, "geoms", [domain_outline]):
+        gx, gy = poly.exterior.xy
+        ax.plot(gx, gy, color="black", linewidth=1.0, zorder=2)
+
+    seg = segments[np.isfinite(segments["width"].to_numpy(dtype=float))]
+    if seg.empty:
+        ax.text(
+            0.5,
+            0.5,
+            "No river segments",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            color="grey",
+        )
+    else:
+        width = seg["width"].to_numpy(dtype=float)
+        depth = seg["depth"].to_numpy(dtype=float)
+        w_lo, w_hi = float(np.nanmin(width)), float(np.nanmax(width))
+
+        def _lw(w):
+            frac = np.sqrt(
+                np.clip(
+                    (np.asarray(w, dtype=float) - w_lo) / max(w_hi - w_lo, 1e-9),
+                    0.0,
+                    1.0,
+                )
+            )
+            return lw_range[0] + (lw_range[1] - lw_range[0]) * frac
+
+        finite = np.isfinite(depth)
+        vmax = float(np.nanpercentile(depth[finite], 98)) if finite.any() else 1.0
+        norm = mcolors.Normalize(vmin=0.0, vmax=max(vmax, 0.1))
+        cmap = plt.get_cmap("viridis_r").copy()
+        cmap.set_bad("#bbbbbb")
+        fallback = (
+            seg["fallback"].to_numpy(dtype=bool)
+            if "fallback" in seg.columns
+            else np.zeros(len(seg), dtype=bool)
+        )
+        # Wide channels first, so narrow ones stay visible on top.
+        order = np.argsort(-width)
+        for dashed in (False, True):
+            idx = order[fallback[order] == dashed]
+            if idx.size == 0:
+                continue
+            lines = [np.asarray(g.coords)[:, :2] for g in seg.geometry.to_numpy()[idx]]
+            lc = LineCollection(
+                lines,
+                cmap=cmap,
+                norm=norm,
+                linewidths=_lw(width[idx]),
+                linestyles=(0, (2, 1.5)) if dashed else "solid",
+                capstyle="round" if not dashed else "butt",
+                zorder=3,
+            )
+            lc.set_array(np.ma.masked_invalid(depth[idx]))
+            ax.add_collection(lc)
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        fig.colorbar(sm, ax=ax, shrink=0.6, pad=0.02, extend="max", label=depth_label)
+
+        inner = [w for w in (100, 500, 2500) if 1.5 * w_lo < w < w_hi / 1.5]
+        ticks = [round(w_lo), *inner, round(w_hi)]
+        handles = [
+            Line2D(
+                [0], [0], color="#555555", linewidth=float(_lw(w)), label=f"{w:,.0f} m"
+            )
+            for w in ticks
+        ]
+        if fallback.any():
+            handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color="#555555",
+                    linewidth=1.5,
+                    linestyle=(0, (2, 1.5)),
+                    label="depth from width fit",
+                )
+            )
+        ax.legend(
+            handles=handles,
+            title="Channel width (used in the calculation)",
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.13),
+            ncol=len(handles),
+            fontsize=8,
+            framealpha=0.9,
+        )
+
+    ax.set_xlim(xmin - pad, xmax + pad)
+    ax.set_ylim(ymin - pad, ymax + pad)
+    ax.set_aspect("equal")
+    km = mticker.FuncFormatter(lambda v, _: f"{v / 1000:,.0f}")
+    ax.xaxis.set_major_formatter(km)
+    ax.yaxis.set_major_formatter(km)
+    ax.set_xlabel(f"x (km, {crs.to_string() if crs is not None else ''})")
+    ax.set_ylabel("y (km)")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3, linewidth=0.5)
+    _save(fig, output_path)
 
 
 def plot_river_depth(

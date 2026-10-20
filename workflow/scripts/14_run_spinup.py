@@ -65,6 +65,7 @@ from hydromt_sfincs import SfincsModel
 from src.geometry import snap_points_into_region
 from src.log import setup_logging
 from src.plots import plot_max_inundation_map, plot_water_level_timeseries
+from src.river_network import outflow_crossing_mask
 from src.postprocessing import compute_max_inundation
 from src.sfincs_run import forward_geometry_files, parse_sfincs_inp, run_sfincs_subprocess
 from src.surge import calm_sea_levels, read_baseline_m
@@ -164,7 +165,11 @@ sf.water_level.write()
 
 # ── river discharge forcing: mean discharge, constant over time ──────────────
 river_ds = xr.open_dataset(river_forcing_path, decode_times=False)
-active = river_ds.has_glofas.values.astype(bool)
+# Crossings on a seed that flows out of the network (rule 08's
+# 'seed_flows_out') inject nothing -- they are free-outflow boundaries.
+active = river_ds.has_glofas.values.astype(bool) & ~outflow_crossing_mask(
+    river_ds, gpd.read_file(river_network_path)
+)
 n_active = int(active.sum())
 log.info(f"River forcing: {n_active}/{len(active)} crossings with valid GloFAS data")
 

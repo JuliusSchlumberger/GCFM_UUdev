@@ -390,7 +390,9 @@ if river_gdf.crs is not None and river_gdf.crs != domain_gdf.crs:
 # Same width/max_width fix + canonical-column choice as rule clean_river_network
 # (this rule reads river_network.gpkg independently and earlier in the DAG, so
 # it can't just inherit the cleaned network's already-fixed 'width').
-river_gdf = normalize_channel_widths(river_gdf)
+river_gdf = normalize_channel_widths(
+    river_gdf, max_width_fill_m=float(snakemake.params.max_width_fill_m)
+)
 
 domain_reach_ids = set(str(rid) for rid in river_gdf["reach_id"].dropna())
 

@@ -114,6 +114,7 @@ zsini_sea_cells_path = Path(snakemake.input.zsini_sea_cells)
 surge_forcing_path    = Path(snakemake.input.surge_forcing)
 river_forcing_path    = Path(snakemake.input.river_forcing)
 river_burned_subgrid_path = Path(snakemake.input.river_burned_subgrid)
+river_roughness_subgrid_path = Path(snakemake.input.river_roughness_subgrid)
 river_burned_dem_sfincs_grid_path = Path(snakemake.input.river_burned_dem_sfincs_grid)
 elevation_conditioned_sfincs_grid_path = Path(snakemake.input.elevation_conditioned_sfincs_grid)
 river_elevation_max_path = Path(snakemake.input.river_elevation_max)
@@ -196,6 +197,13 @@ local_catalog = {
     "local_roughness_native": {
         "data_type": "RasterDataset",
         "uri": str(roughness_path),
+        "driver": "rasterio",
+    },
+    # Channel Manning n under the burned channel (rule 10): nodata outside
+    # it, so local_roughness_native fills the rest of the subgrid.
+    "local_river_roughness_subgrid": {
+        "data_type": "RasterDataset",
+        "uri": str(river_roughness_subgrid_path),
         "driver": "rasterio",
     },
     **({
@@ -528,7 +536,7 @@ log.info(
 subgrid_component = sf.subgrid
 subgrid_component.create(
     elevation_list=elevation_list_subgrid,
-    roughness_list=[{"manning": "local_roughness_native"}],
+    roughness_list=[{"manning": "local_river_roughness_subgrid"}, {"manning": "local_roughness_native"}],
     river_list=river_list,
     nr_subgrid_pixels=nr_subgrid_pixels,
     nr_levels=nr_levels,

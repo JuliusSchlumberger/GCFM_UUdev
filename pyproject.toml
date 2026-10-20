@@ -19,3 +19,8 @@ exclude = [
     "download_glofas.py",
     "plot_dag.py",
 ]
+
+[tool.pytest.ini_options]
+# Only the synthetic unit tests: the other scripts under tests/ are stand-alone
+# analysis/plotting scripts that need real pipeline results, not pytest tests.
+testpaths = ["tests/unit"]

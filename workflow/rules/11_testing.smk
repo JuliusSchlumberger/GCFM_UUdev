@@ -77,7 +77,6 @@ rule test_bifurcation_calibration_options:
     output:
         plot_dir = directory(results_path("{basin_id}/preprocessing_inputs/visuals/11b_bifurcation_calibration_options")),
     params:
-        n_iterations       = config["river_processing"]["flow_accumulation"]["iterations"],
         discharge_variable = config["river_processing"]["flow_accumulation"]["discharge_variable"],
     log:
         "logs/{basin_id}/11b_bifurcation_calibration_options.log"

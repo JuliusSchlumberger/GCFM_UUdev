@@ -90,6 +90,7 @@ from hydromt_sfincs import SfincsModel
 
 from src.geometry import snap_points_into_region
 from src.river_forcing import build_design_discharge_matrix
+from src.river_network import outflow_crossing_mask
 from src.sfincs_run import forward_geometry_files, parse_sfincs_inp
 from src.surge import build_design_surge_matrix
 
@@ -291,7 +292,11 @@ sf.water_level.write()
 # with has_glofas=1 have a calibrated EVA fit and a meaningful discharge signal;
 # crossings without GloFAS data carry zero discharge and are excluded.
 river_ds = xr.open_dataset(river_forcing_path, decode_times=False)
-active = river_ds.has_glofas.values.astype(bool)
+# Crossings on a seed that flows out of the network (rule 08's
+# 'seed_flows_out') inject nothing -- they are free-outflow boundaries.
+active = river_ds.has_glofas.values.astype(bool) & ~outflow_crossing_mask(
+    river_ds, gpd.read_file(snakemake.input.river_network)
+)
 n_active = int(active.sum())
 n_total  = len(active)
 log.info(f"River forcing: {n_active}/{n_total} crossings with valid GloFAS data")

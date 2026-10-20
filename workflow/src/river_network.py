@@ -316,86 +316,263 @@ def fix_tjunction_tails(
     return out
 
 
+def outward_seed_reaches(
+    rivers: gpd.GeoDataFrame, seed_ids, adjacency: dict[str, list[str]]
+) -> set[str]:
+    """
+    Seed reaches that SWORD routes OUT of the network rather than into it.
+
+    A seed is where a GloFAS boundary crossing injects river discharge. A
+    real inflow seed has no upstream reach inside the network (the network
+    is built downstream from the seeds). One that does is fed by the delta
+    itself and carries water out through the crossing -- e.g. basin
+    1248635's Drecht crossing, on a branch running from the Hollandsche
+    IJssel north out of the domain. Its crossing is an outflow, not an
+    inflow.
+
+    Args:
+        rivers:    Network with 'reach_id'.
+        seed_ids:  Seed reach ids (any iterable).
+        adjacency: Downstream adjacency (build_downstream_adjacency).
+
+    Returns:
+        Normalised reach ids of the seeds that have in-network upstream reaches.
+    """
+    ids = {normalize_reach_id(r) for r in rivers["reach_id"]} - {None}
+    has_upstream = {
+        d for u, dns in adjacency.items() if u in ids for d in dns if d in ids
+    }
+    return {normalize_reach_id(s) for s in seed_ids} & has_upstream
+
+
+def outflow_crossing_mask(river_ds, rivers: gpd.GeoDataFrame) -> np.ndarray:
+    """
+    Boolean mask over river_forcing.nc's crossings: True where the crossing's
+    reach is a seed that flows OUT of the network (rule 08's
+    'seed_flows_out', see outward_seed_reaches) -- its discharge must not be
+    injected. All False when the column or 'inside_reach_id' is absent.
+    """
+    n = int(river_ds["has_glofas"].size)
+    if "seed_flows_out" not in rivers.columns or "inside_reach_id" not in river_ds:
+        return np.zeros(n, dtype=bool)
+    flagged = {
+        normalize_reach_id(r)
+        for r, f in zip(rivers["reach_id"], rivers["seed_flows_out"])
+        if bool(f)
+    } - {None}
+    return np.array(
+        [normalize_reach_id(r) in flagged for r in river_ds["inside_reach_id"].values],
+        dtype=bool,
+    )
+
+
+def canal_excluded_arms(
+    rivers: gpd.GeoDataFrame,
+    adjacency: dict[str, list[str]],
+    force_exclude=(),
+    force_include=(),
+    auto: bool = True,
+) -> set[str]:
+    """
+    Bifurcation arms that get no share of the upstream discharge: canals.
+
+    With ``auto``, an arm of a bifurcation is excluded when it -- or any
+    reach on its chain down to the next junction -- is a SWORD canal
+    (``lakeflag == 2``) AND at least one other arm of the same bifurcation
+    is not: where every arm is canal-flagged there is no river to prefer,
+    and the plain width split is kept. Basin 1248635: the Maas-Waal Canal
+    (Meuse -> Waal), the Lek -> Amsterdam-Rijnkanaal -> Vecht offtake, and
+    the Hollandsche IJssel -> Drecht branch.
+
+    Locks (SWORD ``obstr_type == 2``) are deliberately NOT used: SWORD
+    marks the weir-and-lock complexes on the main canalised rivers (Meuse at
+    Grave and Lith, Nederrijn-Lek) as locks too, so a lock does not tell a
+    canal from a canalised river. A canal that SWORD does not flag (1248635:
+    the Amsterdam-Rijnkanaal leaving the Waal at Tiel, reach 23261000641)
+    needs ``force_exclude``.
+
+    ``force_exclude`` / ``force_include`` (reach ids) override the automatic
+    choice; a forced exclusion applies wherever that reach is an arm.
+
+    Returns:
+        Normalised reach ids of the excluded arms.
+    """
+    ids = {normalize_reach_id(r) for r in rivers["reach_id"]} - {None}
+    attrs = rivers.assign(
+        _rid=[normalize_reach_id(r) for r in rivers["reach_id"]]
+    ).set_index("_rid")
+    lakeflag = (
+        attrs["lakeflag"]
+        if "lakeflag" in attrs.columns
+        else pd.Series(0, index=attrs.index)
+    )
+    down = {u: [d for d in dns if d in ids] for u, dns in adjacency.items() if u in ids}
+    n_up: dict[str, int] = {r: 0 for r in ids}
+    for dns in down.values():
+        for d in dns:
+            n_up[d] += 1
+
+    def _is_canal(r: str) -> bool:
+        return int(lakeflag.get(r, 0)) == 2
+
+    def _arm_is_canal(arm: str) -> bool:
+        node, seen = arm, set()
+        while node is not None and node not in seen:
+            seen.add(node)
+            if _is_canal(node):
+                return True
+            nxt = down.get(node, [])
+            node = nxt[0] if len(nxt) == 1 and n_up.get(nxt[0], 0) == 1 else None
+        return False
+
+    forced_in = {normalize_reach_id(r) for r in force_include}
+    forced_out = {normalize_reach_id(r) for r in force_exclude}
+    excluded: set[str] = set()
+    for u, dns in down.items():
+        if len(dns) < 2:
+            continue
+        canal_arms = {a for a in dns if auto and _arm_is_canal(a)} - forced_in
+        if canal_arms == set(dns):
+            canal_arms = set()
+        for arm in dns:
+            if arm in forced_out or arm in canal_arms:
+                excluded.add(arm)
+    excluded |= {r for r in forced_out if r in ids}
+    if excluded:
+        log.info(f"Canal arms with zero discharge share: {sorted(excluded)}")
+    return excluded
+
+
 def accumulate_discharge(
     rivers: gpd.GeoDataFrame,
     seed_q: dict[str, float],
     adjacency: dict[str, list[str]],
-    n_iterations: int,
+    excluded_arms: set[str] | None = None,
 ) -> np.ndarray:
     """
-    Iterative width-weighted downstream flow accumulation.
+    Width-weighted downstream flow accumulation, one pass in topological order.
 
-    Starting from seed reaches whose discharge is known from the boundary
-    forcing, propagates discharge one hop downstream per iteration. At
-    bifurcations the upstream discharge is split proportional to each
-    receiving arm's width. At confluences contributions from all upstream
-    reaches accumulate via addition.
+    Every reach receives the discharge of its upstream reaches: summed at a
+    confluence, and at a bifurcation each upstream reach's discharge is split
+    between its downstream reaches in proportion to their ``width``. A seed
+    reach adds its own boundary discharge ONCE, on top of whatever flows in
+    from upstream reaches inside the network -- so a seed that also has
+    in-network upstream reaches (e.g. a tributary crossing whose reach is fed
+    by a delta branch too) gets inflow + seed value.
+
+    Until 2026-10-12 this was an iterative scheme (``n_iterations`` hops) that
+    held seeds fixed and then added their inflow again on every iteration:
+    a seed with upstream reaches gained that inflow once per iteration
+    (basin 1248635's Drecht seed: 245 m3/s at the crossing, 103,693 m3/s
+    after 100 iterations). The result no longer depends on any iteration
+    count.
+
+    The network is expected to be a directed acyclic graph (bifurcations
+    that rejoin are fine; a directed cycle is not). Reaches on a directed
+    cycle are logged and processed last, receiving only what had reached
+    them from outside the cycle.
 
     Args:
-        rivers:       Cleaned river network GeoDataFrame with 'reach_id',
-                      'width', and geometry columns. Width is assumed valid
-                      (non-missing, non-zero) — callers run this after
-                      remove_reaches_with_missing_width/normalize_channel_widths.
-        seed_q:       Dict {reach_id_str: bankfull_discharge} from the boundary
-                      forcing snapping step.  Multiple crossings that snap to the
-                      same reach are pre-summed.
-        adjacency:    Downstream adjacency dict from build_downstream_adjacency().
-        n_iterations: Number of propagation steps (100 covers chains of ≤100 hops).
+        rivers:    Cleaned river network GeoDataFrame with 'reach_id' and
+                   'width'. Width is assumed valid (non-missing, non-zero) --
+                   callers run this after remove_reaches_with_missing_width/
+                   normalize_channel_widths. A bifurcation whose downstream
+                   widths sum to zero is split equally.
+        seed_q:    {reach_id_str: discharge} from the boundary-forcing
+                   snapping step (multiple crossings on one reach pre-summed).
+        adjacency: Downstream adjacency from build_downstream_adjacency().
+        excluded_arms: Reach ids that get no share when they are an arm of a
+                   bifurcation (canals, see canal_excluded_arms); the other
+                   arms split the discharge by width. If every arm of a
+                   bifurcation is excluded, the plain width split is used.
 
     Returns:
-        1-D NumPy array of accumulated discharge (m³ s⁻¹) indexed in the same
-        order as `rivers`.  Reaches not downstream of any seed retain 0.0.
+        1-D array of accumulated discharge (m3 s-1) in the order of
+        ``rivers``; 0.0 for reaches not downstream of any seed.
     """
-    rids = rivers["reach_id"].astype(str).values
+    rids = [normalize_reach_id(r) for r in rivers["reach_id"]]
     if len(rids) == 0:
         log.warning(
             "accumulate_discharge: river network is empty; returning zero-length array"
         )
         return np.zeros(0)
+    excluded = {normalize_reach_id(r) for r in (excluded_arms or set())}
     widths = rivers["width"].to_numpy(dtype=float)
-    reach_to_idx = {r: i for i, r in enumerate(rids)}
+    reach_to_idx = {r: i for i, r in enumerate(rids) if r is not None}
 
-    adj_idx: dict[int, list[int]] = {
+    down: dict[int, list[int]] = {
         i: [reach_to_idx[d] for d in adjacency.get(rid, []) if d in reach_to_idx]
         for i, rid in enumerate(rids)
     }
+    n_up = np.zeros(len(rids), dtype=int)
+    for dns in down.values():
+        for d in dns:
+            n_up[d] += 1
 
     q = np.zeros(len(rids))
-    seed_mask = np.zeros(len(rids), dtype=bool)
     for rid, val in seed_q.items():
+        rid = normalize_reach_id(rid)
         if rid in reach_to_idx:
-            idx = reach_to_idx[rid]
-            q[idx] = val
-            seed_mask[idx] = True
+            q[reach_to_idx[rid]] += float(val)
+    seeds_with_inflow = [
+        rid
+        for rid in seed_q
+        if normalize_reach_id(rid) in reach_to_idx
+        and n_up[reach_to_idx[normalize_reach_id(rid)]] > 0
+    ]
 
-    log.info(
-        f"Starting flow accumulation: {seed_mask.sum()} seed reaches, "
-        f"{n_iterations} iterations"
-    )
-
-    for _ in range(n_iterations):
-        next_q = np.zeros(len(rids))
-        next_q[seed_mask] = q[seed_mask]  # preserve fixed boundary inputs
-
-        for i in np.where(q > 0)[0]:
-            dn = adj_idx.get(i, [])
-            if not dn:
-                continue
-            w_dn = widths[dn]
-            total_w = w_dn.sum()
-            shares = w_dn / total_w if total_w > 0 else np.ones(len(dn)) / len(dn)
-            for j, d in enumerate(dn):
-                next_q[d] += q[i] * shares[j]
-
-        q = next_q
-
-    if len(q) > 0:
-        log.info(
-            f"Flow accumulation complete: {(q > 0).sum()} reaches with Q > 0, "
-            f"max Q = {q.max():.2f} m³ s⁻¹"
+    # Kahn's algorithm: a reach is passed on only once all its upstream
+    # reaches have delivered into it.
+    remaining = n_up.copy()
+    queue = deque(i for i in range(len(rids)) if remaining[i] == 0)
+    order: list[int] = []
+    while queue:
+        i = queue.popleft()
+        order.append(i)
+        for d in down[i]:
+            remaining[d] -= 1
+            if remaining[d] == 0:
+                queue.append(d)
+    on_cycle = [i for i in range(len(rids)) if remaining[i] > 0]
+    if on_cycle:
+        log.warning(
+            f"accumulate_discharge: {len(on_cycle)} reach(es) on a directed cycle "
+            f"(e.g. {[rids[i] for i in on_cycle[:5]]}) -- processed last, with only "
+            "the inflow from outside the cycle"
         )
-    else:
-        log.info("Flow accumulation complete: 0 reaches (empty network)")
+        order.extend(on_cycle)
+
+    inflow = np.zeros(len(rids))
+    for i in order:
+        dns = down[i]
+        if not dns or q[i] <= 0:
+            continue
+        w_dn = widths[dns].copy()
+        if len(dns) > 1 and excluded:
+            keep = np.array([rids[d] not in excluded for d in dns])
+            if keep.any():
+                w_dn = np.where(keep, w_dn, 0.0)
+                if w_dn.sum() <= 0:
+                    w_dn = keep.astype(float)
+        total_w = w_dn.sum()
+        shares = w_dn / total_w if total_w > 0 else np.full(len(dns), 1.0 / len(dns))
+        for d, share in zip(dns, shares):
+            q[d] += q[i] * share
+            inflow[d] += q[i] * share
+
+    for rid in seeds_with_inflow:
+        idx = reach_to_idx[normalize_reach_id(rid)]
+        log.warning(
+            f"accumulate_discharge: seed reach {rid} also has upstream reaches in the "
+            f"network -- its own boundary discharge {float(seed_q[rid]):.1f} m3/s is added "
+            f"to {inflow[idx]:.1f} m3/s of in-network inflow (total {q[idx]:.1f} m3/s); "
+            "check that the forcing at that crossing does not already include that flow"
+        )
+    log.info(
+        f"Flow accumulation: {int((q > 0).sum())}/{len(rids)} reach(es) with Q > 0, "
+        f"{len([r for r in seed_q if normalize_reach_id(r) in reach_to_idx])} seed reach(es), "
+        f"max Q = {q.max():.2f} m3 s-1"
+    )
     return q
 
 
@@ -667,32 +844,64 @@ def enforce_mouth_width_monotonic(
     return rivers
 
 
-def fix_width_max_width_order(rivers: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+# SWORD v17c 'max_width' value that marks "no value" rather than a measured
+# width: 2,343 reaches worldwide carry exactly 30 m (not on SWORD's ~42 m
+# width lattice), 2,164 of them with a real 'width' far above it (Waal:
+# 389 m) -- swapping those turned 30 m into the channel width.
+MAX_WIDTH_FILL_M = 30.0
+
+
+def fix_width_max_width_order(
+    rivers: gpd.GeoDataFrame, max_width_fill_m: float | None = MAX_WIDTH_FILL_M
+) -> gpd.GeoDataFrame:
     """
     Swap 'width' and 'max_width' wherever max_width < width.
 
     'max_width' (a reach's maximum channel width) should never be smaller
     than 'width' (its average channel width) — where the SWORD attributes
-    violate that, the two values are swapped rather than discarded.
+    violate that, the two values are swapped rather than discarded. A
+    max_width equal to ``max_width_fill_m`` (SWORD's 30 m fill value, see
+    MAX_WIDTH_FILL_M) is not a measurement and never triggers the swap: the
+    reach keeps its own 'width'. ``None`` disables that check.
+
+    Adds a 'width_source' column: "sword_width" (kept), "sword_max_width"
+    (swapped in), or "sword_width, max_width fill ignored".
 
     Args:
         rivers: River network with 'width' and 'max_width' columns. Rows
                 where either value is missing (NaN) are left unchanged,
                 since NaN comparisons are never True.
+        max_width_fill_m: max_width value treated as "no value".
 
     Returns:
         Copy of ``rivers`` with 'width'/'max_width' swapped wherever they
         were inverted; unchanged otherwise.
     """
-    invalid = rivers["max_width"] < rivers["width"]
+    rivers = rivers.copy()
+    if "width_source" not in rivers.columns:
+        rivers["width_source"] = "sword_width"
+    is_fill = (
+        np.isclose(rivers["max_width"].astype(float), float(max_width_fill_m))
+        if max_width_fill_m is not None
+        else np.zeros(len(rivers), dtype=bool)
+    )
+    inverted = rivers["max_width"] < rivers["width"]
+    fill_ignored = inverted & is_fill
+    invalid = inverted & ~is_fill
+    if fill_ignored.any():
+        rivers.loc[fill_ignored, "width_source"] = "sword_width, max_width fill ignored"
+        log.warning(
+            f"max_width == {max_width_fill_m:g} m (SWORD fill value) below width on "
+            f"{int(fill_ignored.sum())}/{len(rivers)} reach(es) -- width kept, not swapped"
+        )
     n_invalid = int(invalid.sum())
     if n_invalid == 0:
         return rivers
 
-    rivers = rivers.copy()
     width_vals = rivers.loc[invalid, "width"].copy()
     rivers.loc[invalid, "width"] = rivers.loc[invalid, "max_width"]
     rivers.loc[invalid, "max_width"] = width_vals
+    rivers.loc[invalid, "width_source"] = "sword_max_width"
     log.warning(
         f"width/max_width swapped for {n_invalid}/{len(rivers)} reach(es) (max_width < width)"
     )
@@ -736,6 +945,7 @@ def select_width_column(
 def normalize_channel_widths(
     rivers: gpd.GeoDataFrame,
     width_column: str = "width",
+    max_width_fill_m: float | None = MAX_WIDTH_FILL_M,
 ) -> gpd.GeoDataFrame:
     """
     Fix SWORD's width/max_width inconsistencies, then select which one
@@ -757,12 +967,14 @@ def normalize_channel_widths(
         rivers:       River network with 'width' and 'max_width' columns.
         width_column: Which (corrected) column becomes 'width' -- "width" or
                       "max_width". Passed through to select_width_column.
+        max_width_fill_m: SWORD's max_width fill value, never swapped in
+                      (fix_width_max_width_order).
 
     Returns:
         Copy of ``rivers`` with 'width'/'max_width' fixed and 'width' set to
         the configured choice.
     """
-    rivers = fix_width_max_width_order(rivers)
+    rivers = fix_width_max_width_order(rivers, max_width_fill_m=max_width_fill_m)
     rivers = select_width_column(rivers, width_column=width_column)
     return rivers
 

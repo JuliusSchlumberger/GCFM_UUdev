@@ -56,6 +56,13 @@ rule modelled_depth_estimation:
         # 13's own production build exactly -- always present (possibly
         # empty).
         delta_outflow_points     = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_outflow_points.gpkg"),
+        # method gvf only: unconditioned DEM (bed floor of the burn, beds of
+        # water bodies) and the geoid models that put SWORD's EGM2008 wse in
+        # the model datum (GOCO06s), as rule 05a does for FathomDEM.
+        elevation_merged         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"),
+        landuse                  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
+        goco06s_gfc              = catalogue_path("goco06s"),
+        egm2008_gfc              = catalogue_path("egm2008_geoid"),
     output:
         depth_estimated_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
         # THE burned river channel, from round 0's own per-cell excavation
@@ -70,6 +77,10 @@ rule modelled_depth_estimation:
         #   place.
         river_burned_subgrid          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_subgrid.tif"),
         river_burned_dem_sfincs_grid  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"),
+        # Channel Manning n on the subgrid pixel grid (method gvf: n under the
+        # burned channel, nodata elsewhere; method modelled: all nodata).
+        # Listed first in every subgrid roughness_list, so it wins where valid.
+        river_roughness_subgrid       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_roughness_subgrid.tif"),
         # The traced weir with
         # every edge's own crest from round 1's water level on its own
         # water side (the same weir round 2 verified), not re-derivable
@@ -104,6 +115,9 @@ rule modelled_depth_estimation:
         # numbered files below, for downstream consumers/convention that
         # expect these fixed filenames.
         plot_calibration             = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/river_depth.png"),
+        # River network on land: colour = river depth (GVF: water depth at the
+        # mean discharge; modelled: excavated depth), line width = channel width.
+        plot_river_network_depth     = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/river_network_depth.png"),
         plot_water_level_timeseries  = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/water_level_timeseries.png"),
         plot_max_inundation          = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/max_inundation.png"),
         animation_flood_progress     = results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/flood_animation.mp4"),
@@ -130,8 +144,12 @@ rule modelled_depth_estimation:
         # -- rounds 1-2 force the coastal protection storm tide at those
         # stations.
         waterlevel_buffer_m = config["sfincs"]["boundary_setup"]["waterlevel_buffer_m"],
-        flow_accumulation_iterations = config["river_processing"]["flow_accumulation"]["iterations"],
+        depth_method                 = config["river_processing"]["river_depth_modelling"]["method"],
+        gvf                          = config["river_processing"]["river_depth_modelling"]["gvf"],
         calibration_days             = config["river_processing"]["river_depth_modelling"]["calibration_days"],
+        round0_level                 = config["river_processing"]["river_depth_modelling"]["round0_level"],
+        gebco_max_depth_m            = config["terrain"]["gebco_max_depth_m"],
+        steady_state                 = config["river_processing"]["river_depth_modelling"]["steady_state"],
         discharge_ramp_hours          = config["river_processing"]["river_depth_modelling"]["discharge_ramp_hours"],
         weir_crest_m                  = config["river_processing"]["river_depth_modelling"]["weir_crest_m"],
         weir_par1                     = config["river_processing"]["river_depth_modelling"]["weir_par1"],

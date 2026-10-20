@@ -38,6 +38,32 @@ def parse_sfincs_inp(path: str | Path) -> dict[str, str]:
     return cfg
 
 
+def set_sfincs_inp_keys(path: str | Path, updates: dict[str, object | None]) -> None:
+    """
+    Change keys of an existing sfincs.inp in place: replace the value of each
+    key in ``updates`` (adding the line if it is missing); a value of None
+    removes the key. Used to continue a run from its restart file without
+    rewriting the whole model through hydromt (sf.write() rewrites every
+    grid and subgrid file; sf.config.write() absolutizes relative paths).
+    """
+    path = Path(path)
+    lines = path.read_text().splitlines()
+    todo = {k.lower(): v for k, v in updates.items()}
+    out = []
+    for line in lines:
+        key = line.partition("=")[0].strip().lower() if "=" in line else None
+        if key in todo:
+            value = todo.pop(key)
+            if value is not None:
+                out.append(f"{key:<20} = {value}")
+            continue
+        out.append(line)
+    for key, value in todo.items():
+        if value is not None:
+            out.append(f"{key:<20} = {value}")
+    path.write_text("\n".join(out) + "\n")
+
+
 def forward_geometry_files(
     cfg: dict[str, str],
     source_root: str | Path,

@@ -87,7 +87,6 @@ _PREPROCESS_OUTPUTS = [
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sfincs_grid.json"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/09_condition_elevation.png"), basin_id=BASINS),
     # Rule modelled_depth_estimation (10): river_network_depth_estimated.gpkg,
     # the burned river channel on the subgrid pixel grid and its main-grid
     # mean, and the calibrated coastal protection weir.

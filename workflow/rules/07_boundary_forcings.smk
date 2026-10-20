@@ -41,6 +41,7 @@ rule get_boundary_forcings:
         plot_bias_correction = directory(results_path("{basin_id}/preprocessing_inputs/visuals/07_bias_correction")),
         plot_surge_correction = results_path("{basin_id}/preprocessing_inputs/visuals/07_surge_correction.png"),
     params:
+        max_width_fill_m = config["river_processing"]["width_qa"]["max_width_fill_m"],
         # shared (surge + river forcing timeseries axis)
         lead_days = config["boundary_forcings"]["lead_days"],
         dt_hr = config["boundary_forcings"]["dt_hr"],

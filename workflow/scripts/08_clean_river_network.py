@@ -11,11 +11,13 @@ from src.river_network import (
     _as_linestring,
     accumulate_discharge,
     build_downstream_adjacency,
+    canal_excluded_arms,
     collect_downstream_main_paths,
     enforce_mouth_width_monotonic,
     fix_tjunction_tails,
     identify_delta_outflow_points,
     normalize_channel_widths,
+    outward_seed_reaches,
     remove_reaches_with_missing_width,
 )
 
@@ -73,6 +75,24 @@ rivers_clean["linked_to_source"] = True
 rivers_clean["is_seed"] = rivers_clean["reach_id"].map(_norm_id).isin(set(seed_q.keys()))
 log.info(f"Retained {len(rivers_clean)}/{len(rivers)} reaches")
 
+# A seed reach fed from upstream reaches INSIDE the network is a branch SWORD
+# routes out of the delta through the crossing (basin 1248635: Drecht): its
+# crossing is an outflow, not an inflow. It loses its seed status and inflow
+# here, which also lets identify_delta_outflow_points below register the
+# crossing as a free-outflow boundary; rules 10/13/14 skip its discharge via
+# 'seed_flows_out' (src.river_network.outflow_crossing_mask).
+_outward = outward_seed_reaches(
+    rivers_clean, seed_q.keys(), build_downstream_adjacency(rivers_clean)
+)
+rivers_clean["seed_flows_out"] = rivers_clean["reach_id"].map(_norm_id).isin(_outward)
+if _outward:
+    rivers_clean.loc[rivers_clean["seed_flows_out"], "is_seed"] = False
+    seed_q = {k: v for k, v in seed_q.items() if _norm_id(k) not in _outward}
+    log.warning(
+        f"Seed reach(es) fed from upstream reaches in the network, treated as outflow "
+        f"(no inflow, free-outflow boundary): {sorted(_outward)}"
+    )
+
 # Trim each seed reach's own geometry to the real delta polygon (domain_poly
 # -- the SAME polygon rule 07's own find_boundary_crossings/
 # _domain_entry_point used to locate the actual discharge injection
@@ -126,7 +146,9 @@ rivers_clean = remove_reaches_with_missing_width(rivers_clean)
 # width-dependent step uses (discharge propagation here, hydraulic depth,
 # SFINCS rivwth).
 
-rivers_clean = normalize_channel_widths(rivers_clean)
+rivers_clean = normalize_channel_widths(
+    rivers_clean, max_width_fill_m=float(snakemake.params.max_width_fill_m)
+)
 
 # River mouths shouldn't be narrower than the reach feeding into them --
 # channels don't narrow immediately before the outlet; where SWORD's own
@@ -142,11 +164,19 @@ rivers_clean = enforce_mouth_width_monotonic(rivers_clean)
 # At bifurcations discharge is split proportional to channel width; at
 # confluences contributions from all upstream reaches are summed.
 
+# Canals (SWORD lakeflag 2 / locks) get no share where they branch off a
+# bifurcation -- see src.river_network.canal_excluded_arms. Stored as
+# 'zero_discharge_share' so rule 10's own accumulation uses the same arms.
 adjacency = build_downstream_adjacency(rivers_clean)
-q_acc = accumulate_discharge(
-    rivers_clean, seed_q, adjacency,
-    n_iterations=snakemake.params.flow_accumulation_iterations,
+_canal_cfg = dict(snakemake.params.canal_routing)
+_excluded = canal_excluded_arms(
+    rivers_clean, adjacency,
+    force_exclude=_canal_cfg.get("force_exclude") or [],
+    force_include=_canal_cfg.get("force_include") or [],
+    auto=bool(_canal_cfg.get("auto", True)),
 )
+rivers_clean["zero_discharge_share"] = rivers_clean["reach_id"].map(_norm_id).isin(_excluded)
+q_acc = accumulate_discharge(rivers_clean, seed_q, adjacency, excluded_arms=_excluded)
 rivers_clean["bankfull_discharge_acc"] = q_acc
 log.info(
     f"Discharge propagation: {(q_acc > 0).sum()} reaches with Q > 0, "

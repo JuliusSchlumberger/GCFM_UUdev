@@ -4,10 +4,185 @@ Newest changes first. See `Reference_memory.txt` for the current, up-to-date
 description of how the pipeline works; this file only describes *what changed
 and why*.
 
-# 2026-10-09d: river events from real GloFAS floods instead of a 24 h wave (- JS)
+# 2026-10-13: river depth map replaces the rule 09 profile plot (- JS)
+
+- New rule 10 output `visuals/10_calibration/river_network_depth.png`
+  (`src.plots.plot_river_depth_width`): the river network on the land mask,
+  in the model CRS (rotated domain outline). Line colour is the river depth,
+  line width the channel width used in the calculation (sqrt-scaled, with a
+  width legend). `method: gvf`: water depth at the mean discharge between
+  consecutive GVF nodes, dashed where it comes from the width-depth fit
+  (no-flow reaches). `method: modelled`: the excavated depth `rivdph`
+  between consecutive centreline cells.
+- Removed rule 09's diagnostic plot `09_condition_elevation.png` (per-seed
+  elevation profiles before and after conditioning) and its code. Rule 09
+  itself is unchanged: rules 10 and 13 still use its conditioned DEM.
+
+# 2026-10-12c: river bed from gradually varied flow (GVF plan WP1-WP3) (- JS)
+
+New `river_processing.river_depth_modelling.method: gvf` (default stays
+`modelled`). The river bed comes from a steady gradually-varied-flow fit to
+SWORD's water levels, after Neal et al. (2021), instead of round 0's
+confined SFINCS run and `excavation_fraction`. Rounds 1-2 are unchanged and
+still set the weir crests at the protection-RP discharge.
+
+- **Target** (`src/gvf_target.py`): SWORD `wse` per reach, taken as correct,
+  moved from EGM2008 to the model datum (GOCO06s) with the same geoid offset
+  rule 05a applies to FathomDEM, placed at reach midpoints, interpolated to
+  nodes every 500 m, smoothed over 5 km and made non-increasing downstream by
+  an exact isotonic regression on the whole network (loops included).
+  Junctions share one node (one level); a drop over 0.5 m, or 0.2 m at a
+  SWORD obstruction reach, is a structure and splits the node. A rise over
+  0.5 m (1248635: the IJssel 1.1 m above its offtake) is cut likewise and
+  logged. Wide sea-class or GEBCO-floor sections are water bodies (target
+  level, DEM bed).
+- **Discharge**: GloFAS `mean_discharge`, routed like the calibration
+  discharge (canal arms and outward seeds excluded). Paired with `wse`
+  because SWORD's levels are long-term means.
+- **Solver** (`src/gvf_solver.py`): dh/dx = (S0 - Sf)/(1 - Fr^2),
+  rectangular channel of SWORD width, Manning n = `gvf.manning_channel`
+  (0.03), RK4 upstream from the sea (`baseline_m`) at mouths and from the
+  target level at other network ends. Beds are inverted by nudging, then
+  per-reach bounded least squares with a bed-slope regulariser and a weak
+  prior towards the normal depth: where the target is flat (tidal delta)
+  the level says almost nothing about the depth, and the fit otherwise runs
+  to the 30 m bound. Beds are per reach at junctions (discordant junctions
+  allowed); levels are per node. Reaches without discharge get their depth
+  from a width-depth fit of the inverted reaches.
+- **Rule 10** (`src/gvf.py`): the bed is interpolated onto the centreline
+  cells and burned as before, floored by the unconditioned merged DEM (not
+  the stage-1/2 conditioned one, whose sticky floors would override it).
+  Mouth and no-dig rules are not applied. New output
+  `{basin}_river_roughness_subgrid.tif`: n = 0.03 under the burned channel
+  (all nodata with `method: modelled`), listed first in the subgrid
+  roughness of rounds 1-2 and rule 13. Diagnostics per node in
+  `visuals/10_calibration/gvf/`. Not yet in the adaptation rules' subgrid
+  rebuilds (`src/adaptation_method_pre.py`).
+- 1248635, standalone solve: 2,299 nodes, level RMSE 0.08 m on the inverted
+  nodes, inverted depth p10/50/90 2.5 / 8.0 / 12.3 m, 2 bound hits, junction
+  mismatch at most 0.25 m. 53 of 182 reaches carry no mean discharge.
+- 20 new unit tests (`tests/unit/test_gvf.py`): hydraulics, uniform and
+  backwater reaches, regularisation, n sweep, Froude cap, confluence,
+  bifurcation, loop, water body, structure, target builder.
+
+# 2026-10-12b: river network QA and a steady round 0 (GVF plan WP0.2-0.7) (- JS)
+
+Prerequisites from `docs/gvf_plan.md` (WP0), mostly found on basin 1248635
+(Rhine-Meuse).
+
+- **WP0.2 Width.** The 30 m widths were not SWORD fill values in `width`:
+  SWORD has a real width (Waal 389 m) and `max_width` = 30, and the
+  width/max_width swap (`fix_width_max_width_order`) put the 30 into
+  `width`. A `max_width` equal to `river_processing.width_qa.max_width_fill_m`
+  (30) no longer triggers the swap; new column `width_source` records where
+  each width came from. 1248635: 13 reaches back to their SWORD width
+  (Waal 389-390, Lek 168-195, Hollandsche IJssel 43-361 m); Mississippi: 4.
+  About 2,160 SWORD reaches worldwide had this pattern.
+- **WP0.3 Canals in discharge routing.** At a bifurcation, an arm whose
+  chain to the next junction contains a SWORD canal (`lakeflag` 2) gets no
+  share when a sibling arm is not a canal (`canal_excluded_arms`;
+  `river_processing.canal_routing`). SWORD's lock flag is not used: it
+  also marks the weir-and-lock complexes on the canalised main rivers.
+  `force_exclude` holds 23261000641 (Amsterdam-Rijnkanaal leaving the Waal
+  at Tiel, not canal-flagged in SWORD). Stored as `zero_discharge_share`
+  (rule 08) and reused by rule 10. 1248635 at RP 1000: Rhine 17,421 m3/s
+  now splits into Waal 10,949, Lek 4,225, IJssel 2,246 (was routed half
+  into the Amsterdam-Rijnkanaal and the Vecht). Routing only: canals stay
+  open in SFINCS.
+- **WP0.4 Outward seeds.** A seed reach fed from upstream reaches inside
+  the network is a branch SWORD routes out of the delta through the
+  crossing (1248635: Drecht). It is no longer a seed: no inflow is injected
+  there (`seed_flows_out`, `outflow_crossing_mask` in rules 10, 13, 14) and
+  the crossing becomes a free-outflow boundary like the IJssel and Vecht
+  exits.
+- **WP0.5 Round 0 runs until steady.** Forcing now covers
+  `steady_state.max_days` (5); after the first `calibration_days`, round 0
+  is continued from its own restart file one `chunk_days` at a time until
+  the centreline water level changes less than 1 cm (median) / 5 cm (p95)
+  over the last 3 h. The excavation uses the end-of-run level (mean of the
+  last two outputs, `round0_level: end_of_run`; `period_max` restores the
+  old maximum over the run). Exit cross-sections at every mouth and outflow
+  boundary give a flow balance against the injected discharge; an unsteady
+  run or an imbalance above `flow_balance_tol` (5%) is logged as a warning
+  (`fail: true` makes it an error). Rounds 1 and 2 are unchanged.
+- **WP0.6 Mouths.** Checked on 1248635: no round-0 weir crosses a mouth
+  channel; the outlets are open. No change.
+- **WP0.7 No digging below a sea bed.** Round 0 no longer excavates
+  centreline cells that are land-use sea or whose elevation is at the
+  GEBCO depth limit (`terrain.gebco_max_depth_m` below mean sea level, which
+  rule 09's running minimum also spreads into channels): there the confined
+  level is a water surface over a sea bed and 0.8 x the rise dug beds
+  around -18 m on 36 reaches of 1248635.
+- Unit tests for all of the above in `tests/unit/` (25 tests).
+
+Rerun scope: every basin from rule 07 (widths) onward; basins without
+these patterns produce the same network and discharges, but round 0 now
+runs until steady and uses the end-of-run level.
+
+# 2026-10-12: discharge accumulation fixed (seed with upstream inflow); unit-test suite (- JS)
+
+`src.river_network.accumulate_discharge` held each seed reach's value fixed
+per iteration and then added that iteration's upstream inflow on top, so a
+seed reach that also has upstream reaches inside the network gained its
+inflow once per iteration (100 iterations). Basin 1248635's Drecht seed
+`23261000015` (245 m3/s at RP 1000) came out at 103,693 m3/s, the total
+calibration inflow at 127,935 instead of 24,487 m3/s, and the bed of the
+reaches around it was dug 25-54 m deep. `bankfull_discharge_acc` (rule 08)
+had the same fault.
+
+- **Now a single pass in topological order**: each reach receives its
+  upstream reaches' discharge (summed at confluences, split by width at
+  bifurcations); a seed adds its own boundary discharge once, on top of its
+  in-network inflow (Drecht: 1,513 + 245 = 1,758 m3/s). A seed with
+  in-network upstream reaches is logged as a warning, since the forcing at
+  that crossing may already include that flow. Directed cycles (none exist
+  in the current networks) are logged and processed last.
+- `n_iterations` is gone, with `river_processing.flow_accumulation.iterations`
+  in `config.yml` and the matching rule params (08, 10, 11b): the result no
+  longer depends on an iteration count (the old scheme also silently
+  stopped at 100 hops).
+- Effect: only 1248635 changes (8 of 182 reaches); the other completed
+  basins have no seed with upstream reaches and are bit-identical. 1248635
+  reruns from rule 08.
+- **New unit-test suite** `tests/unit/` (pytest, synthetic networks only,
+  `testpaths` set in `pyproject.toml` so the analysis scripts in `tests/`
+  are not collected): chain, confluence, width split, zero-width split,
+  bifurcate-then-rejoin, seed with upstream inflow, unreached reaches, a
+  250-reach chain, mass conservation on a random network, directed cycle.
+  CI runs it in a new `unit-tests` job.
+
+# 2026-10-11: memory fixes for large basins on a rotated grid (- JS)
+
+Two out-of-memory failures from the first all-basin run on the rotated
+default (15 GB machine); the six smaller basins completed.
+
+- **Rule 09b, basin 4267691** (`write_roughness_raster`): Manning's n was
+  aggregated in full-width row strips of the target grid. On a rotated grid
+  the axis-aligned source window behind one strip is nearly the whole
+  domain (48,630 x 68,937 land-use pixels, 12.5 GiB). Now aggregated in
+  square tiles (`src.landuse._square_tiles`), whose source window is at
+  most twice the tile's own area at any rotation. Result unchanged
+  (620947: identical to 1e-8); the Mississippi's 1958 x 3125 grid takes
+  103 s at 0.7 GB.
+- **Rule 10, basin 1416812** (`compute_max_inundation`): opening the
+  full-resolution `dep_subgrid.tif` of a rotated model allocates 2-D
+  float64 coordinates (16 bytes per pixel, 5 GB for 317 M pixels) before
+  anything is coarsened. `get_bed_level(max_bytes=...)` now reads the raster
+  block-averaged straight from disk when it would not fit, and counts a
+  rotated raster 5x (`_ROTATED_MEMORY_FACTOR`). For that basin the flood
+  map and its statistics are computed on 30 m pixels (was 20 m unrotated),
+  peak memory 5.5 GB (8.2 GB at 20 m). Basins that fit are untouched.
+- `_source_block_window` takes the block's extent from its four corners
+  (rasterio's `array_bounds` returns south > north for an unrotated
+  south-up block).
+
+Not yet confirmed: basin 4267691 beyond rule 09b, and the adaptation
+measures, which still open the full-resolution `dep_subgrid.tif`.
+
+# 2026-10-09d: river events from GloFAS floods instead of a 24 h wave (- JS)
 
 A scenario's river return period used to become a 24 h half-cosine on the
-mean discharge. Real floods of the main inflow stay above half their height
+mean discharge. Floods of the main inflow stay above half their height
 for 6-9 days (Ebro), 14-35 (Mississippi), 14-38 (Calvert), so river flood
 volume inside the event window was 2-8 times too small.
 

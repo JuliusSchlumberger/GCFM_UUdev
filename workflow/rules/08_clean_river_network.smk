@@ -13,7 +13,8 @@ rule clean_river_network:
         plot_discharge_network = results_path("{basin_id}/preprocessing_inputs/visuals/08_river_discharge.png"),
     params:
         discharge_variable = config["river_processing"]["flow_accumulation"]["discharge_variable"],
-        flow_accumulation_iterations = config["river_processing"]["flow_accumulation"]["iterations"],
+        max_width_fill_m   = config["river_processing"]["width_qa"]["max_width_fill_m"],
+        canal_routing      = config["river_processing"]["canal_routing"],
     log:
         "logs/{basin_id}/08_clean_river_network.log"
     script:

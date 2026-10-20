@@ -57,6 +57,9 @@ rule build_sfincs_skeleton:
         # pixel grid), and its per-cell mean for the main-grid "dep".
         river_burned_subgrid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_subgrid.tif"),
         river_burned_dem_sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"),
+        # Channel Manning n under the burned channel (rule 10, method gvf;
+        # all nodata for method modelled) -- first in the subgrid roughness.
+        river_roughness_subgrid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_roughness_subgrid.tif"),
         elevation_conditioned_sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"),
         river_elevation_max = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_elevation_max.json"),
         coastal_protection_weir = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"),

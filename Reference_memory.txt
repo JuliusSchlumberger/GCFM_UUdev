@@ -953,8 +953,8 @@ ALWAYS runs, no longer opt-in):
   10-modelled/13) to set the active-cell elevation ceiling.
   Uses the shared _sample_line_cells() helper, defined in
   src/river_network.py.
-  Diagnostic plot: 09_condition_elevation.png (n_seeds × 2 grid of
-  before/after downstream elevation profiles per seed reach).
+  No diagnostic plot (09_condition_elevation.png was removed 2026-10-13;
+  rule 10's 10_calibration/river_network_depth.png maps the river depth).
 
 RIVER-BED BURNING (folded into rule 10, modelled_depth_estimation — there is
 no separate preburn rule or burn-DEM rule):
@@ -2184,12 +2184,15 @@ D:/GCFM_UU/results/{basin_id}/
     │   │   ├── 07_surge_correction.png
     │   │   ├── 08_river_clean.png
     │   │   ├── 08_river_discharge.png
-    │   │   ├── 09_condition_elevation.png  ← rule 09 (ALWAYS produced now)
     │   │   ├── 10_calibration/             ← rule 10-modelled ONLY, sibling of the
     │   │   │   ├── river_depth.png            three plots above (mutually exclusive
     │   │   │   ├── water_level_timeseries.png with them — see section 2's rule-10
     │   │   │   ├── max_inundation.png         DAG-shape note): canonical copies of
     │   │   │   ├── flood_animation.mp4        round 2's (verification) own plots
+    │   │   │   ├── river_network_depth.png    river network on land: colour = river depth
+    │   │   │   │                              (gvf: water depth at mean Q; modelled: rivdph),
+    │   │   │   │                              line width = channel width used
+    │   │   │   ├── gvf/                       method gvf only: per-node table + gpkg
     │   │   │   └── rounds/                    below
     │   │   │       └── {river_depth,water_level_timeseries,max_inundation}_round{i}.png,
     │   │   │           flood_animation_round{i}.mp4, crest_gap_map_round2.png

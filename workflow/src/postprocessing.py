@@ -79,26 +79,92 @@ def load_sfincs_output(run_dir: str | Path) -> SfincsModel:
     return mod
 
 
+# In-memory cost of one pixel of a ROTATED raster relative to an axis-aligned
+# one: on top of the float32 value, xarray/hydromt carry 2-D float64 x and y
+# coordinates for it (an axis-aligned raster only needs two 1-D vectors), and
+# every reprojection onto it builds them again. Measured on basin 1416812:
+# compute_max_inundation peaks at ~100 bytes per subgrid pixel on a rotated
+# grid (8.2 GB for 79 M pixels) -- 5 keeps that peak around 4 GB.
+_ROTATED_MEMORY_FACTOR = 5.0
+
+
 def get_bed_level(
     mod: SfincsModel,
     sfincs_root: str | Path,
+    max_bytes: float | None = None,
 ) -> xr.DataArray:
     """
     Bed level (dep) used to convert water levels to inundation depths: the
     subgrid reference raster (``subgrid/dep_subgrid.tif``), the elevation on
     the subgrid pixels the model's subgrid tables were built from.
 
+    ``max_bytes`` bounds the raster's memory: when the full raster would
+    exceed it, it is read from disk already block-averaged by the smallest
+    integer factor that fits (GDAL decimated read -- the full-resolution
+    array is never held), instead of loading everything and coarsening
+    afterwards. That matters on a rotated model grid, where merely opening
+    the full raster allocates 16 bytes of 2-D coordinates per pixel: 5 GB
+    for the 317 M subgrid pixels of basin 1416812, before any data is read.
+    ``None`` returns the full-resolution raster.
+
     Raises FileNotFoundError when it is missing -- every model this pipeline
     builds has a subgrid, and the run output's own ``zb`` (the LOWEST subgrid
     pixel of each cell) is not a substitute.
     """
+    import os
+    import tempfile
+
+    import rasterio
+    from rasterio.enums import Resampling
+    from rasterio.windows import Window
+
     dep_subgrid_path = Path(sfincs_root) / "subgrid" / "dep_subgrid.tif"
     if not dep_subgrid_path.exists():
         raise FileNotFoundError(
             f"{dep_subgrid_path} not found -- the model's subgrid reference raster "
             f"(written by sf.subgrid.create(write_dep_tif=True)) is required"
         )
-    return mod.data_catalog.get_rasterdataset(str(dep_subgrid_path))
+    if max_bytes is None:
+        return mod.data_catalog.get_rasterdataset(str(dep_subgrid_path))
+
+    with rasterio.open(dep_subgrid_path) as src:
+        rotated = src.transform.b != 0 or src.transform.d != 0
+        cost = src.width * src.height * np.dtype(src.dtypes[0]).itemsize
+        cost *= _ROTATED_MEMORY_FACTOR if rotated else 1.0
+        factor = int(np.ceil((cost / max_bytes) ** 0.5)) if cost > max_bytes else 1
+        if factor == 1:
+            return mod.data_catalog.get_rasterdataset(str(dep_subgrid_path))
+        # Whole factor x factor blocks only (the remainder at the far edges is
+        # trimmed), so the origin stays put and each coarse pixel is the plain
+        # mean of its block's valid pixels.
+        out_h, out_w = src.height // factor, src.width // factor
+        coarse = src.read(
+            1,
+            window=Window(0, 0, out_w * factor, out_h * factor),
+            out_shape=(out_h, out_w),
+            resampling=Resampling.average,
+        )
+        profile = src.profile.copy()
+        profile.update(
+            height=out_h, width=out_w, transform=src.transform * Affine.scale(factor)
+        )
+    # Round-trip through a small GeoTIFF so the result is the same kind of
+    # object (coordinates, CRS, nodata handling) get_rasterdataset returns
+    # for the full raster.
+    fd, tmp_path = tempfile.mkstemp(suffix=".tif")
+    os.close(fd)
+    try:
+        with rasterio.open(tmp_path, "w", **profile) as dst:
+            dst.write(coarse, 1)
+        del coarse
+        da = mod.data_catalog.get_rasterdataset(tmp_path).load()
+        da.close()
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    return da
 
 
 def _coarsen_for_memory(da_ref: xr.DataArray, max_bytes: float = 5e8) -> xr.DataArray:
@@ -184,10 +250,10 @@ def compute_max_inundation(
     if "timemax" in da_zsmax.dims:
         da_zsmax = da_zsmax.max(dim="timemax")
 
-    da_dep = get_bed_level(mod, sfincs_root)
     # Bound da_dep's memory -- a large enough full-extent subgrid reference
-    # raster (get_bed_level's dep_subgrid.tif) can exceed max_bytes;
-    # _coarsen_for_memory is already a no-op below its own threshold.
+    # raster can exceed max_bytes; get_bed_level then reads it block-averaged
+    # straight from disk. _coarsen_for_memory stays as a no-op safety net.
+    da_dep = get_bed_level(mod, sfincs_root, max_bytes=max_bytes)
     da_dep = _coarsen_for_memory(da_dep, max_bytes=max_bytes)
 
     da_hmax = sfincs_utils.downscale_floodmap(zsmax=da_zsmax, dep=da_dep, hmin=hmin)
@@ -302,9 +368,9 @@ def compute_flood_timeseries_stats(
 
     da_zs_native = mod.output.data["zs"]
 
-    da_dep = get_bed_level(mod, sfincs_root)
-    # See compute_max_inundation's identical fix: bound da_dep -- a large
-    # full-extent subgrid reference raster needs this protection.
+    # See compute_max_inundation: bound da_dep -- a large full-extent subgrid
+    # reference raster needs this protection.
+    da_dep = get_bed_level(mod, sfincs_root, max_bytes=max_bytes)
     da_dep = _coarsen_for_memory(da_dep, max_bytes=max_bytes)
 
     da_sea = mod.data_catalog.get_rasterdataset(str(sea_mask_path))

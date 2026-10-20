@@ -13,6 +13,10 @@ name: CI
 # machine where that named env actually exists -- this runner has no conda
 # at all, so the hook can never succeed here (see tools/sync_environment.py).
 #
+# Unit tests: the synthetic-data pytest suite under tests/unit (no raw data,
+# no conda environment) runs in its own job with a pip-installed minimum set
+# of packages -- see the unit-tests job below.
+#
 # There is NO code-health/import-check job here anymore -- it required
 # building the real pipeline environment from environment.yml on this
 # ubuntu-latest runner, but environment.yml is a full `conda env export`
@@ -44,3 +48,15 @@ jobs:
         with:
           python-version: "3.11"
       - uses: pre-commit/action@v3.0.1
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Only what tests/unit imports (src.river_network and its own imports);
+      # environment.yml is a Windows conda export and does not solve here.
+      - run: pip install pytest numpy pandas xarray geopandas shapely rasterio pyproj
+      - run: pytest

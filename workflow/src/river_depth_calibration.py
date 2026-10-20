@@ -93,6 +93,54 @@ def build_calibration_seed_discharge(
     return snap_crossings_to_reaches(crossings)
 
 
+def steady_state_metrics(zs: np.ndarray, window_steps: int = 3) -> dict[str, float]:
+    """
+    How much the water level still changes at the end of a run.
+
+    Args:
+        zs: (n_time, n_points) water level, regular output interval.
+        window_steps: Number of output intervals to look back (3 hourly
+            outputs = the last 3 h).
+
+    Returns:
+        {"median": ..., "p95": ..., "frac_rising_1cm": ...} of
+        |zs[-1] - zs[-1 - window_steps]| over the points that are wet at
+        both times; all NaN when the run has too few outputs.
+    """
+    if zs.shape[0] <= window_steps:
+        return {"median": np.nan, "p95": np.nan, "frac_rising_1cm": np.nan}
+    d = zs[-1] - zs[-1 - window_steps]
+    d = d[np.isfinite(d)]
+    if d.size == 0:
+        return {"median": np.nan, "p95": np.nan, "frac_rising_1cm": np.nan}
+    return {
+        "median": float(np.median(np.abs(d))),
+        "p95": float(np.percentile(np.abs(d), 95)),
+        "frac_rising_1cm": float(np.mean(d > 0.01)),
+    }
+
+
+def is_steady(metrics: dict[str, float], median_tol_m: float, p95_tol_m: float) -> bool:
+    """True when both the median and the p95 change are within tolerance."""
+    return bool(
+        np.isfinite(metrics["median"])
+        and metrics["median"] < median_tol_m
+        and metrics["p95"] < p95_tol_m
+    )
+
+
+def compute_end_of_run_zs(zs: np.ndarray, n_last: int = 2) -> np.ndarray:
+    """
+    Per-point water level at the end of a run: the mean of the last
+    ``n_last`` outputs (NaN-aware). The steady-state alternative to
+    compute_period_max_zs, which takes the maximum over the whole run and
+    so picks up a run that is still filling or a start-up transient.
+    """
+    tail = zs[-max(1, int(n_last)) :]
+    with np.errstate(all="ignore"):
+        return np.nanmean(tail, axis=0)
+
+
 def compute_period_max_zs(zs: np.ndarray) -> np.ndarray:
     """
     Per-point maximum simulated water level over the ENTIRE calibration run.
@@ -204,3 +252,39 @@ def compute_excavation_depth(
     """
     rise = period_max_zs - dem_at_cell
     return excavation_fraction * np.maximum(rise, 0.0)
+
+
+def cell_depth_segments(
+    cell_gdf: gpd.GeoDataFrame, depth: np.ndarray, width_by_reach: dict[str, float]
+) -> gpd.GeoDataFrame:
+    """Segments between consecutive centreline cells of each reach, for the river depth map.
+
+    Args:
+        cell_gdf: Centreline cells (src.river_burn.build_centerline_cells_regular)
+            with 'reach_id', 'along_m', 'x', 'y', in the model CRS.
+        depth: Per cell depth to show (same order as ``cell_gdf``).
+        width_by_reach: {reach_id: channel width (m)}.
+
+    Returns:
+        Line segments with 'reach_id', 'depth' (mean of the two cells) and
+        'width', in the CRS of ``cell_gdf``.
+    """
+    from shapely.geometry import LineString
+
+    rows = []
+    rid_arr = cell_gdf["reach_id"].map(normalize_reach_id).to_numpy()
+    along = cell_gdf["along_m"].to_numpy(dtype=float)
+    xs, ys = cell_gdf["x"].to_numpy(dtype=float), cell_gdf["y"].to_numpy(dtype=float)
+    for rid in pd.unique(rid_arr):
+        pos = np.flatnonzero(rid_arr == rid)
+        pos = pos[np.argsort(along[pos])]
+        for a, b in zip(pos[:-1], pos[1:]):
+            rows.append(
+                {
+                    "reach_id": rid,
+                    "depth": float(np.nanmean(depth[[a, b]])),
+                    "width": float(width_by_reach.get(rid, np.nan)),
+                    "geometry": LineString([(xs[a], ys[a]), (xs[b], ys[b])]),
+                }
+            )
+    return gpd.GeoDataFrame(rows, geometry="geometry", crs=cell_gdf.crs)

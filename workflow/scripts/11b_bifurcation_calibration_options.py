@@ -96,7 +96,6 @@ basin_id = snakemake.wildcards.basin_id
 plot_dir = Path(snakemake.output.plot_dir)
 plot_dir.mkdir(parents=True, exist_ok=True)
 
-N_ITERATIONS = int(snakemake.params.n_iterations)
 DISCHARGE_VARIABLE = snakemake.params.discharge_variable
 N_STEPS = 3
 WIDTH_DIFF_TOLERANCE_M = 0.01  # min |width_orig - width_mod| in a bifurcation's neighborhood
@@ -163,7 +162,7 @@ def compute_discharge(
 ) -> gpd.GeoDataFrame:
     """Run discharge accumulation and attach the result as 'bankfull_discharge_acc'."""
     adjacency = build_downstream_adjacency(rivers)
-    q = accumulate_discharge(rivers, seed_q, adjacency, N_ITERATIONS)
+    q = accumulate_discharge(rivers, seed_q, adjacency)
     rivers = rivers.copy()
     rivers["bankfull_discharge_acc"] = q
     return rivers

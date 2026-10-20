@@ -80,7 +80,6 @@ import numpy as np
 import pandas as pd
 import rasterio
 from affine import Affine
-from rasterio.transform import array_bounds
 from rasterio.warp import Resampling, reproject, transform_bounds
 from rasterio.windows import Window, from_bounds
 
@@ -169,6 +168,33 @@ def _row_blocks(height: int, width: int, max_pixels: int = MAX_BLOCK_PIXELS):
     rows = max(1, int(max_pixels // max(width, 1)))
     for row0 in range(0, height, rows):
         yield row0, min(rows, height - row0)
+
+
+def _square_tiles(
+    height: int,
+    width: int,
+    dst_res_m: float,
+    src_res_m: float,
+    max_source_pixels: int = MAX_BLOCK_PIXELS,
+):
+    """
+    Yield (row_off, col_off, n_rows, n_cols) tiles of a destination grid,
+    sized so the SOURCE window behind one tile holds at most
+    ``max_source_pixels``.
+
+    Square tiles, not full-width row strips: the source window of a block is
+    the axis-aligned box around its footprint, and on a ROTATED destination
+    grid (the model grid, sfincs.grid.rotated) the box around a thin
+    full-width strip is nearly as tall as the whole domain -- 48,630 x
+    68,937 source pixels for one strip of the Mississippi's 150 m grid. The
+    box around a square is at most twice the square's own area whatever the
+    rotation, which is what the factor 2 below budgets for.
+    """
+    ratio = max(dst_res_m, 1e-9) / max(src_res_m, 1e-9)  # source px per destination px
+    side = max(1, int(math.sqrt(max_source_pixels / 2.0) / max(ratio, 1.0)))
+    for row0 in range(0, height, side):
+        for col0 in range(0, width, side):
+            yield row0, col0, min(side, height - row0), min(side, width - col0)
 
 
 def _read_window(path: str | Path, wgs84_bounds: tuple[float, float, float, float]):
@@ -535,8 +561,14 @@ def _source_block_window(
     src, dst_transform, dst_crs, nrows: int, ncols: int, margin_px: int = 2
 ):
     """Source window (+margin) covering one destination block's footprint."""
-    left, bottom, right, top = array_bounds(nrows, ncols, dst_transform)
-    wgs = transform_bounds(dst_crs, src.crs, left, bottom, right, top, densify_pts=21)
+    # Corner-based, not rasterio's array_bounds: that one returns south > north
+    # for an unrotated SOUTH-UP block (the unrotated model grid).
+    xs, ys = zip(
+        *(dst_transform * c for c in [(0, 0), (ncols, 0), (ncols, nrows), (0, nrows)])
+    )
+    wgs = transform_bounds(
+        dst_crs, src.crs, min(xs), min(ys), max(xs), max(ys), densify_pts=21
+    )
     win = _integer_window(src, wgs)
     return Window(
         win.col_off - margin_px,
@@ -779,10 +811,15 @@ def write_roughness_raster(
         unmapped: set[int] = set()
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         with rasterio.open(out_path, "w", **meta) as dst:
-            for row0, nrows in _row_blocks(height, width):
-                block_transform = transform * Affine.translation(0, row0)
+            # Square tiles: the target may be the ROTATED model grid, where a
+            # full-width row strip needs a source window the size of the
+            # whole domain (see _square_tiles).
+            for row0, col0, nrows, ncols in _square_tiles(
+                height, width, target_res_m, src_res_m
+            ):
+                block_transform = transform * Affine.translation(col0, row0)
                 win = _source_block_window(
-                    src, block_transform, meta["crs"], nrows, width
+                    src, block_transform, meta["crs"], nrows, ncols
                 )
                 lu_block = src.read(
                     1, window=win, boundless=True, fill_value=src_nodata
@@ -795,7 +832,7 @@ def write_roughness_raster(
                     n_fine,
                     src.window_transform(win),
                     src.crs,
-                    (nrows, width),
+                    (nrows, ncols),
                     block_transform,
                     meta["crs"],
                     method=method,
@@ -806,7 +843,7 @@ def write_roughness_raster(
                         np.float32
                     ),
                     1,
-                    window=Window(0, row0, width, nrows),
+                    window=Window(col0, row0, ncols, nrows),
                 )
     info = {
         "resolution_m": round(target_res_m, 2),

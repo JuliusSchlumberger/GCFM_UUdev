@@ -72,9 +72,43 @@ flopros_range:
 river_processing:
   flow_accumulation:
     discharge_variable: bankfull_discharge
-    iterations: 100
+  width_qa:  # rule 08 (and 07): SWORD width checks
+    max_width_fill_m: 30.0          # SWORD max_width fill value: never swapped into width (Waal: 389 m width, 30 m max_width)
+  canal_routing:  # rule 08/10 discharge accumulation: canals get no share at a bifurcation
+    auto: true                      # arm excluded if it, or its chain to the next junction, is a SWORD canal (lakeflag 2) and a sibling arm is not (see src.river_network.canal_excluded_arms)
+    force_exclude:                  # reach ids always excluded when they are a bifurcation arm
+      - 23261000641                 # 1248635: Amsterdam-Rijnkanaal leaving the Waal at Tiel (not canal-flagged in SWORD)
+    force_include: []               # reach ids never excluded by the automatic rule
   river_depth_modelling:  # rule modelled_depth_estimation (10): SFINCS runs that set river depth and dike crests
-    calibration_days: 1             # single fixed run duration (days)
+    method: modelled                # modelled: round 0 (confined SFINCS run) + excavation_fraction | gvf: river bed from steady gradually-varied flow fitted to SWORD wse (src/gvf*.py); round 0 is not run, rounds 1-2 still set the crests
+    gvf:  # method gvf only (GVF plan WP1-WP3; Neal et al. 2021, WRR 57, e2020WR028301)
+      target_discharge: mean        # GloFAS mean_discharge, routed like the calibration discharge, paired with SWORD wse
+      manning_channel: 0.03         # channel Manning n in the GVF solve; also written under the burned channel in the subgrid roughness (rules 10 and 13)
+      node_spacing_m: 500           # GVF node spacing along each reach
+      target_smoothing_m: 5000      # running-mean length of the target level (removes SWORD's 0.1 m steps); never across a structure
+      step_threshold_m: 0.5         # a level drop larger than this at a junction is a structure (weir/lock/dam); a rise this large is cut likewise (inconsistent SWORD levels)
+      structure_min_drop_m: 0.2     # smallest drop that counts as a structure at a SWORD obstruction reach (obstr_type 1-4)
+      use_sword_obstructions: true
+      cut_rising_edges: true
+      structures: []                # reach ids with a structure at their downstream end
+      slope_floor: 1.0e-5           # smallest target slope used for the slope scale and the normal-depth prior
+      mouth_level_tol_m: 0.5        # a network end is a sea mouth if its target is within this of mean sea level (or its end is sea / water body)
+      q_min_m3s: 1.0                # reaches with at most this discharge are not inverted (depth from a width-depth fit of the inverted reaches)
+      h_min_m: 0.5                  # depth bounds below the target level
+      h_max_m: 30.0
+      froude_cap: 0.95
+      water_body: {min_width_m: 1000, sea_class_fraction: 0.5}  # wide sea-class / GEBCO-floor sections keep the DEM bed and the target level
+      nudging: {alpha: 1.0, passes: 3}
+      least_squares: {apply: all, rmse_tol_m: 0.10, rho_m: 0.05, prior_weight_m: 0.05}  # rho_m: bed-slope regularisation; prior_weight_m: pull towards the normal depth where the level carries no depth information
+    calibration_days: 1             # run duration (days) of rounds 1-2, and round 0's first chunk
+    round0_level: end_of_run        # end_of_run (mean of the last two outputs, after steady state) | period_max (old: max over the run)
+    steady_state:                   # round 0 is continued from its restart file until steady (see 10_depth_estimation_modelled.py)
+      median_dzs_3h_m: 0.01         # steady when the median |change| of the centreline water level over the last 3 h is below this ...
+      p95_dzs_3h_m: 0.05            # ... and its 95th percentile is below this
+      chunk_days: 1                 # length of each continuation
+      max_days: 5                   # stop extending after this total run length (warns if still not steady)
+      flow_balance_tol: 0.05        # warn when |inflow - outflow| / inflow at the exits exceeds this
+      fail: false                   # true: an unsteady or unbalanced round 0 stops the rule instead of warning
     discharge_ramp_hours: 6.0        # linear ramp from each crossing's own bankfull_discharge up to the full calibration discharge over this many hours (from t=0), then held flat for the rest of the run -- avoids forcing the full (often many-times-bankfull) calibration discharge as an instantaneous step into an initially near-dry channel, which produces a startup shock wave that can persist/oscillate for the whole run instead of damping out. Mirrors production's own bankfull-lead-in-then-ramp hydrograph shape (src.river_forcing.build_design_discharge_matrix/sinusoidal_wave, rule 13/14's own spin-up), just linear instead of sinusoidal since calibration only needs to reach and hold the peak, not simulate a full event recession.
     weir_crest_m: 1000.0            # confinement weir crest (m) for rounds 0 and 1 -- effectively never overtopped
     excavation_fraction: 0.8        # fraction of round 0's confined rise above the DEM (period_max_zs - dem_at_cell, per centerline cell) excavated as channel depth (rivdph). The mouth rules in 10_depth_estimation_modelled.py (coastal endpoint at natural bathymetry, bed floored upstream of it) are applied on top.
@@ -82,7 +116,7 @@ river_processing:
     min_component_cells: 30           # discard small isolated land islands or water patches below this cell count on either side -- neither gets a weir ring around it
     unprotected_ocean_wetlands: false # true: wetland/lagoon patches (80 = permanent water/tidal flats, 90 = herbaceous wetland, and 95 = mangroves under ESA WorldCover; src.landuse.OCEAN_WETLAND_CLASSES) sharing a cell edge with the open sea are left on the SEAWARD side of the coastal dike -- the dike runs along their landward edge and they flood freely (still counted as land in flood metrics). false: the dike follows the open-sea (200) boundary.
     weir_par1: 0.6                    # SFINCS weir discharge coefficient Cd (0.6 = SFINCS's own recommended value). Per metre of weir, with h1/h2 = water level above crest on the high/low side: free flow q = Cd * 1.7049 * h1^1.5 (1.7049 = (2/3)^1.5 * sqrt(g)); submerged (h2 > 2/3 h1) q = Cd * h2 * sqrt(2g (h1 - h2)). No flow while both sides are below the crest. Scales overtopping discharge directly; lower = more throttled flow for the same exceedance
-    freeboard_m: 0.0                  # margin added on top of every production weir crest: crest(edge) = max(round-1 water level on the edge's own water side, coastal protection crest) + freeboard_m, rounded UP to the next 0.1 m. The only margin -- round 1 is still confined by 1000 m walls, so its water level already holds the calibration discharge exactly (the round-up adds 0-0.1 m on top).
+    freeboard_m: 0.0                  # margin added on top of every production weir crest: crest(edge) = max(round-1 water level on the edge's own water side, coastal protection crest) + freeboard_m, rounded UP to the next centimetre (src.surge.ceil_crest). The only margin -- round 1 is still confined by 1000 m walls, so its water level already holds the calibration discharge exactly (the round-up adds 0-0.1 m on top).
 
 # ── Boundary forcings (rule 07) ─────────────────────────────────────────────
 boundary_forcings:
@@ -104,7 +138,7 @@ boundary_forcings:
       enabled: true
       window_hr: 60          # event = -60..+60 h around the peak -> 120 h event window; also the length of the surge shapes
       window_overrides_hr:   # optional per-basin window (h), keyed by basin id -- surges last hours on
-        2433835: 70          # some coasts and days on others. Changing a basin's window reruns its
+        2433835: 80          # some coasts and days on others. Changing a basin's window reruns its
                              # storm_tide_hydrographs and rule 07 onward, not the GTSM extraction.
       ramp_hours: 6.0        # boundary blends from the calm lead-in level into the tide over the window's first hours (surge is still 0 there)
       max_match_km: 0.1      # coincidence tolerance: COAST-RP's coastal stations ARE GTSM output stations
