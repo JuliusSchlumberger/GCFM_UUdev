@@ -1,16 +1,20 @@
 """Smoke tests for storm-tide levels and design boundary series in src.surge."""
 
+import geopandas as gpd
 import numpy as np
 import pytest
 import xarray as xr
 from src.surge import (
     _COASTRP_RPS,
     build_design_surge_matrix,
+    build_surge_dataset,
     build_time_axis,
     calm_sea_levels,
     ceil_crest,
+    load_coastrp_stations,
     load_mdt,
     lookup_storm_tide_at_rp,
+    preview_station_rp_yr,
     read_calm_sea_level_m,
     sinusoidal_wave,
     storm_tide_at_rp_interpolated,
@@ -157,3 +161,65 @@ def test_load_mdt_clips_descending_lat_0_360_file_to_bbox(tmp_path):
         da.values,
         da["latitude"].values[:, None] * 1000.0 + da["longitude"].values[None, :],
     )
+
+
+def _coastrp_nc(path) -> str:
+    ds = xr.Dataset(
+        {
+            "station_x_coordinate": ("stations", np.array([0.6, 0.9])),
+            "station_y_coordinate": ("stations", np.array([40.6, 40.8])),
+            **{
+                f"storm_tide_rp_{rp:04d}": (
+                    "stations",
+                    1.0 + 0.3 * np.log(rp) + np.array([0.0, 0.2]),
+                )
+                for rp in _COASTRP_RPS
+            },
+        }
+    )
+    ds.to_netcdf(path)
+    return str(path)
+
+
+def test_preview_rp_is_unchanged_when_numeric_and_smallest_tabulated_for_tide_or_none():
+    assert preview_station_rp_yr(250) == 250
+    assert preview_station_rp_yr("Tide") == min(_COASTRP_RPS)
+    assert preview_station_rp_yr(None) == min(_COASTRP_RPS)
+
+
+@pytest.mark.parametrize("default_surge_rp_yr", ["Tide", None])
+def test_surge_preview_without_storm_tide_rp_builds_valid_dataset(
+    tmp_path, default_surge_rp_yr
+):
+    station_rp_yr = preview_station_rp_yr(default_surge_rp_yr)
+    stations = load_coastrp_stations(
+        _coastrp_nc(tmp_path / "coastrp.nc"), station_rp_yr
+    )
+    stations = gpd.GeoDataFrame(
+        stations.assign(dist_m=[100.0, 200.0]), crs=stations.crs
+    )
+    calm_m = np.array([0.1, 0.2])
+    times = build_time_axis(_LEAD_DAYS, _PERIOD_HR, 0.5)
+    ds = build_surge_dataset(
+        stations,
+        times,
+        _LEAD_DAYS,
+        _PERIOD_HR,
+        station_rp_yr,
+        calm_sea_level_m=float(calm_m.mean()),
+        station_calm_sea_level_m=calm_m,
+    )
+    assert np.all(np.isfinite(ds["storm_tide_at_rp_m"].values))
+    assert np.all(np.isfinite(ds["water_level"].values))
+    if default_surge_rp_yr is None:
+        flat = build_design_surge_matrix(ds, None)
+        np.testing.assert_allclose(
+            flat, calm_sea_levels(ds)[:, None] * np.ones_like(flat)
+        )
+    else:
+        tide = build_design_surge_matrix(
+            _surge_ds(with_hydrograph=True), default_surge_rp_yr
+        )
+        assert np.all(np.isfinite(tide))
+        with pytest.raises(ValueError, match="hydrograph"):
+            build_design_surge_matrix(ds, default_surge_rp_yr)

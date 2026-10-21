@@ -115,11 +115,11 @@ def apply_base_width_rule(rivers_clean: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 def compute_discharge(
     rivers: gpd.GeoDataFrame, seed_q: dict[str, float]
 ) -> gpd.GeoDataFrame:
-    """Run discharge accumulation and attach the result as 'bankfull_discharge_acc'."""
+    """Run discharge accumulation and attach the result as 'bankfull_discharge_acc_m3s'."""
     adjacency = build_downstream_adjacency(rivers)
     q = accumulate_discharge(rivers, seed_q, adjacency)
     rivers = rivers.copy()
-    rivers["bankfull_discharge_acc"] = q
+    rivers["bankfull_discharge_acc_m3s"] = q
     return rivers
 
 
@@ -222,8 +222,8 @@ else:
     log.info(f"Basin {basin_id}: {len(rivers_orig_utm)} reaches, {len(bifurcation_ids)} bifurcation(s)")
 
     q_by_scenario = {
-        "Original": rivers_orig_utm["bankfull_discharge_acc"],
-        "Modified": rivers_mod_utm["bankfull_discharge_acc"],
+        "Original": rivers_orig_utm["bankfull_discharge_acc_m3s"],
+        "Modified": rivers_mod_utm["bankfull_discharge_acc_m3s"],
     }
 
     for root_reach_id in bifurcation_ids:

@@ -28,6 +28,7 @@ include: "rules/09b_grid_align_landuse.smk"
 include: "rules/10_depth_estimation_modelled.smk"
 include: "rules/11_testing.smk"
 include: "rules/13_build_sfincs_skeleton.smk"
+include: "rules/13b_build_adaptation_lines.smk"
 include: "rules/13_build_sfincs.smk"
 include: "rules/14_run_spinup.smk"
 include: "rules/15_sanity_checks.smk"
@@ -88,8 +89,8 @@ _PREPROCESS_OUTPUTS = [
     expand(results_path("{basin_id}/preprocessing_inputs/visuals/11b_bifurcation_calibration_options"), basin_id=BASINS),
 ]
 
-# Basin-level, scenario-independent: skeleton, spin-up (run_spinup, fixed RP=1
-# river + calm sea) and its sanity checks.
+# Basin-level, scenario-independent: skeleton, spin-up (run_spinup, mean river
+# discharge + calm sea) and its sanity checks.
 _BUILD_OUTPUTS_BASIN = [
     expand(results_path("{basin_id}/sfincs_skeleton/sfincs.inp"), basin_id=BASINS),
     expand(results_path("{basin_id}/sfincs_skeleton/sfincs.weir"), basin_id=BASINS),
@@ -151,6 +152,12 @@ if {"pre", "post"} <= set(METHODS):
     _ADAPT_OUTPUTS += expand(
         results_path("{basin_id}/runs/metrics_comparison.csv"),
         basin_id=BASINS)
+# Adaptation runs restart from the spin-up (restart file, spin-up map).
+if STRATEGIES and not config["sfincs"]["spinup"]["enabled"]:
+    raise ValueError(
+        "adaptation (target_strategies) needs the spin-up: set "
+        "sfincs.spinup.enabled: true in the config, or run without target_strategies"
+    )
 
 
 rule adapt:
@@ -188,4 +195,10 @@ rule build:
 
 
 rule all:
+    """
+    Run preprocess + build; the target of a bare `snakemake`.
+
+    Usage:  snakemake --cores N
+    """
+    default_target: True
     input: _PREPROCESS_OUTPUTS + _BUILD_OUTPUTS

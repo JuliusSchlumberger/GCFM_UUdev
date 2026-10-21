@@ -8,11 +8,11 @@ Two passes, writing a new raster:
    profile at its along-channel position, lowering highs AND filling lows.
    Raw off-centreline noise would otherwise create spurious barriers in the
    calibration run (rule modelled_depth_estimation) or give it conveyance the
-   flat rectangular burn (rule 11b) lacks. Where buffers overlap at a junction
+   rectangular channel burn (src.river_burn.burn_river_channel) lacks. Where buffers overlap at a junction
    the lower value wins.
 
-Needs only topology and width (not river_depth_m), so it runs before rule
-modelled_depth_estimation and before burn_river_rect (build_sfincs).
+Needs only topology and width (not river_depth_m), so it runs in rule
+enforce_river_monotonicity, before rule modelled_depth_estimation.
 """
 
 from __future__ import annotations

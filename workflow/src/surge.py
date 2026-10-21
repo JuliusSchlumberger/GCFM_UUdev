@@ -559,6 +559,18 @@ def apply_slr_fingerprint(
     return result
 
 
+def preview_station_rp_yr(surge_rp_yr: int | str | None) -> int:
+    """Return the COAST-RP RP (yr) that fills rule 07's per-station preview columns.
+
+    A numeric surge_rp_yr is returned unchanged. 'Tide' and None have no
+    storm-tide RP, so the smallest tabulated RP keeps storm_tide_at_rp_m
+    defined; the production boundary (rule 13) never reads that column.
+    """
+    if surge_rp_yr is None or isinstance(surge_rp_yr, str):
+        return _COASTRP_RPS[0]
+    return surge_rp_yr
+
+
 def load_coastrp_stations(
     nc_path: str,
     rp_yr: int,

@@ -508,7 +508,7 @@ def plot_protection_levels(
     wri_geogunit_107 raster is read.
     """
     import pandas as pd
-    import shapely.vectorized
+    import shapely
     import xarray as xr
     from shapely.geometry import box as _box
 
@@ -541,7 +541,7 @@ def plot_protection_levels(
     )
 
     lon_grid, lat_grid = np.meshgrid(lon_vals, lat_vals)
-    inside = shapely.vectorized.contains(delta_polygon_wgs84, lon_grid, lat_grid)
+    inside = shapely.contains_xy(delta_polygon_wgs84, lon_grid, lat_grid)
     # xarray decodes _FillValue to NaN, so isfinite drops fill pixels.
     valid = inside & np.isfinite(arr)
 
@@ -619,8 +619,10 @@ def plot_domain_map(
 ) -> None:
     """Plot the model domain, river network, surge stations and river crossings.
 
-    Crossing points are coloured green when matched to a GloFAS cell (active)
-    and red when not matched (inactive).
+    Crossing points: green active; inactive as red crosses (enters and visible
+    on the grid but no GloFAS/EVA), purple (enters but narrower than the grid)
+    or orange (no downstream reach inside the domain). Without rule 07's filter
+    columns every inactive crossing is red.
     """
     lon_min, lat_min, lon_max, lat_max = bbox_poly.bounds
     margin = max(lon_max - lon_min, lat_max - lat_min) * 0.3
@@ -752,7 +754,7 @@ def plot_domain_map(
 def plot_forcing_timeseries(
     surge_ds: xr.Dataset,
     river_ds: xr.Dataset,
-    rp_yr: int,
+    rp_yr: int | str | None,
     output_path: str,
 ) -> None:
     """Plot surge water level (left) and river discharge (right) forcing timeseries.
@@ -774,7 +776,12 @@ def plot_forcing_timeseries(
 
     ax1.set_xlabel("Time (hours since start)")
     ax1.set_ylabel("Water level (m, GOCO06s frame)")
-    ax1.set_title(f"Surge forcing — RP{rp_yr} ({water_level_m.shape[0]} stations)")
+    rp_label = (
+        f"surge_rp_yr={rp_yr}"
+        if rp_yr is None or isinstance(rp_yr, str)
+        else f"RP{rp_yr}"
+    )
+    ax1.set_title(f"Surge forcing — {rp_label} ({water_level_m.shape[0]} stations)")
     ax1.grid(True, alpha=0.3)
 
     max_box = dict(boxstyle="round,pad=0.3", fc="white", ec="grey", alpha=0.85)
@@ -1000,7 +1007,7 @@ def plot_surge_corrections(
     dimensionless slr_fingerprint × slr_m, so only the fingerprint is
     annotated. The FLOPROS coastal level (weir crest floor, rule 13) has no bar.
 
-    Left panel — two sub-bars per station, each anchored at 0 m (local MSL):
+    Left panel — three sub-bars per station, each anchored at 0 m (local MSL):
       1. storm_tide_at_rp_raw_m — steelblue
       2. +MDT correction — darkorange; extends above 0 when MDT > 0, below 0 when MDT < 0
       3. Net peak (MDT-only) = rp_raw + MDT — navy
@@ -1211,7 +1218,7 @@ def plot_clean_network_discharge(
     )
     land = gpd.read_file(land_polygons_path, bbox=map_bounds)
 
-    col = "bankfull_discharge_acc"
+    col = "bankfull_discharge_acc_m3s"
     active = (
         rivers_wgs[rivers_wgs[col] > 0].copy()
         if col in rivers_wgs.columns
@@ -2035,10 +2042,10 @@ def plot_calibration_round_profiles(
     """Plot bed, weir crest and water level along one seed-to-mouth path.
 
     One subplot per round plus an all-rounds overlay. profiles_by_round maps
-    round_idx (0..n_rounds) to a DataFrame with 'along_path_m', 'dem',
-    'river_depth_m', 'weir_crest', 'zs' (src.river_depth_calibration.
-    gather_calibration_round_profile); the bed is dem - river_depth_m.
-    water_level_labels names the level stored in 'zs' per round (default:
+    round_idx (0..n_rounds) to a DataFrame with 'along_path_m', 'dem_m',
+    'river_depth_m', 'weir_crest_m', 'zs_m' (src.river_depth_calibration.
+    gather_calibration_round_profile); the bed is dem_m - river_depth_m.
+    water_level_labels names the level stored in 'zs_m' per round (default:
     period max); a subplot gets its own legend when its label differs from
     round 0's.
     """
@@ -2055,7 +2062,7 @@ def plot_calibration_round_profiles(
         df = profiles_by_round[round_idx]
         ax.plot(
             df["along_path_m"],
-            df["dem"],
+            df["dem_m"],
             color="grey",
             lw=1.0,
             ls=":",
@@ -2063,21 +2070,21 @@ def plot_calibration_round_profiles(
         )
         ax.plot(
             df["along_path_m"],
-            df["dem"] - df["river_depth_m"],
+            df["dem_m"] - df["river_depth_m"],
             color="steelblue",
             lw=1.4,
             label="river bed (excavated)",
         )
         ax.plot(
             df["along_path_m"],
-            df["weir_crest"],
+            df["weir_crest_m"],
             color="firebrick",
             lw=1.4,
             label="weir crest",
         )
         ax.plot(
             df["along_path_m"],
-            df["zs"],
+            df["zs_m"],
             color="black",
             lw=1.2,
             ls="-.",
@@ -2099,7 +2106,7 @@ def plot_calibration_round_profiles(
     df0 = profiles_by_round[0]
     ax.plot(
         df0["along_path_m"],
-        df0["dem"],
+        df0["dem_m"],
         color="black",
         lw=1.2,
         ls=":",
@@ -2111,7 +2118,7 @@ def plot_calibration_round_profiles(
         color = colors[round_idx]
         ax.plot(
             df["along_path_m"],
-            df["dem"] - df["river_depth_m"],
+            df["dem_m"] - df["river_depth_m"],
             color=color,
             lw=1.3,
             ls="-",
@@ -2119,7 +2126,7 @@ def plot_calibration_round_profiles(
         )
         ax.plot(
             df["along_path_m"],
-            df["weir_crest"],
+            df["weir_crest_m"],
             color=color,
             lw=1.3,
             ls="--",
@@ -2127,7 +2134,7 @@ def plot_calibration_round_profiles(
         )
         ax.plot(
             df["along_path_m"],
-            df["zs"],
+            df["zs_m"],
             color=color,
             lw=1.1,
             ls="-.",
@@ -2618,10 +2625,10 @@ def plot_inundation_check(
 ) -> None:
     """Plot the fraction of land pixels above an inundation threshold (rules 15, 16).
 
-    Left panel — map of max inundation depth using da_hmax.plot(), which reads
-                 the DataArray's own x/y coordinates so north-up orientation is
-                 handled automatically regardless of y-axis direction; the land
-                 outline and clean river network are overlaid for context.
+    Left panel — map of max inundation depth drawn with ax.imshow and an
+                 explicit extent from the DataArray's x/y coordinates, so it is
+                 north-up whatever the y-axis direction; the land outline and
+                 clean river network are overlaid for context.
     Right panel — bar chart of flooded vs dry pixel counts.
 
     da_hmax (downscale_floodmap) uses NaN for dry or outside the domain and

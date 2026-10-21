@@ -23,6 +23,7 @@ _EVA_CFG = {
     "bankfull_rp_yr": 2.0,
     "preview_rp_yr": 100.0,
     "ci_alpha": 0.95,
+    "n_boot": 200,
     "decorr_cut": 1.0 / np.e,
     "decorr_max": 30,
     "deseasonalize_for_decorr": True,
@@ -121,6 +122,25 @@ def test_analyse_cell_rp100_exceeds_rp2_with_ordered_ci(eva_result):
 
 def test_protection_rp_level_lies_between_rp2_and_rp100(eva_result):
     assert eva_result.q_rp2 < eva_result.q_protection < eva_result.q_rp100
+
+
+def test_protection_level_equals_discharge_rp_table_at_that_rp(eva_result):
+    res = eva_result
+    table = gpd_return_value_table(
+        res.pot_threshold,
+        res.pot_scale,
+        res.pot_shape,
+        res.pot_peaks_per_year,
+        np.array([20.0]),
+    )
+    assert res.q_protection == pytest.approx(table[0], rel=1e-12)
+
+
+def test_analyse_cell_requires_n_boot():
+    times, q = _daily_discharge(2)
+    cfg = {k: v for k, v in _EVA_CFG.items() if k != "n_boot"}
+    with pytest.raises(KeyError, match="n_boot"):
+        analyse_cell(times, q, cfg)
 
 
 def test_analyse_cell_short_record_is_skipped_with_nan_levels():

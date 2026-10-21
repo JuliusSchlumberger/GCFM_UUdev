@@ -1,7 +1,7 @@
 """Derive analysis quantities from SFINCS run map outputs (sfincs_map.nc).
 
 Each ``compute_*`` function returns data for the matching ``plot_*`` /
-``animate_*`` function in ``src.plots``.  ``postprocess_sfincs_output`` dispatches to these by keyword.
+``animate_*`` function in ``src.plots``; workflow scripts call them directly.
 """
 
 from __future__ import annotations

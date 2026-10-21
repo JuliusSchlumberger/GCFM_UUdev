@@ -10,15 +10,14 @@ All commands run from the repository root inside `<env>` (see
 
 ## Targets
 
-Always name the target. Without one Snakemake runs the first rule in
-`workflow/Snakefile`, which is `adapt`.
+Without a target Snakemake runs `all`.
 
 | target | rules | runs | needs |
 |---|---|---|---|
 | `preprocess` | 01-11 | domain, land use, terrain, protection levels, river network, forcing, model grid, river depth and crest calibration, diagnostic checks | input data under `<raw_data_root>`, SFINCS (rule 10 runs it) |
 | `build` | 13-17 | SFINCS skeleton, spin-up, per-scenario forcing, event runs, flood metrics | `preprocess` outputs, SFINCS |
 | `all` | 01-17 | `preprocess` and `build` | as above |
-| `adapt` | 18a-19 | adaptation strategies and their comparison | `build` outputs, adaptation geometries, `target_strategies` |
+| `adapt` | 13b, 18a-19 | adaptation lines, adaptation strategies and their comparison | `build` outputs, adaptation geometries, `target_strategies` |
 
 ```bash
 snakemake preprocess --cores 4 --config target_basins="[2433835]" target_scenarios="['default']"
@@ -57,13 +56,12 @@ wildcard. A `default` entry is required.
 |---|---|---|
 | `surge_rp_yr` | yes | COAST-RP return period (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000), `Tide` (average tide, needs `boundary_forcings.surge.hydrograph.enabled`), or null (no surge forcing) |
 | `river_rp_yr` | yes | return period in [2, 1000] years, `Mean` (mean discharge), or null (no discharge) |
-| `discharge_multiplier` | yes | factor > 0 on the whole river hydrograph; 1.0 = unscaled |
 | `slr_m` | yes | global-mean sea-level rise (m), scaled per station by its AR6 fingerprint; 0 = none |
 | `event` | adaptation runs only | `coastal`, `river` or `compound`: picks the per-event parameter values of a strategy; every scenario in `config/scenarios.yml` sets it |
 
 The forcing mode follows from the two return periods: both set (including `Tide`
 or `Mean`) is `compound`, one set is `coastal_only` or `river_only`, both null is
-an error. Return periods, `discharge_multiplier` and `slr_m` are applied when the
+an error. Return periods and `slr_m` are applied when the
 scenario is built (rule 13), so adding or changing a scenario reruns only that
 scenario's build, event run and metrics, never preprocessing or the spin-up.
 
@@ -74,20 +72,26 @@ of `spinup_days` at constant mean discharge and calm sea; every scenario's event
 run starts from its restart file at `tref + spinup_days`. With
 `enabled: false`, rules 14 and 15 are skipped and each event run starts at
 `tref` from the skeleton's initial water level (sea cells at the calm-sea level,
-land dry). The `adapt` target still needs the spin-up outputs.
+land dry). The `adapt` target requires `enabled: true`: its rules read the
+spin-up restart and the spin-up map.
 
 ## Adaptation runs
 
 `adapt` needs, for every selected basin and scenario:
 
-- the `build` outputs, including the spin-up restart and spin-up map;
+- `sfincs.spinup.enabled: true` (with `target_strategies` set and the spin-up
+  off, the workflow stops at DAG construction) and the `build` outputs,
+  including the spin-up restart and spin-up map;
 - for strategies whose measures have `locations:`, the geometry files under
   `<raw_data_root>` listed in [data.md](data.md#adaptation-geometries) (for
   example `advance` needs `adaptation_ebro/offshore_island.geojson`);
   `accommodate` and `retreat` need none;
-- for `grey_protect_open` and `protect_closed`, the lines written by
-  `tools/build_adaptation_lines.py` from the basin's SFINCS skeleton (run by hand
-  after `build`; rerun when the grid changes);
+- nothing extra for `locations: auto/<name>` (`grey_protect_open`,
+  `protect_closed`): rule `build_adaptation_lines` (13b) derives these lines from
+  the basin's skeleton into `<results_dir>/{basin_id}/adaptation_lines/`, and
+  reruns with the skeleton. Review `adaptation_lines.png` there. The rule fails if
+  a mouth closure does not seal its river; `--keep-incomplete` keeps the figure
+  for inspection;
 - an `event` key on each scenario;
 - for the attribution mask (rule 18c, used by `post` and by water-retention
   measures): a river-only sibling scenario with the same `river_rp_yr` and
@@ -95,11 +99,12 @@ land dry). The `adapt` target still needs the spin-up outputs.
   and `river_rp_yr: null`.
 
 ```bash
-snakemake adapt --cores 4 --config target_basins="[2433835]" target_scenarios="['compound_100']" target_strategies="['accommodate_1']"
+snakemake adapt --cores 4 --config target_basins="[2433835]" target_scenarios="['compound_100']" target_strategies="['advance_1']"
 ```
 
-`accommodate_1` (urban raising) needs no geometry file, and `compound_100` has
-the siblings `river_only_100` and `coast_only_100`. On an empty `<results_dir>`
+`advance_1`, the smallest adaptation case, reads
+`adaptation_ebro/offshore_island.geojson`, and `compound_100`
+has the siblings `river_only_100` and `coast_only_100`. On an empty `<results_dir>`
 the dry run (`-n`) of this command lists 37 jobs, including `preprocess` and the
 `build` of all three scenarios.
 

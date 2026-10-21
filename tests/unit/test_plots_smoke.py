@@ -73,10 +73,10 @@ def _round_profile():
     return pd.DataFrame(
         {
             "along_path_m": along,
-            "dem": [2.0, 1.0, 0.0],
+            "dem_m": [2.0, 1.0, 0.0],
             "river_depth_m": [1.5, 1.0, 0.0],
-            "weir_crest": [3.0, 2.0, np.nan],
-            "zs": [2.5, 1.5, 0.2],
+            "weir_crest_m": [3.0, 2.0, np.nan],
+            "zs_m": [2.5, 1.5, 0.2],
         }
     )
 

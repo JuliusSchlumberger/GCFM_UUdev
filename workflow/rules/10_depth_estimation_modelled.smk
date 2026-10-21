@@ -25,8 +25,8 @@ rule modelled_depth_estimation:
         # On this rule's grid; no reprojection.
         landuse_on_grid          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_on_grid.tif"),
         roughness_on_grid        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness_on_grid.tif"),
-        # Real, steady coastal baseline (mean sea level + SLR/MDT
-        # correction) for the water-level boundary.
+        # Real, steady coastal baseline (calm sea level, MDT-corrected; SLR is
+        # applied at build time) for the water-level boundary.
         surge_forcing            = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         # Where a non-seed, non-mouth, non-bifurcation reach crosses the delta
         # outline (flow leaves without reaching a coastal mouth): free outflow

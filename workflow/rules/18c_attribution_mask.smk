@@ -9,7 +9,7 @@ rule attribution_mask:
     input:
         river_tif    = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{attribution_counterparts(wildcards.scenario)[0]}/visuals/max_flood_depth.tif"),
         coastal_tif  = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{attribution_counterparts(wildcards.scenario)[1]}/visuals/max_flood_depth.tif"),
-        # Spin-up (RP=1 river, calm sea) has no max_flood_depth.tif; the script
+        # Spin-up (mean river discharge, calm sea) has no max_flood_depth.tif; the script
         # derives one from sfincs_map.nc as rule 17 does.
         spinup_map_nc = results_path("{basin_id}/spin_up/sfincs_map.nc"),
         sea_mask      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
@@ -21,8 +21,8 @@ rule attribution_mask:
     output:
         attribution_mask_tif = results_path("{basin_id}/runs/{scenario}/attribution_mask.tif"),
         attribution_mask_png = results_path("{basin_id}/runs/{scenario}/attribution_mask.png"),
-        # classes=(1,3), i.e. everything but pure-coastal; read by rules 18a and
-        # 18b for water_retention sizing.
+        # classes=(1,3), i.e. river and compound (coastal and spin-up water
+        # excluded); read by rules 18a and 18b for water_retention sizing.
         baseline_excess_volume = results_path("{basin_id}/runs/{scenario}/baseline_excess_volume.json"),
     params:
         skeleton_root   = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),

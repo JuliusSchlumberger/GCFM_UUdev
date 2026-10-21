@@ -1,88 +1,9 @@
 # TODO
 
-## Open decisions and follow-ups
+Decision table; mark each row's decision. Previous table: git show 580633b:TODO.md
 
-- docs (cold start, major): every dry run, incl. `preprocess` (rule 10 resolves the SFINCS path), needs `sfincs_exe` set in config/site.yml; docs say only solver rules need it. State in README step 3 and docs/install.md "Verifying the install" that any path works for `-n`.
-- docs (cold start, minor): `pre-commit run --all-files` needs a git clone plus `pre-commit install`; say so next to the command in README and docs/install.md.
-- docs (cold start, minor): give the expected `pytest -q` result (274 passed, ~2 min) in docs/install.md and README checks.
-- docs/install.md:78: "other SFINCS versions: <to be documented>" placeholder; fill in or drop the row.
-- URGENT <raw_data_root>/SWORD/SWORD_global_v17c_unpublished_modified.gpkg: partly rewritten (3 of 9 WIDTH_CHANGES applied) by an accidental `--help` run; rebuild with `python tools/prepare_modified_sword_dataset.py` (copies the intact original, applies all fixes) before the next rule 06 run.
-- DECIDE data columns still without units: rule 08 gpkg `bankfull_discharge_acc` (-> bankfull_discharge_acc_m3s?), 07c `storm_tide_level` (-> storm_tide_level_m?), calibration_state.csv `weir_crest`/`dem`/`zs` (-> *_m?).
-- CLAUDE.md:25: "Other protected paths: <unknown: ask>" still unresolved.
-- docs/gvf_discovery.md (+ docs/figures/gvf/): now visible as untracked since /docs/ is no longer ignored; session record: trim into a docs/ page or delete.
-- AUDIT Q14 (decided yes, not done): turn tools/build_adaptation_lines.py into a Snakemake rule (per-basin step after rule 13).
-- AUDIT phase 8 (remaining): LICENSE and CITATION.cff, cold-start check following README.
-- DECIDE <raw_data_root>/adaptation_ebro/offshore_island.geojson (config/adaptation_strategies.yml:22, `advance/offshore_barrier`) is missing on the data root (only advance_pumps, land_reclamation, water_retention_area_river, auto/); CLAUDE.md names advance_1 as the smallest adaptation case: supply the file or name another smallest case (docs/running.md uses accommodate_1 + compound_100, 37 jobs).
-- config/data_catalogue.yml:39 (protected): FathomDEM `source` says `tests/download_fathomdem.py`; the tool is tools/download_fathomdem.py (docs/data.md copies the text).
-- DECIDE config/data_catalogue.yml:725 (protected): `file_path: AVISO/...` vs folder `Aviso` on the data root; works on case-insensitive Windows, fails on Linux: rename the folder or the catalogue path.
+## Text
 
-- workflow/rules/18a_adapt_pre.smk:24, workflow/rules/18c_attribution_mask.smk:14: `adapt` still requires spin-up outputs (restart file, spin-up map); make it run with `sfincs.spinup.enabled: false` like `build`.
-- workflow/src/river_forcing.py:56: `_domain_entry_point` returns the touching Point when a reach only touches the domain boundary, so `resolve_inside_domain_reaches` keeps the outside reach instead of walking downstream as its docstring (:85) says; synthetic case gives inside_reach_id '1', expected '2'.
-- workflow/src/extreme_values.py:377,418: `n_boot=200` hard-coded; move to config. `q_protection` (pyextremes) differs ~1% from `gpd_return_value_table` on the same stored POT parameters (RP 5: 6004 vs 5954), so q_rp100 and discharge_rp_table may be slightly inconsistent.
-- workflow/src/sfincs_restart.py:69-73: `read_ind` docstring says it returns (rows, cols); it returns one array of 0-based flat Fortran-order indices.
-- workflow/src/domain.py:54, workflow/src/geometry.py:13: deprecated `.unary_union` (use `union_all()`); workflow/src/protection_levels.py:59, workflow/src/plots.py:544: deprecated `shapely.vectorized.contains` (use `shapely.contains_xy`).
-- analysis/check_adaptation_scaling.py:34: slices workflow/rules/00_common.smk by comment text ("# ---- Adding adaptation wildcard" to "def adaptation_input_path"); import the strategy expansion instead.
-- workflow/Snakefile:156: `adapt` is the first rule, so a bare `snakemake` runs `adapt`, not `all`; mark `rule all` (:190) `default_target: True` (changes the default target: decide).
-- tools/prepare_modified_sword_dataset.py:62: no argparse, so `--help` runs the job and overwrites SWORD_global_v17c_unpublished_modified.gpkg under the raw data root; add argparse.
-- tools/sync_environment.py: no argparse, so `--help` regenerates environment.win-64.lock.yml from the live env; add argparse.
-- analysis/*.py: no argparse or `main()`; `--help` runs each script (csi_pre_vs_post.py crashes: 'DataFrame' object has no attribute 'scale').
-
-## Docstrings and comments that contradict the code
-
-- workflow/src/postprocessing.py:4 | names `postprocess_sfincs_output` as dispatcher | no such function exists
-- workflow/src/adaptation_method_pre.py:213 | apply_river_levee: merge=False "the default here" | signature default is `merge=True`
-- workflow/src/adaptation_method_pre.py:3 | caller is 18_adapt_apply.py | callers are 18a_adapt_pre.py / 18b_adapt_post.py
-- workflow/src/adaptation_method_pre.py:1020 | file "read back by generate_risk_metrics()" | function does not exist
-- workflow/src/adaptation_method_pre.py:779 | cites "0.1 m ASCII round-trip truncation" of the weir | write_weir_file writes crests at 1 cm
-- workflow/src/adaptation_method_post.py:259 | caller is adaptation.py | caller is 18b_adapt_post.py
-- workflow/src/adaptation_method_post.py:791 | params come "from SimulationConfig" | no SimulationConfig in the repo
-- workflow/src/plots.py:620 | crossings green/red | code draws four classes (green, red, purple, orange)
-- workflow/src/plots.py:999 | "two sub-bars per station" | code draws three
-- workflow/src/plots.py:2610 | left panel uses `da_hmax.plot()` | code uses `ax1.imshow`
-- workflow/src/attribution_plot.py:113 | class 4 "plotted but not labelled" | :95 sets class 4 to NaN (not plotted)
-- workflow/src/profiling.py:18 | report suffix `_profile.txt` | writes `line_profiler_<stem>.txt`
-- workflow/src/raster.py:84 | uppercase N/E/S/W "also resolves on case-insensitive filesystems" | files are lowercase; match works only on case-insensitive filesystems
-- workflow/src/river_conditioning.py:15 | runs "before burn_river_rect (build_sfincs)" | burn_river_rect is not used (Snakefile:21)
-- workflow/src/river_conditioning.py:11 | flat burn is "rule 11b" | 11b is bifurcation_calibration_options
-- workflow/src/river_burn.py:78 | "see 11b_burn_river_dem.py" | no such script
-- workflow/src/river_burn.py:98 | stats has 3 keys | returns 4 (`n_boundaries_blended`)
-- workflow/src/river_network.py:27 | `_smoothed_weir_crest_profiles` in river_burn | does not exist
-- workflow/src/river_network.py:176 | connectivity "burn_river_rect relies on" | burn_river_rect not used
-- workflow/src/river_network.py:561 | run before `clip_anomalous_max_width` | function does not exist
-- workflow/src/river_network.py:738 | `tests/plot_width_max_width_heatmap.py` | file does not exist
-- workflow/src/river_network.py:762 | "rule boundary_forcings" | rule is `get_boundary_forcings`
-- workflow/src/river_depth_calibration.py:110 | refers to `check_convergence` | function does not exist
-- workflow/src/river_forcing.py:406 | hydrograph from bankfull_discharge | build_design_discharge_matrix uses mean_discharge
-- workflow/src/river_forcing.py:747 | "bankfull lead-in" | lead-in is mean_q
-- workflow/src/gvf_target.py:27 | per-reach isotonic regression repeated until junctions agree | enforce_non_increasing solves the whole graph in one pass (Hildreth)
-- workflow/src/protection_weir.py:549 | landuse resampled nearest-neighbour (09b) | 09b uses Resampling.mode
-- workflow/src/protection_weir.py:551,580 | names `correct_sea_mask_from_grid_mask`, `relabel_landuse_from_grid_mask` | neither exists
-- workflow/src/protection_weir.py:473 | `channel_mask_gap_free` caller is 13_build_sfincs.py | only 10_depth_estimation_modelled.py passes it
-- workflow/src/extreme_values.py:6,223 | config keys `boundary_forcings.eva` / `.bias_correction` | rule 07 passes `boundary_forcings.river.eva` / `.river.bias_correction`
-- workflow/scripts/09b_grid_align_landuse.py:10 | nearest-neighbour landuse, roughness from coarse grid | Resampling.mode; roughness area-averaged from source
-- workflow/scripts/05a_get_elevation.py:4 | zsini built in rule 05b | built in rule 13
-- workflow/scripts/05a_get_elevation.py:323 | "the subtraction" | code adds the MDT
-- workflow/scripts/05a_get_elevation.py:422 | "effectively unlimited max_search_distance" | capped at 100 px
-- workflow/scripts/07_get_boundary_forcings.py:432 | names rule `test_discharge_comparison` | no such rule
-- workflow/scripts/07_get_boundary_forcings.py:352 | crossing selected by flood_q | selected by `q_rp100`
-- workflow/scripts/10_depth_estimation_modelled.py:3,39,762 | "three fixed-duration runs", no restart/extension | round 0 continues until steady from restart files
-- workflow/scripts/10_depth_estimation_modelled.py:228; workflow/rules/10_depth_estimation_modelled.smk:28 | baseline includes SLR | baseline is MDT-only; SLR applied at build time
-- workflow/scripts/10_depth_estimation_modelled.py:1425 | landuse resampled nearest-neighbour | 09b uses mode
-- workflow/scripts/13_build_sfincs.py:318, workflow/Snakefile:91, workflow/rules/00_common.smk:220, 13_build_sfincs_skeleton.smk:4, 14_run_spinup.smk:2, 18c_attribution_mask.smk:12 | spin-up river at RP=1 | 14_run_spinup.py forces mean_discharge
-- workflow/scripts/11_test_upstream_boundary.py:410 | forcing points plotted "outside first" | index order
-- workflow/scripts/18a_adapt_pre.py:3 | "dike rings" as example measure | dike_ring is commented out
-- workflow/rules/07_boundary_forcings.smk:64 | slr_m is a param of run_spinup | run_spinup applies no SLR
-- workflow/rules/05_static_terrain_data.smk:27,68 | zsini.tif built by build_sfincs from sea_mask | built by build_sfincs_skeleton from zsini_sea_cells_on_grid.tif
-- workflow/rules/03_land_polygons.smk:5 | every later step incl. river network takes land_polygons | rule 06 runs before 03 and does not
-- workflow/rules/09b_grid_align_landuse.smk:3 | roughness from coarse landuse_on_grid | area-averaged from native source
-- workflow/rules/18c_attribution_mask.smk:24 | classes (1,3) = everything but pure-coastal | class 4 (spin-up water) also excluded
-- workflow/rules/19_adapt_compare.smk:5 | covers SCENARIOS x STRATEGIES in play | script globs every flood_metrics.csv on disk
-- analysis/domain_figures.py:8-11 | outputs in results/2433835 incl. elevation/landuse maps | BASIN_ID 3279946; those saves commented out
-- analysis/flood_maps.py:3,13 | scenarios coast_500/river_500/compound_500; "section 3 below" | coast_100/river_500/compound_100c_500r; no section 3
-- analysis/results_figures.py:252 | "2x3 grid"; SLR line on coastal scenarios; "hydrographs" | 2x2; SLR scenario not in SCENARIOS; plots RP curves
-- workflow/scripts/13_build_sfincs.py:283: river_only scenarios still load the spin-up restart (sea held at calm level) although the docstring (:16-18) promises a uniform dry start against the -10.5 m boundary.
-- workflow/scripts/14_run_spinup.py:139: spin-up runs at unscaled mean discharge while the event lead-in is mean x discharge_multiplier (src/river_forcing.py:816): a step at the restart when the multiplier != 1.
-- workflow/rules/07_boundary_forcings.smk:50: rule 07 previews the default scenario's surge_rp_yr; a 'Tide' default would fail in src/surge.py:574 (f"{rp_yr:04d}"); validation in 00_common.smk accepts it.
-- config/config.yml:202-205, src/extreme_values.py:256: comments say the GRDC correlation diagnostic runs unconditionally; bias_correct_discharge returns before computing it when bias_correction.enabled is false.
-- workflow/scripts/13_build_sfincs.py:290-304: event sfincs.inp never sets storevel (spin-up hard-wires 0, 14_run_spinup.py:188); decide whether to pin it.
-- Stale docstrings/comments: 09b_grid_align_landuse.py:9-16 (nearest + lookup; code uses mode + area-average), 05a_get_elevation.py:19-22 (zsini built in 05b; built in rule 10 + skeleton), 10_depth_estimation_modelled.py:3,39-48 (fixed-duration rounds; round 0 runs until steady), config.yml:114 (period_max_zs; round0_level end_of_run), config.yml:287-288 and 00_common.smk:220 (spin-up at bankfull / RP=1; mean discharge), src/protection_levels.py:3-6 (protection subtracted from forcing; never), src/extreme_values.py:3 (bankfull RP 2 yr; config 1.5), config/data_catalogue.yml:106 (rule bifurcation_calibration_options; test_bifurcation_calibration_options) and the FathomDEM source naming tests/download_fathomdem.py (tools/).
+| id | file:line | issue (one line) | kind | effort | impact | recommendation |
+|---|---|---|---|---|---|---|
+| X57 | LICENSE; CITATION.cff | missing before sharing | text | S | repo shareable and citable | decide: licence; then fix |

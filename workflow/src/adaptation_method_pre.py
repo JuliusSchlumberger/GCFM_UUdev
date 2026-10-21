@@ -1,9 +1,9 @@
 """Pre-processing adaptation measures: each mutates an open SfincsModel in place.
 
-One function per measure type in config/measures.yml. Called by 18_adapt_apply.py,
+One function per measure type in config/measures.yml. Called by 18a_adapt_pre.py,
 once per measure in a strategy's config/adaptation_strategies.yml entry, via
-dispatch_rules(). Chaining across measures that both rebuild the subgrid
-(current_dep_subgrid forwarding) lives in 18_adapt_apply.py.
+dispatch_rules(). Measures that rebuild the subgrid all start from the
+skeleton's dep_subgrid.tif, passed in by 18a_adapt_pre.py.
 
 water_retention's baseline_excess_volume is computed once per basin x scenario by
 rule attribution_mask (src.postprocessing.compute_excess_volume) and read from its
@@ -210,9 +210,8 @@ def apply_river_levee(
 
     Used by protect_open strategies alongside a sibling coastal_levee measure,
     each independently raising its own portion of the weir to its own
-    elevation. merge=False (the default here matches apply_coastal_levee's
-    own default expectation for this use case, even though it's spelled
-    merge: false explicitly in every strategy that uses it) does the SAME
+    elevation. The signature default is merge=True; every strategy that uses
+    this measure sets merge: false, which does the SAME
     replace-matched/preserve-the-rest merge as apply_coastal_levee -- NOT
     hydromt_sfincs's own plain mod.weirs.create(merge=False), which would
     wholesale replace the ENTIRE current weir (including whatever a
@@ -776,8 +775,8 @@ def apply_coastal_levee(
     hydromt_sfincs's plain concatenation; only this branch supports dep/dz crests.
     elevation: crest [m above datum], or current_protection's
     {"current": True, "fill_crest": x} (merge=False only; see _levee_crests).
-    max_match_distance_m: 2.0 m clears the baseline weir's 0.1 m ASCII round-trip
-    truncation and editing/reprojection noise while staying well under half a grid
+    max_match_distance_m: 2.0 m clears the baseline weir's 1 cm crest rounding
+    (src.sfincs_run.write_weir_file) and editing/reprojection noise while staying well under half a grid
     cell; too tight silently leaves old segments in place.
     """
     if merge:
@@ -1017,7 +1016,7 @@ def apply_retreat(
     flood_map_path: str | None = None,
     flood_threshold: float = 0.05,
     nr_subgrid_pixels: int | None = None,
-    out_path: str = "retreat_landuse.tif",  # written under mod.root; read back by generate_risk_metrics()
+    out_path: str = "retreat_landuse.tif",  # written under mod.root; read by rule adapt_flood_metrics_pre
     **kwargs,
 ) -> SfincsModel:
     """Convert flooded urban cells to `target_code` land use (managed retreat).
@@ -1159,7 +1158,7 @@ def dispatch_rules(
 ) -> SfincsModel:
     """Validate params and call the measure function for `measure_type`.
 
-    Entry point called by 18_adapt_apply.py. Validates params against
+    Entry point called by 18a_adapt_pre.py. Validates params against
     measure_def (config/measures.yml), then looks up and calls the matching
     rule function with named params. `mod`'s root is already redirected to the
     adaptation run's output directory.

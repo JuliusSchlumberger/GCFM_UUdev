@@ -16,7 +16,7 @@ rule adapt_metrics_post:
         delta_polygon  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
         land_mask_on_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),  # plot background
         river_network  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
-        measure_data   = lambda wildcards: strategy_measure_input_paths(wildcards.strategy),
+        measure_data   = lambda wildcards: strategy_measure_input_paths(wildcards.strategy, wildcards.basin_id),
         # For run-time-derived strategy params, as in rule adapt_apply_pre.
         baseline_sfincs_inp = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs.inp"),
         skeleton_weir       = results_path("{basin_id}/sfincs_skeleton/sfincs.weir"),
@@ -25,7 +25,7 @@ rule adapt_metrics_post:
         metrics_csv   = results_path("{basin_id}/runs/{scenario}/adaptation/post/{strategy}/flood_metrics.csv"),
         plot_inundation_ratio    = results_path("{basin_id}/runs/{scenario}/adaptation/post/{strategy}/01_inundation_ratio.png")
     params:
-        strategy_def         = lambda wildcards: strategy_def_for(wildcards.strategy, wildcards.scenario),
+        strategy_def         = basin_strategy_def,
         measures_def         = MEASURES_DEFS,
         adaptation_root      = ADAPT_CATALOGUE_ROOT,
         baseline_sfincs_root = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),

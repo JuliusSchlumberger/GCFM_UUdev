@@ -256,7 +256,7 @@ def apply_water_retention(
     (compute_excess_volume, classes=(1, 3)), auto-injected by 18b_adapt_post.py and
     shared with src.adaptation_method_pre.apply_water_retention, so storage_fraction
     means the same in both methods. In a chained post-processing pipeline (see
-    adaptation.py) `flood_map_path` may already reflect earlier measures; depths are
+    18b_adapt_post.py) `flood_map_path` may already reflect earlier measures; depths are
     reduced from it as given, but the volume sizing stays pinned to the baseline.
     The realized removed volume is reported next to the nominal target.
     scenario_root: the scenario's sfincs/ root; attribution_mask.tif is in its parent.
@@ -782,13 +782,14 @@ def dispatch_rules(
 ) -> dict:
     """Validate params and call the post-processing function for `measure_type`.
 
-    Entry point called by adaptation.py for post-processing method.
+    Entry point called by 18b_adapt_post.py for the post-processing method.
     landuse_path: read only by apply_retreat.
     strategy_measures: the strategy's full measures dict
     (config/adaptation_strategies.yml), passed through unvalidated, so
     apply_coastal_levee/apply_river_levee can decide compound (class 3) flooding
     jointly.
-    **params: named parameter values from SimulationConfig (e.g. height=2.0)
+    **params: the measure's parameters from the strategy entry in
+    config/adaptation_strategies.yml (e.g. height=2.0)
     Returns {"method": ..., "out_raster": adapted flood map path}.
     """
     if measure_type not in selected_measures:

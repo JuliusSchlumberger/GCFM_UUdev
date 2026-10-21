@@ -10,7 +10,7 @@ from shapely.ops import nearest_points
 
 def pick_utm_crs(gdf: gpd.GeoDataFrame) -> str:
     """Return the UTM EPSG code (326xx north, 327xx south) at the GeoDataFrame centroid."""
-    centroid = gdf.to_crs("EPSG:4326").geometry.unary_union.centroid
+    centroid = gdf.to_crs("EPSG:4326").geometry.union_all().centroid
     lon, lat = centroid.x, centroid.y
     zone = int((lon + 180) // 6) + 1
     epsg = 32600 + zone if lat >= 0 else 32700 + zone

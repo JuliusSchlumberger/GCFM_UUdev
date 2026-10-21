@@ -16,10 +16,9 @@
 5.  Write elevation_merged.tif (nodata -9999).
 6.  Diagnostic maps: elevation, geoid offset, MDT, both datum-correction deltas.
 
-zsini.tif is NOT produced here — it needs the land/water-body distinction
-(landuse), which rule get_landuse (05b) already computes
-for its own reprojection step, so the full zsini is built there instead of
-splitting the land-mask computation across two rules.
+zsini.tif is NOT produced here: rule modelled_depth_estimation (10) writes
+its sea cells (zsini_sea_cells_on_grid.tif) and rule build_sfincs_skeleton
+turns them into zsini.tif.
 """
 
 import json
@@ -320,7 +319,7 @@ plot_mdt_ocean(
 log.info(f"Plot written: {_out_mdt}")
 
 # Extrapolate MDT over land (IDW + light smoothing) before resampling.
-# Without this, the subtraction only affects pixels that happen to overlap
+# Without this, adding the MDT only affects pixels that happen to overlap
 # an ocean MDT cell, leaving land-side GEBCO gap-fill pixels unconnected from
 # sea-level information.
 n_ocean = int((~np.isnan(mdt_np)).sum())
@@ -419,7 +418,7 @@ if _remaining.any():
     fillnodata(merged, mask=~_remaining,
                max_search_distance=_GAP_FILL_MAX_SEARCH_PX)
 # fillnodata's mask only distinguishes "has data" from "no data" -- with no
-# notion of "outside domain_poly", an effectively unlimited max_search_distance
+# notion of "outside domain_poly", so even the 100 px max_search_distance
 # would otherwise extrapolate valid elevation all the way out to the
 # rectangular bbox edges. Re-clamp to NaN outside the polygon regardless of how
 # far the fill reached.

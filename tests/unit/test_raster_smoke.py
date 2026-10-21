@@ -69,13 +69,13 @@ def test_reproject_nan_aware_constant_field_stays_constant_near_nan_edge():
     assert np.allclose(out[np.isfinite(out)], 3.0, atol=1e-5)
 
 
-def test_find_fathomdem_tiles_returns_only_existing_tiles(tmp_path):
-    for name in ["N51E003.tif", "S01W090.tif"]:
+def test_find_fathomdem_tiles_returns_only_existing_lowercase_tiles(tmp_path):
+    for name in ["n51e003.tif", "s01w090.tif"]:
         (tmp_path / name).touch()
     tiles = find_fathomdem_tiles(tmp_path, (3.2, 51.2, 4.8, 52.5))
-    assert [Path(p).name for p in tiles] == ["N51E003.tif"]
+    assert [Path(p).name for p in tiles] == ["n51e003.tif"]
     tiles_sw = find_fathomdem_tiles(tmp_path, (-89.5, -0.5, -89.2, -0.2))
-    assert [Path(p).name for p in tiles_sw] == ["S01W090.tif"]
+    assert [Path(p).name for p in tiles_sw] == ["s01w090.tif"]
 
 
 def test_merge_tiled_raster_keeps_pixel_lattice_dtype_and_nodata(tmp_path):

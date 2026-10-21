@@ -1,7 +1,7 @@
 # Rule: build the scenario-independent SFINCS skeleton once per basin: grid,
 # elevation, masks, coastal protection weir, roughness, subgrid, observation
 # points and zsini. All inputs are basin-level and RP-independent. Rules
-# build_sfincs and run_spinup (RP=1 river, calm sea) reference its geometry
+# build_sfincs and run_spinup (mean river discharge, calm sea) reference its geometry
 # files by relative path.
 #
 # Every grid input is resampled onto the SFINCS grid exactly once, upstream:

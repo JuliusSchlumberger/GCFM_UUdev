@@ -1,5 +1,6 @@
 """Shared paths and helpers for the stand-alone analysis scripts in analysis/."""
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -17,9 +18,21 @@ def site_path(key: str) -> Path:
     return Path(site_setting(key))
 
 
-def basin_id_from_argv() -> str:
-    """Return the basin id given as the first CLI argument, else DEFAULT_BASIN_ID."""
-    return sys.argv[1] if len(sys.argv) > 1 else DEFAULT_BASIN_ID
+def script_parser(doc: str | None) -> argparse.ArgumentParser:
+    """Return an argument parser whose help text is the script's module docstring."""
+    return argparse.ArgumentParser(
+        description=doc, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+
+def add_basin_id_argument(parser: argparse.ArgumentParser) -> None:
+    """Add the optional positional basin_id (default DEFAULT_BASIN_ID)."""
+    parser.add_argument(
+        "basin_id",
+        nargs="?",
+        default=DEFAULT_BASIN_ID,
+        help=f"basin id (default: {DEFAULT_BASIN_ID})",
+    )
 
 
 def first_existing(candidates: list[Path]) -> Path:

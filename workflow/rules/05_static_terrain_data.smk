@@ -24,8 +24,8 @@ rule get_elevation:
       6. Diagnostic elevation + datum-correction maps.
 
     sea_mask.tif is built in rule get_landuse (05b). The actual initial water
-    level (zsini.tif) is built later, in rule build_sfincs (13), once
-    calm_sea_level_m is known.
+    level (zsini.tif) is built later, in rule build_sfincs_skeleton, from
+    zsini_sea_cells_on_grid.tif (rule 10).
     """
     input:
         spec_basins_meta        = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
@@ -65,8 +65,8 @@ rule get_landuse:
     criterion as src.protection_weir's ocean_mask, so no cell starts wet
     outside the weir. land_polygons is used for plot backgrounds only.
     sea_mask.tif is a pure classification, not the initial water level
-    itself -- rule build_sfincs (13) turns it into zsini.tif once
-    calm_sea_level_m is known."""
+    itself; zsini.tif is built by rule build_sfincs_skeleton from
+    zsini_sea_cells_on_grid.tif (rule 10)."""
     input:
         spec_basins_meta = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
         domain_gpkg      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),

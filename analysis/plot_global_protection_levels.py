@@ -22,15 +22,16 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
-from _common import REPO_ROOT  # noqa: E402
+from _common import REPO_ROOT, script_parser  # noqa: E402
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
 from src.io import load_catalogue, raw_input_path
 from src.plots import _save
 from src.protection_levels import load_flopros_table
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
+
+FIGS_DIR = REPO_ROOT / "figs" / "protection_levels"
 
 
 def plot_global_protection_map(
@@ -99,34 +100,44 @@ def plot_global_protection_map(
         _save(fig, output_path)
 
 
-FIGS_DIR = REPO_ROOT / "figs" / "protection_levels"
-FIGS_DIR.mkdir(parents=True, exist_ok=True)
+def main() -> None:
+    """Run the FLOPROS map rendering for river and coast."""
+    script_parser(__doc__).parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-with open(REPO_ROOT / "config" / "config.yml") as fh:
-    config = yaml.safe_load(fh)
+    FIGS_DIR.mkdir(parents=True, exist_ok=True)
 
-catalogue = load_catalogue(config["data_catalogue"])
-flopros_path = raw_input_path(catalogue, "protection_levels_flopros")
+    with open(REPO_ROOT / "config" / "config.yml") as fh:
+        config = yaml.safe_load(fh)
 
-log.info(f"Loading FLOPROS table: {flopros_path}")
-flopros_df = load_flopros_table(flopros_path)
-log.info(
-    f"Loaded {len(flopros_df)} geounit(s), "
-    f"{flopros_df['ISO'].nunique()} distinct ISO3 code(s), "
-    f"Riverine: {flopros_df['Riverine'].notna().sum()} populated, "
-    f"Coastal: {flopros_df['Coastal'].notna().sum()} populated"
-)
+    catalogue = load_catalogue(config["data_catalogue"])
+    flopros_path = raw_input_path(catalogue, "protection_levels_flopros")
 
-log.info("Fetching Natural Earth country boundaries (50m, cached after first run)...")
-countries_path = shpreader.natural_earth(
-    resolution="50m", category="cultural", name="admin_0_countries"
-)
-countries_gdf = gpd.read_file(countries_path)
-log.info(f"Loaded {len(countries_gdf)} country polygon(s)")
+    log.info(f"Loading FLOPROS table: {flopros_path}")
+    flopros_df = load_flopros_table(flopros_path)
+    log.info(
+        f"Loaded {len(flopros_df)} geounit(s), "
+        f"{flopros_df['ISO'].nunique()} distinct ISO3 code(s), "
+        f"Riverine: {flopros_df['Riverine'].notna().sum()} populated, "
+        f"Coastal: {flopros_df['Coastal'].notna().sum()} populated"
+    )
 
-riverine_path = FIGS_DIR / "global_protection_levels_riverine.png"
-coastal_path = FIGS_DIR / "global_protection_levels_coastal.png"
-plot_global_protection_map(
-    flopros_df, countries_gdf, str(riverine_path), str(coastal_path)
-)
-log.info(f"Plots written: {riverine_path}, {coastal_path}")
+    log.info(
+        "Fetching Natural Earth country boundaries (50m, cached after first run)..."
+    )
+    countries_path = shpreader.natural_earth(
+        resolution="50m", category="cultural", name="admin_0_countries"
+    )
+    countries_gdf = gpd.read_file(countries_path)
+    log.info(f"Loaded {len(countries_gdf)} country polygon(s)")
+
+    riverine_path = FIGS_DIR / "global_protection_levels_riverine.png"
+    coastal_path = FIGS_DIR / "global_protection_levels_coastal.png"
+    plot_global_protection_map(
+        flopros_df, countries_gdf, str(riverine_path), str(coastal_path)
+    )
+    log.info(f"Plots written: {riverine_path}, {coastal_path}")
+
+
+if __name__ == "__main__":
+    main()

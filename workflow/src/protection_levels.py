@@ -1,9 +1,9 @@
 """Identify the existing flood protection standard of a delta (FLOPROS x WRI geounits).
 
 Returns the dominant (largest-area) geounit's riverine and coastal design
-return periods; the boundary-forcings rule subtracts the matching
-discharge/water level, since that protection is not represented in the DEM
-or any other input.
+return periods. Rule 07 turns the coastal one into the coastal protection
+crest; rule 10 calibrates the riverbank weirs at the riverine one's
+discharge. Nothing is subtracted from the forcing.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import logging
 
 import numpy as np
 import pandas as pd
-import shapely.vectorized
+import shapely
 import xarray as xr
 from shapely.geometry import Polygon
 
@@ -56,7 +56,7 @@ def _dominant_geounit_pixel_counts(
 
     lon_grid, lat_grid = np.meshgrid(lon_vals, lat_vals)
     # xarray CF-decodes the raster's _FillValue (-9999) to NaN, so isfinite excludes fill pixels.
-    inside = shapely.vectorized.contains(delta_polygon_wgs84, lon_grid, lat_grid)
+    inside = shapely.contains_xy(delta_polygon_wgs84, lon_grid, lat_grid)
     valid = inside & np.isfinite(arr)
 
     if not valid.any():

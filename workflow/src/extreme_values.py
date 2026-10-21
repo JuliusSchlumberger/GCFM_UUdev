@@ -1,9 +1,9 @@
 """Estimate GloFAS return-period discharges per cell and bias-correct against GRDC.
 
-Bankfull RP (default 2 yr): Block Maxima / GEV on annual maxima. Flood RP
-(default 100 yr): Peaks-Over-Threshold / GPD with autocorrelation-based
+Bankfull RP (bankfull_rp_yr, 1.5 yr): Block Maxima / GEV on annual maxima. Flood RP
+(preview_rp_yr, 100 yr): Peaks-Over-Threshold / GPD with autocorrelation-based
 declustering and iterative threshold search. Trend: Mann-Kendall + Sen's
-slope on annual maxima. Parameters come from config boundary_forcings.eva.
+slope on annual maxima. Parameters come from config boundary_forcings.river.eva.
 
 GRDC bias correction: where a gauge overlaps GloFAS long enough
 (min_overlap_days), empirical quantile mapping remaps the full GloFAS record
@@ -103,6 +103,7 @@ _THRESHOLD_KEYS = (
 )
 _EVA_KEYS = (
     "min_days",
+    "n_boot",
     "min_years_high_confidence",
     "fit_method",
     "bankfull_rp_yr",
@@ -246,7 +247,7 @@ def bias_correct_discharge(
 ) -> tuple[np.ndarray, dict | None]:
     """Bias-correct a GloFAS cell series against a GRDC station; return (values, diagnostics).
 
-    cfg: boundary_forcings.bias_correction (enabled, min_overlap_days,
+    cfg: boundary_forcings.river.bias_correction (enabled, min_overlap_days,
     tail_percentile). Skipped (input returned, diagnostics None) when disabled
     or the overlap is below min_overlap_days.
     """
@@ -374,7 +375,7 @@ def _gev_boot_ci(
     amax: np.ndarray,
     rp_yr: float,
     alpha: float,
-    n_boot: int = 200,
+    n_boot: int,
     c0: float | None = None,
     loc0: float | None = None,
     scale0: float | None = None,
@@ -415,7 +416,7 @@ def _gpd_boot_ci(
     ppy: float,
     rp_yr: float,
     alpha: float,
-    n_boot: int = 200,
+    n_boot: int,
     c0: float | None = None,
     scale0: float | None = None,
 ) -> tuple[float, float]:
@@ -541,6 +542,7 @@ def analyse_cell(
     bankfull_rp_yr = float(eva_cfg["bankfull_rp_yr"])
     preview_rp_yr = float(eva_cfg["preview_rp_yr"])
     ci_alpha = float(eva_cfg["ci_alpha"])
+    n_boot = int(eva_cfg["n_boot"])
     decorr_cut = float(eva_cfg["decorr_cut"])
     decorr_max = int(eva_cfg["decorr_max"])
     deseasonalize = bool(eva_cfg["deseasonalize_for_decorr"])
@@ -600,6 +602,7 @@ def analyse_cell(
             amax,
             bankfull_rp_yr,
             ci_alpha,
+            n_boot,
             c0=gev_params.get("c"),
             loc0=gev_params.get("loc"),
             scale0=gev_params.get("scale"),
@@ -651,14 +654,23 @@ def analyse_cell(
 
             eva_pot.fit_model(fit_method)
             res.q_rp100 = _rv(eva_pot, preview_rp_yr)
-            if protection_rp_yr is not None:
-                res.q_protection = _rv(eva_pot, protection_rp_yr)
             gpd_params = eva_pot.model.fit_parameters
             # pyextremes picks "genpareto" or "expon" by AIC; "expon" is the GPD
             # with c = 0, so a missing "c" means shape 0, not a failed fit.
             res.pot_shape = float(gpd_params.get("c", 0.0))
             # Kept for gpd_return_value_table (any RP without refitting).
             res.pot_scale = float(gpd_params.get("scale", np.nan))
+            if protection_rp_yr is not None:
+                # Same formula as discharge_rp_table, not pyextremes' own.
+                res.q_protection = float(
+                    gpd_return_value_table(
+                        res.pot_threshold,
+                        res.pot_scale,
+                        res.pot_shape,
+                        res.pot_peaks_per_year,
+                        np.array([protection_rp_yr], dtype=float),
+                    )[0]
+                )
 
             # Advisory: |c| > 0.5 is implausible for river-discharge tails.
             if np.isfinite(res.pot_shape) and abs(res.pot_shape) > 0.5:
@@ -684,6 +696,7 @@ def analyse_cell(
                 ppy,
                 preview_rp_yr,
                 ci_alpha,
+                n_boot,
                 c0=gpd_params.get("c"),
                 scale0=gpd_params.get("scale"),
             )

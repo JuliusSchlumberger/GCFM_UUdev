@@ -121,7 +121,7 @@ bed (`downscale_floodmap`) as `max_flood_depth.tif`, masks the sea, and writes
 (depth ≥ `metrics.hmin`), urban exposure (land use `metrics.urban_landuse_code`),
 mean and maximum depth, volume.
 
-**18a-19** adaptation; see [Adaptation](#adaptation).
+**13b, 18a-19** adaptation; see [Adaptation](#adaptation).
 
 ## Datums and vertical references
 
@@ -229,7 +229,7 @@ outline that are no seed, mouth or bifurcation, later the SFINCS outflow
 boundary, mask 3); drop reaches without any width; swap `width`/`max_width`
 where `max_width < width` (the 30 m `max_width` fill value is never swapped in);
 raise mouth widths to their widest upstream neighbour; accumulate
-`bankfull_discharge_m3s` into `bankfull_discharge_acc`. At a bifurcation
+`bankfull_discharge_m3s` into `bankfull_discharge_acc_m3s`. At a bifurcation
 discharge splits in proportion to arm width only (equally if all widths are
 zero); canal arms (SWORD lakeflag 2 on the arm's chain to the next junction,
 plus `river_processing.canal_routing.force_exclude`) get no share unless every
@@ -267,6 +267,64 @@ fitted to SWORD water-surface elevations at the mean discharge (Neal et al.,
 crests. Only this method writes a channel roughness
 (`river_processing.channel_manning_n`, 0.03); with `modelled` the channel takes
 the land-use roughness.
+
+- *Discharge.* GloFAS `mean_discharge_m3s` at the seed crossings, accumulated
+  through the network like the calibration discharge (summed at confluences,
+  width split at bifurcations, canal arms excluded). SWORD v17c levels are
+  long-term means of SWOT/altimetry observations, so they pair with the mean
+  discharge.
+- *Nodes* (`src.gvf_target`). Every `node_spacing_m` (500) along each reach,
+  ends included. Reach lines are reversed where they run upstream
+  (`orient_downstream`). Reach ends meeting at a junction share one node; ends
+  either side of a structure stay separate, so the level can drop across it.
+- *Target level.* SWORD `wse` (EGM2008, 0.1 m steps) plus N_EGM2008 −
+  N_GOCO06s at the reach, placed at the reach midpoint and interpolated along
+  the network to the nodes; smoothed over `target_smoothing_m` (5000), never
+  across a structure; made non-increasing downstream by a length-weighted
+  isotonic regression on the whole node graph (Hildreth's dual coordinate
+  ascent, so loops and junctions are solved together), then a final clip.
+- *Structures*, at junctions only: the level drops by more than
+  `step_threshold_m` (0.5), or either reach is a SWORD obstruction
+  (`obstr_type` 1-4, `use_sword_obstructions`) with a drop of at least
+  `structure_min_drop_m` (0.2), or the upstream reach is listed in
+  `structures`. A downstream rise above `step_threshold_m` is inconsistent data
+  and is cut likewise (`cut_rising_edges`).
+- *Node classes.* `water_body`: wider than `water_body.min_width_m` (1000) and
+  mostly sea class (fraction > `sea_class_fraction`, 0.5) or with the DEM at the
+  GEBCO floor; bed from the DEM, level from the target. `fixed_bed`: other
+  mostly-sea nodes; bed from the DEM, forward solve only. `invert`: bed
+  estimated.
+- *Forward model* (`src.gvf_solver`), rectangular channel of width w,
+  discharge Q, Manning n:
+  `dh/dx = (S0 − Sf) / (1 − Fr²)`, `Sf = n² Q² / (A² R^(4/3))`, `A = w h`,
+  `R = w h / (w + 2h)`, `Fr² = Q² / (g w² h³)`. Subcritical, integrated
+  upstream with RK4 (substeps ≤ 50 m), bed and width linear between nodes;
+  where Fr would reach `froude_cap` (0.95) the depth is held at that Froude
+  number and the node is flagged. Reaches are solved downstream first. The
+  downstream level of a reach is the simulated level at its end node (mean over
+  the downstream reaches at a bifurcation), the target above a structure,
+  `calm_sea_level_m` at a sea mouth, and the target at any other network end. A
+  network end is a sea mouth unless it is a free outflow (`is_delta_outflow`),
+  and only if its last node is `water_body`/`fixed_bed` or its target is within
+  `mouth_level_tol_m` (0.5) of sea level.
+- *Inversion.* Start from the Manning normal depth on the target slope (slope
+  at least `slope_floor`, 1e-5); nudge the bed `nudging.passes` (3) times by
+  `alpha` (1.0) × (target − simulated level); then, per reach downstream first,
+  bounded least squares on
+  `[η_sim − η_target ; ρ (S_bed / s_scale − 1) ; w_p (h − h_p) / h_p]` with
+  `least_squares.rho_m` (0.05) and `prior_weight_m` (0.05). The slope term pulls
+  the bed slope towards the target slope, not flat, and acts only between two
+  inverted beds; the prior term keeps the depth near normal depth h_p where a
+  near-flat target (tidal delta) carries no depth information.
+  `least_squares.apply`: `all`, `flagged` (reach level RMSE above `rmse_tol_m`,
+  0.10, after nudging) or `none`. Depth stays within `h_min_m`-`h_max_m`
+  (0.5-30) below the target.
+- *No-flow reaches* (Q ≤ `q_min_m3s`, 1.0: tidal side channels, canal arms)
+  cannot be inverted; their depth comes from a width-depth fit h = c w^b of the
+  inverted reaches, and their level is ignored at a junction with a flowing
+  reach.
+- The bed at each model centreline cell (`src.gvf.values_at_points`) is the
+  absolute bed elevation (GOCO06s) used as burn anchor.
 
 **Burn.** Each reach is burned independently from its own bed anchors
 (`src.river_burn.burn_river_channel`); junction anchors take the mean of the
@@ -327,8 +385,7 @@ GloFAS flood of the main inflow whose peak is nearest that level, scaled to it
 inflows carry their own discharge on the same dates times the same factor.
 `cosine` uses a synthetic wave of `period_hr` on the mean discharge. The event
 blends from the spin-up mean into the flood over
-`max(min_ramp_hr, gap / (max_rise_per_hr × peak))`. `discharge_multiplier` scales
-the whole hydrograph; `compound.lag_hr` shifts discharge relative to surge
+`max(min_ramp_hr, gap / (max_rise_per_hr × peak))`. `compound.lag_hr` shifts discharge relative to surge
 (positive = later); in `coastal_only` the discharge points stay with zero flow.
 
 **Surge.** Rule 07a picks 6-10 COAST-RP stations (deduplicated within 1 km,
@@ -393,6 +450,24 @@ number, a `{coastal, river, compound}` map picked by the scenario's `event`, a
 run-time value (`max_coastal_water_level`, `max_river_water_level`,
 `max_discharge`), `current_protection` (never scaled) or `{fixed: x}`. Every
 strategy and event combination is validated when the DAG is built.
+
+A measure's `locations` is a geometry under `<raw_data_root>`, or `auto/<name>`:
+a line that rule 13b `build_adaptation_lines` derives per basin from the
+skeleton's baseline weir (`src.adaptation_lines`), so it follows the grid's cell
+edges. Each weir segment is labelled by the water it faces: coast (open sea,
+plus sea-linked wetlands when `unprotected_ocean_wetlands`), river (channel), or
+for a segment between two land cells the water around the small merged island
+it faces. Every SWORD outlet
+reach gets a closure: the shortest straight crossing within 60° of perpendicular
+to the river at the outlet reach's upstream end that reaches protected land on
+both sides, snapped to cell edges. Sea cells the closures cut off from the open
+sea form the estuary; coast segments facing it become estuary banks. The pump
+line runs along the river centreline from 200 m upstream of the closure to the
+outlet reach's seaward end (inland to sea). Outputs: `coastal_protection_weir_PC`
+(coast + closures, `protect_closed`), `coastal_protection_weir_PO` (coast,
+`grey_protect_open`), `river_protection_weir_PO` (river and estuary banks) and
+`pump_river_mouth`. The rule fails when the river behind a closure is still
+connected to the open sea.
 
 | method | rule | approach |
 |---|---|---|

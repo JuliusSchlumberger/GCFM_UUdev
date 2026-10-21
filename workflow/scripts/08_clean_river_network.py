@@ -149,7 +149,7 @@ _excluded = canal_excluded_arms(
 )
 rivers_clean["zero_discharge_share"] = rivers_clean["reach_id"].map(normalize_reach_id).isin(_excluded)
 q_acc = accumulate_discharge(rivers_clean, seed_q, adjacency, excluded_arms=_excluded)
-rivers_clean["bankfull_discharge_acc"] = q_acc
+rivers_clean["bankfull_discharge_acc_m3s"] = q_acc
 log.info(
     f"Discharge propagation: {(q_acc > 0).sum()} reaches with Q > 0, "
     f"max Q = {q_acc.max():.2f} m³ s⁻¹" if len(q_acc) > 0 else

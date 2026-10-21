@@ -75,10 +75,11 @@ this repository and is licensed and obtained separately.
 | version | SFINCS v2.3.0 ("Faber" release), multithreaded build (`_mt`); the restart files follow the `sfincs.YYYYMMDD.HHMMSS.rst` naming |
 | source | Deltares SFINCS releases, https://github.com/Deltares/SFINCS/releases |
 | licence | see the SFINCS repository |
-| other versions | <to be documented> |
 | threads | each solver rule takes the whole `--cores` budget and sets `OMP_NUM_THREADS` for the SFINCS process |
 
-Point `sfincs_exe` in the site settings at the binary.
+Point `sfincs_exe` in the site settings at the binary. Every run, dry runs
+included, needs the key set (rule 10 resolves the path while the DAG is built);
+for `-n` any path works.
 
 ## Site settings
 
@@ -93,7 +94,7 @@ cp config/site.example.yml config/site.yml
 |---|---|---|---|
 | `results_dir` | `GCFM_RESULTS_DIR` | `<results_dir>`, where outputs are written | every run |
 | `raw_data_root` | `GCFM_RAW_DATA_ROOT` | `<raw_data_root>`, root of every `file_path` in `config/data_catalogue.yml` and every measure file in `config/adaptation_strategies.yml` | every run |
-| `sfincs_exe` | `GCFM_SFINCS_EXE` | `<sfincs_exe>`, the SFINCS binary | solver rules only |
+| `sfincs_exe` | `GCFM_SFINCS_EXE` | `<sfincs_exe>`, the SFINCS binary | every run, dry runs included (any path for `-n`) |
 
 For example:
 
@@ -143,8 +144,9 @@ pre-commit run --all-files           # ruff, pyright, pydocstyle, lock-file sync
 snakemake -n preprocess --cores 1 --config target_basins="[2433835]" target_scenarios="['default']"
 ```
 
-`pre-commit` needs the one-time setup under [Pre-commit](#pre-commit). The tests
-and the health check need no input data. Quick-look figure titles carry the git
+`pytest -q` reports 274 passed in about 2 minutes. `pre-commit` needs a git
+clone and the one-time `pre-commit install` under [Pre-commit](#pre-commit).
+The tests and the health check need no input data. Quick-look figure titles carry the git
 commit hash; outside a git clone (for example an unpacked ZIP) they show `nogit`
 and the tests still pass. The dry run needs the site
 settings and the delta polygons under `<raw_data_root>`; for basin `2433835`

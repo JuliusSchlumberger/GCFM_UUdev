@@ -78,9 +78,6 @@ def test_design_discharge_matrix_shape_non_negative_and_peaks_at_design_q():
     np.testing.assert_allclose(q.max(axis=1), [400.0, 50.0])
     np.testing.assert_allclose(q[:, 0], ds["mean_discharge_m3s"].values)
 
-    np.testing.assert_allclose(
-        build_design_discharge_matrix(ds, active, 100.0, 2.0), 2 * q
-    )
     assert np.all(build_design_discharge_matrix(ds, active, None) == 0)
     mean_discharge_m3s = build_design_discharge_matrix(ds, active, "Mean")
     np.testing.assert_allclose(
@@ -154,3 +151,22 @@ def test_boundary_crossing_resolves_to_first_reach_entering_domain():
     assert resolved.geometry.iloc[0].distance(Point(0.0, 0.5)) < 1e-12
     assert resolved.geometry.iloc[1] == Point(0.5, 3.0)
     assert resolved["width"].tolist() == [50.0, 30.0]
+
+
+def test_reach_touching_boundary_walks_to_downstream_reach():
+    domain = box(0.0, 0.0, 1.0, 1.0)
+    rivers = gpd.GeoDataFrame(
+        {"reach_id": [1, 2], "rch_id_dn": ["[2]", "[]"], "width": [50.0, 80.0]},
+        geometry=[
+            LineString([(-1.0, 0.5), (0.0, 0.5)]),  # ends on the boundary
+            LineString([(0.0, 0.5), (0.5, 0.5)]),
+        ],
+        crs="EPSG:4326",
+    )
+    crossings = gpd.GeoDataFrame(
+        {"reach_id": [1], "width": [50.0]}, geometry=[Point(0.0, 0.5)], crs="EPSG:4326"
+    )
+    resolved = resolve_inside_domain_reaches(crossings, rivers, domain)
+    assert resolved["inside_reach_id"].tolist() == ["2"]
+    assert resolved["width"].tolist() == [80.0]
+    assert resolved.geometry.iloc[0].distance(Point(0.0, 0.5)) < 1e-12

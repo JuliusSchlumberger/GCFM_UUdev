@@ -1,9 +1,9 @@
 rule get_land_polygons:
     """Vectorize the basin's land-use raster (landuse != 200, not sea), native WGS84.
 
-    Runs right after the land-use source is prepared (rule 02b) — every later
-    static-data step (elevation, landuse, river network) takes this file as an
-    input, so it has to exist before any of them, not alongside/after them.
+    Runs right after the land-use source is prepared (rule 02b). Rules 05
+    (elevation, landuse, roughness), plot_river_network, 07, 08 and 11 take
+    this file as an input; get_river_network does not.
 
     Figure background only, for figures made before the SFINCS grid exists
     (rules 04-09, 11b); from rule grid_align_landuse (09b) on, the grid-aligned

@@ -13,8 +13,8 @@ Site paths: `config/site.yml` (gitignored; copy `config/site.example.yml`), keys
 
 - `snakemake preprocess --cores N`: rules 01-11, terrain, forcing, depth and crest calibration
 - `snakemake build --cores N`: SFINCS build, spin-up, event run, flood metrics
-- `snakemake all --cores N`: preprocess + build; always name the target (a bare `snakemake` runs `adapt`, the first rule); any target takes `--config target_basins="[ID]" target_scenarios="['name']"`
-- `snakemake adapt --cores N --config target_strategies="['advance_1']"`: needs `build` done
+- `snakemake all --cores N`: preprocess + build; the default target (`default_target`), so a bare `snakemake` runs it; any target takes `--config target_basins="[ID]" target_scenarios="['name']"`
+- `snakemake adapt --cores N --config target_strategies="['advance_1']"`: needs `build` done; strategies with `auto/<name>` locations also run rule 13b `build_adaptation_lines` (writes `<results_dir>/{basin_id}/adaptation_lines/`)
 - `python tools/<script>.py`: one-off data preparation (not all parse `--help`: `prepare_modified_sword_dataset.py` runs and overwrites raw data)
 - `python analysis/<script>.py`: stand-alone figures and checks on finished results (no argparse; shared helpers in `analysis/_common.py`)
 - `python plot_dag.py`: rule graph to `figs/dag/`
@@ -24,20 +24,20 @@ Site paths: `config/site.yml` (gitignored; copy `config/site.example.yml`), keys
 - `raw_data_root` (read only) and `results_dir` (pipeline outputs), as set in `config/site.yml`
 - `config/config.yml`, `config/scenarios.yml`, `config/data_catalogue.yml`, `config/adaptation_strategies*.yml`, `config/measures.yml`
 - `environment.yml`, `environment.win-64.lock.yml`, `.pre-commit-config.yaml` (pinned versions); `config/site.yml` (machine paths)
-- Other protected paths: <unknown: ask>
+- Local, gitignored: `config/site.yml`, `CLAUDE.local.md`
 
 ## Smallest end-to-end case
 
 Basin `2433835` (Ebro delta), scenario `default`; adaptation: strategy `advance_1`.
-`advance_1` needs the per-basin adaptation geometries under `$GCFM_RAW_DATA_ROOT` (e.g. `adaptation_ebro/offshore_island.geojson`), missing on this machine.
+`advance_1` needs the per-basin adaptation geometries under `raw_data_root` (e.g. `adaptation_ebro/offshore_island.geojson`).
 
 ## Baselines (`.baseline/`, gitignored; recorded at the commit in `.baseline/git_head.txt`)
 
 | check | command | expected |
 |---|---|---|
-| lint | `ruff check . --statistics --no-fix` (ruff 0.13.0, pre-commit's copy) | 613 (F821: 568) |
-| unit tests | `pytest -q` | 263 passed (`needs_data` excluded; 0 marked) |
-| code health | `python tests/check_code_health.py` | OK, 76 files |
+| lint | `ruff check . --statistics --no-fix` (ruff 0.13.0, pre-commit's copy) | 629 (F821: 584) |
+| unit tests | `pytest -q` | 295 passed (`needs_data` excluded; 0 marked) |
+| code health | `python tests/check_code_health.py` | OK, 79 files |
 | quick-look figures | `pytest -q tests/unit/test_quicklook.py` | 19 PNGs in `.baseline/figures/` (synthetic delta) |
 | preprocess DAG | `snakemake -n preprocess --forceall --cores 1 --config target_basins="[2433835]" target_scenarios="['default']"` | 22 jobs |
 | build DAG | same, target `build` | 25 jobs |

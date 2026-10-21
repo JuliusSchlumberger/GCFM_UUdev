@@ -51,7 +51,7 @@ def load_domain(
 
     if domain_gpkg_path is not None:
         gdf = gpd.read_file(domain_gpkg_path).to_crs("EPSG:4326")
-        domain_poly = gdf.geometry.unary_union
+        domain_poly = gdf.geometry.union_all()
     else:
         domain_poly = box(*wgs84)
 

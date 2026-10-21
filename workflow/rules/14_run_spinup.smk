@@ -1,5 +1,5 @@
 # Rule: basin-level SFINCS spin-up producing the restart file every scenario's
-# event run uses, with the river at a fixed RP=1 and a calm sea (the level every
+# event run uses, with the river at its mean discharge and a calm sea (the level every
 # event's boundary lead-in starts at); independent of any design RP.
 
 rule run_spinup:

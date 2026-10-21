@@ -18,7 +18,7 @@ rule adapt_apply_pre:
         # water_retention sizing reference from rule attribution_mask (18c);
         # only required by strategies that use water_retention.
         baseline_excess_volume = water_retention_excess_volume_input,
-        measure_data       = lambda wildcards: strategy_measure_input_paths(wildcards.strategy),
+        measure_data       = lambda wildcards: strategy_measure_input_paths(wildcards.strategy, wildcards.basin_id),
         # Basin spin-up restart, copied into adapted_root (patched for
         # water_retention, whose zs was computed on the original terrain).
         rstart = results_path("{basin_id}/spin_up/" + RST_FNAME),
@@ -34,7 +34,7 @@ rule adapt_apply_pre:
         sea_mask   = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sea_mask.tif"),
         rstart     = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/" + RST_FNAME),
     params:
-        strategy_def       = lambda wildcards: strategy_def_for(wildcards.strategy, wildcards.scenario),
+        strategy_def       = basin_strategy_def,
         measures_def       = MEASURES_DEFS,
         baseline_sfincs_root = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),
         adaptation_root    = ADAPT_CATALOGUE_ROOT,
@@ -113,7 +113,7 @@ rule adapt_flood_metrics_pre:
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
         hmin = config["metrics"]["hmin"], urban_code = config["metrics"]["urban_landuse_code"],
         # Lets 17_flood_metrics.py exclude a water_retention zone from the metrics.
-        strategy_def    = lambda wildcards: strategy_def_for(wildcards.strategy, wildcards.scenario),
+        strategy_def    = basin_strategy_def,
         adaptation_root = ADAPT_CATALOGUE_ROOT,
     log: "logs/{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/17_flood_metrics.log"
     script: "../scripts/17_flood_metrics.py"

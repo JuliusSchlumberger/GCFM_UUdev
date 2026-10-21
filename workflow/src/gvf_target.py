@@ -24,8 +24,8 @@ Target level (``target_source: sword_wse``):
   to the nodes (towards the up- and downstream neighbours' midpoints).
 - Smoothed over ``target_smoothing_m`` (removes the 0.1 m quantisation), never
   across a structure.
-- Made non-increasing downstream (per-reach isotonic regression, repeated
-  until junctions agree, then a final clip).
+- Made non-increasing downstream (one weighted isotonic regression over the
+  whole node graph, enforce_non_increasing, then a final clip).
 
 Structures are only placed at reach junctions: the edge from reach u to its
 downstream reach d is a structure if the level drops by more than

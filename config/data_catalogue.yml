@@ -36,7 +36,7 @@ datasets:
       WGS84 geographic coordinates (EPSG:4326), 19,210 tiles globally.
       IMPORTANT: pixel values are stored as int32 CENTIMETERS, not meters
       (raster tags: VERTICAL_UNITS=centimeters) — divide by 100 to get meters.
-    source: "Uhe, P., Lucas, C., Hawker, L., Brine, M., Wilkinson, H., Cooper, A., Saoulis, A.A., Savage, J., & Sampson, C. (2025). FathomDEM: an improved global terrain map using a hybrid vision transformer model. Environmental Research Letters, 20, 034002. https://doi.org/10.1088/1748-9326/ada972 . Data: Zenodo record 14523356 (https://doi.org/10.5281/zenodo.14523356), restricted access via share-link token — see tests/download_fathomdem.py."
+    source: "Uhe, P., Lucas, C., Hawker, L., Brine, M., Wilkinson, H., Cooper, A., Saoulis, A.A., Savage, J., & Sampson, C. (2025). FathomDEM: an improved global terrain map using a hybrid vision transformer model. Environmental Research Letters, 20, 034002. https://doi.org/10.1088/1748-9326/ada972 . Data: Zenodo record 14523356 (https://doi.org/10.5281/zenodo.14523356), restricted access via share-link token — see tools/download_fathomdem.py."
     provider: gdal
     file_format: GeoTIFF
     file_path: FathomDEM/
@@ -45,9 +45,7 @@ datasets:
       Lowercase. {ns} is n or s, {ew} is e or w. {lat} (2-digit) and {lon}
       (3-digit) are the tile's SW-corner integer degrees (e.g. n00e010.tif
       spans 0°-1°N, 10°-11°E; s01w090.tif spans 1°-0°S, 90°-89°W). Matches
-      src.raster.find_fathomdem_tiles's fname construction (NTFS path
-      lookups are case-insensitive, so the function's uppercase N/E also
-      resolves these files on Windows).
+      src.raster.find_fathomdem_tiles's fname construction.
     tile_examples:
       - n00e010.tif
       - s01w090.tif
@@ -103,7 +101,7 @@ datasets:
     # wrong. This modified file is the pipeline's DEFAULT river network
     # source (rule get_river_network reads this entry directly). The
     # unmodified original is kept as the separate `river_network_original`
-    # entry, used by rule bifurcation_calibration_options (script
+    # entry, used by rule test_bifurcation_calibration_options (script
     # 11b_bifurcation_calibration_options.py) for a before/after comparison.
     # Geometry and rch_id_up/rch_id_dn topology are UNCHANGED from the
     # original -- only attribute values differ for the adjusted reaches.
@@ -183,7 +181,7 @@ datasets:
     # Unmodified SWORD v17c "unpublished" export -- same schema/feature
     # count as `river_network`, but WITHOUT the manual main_side/width
     # corrections. Used only for the "before" comparison in rule
-    # bifurcation_calibration_options; not read by any production rule
+    # test_bifurcation_calibration_options; not read by any production rule
     # (rule get_river_network reads `river_network`, the modified/default
     # version).
     description: SWORD (SWOT River Database) v17c "unpublished" export, global reach-level vector river network, unmodified.
@@ -722,7 +720,7 @@ datasets:
       validity range from the coast).
     source: "CNES-CLS22 MDT, AVISO+ altimetry data centre. https://doi.org/10.24400/527896/a01-2021.001"
     file_format: NetCDF
-    file_path: AVISO/mdt_hybrid_cnes_cls22_cmems2020_global.nc
+    file_path: Aviso/mdt_hybrid_cnes_cls22_cmems2020_global.nc
     crs:
       epsg: 4326
     variables:

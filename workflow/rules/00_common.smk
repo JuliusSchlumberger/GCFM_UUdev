@@ -5,6 +5,9 @@ import os
 from src.io import load_catalogue, catalogue_entry,read_geometry, raw_input_path, site_setting, require_keys
 from src.io import general_path as _gen_path
 from src.river_forcing import derive_forcing_mode
+from src.adaptation_strategies import (
+    ADAPTATION_LINE_NAMES, expand_strategies, location_path, with_auto_locations,
+)
 import geopandas as gpd
 
 import re as _re
@@ -159,15 +162,12 @@ for _name, _s in SCENARIO_DEFS.items():
             f"{_name}: river_rp_yr must be 'Mean', null, or in "
             f"[{_RIVER_RP_MIN}, {_RIVER_RP_MAX}] yr"
         )
-    require_keys(_s, ("discharge_multiplier", "slr_m"), f"{config['scenarios_file']}: {_name}")
-    _dm = _s["discharge_multiplier"]
-    if not _dm > 0:
-        raise ValueError(f"{_name}: discharge_multiplier must be > 0")
+    require_keys(_s, ("slr_m",), f"{config['scenarios_file']}: {_name}")
 
 def scenario_params(name):
-    """Return a scenario's mode, surge_rp_yr, river_rp_yr, discharge_multiplier and slr_m.
+    """Return a scenario's mode, surge_rp_yr, river_rp_yr and slr_m.
 
-    discharge_multiplier and slr_m (m) are per-scenario and read only by
+    slr_m (m) is per-scenario and read only by
     build_sfincs/adapt_build_forcing_pre, so changing them invalidates only
     that scenario.
     """
@@ -181,7 +181,6 @@ def scenario_params(name):
         "mode": mode,
         "surge_rp_yr": surge_rp_yr,
         "river_rp_yr": river_rp_yr,
-        "discharge_multiplier": s["discharge_multiplier"],
         "slr_m": s["slr_m"],
     }
 
@@ -217,8 +216,8 @@ _unknown = sorted(set(SCENARIOS) - set(SCENARIO_DEFS))
 if _unknown:
     raise ValueError(f"target_scenarios {_unknown} not defined in {config['scenarios_file']}")
 
-# Basin-level restart filename: run_spinup (14) always runs at a fixed RP=1
-# river + calm sea for spinup_days, so the file is shared by every scenario.
+# Basin-level restart filename: run_spinup (14) always runs at mean river
+# discharge + calm sea for spinup_days, so the file is shared by every scenario.
 # Defined here because rules 13, 14 and 16 all need it.
 from datetime import datetime as _datetime, timedelta as _timedelta
 
@@ -228,152 +227,51 @@ RST_FNAME   = f"sfincs.{_spinup_end.strftime('%Y%m%d.%H%M%S')}.rst"
 
 
 
-# ---- Adding adaptation wildcard (analysis/check_adaptation_scaling.py slices this file from here)
+# ---- Adaptation strategies: families x scales, see src.adaptation_strategies
 with open(config["adaptation"]["strategies_file"]) as _f:
     STRATEGY_DEFS_RAW = _yaml.safe_load(_f) or {}
 
-# Strategy measure files live under the catalogue's raw-data root (site setting raw_data_root).
+# Strategy measure files live under the catalogue's raw-data root (site setting
+# raw_data_root), except `auto/<name>` lines, built per basin by rule
+# build_adaptation_lines.
 ADAPT_CATALOGUE_ROOT = CATALOGUE["meta"]["root"]
 
 with open(config["adaptation"]["measures_file"]) as _f:
     _MEASURES_RAW = _yaml.safe_load(_f) or {}
-require_keys(_MEASURES_RAW, ("adaptation_measures",), config["adaptation"]["measures_file"])
-MEASURES_DEFS = _MEASURES_RAW["adaptation_measures"]
+
+_STRATEGY_EXPANSION = expand_strategies(
+    STRATEGY_DEFS_RAW,
+    _MEASURES_RAW,
+    SCENARIO_DEFS,
+    strategies_file=config["adaptation"]["strategies_file"],
+    measures_file=config["adaptation"]["measures_file"],
+    scenarios_file=config["scenarios_file"],
+)
+MEASURES_DEFS = _STRATEGY_EXPANSION.measures
+STRATEGY_FAMILIES = _STRATEGY_EXPANSION.families
+STRATEGY_DEFS = _STRATEGY_EXPANSION.defs
+strategy_def_for = _STRATEGY_EXPANSION.strategy_def_for
 
 
-# adaptation_strategies.yml holds strategy families written at scale 1; each
-# family expands into one {strategy} per entry of `scales` (0.4 -> <family>_04,
-# 0.9 -> <family>_09, 1.0 -> <family>_1). A param is multiplied by the scale
-# only when measures.yml flags it `scale: true`. A param value is one of:
-#   number                         same scale-1 value for every event type
-#   {coastal: .., river: .., compound: ..}
-#                                  scale-1 value per scenario `event` (scenarios.yml)
-#   one of _DERIVED_PARAMS         scale-1 value read from the scenario's own
-#                                  baseline run at run time (forcing/map files
-#                                  don't exist yet at DAG-build time), resolved
-#                                  by src.adaptation_scaling
-#   current_protection             today's baseline weir crest, never scaled
-#   {fixed: x}                     x, never scaled
+def adaptation_lines_dir(basin_id):
+    """Return the folder rule build_adaptation_lines writes a basin's lines to."""
+    return results_path(f"{basin_id}/adaptation_lines")
 
-_STRATEGY_EVENTS = ("coastal", "river", "compound")
-_DERIVED_PARAMS = {"max_coastal_water_level", "max_river_water_level", "max_discharge"}
-_UNSCALED_DERIVED_PARAMS = {"current_protection"}
-require_keys(STRATEGY_DEFS_RAW, ("scales",), config["adaptation"]["strategies_file"])
-_STRATEGY_SCALES = STRATEGY_DEFS_RAW["scales"]
-for _m, _mdef in MEASURES_DEFS.items():
-    require_keys(_mdef, ("params",), f"{config['adaptation']['measures_file']}: adaptation_measures.{_m}")
-_SCALABLE_PARAMS = {
-    (_m, _p)
-    for _m, _mdef in MEASURES_DEFS.items()
-    for _p, _spec in _mdef["params"].items()
-    if isinstance(_spec, dict) and _spec.get("scale")
-}
-
-def _scale_tag(scale):
-    """0.4 -> '04', 0.9 -> '09', 1.0 -> '1'."""
-    return f"{scale:g}".replace(".", "")
-
-STRATEGY_FAMILIES = {k: v for k, v in STRATEGY_DEFS_RAW.items() if k != "scales"}
-if not STRATEGY_FAMILIES:
-    raise ValueError(f"{config['adaptation']['strategies_file']} defines no strategies (besides 'scales')")
-
-
-STRATEGY_DEFS = {}
-for _fam, _fdef in STRATEGY_FAMILIES.items():
-    require_keys(_fdef or {}, ("measures",), f"{config['adaptation']['strategies_file']}: {_fam}")
-    for _m in _fdef["measures"]:
-        if _m not in MEASURES_DEFS:
-            raise ValueError(f"strategy {_fam!r}: measure {_m!r} not defined in {config['adaptation']['measures_file']}")
-    for _s in _STRATEGY_SCALES:
-        _name = f"{_fam}_{_scale_tag(_s)}"
-        if not _re.fullmatch(r"[A-Za-z0-9_-]+", _name):
-            raise ValueError(f"strategy name {_name!r} invalid (use letters/digits/_/- only)")
-        if _name in STRATEGY_DEFS:
-            raise ValueError(f"strategy name {_name!r} generated twice -- check family names/scales")
-        # `measures` stays the raw family definition: strategy_measure_input_paths
-        # and water_retention_excess_volume_input only read measure names and
-        # `locations` strings, which never vary per scale or event.
-        STRATEGY_DEFS[_name] = {"family": _fam, "scale": float(_s), "measures": _fdef["measures"]}
-
-
-def _resolve_strategy_param(measure, param, value, scale, event, where):
-
-    if isinstance(value, dict) and set(value) <= set(_STRATEGY_EVENTS) and value:
-        if set(value) != set(_STRATEGY_EVENTS):
-            raise ValueError(f"{where}: per-event map must set all of {_STRATEGY_EVENTS}, got {sorted(value)}")
-        if event is None:
-            raise ValueError(f"{where}: value depends on the event type, but the scenario has no "
-                             f"`event:` in {config['scenarios_file']}")
-        value = value[event]
-
-    scalable = (measure, param) in _SCALABLE_PARAMS
-    if isinstance(value, str) and value in _UNSCALED_DERIVED_PARAMS:
-        return {"from_forcing": value}
-    if isinstance(value, str) and value in _DERIVED_PARAMS:
-        if not scalable:
-            raise ValueError(f"{where}: {value!r} only allowed on a param flagged `scale: true` in measures.yml")
-        return {"from_forcing": value, "scale": scale}
-
-    if isinstance(value, dict) and set(value) == {"fixed"}:
-        value, scalable = value["fixed"], False
-    elif isinstance(value, dict):
-        raise ValueError(f"{where}: unrecognised value {value!r}")
-    elif isinstance(value, str) and scalable:
-        raise ValueError(f"{where}: unknown keyword {value!r} (expected a number, "
-                         f"{sorted(_DERIVED_PARAMS | _UNSCALED_DERIVED_PARAMS)} or {{fixed: x}})")
-
-    if not scalable:
-        return value
-
-    value = float(value) * scale
-    spec = MEASURES_DEFS[measure]["params"][param]
-    lo, hi = spec.get("min"), spec.get("max")
-    if (lo is not None and value < lo) or (hi is not None and value > hi):
-        raise ValueError(f"{where}: {param}={value:g} outside [{lo}, {hi}] from measures.yml")
-    return value
-
-
-def _resolve_strategy_measures(strategy, event, where):
-    sdef = STRATEGY_DEFS[strategy]
-    return {
-        m: {p: _resolve_strategy_param(m, p, v, sdef["scale"], event, f"{where} {m}.{p}")
-            for p, v in params.items()}
-        for m, params in sdef["measures"].items()
-    }
-
-
-def strategy_def_for(strategy, scenario):
-    """Return {"measures": {...}} for one strategy in one scenario.
-
-    Per-event values follow the scenario's `event`; scale-flagged params are
-    multiplied by the strategy scale; run-time-derived params stay as
-    {"from_forcing": ...} markers for src.adaptation_scaling.
-    """
-    event = SCENARIO_DEFS[scenario].get("event")
-    if event is not None and event not in _STRATEGY_EVENTS:
-        raise ValueError(f"scenario {scenario!r}: event must be one of {_STRATEGY_EVENTS}, got {event!r}")
-    return {"measures": _resolve_strategy_measures(strategy, event, f"{strategy}/{scenario}")}
-
-
-# Validate every strategy x event type once at startup, so a typo or an
-# out-of-range value fails `snakemake -n` instead of a single job mid-run.
-for _strategy in STRATEGY_DEFS:
-    for _event in _STRATEGY_EVENTS:
-        _resolve_strategy_measures(_strategy, _event, f"{_strategy}[{_event}]")
-
-
-def adaptation_input_path(rel):
-    """Resolve a measure's locations path against the raw-data root."""
-    return str(Path(ADAPT_CATALOGUE_ROOT) / rel)
-
-def strategy_measure_input_paths(strategy):
-    """Return the raw-data files a strategy's measures reference, for rule inputs."""
+def strategy_measure_input_paths(strategy, basin_id):
+    """Return the files a strategy's measures reference in a basin, for rule inputs."""
     paths = []
     for _measure_params in STRATEGY_DEFS[strategy]["measures"].values():
         for _k, _v in _measure_params.items():
             if _k == "locations" and isinstance(_v, str):
-                paths.append(adaptation_input_path(_v))
+                paths.append(location_path(_v, ADAPT_CATALOGUE_ROOT, adaptation_lines_dir(basin_id)))
     return paths
+
+def basin_strategy_def(wildcards):
+    """Return strategy_def_for() with `auto/` locations pointing at the basin's lines."""
+    return with_auto_locations(
+        strategy_def_for(wildcards.strategy, wildcards.scenario),
+        adaptation_lines_dir(wildcards.basin_id),
+    )
 
 
 def water_retention_excess_volume_input(wildcards):
@@ -440,13 +338,10 @@ def build_sfincs_params():
         river_rp_yr        = lambda wildcards: scenario_params(wildcards.scenario)["river_rp_yr"],
         surge_rp_yr        = lambda wildcards: scenario_params(wildcards.scenario)["surge_rp_yr"],
         compound_lag_hr    = config["sfincs"]["boundary_setup"]["compound"]["lag_hr"],
-        # Per-scenario discharge scaling (default 1.0), applied here only, so
-        # changing it reruns just this scenario's build and event run.
-        discharge_multiplier = lambda wildcards: scenario_params(wildcards.scenario)["discharge_multiplier"],
         # Real GloFAS flood event or synthetic wave; changing it only rebuilds scenarios.
         river_event        = config["boundary_forcings"]["river"]["event_hydrograph"],
         # Target global-mean SLR (m) × surge_forcing.nc's dimensionless
-        # slr_fingerprint; per-scenario and applied here only, like discharge_multiplier.
+        # slr_fingerprint; per-scenario and applied here only.
         slr_enabled        = config["boundary_forcings"]["surge"]["slr"]["enabled"],
         slr_m              = lambda wildcards: scenario_params(wildcards.scenario)["slr_m"],
         # SLR ramps in over the event's first hours (the shared spin-up has none).

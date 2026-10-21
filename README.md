@@ -19,6 +19,7 @@ Everything is written under `<results_dir>/{basin_id}/`:
 | `runs/{scenario}/sfincs/` | event run (`sfincs_map.nc`) |
 | `runs/{scenario}/visuals/` | maximum flood depth (`max_flood_depth.tif`), flood time series, animation |
 | `runs/{scenario}/metrics/flood_metrics.csv` | flood-risk metrics (flooded shares of the land and urban area, depths) |
+| `adaptation_lines/` | levee, mouth-closure and pump lines derived from the skeleton for `auto/` strategy locations, with a review figure |
 | `runs/{scenario}/adaptation/{pre,post}/{strategy}/` | adapted runs and their flood metrics |
 | `runs/metrics_comparison.csv` | all strategies and scenarios side by side |
 
@@ -49,7 +50,7 @@ Everything is written under `<results_dir>/{basin_id}/`:
    |---|---|
    | `results_dir` | `<results_dir>`, where outputs are written |
    | `raw_data_root` | `<raw_data_root>`, the root of every `file_path` in `config/data_catalogue.yml` |
-   | `sfincs_exe` | `<sfincs_exe>`, the SFINCS binary (needed only by rules that run the solver) |
+   | `sfincs_exe` | `<sfincs_exe>`, the SFINCS binary (must be set for every run, dry runs included; any path works for `-n`) |
 
    The environment variables `GCFM_RESULTS_DIR`, `GCFM_RAW_DATA_ROOT` and
    `GCFM_SFINCS_EXE` override the file when set, for example:
@@ -73,8 +74,7 @@ Everything is written under `<results_dir>/{basin_id}/`:
    snakemake -n preprocess --cores 1 --config target_basins="[2433835]" target_scenarios="['default']"
    ```
 
-5. Run it. Always name the target: without one Snakemake runs the first rule in
-   `workflow/Snakefile`, which is `adapt`.
+5. Run it. Without a target Snakemake runs `all` (preprocess + build).
 
    ```bash
    snakemake preprocess --cores 4 --config target_basins="[2433835]" target_scenarios="['default']"
@@ -88,7 +88,7 @@ Everything is written under `<results_dir>/{basin_id}/`:
 | `preprocess` | rules 01-11: domain, terrain, land use, river network, forcing, river depth and crest calibration | input data under `<raw_data_root>` |
 | `build` | rules 13-17: SFINCS skeleton, spin-up, event runs, flood metrics | `preprocess` outputs, SFINCS |
 | `all` | `preprocess` and `build` | |
-| `adapt` | rules 18a-19: adaptation strategies and comparison | `build` outputs, per-basin adaptation geometries, `--config target_strategies=...` |
+| `adapt` | rules 13b, 18a-19: adaptation lines, strategies and comparison | `build` outputs, per-basin adaptation geometries, `--config target_strategies=...` |
 
 Selecting basins, scenarios and strategies, adaptation runs and rule graphs:
 [docs/running.md](docs/running.md).
@@ -113,7 +113,7 @@ plot_dag.py           rule-graph rendering
 | file | holds |
 |---|---|
 | `config/config.yml` | all pipeline settings, grouped by the rules that read them |
-| `config/scenarios.yml` | named flood scenarios: surge and river return periods (`surge_rp_yr`, `river_rp_yr`), discharge multiplier, sea-level rise |
+| `config/scenarios.yml` | named flood scenarios: surge and river return periods (`surge_rp_yr`, `river_rp_yr`), sea-level rise |
 | `config/data_catalogue.yml` | input datasets, paths relative to `<raw_data_root>` |
 | `config/site.yml` | machine-specific paths (gitignored; template `config/site.example.yml`) |
 | `config/measures.yml` | adaptation measures and their allowed parameters |
@@ -131,7 +131,10 @@ python tests/check_code_health.py      # syntax and src imports
 pre-commit run --all-files             # ruff, pyright, pydocstyle, lock-file sync
 ```
 
-Tests that need real data carry the `needs_data` marker and are excluded by default.
+`pytest -q` reports 274 passed in about 2 minutes. Tests that need real data
+carry the `needs_data` marker and are excluded by default. `pre-commit` needs a
+git clone and a one-time `pre-commit install`
+([install.md](docs/install.md#pre-commit)).
 
 ## Documentation
 

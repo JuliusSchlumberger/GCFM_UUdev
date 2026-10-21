@@ -10,7 +10,7 @@ Wave-propagation distance = min(kinematic, attenuation):
     depth_mouth = river_depth_m as calculated, no config floor; a mouth without
     usable depth or velocity is skipped.
   attenuation: march upstream along the mainstem (largest
-  bankfull_discharge_acc branch at each confluence):
+  bankfull_discharge_acc_m3s branch at each confluence):
     A(x) = A0 · exp(−μx),   μ = r / (2c),   r = (8/3π) · g · n² · U0 / h^(4/3)
     U0 = c0 · A0 / depth_mouth, fixed at the mouth for the whole march
     (linearised-friction assumption). Re-deriving U from the decaying A turns
@@ -178,12 +178,12 @@ log.info(f"River mouths identified: {len(mouth_ids)}")
 
 
 def _mainstem_upstream(reach_id: str) -> str | None:
-    """Return the upstream neighbour with the largest bankfull_discharge_acc, or None."""
+    """Return the upstream neighbour with the largest bankfull_discharge_acc_m3s, or None."""
     ups = upstream_adj.get(reach_id, [])
     if not ups:
         return None
     def _q(u):
-        qv = by_reach_id[u].get("bankfull_discharge_acc", np.nan)
+        qv = by_reach_id[u].get("bankfull_discharge_acc_m3s", np.nan)
         return float(qv) if qv is not None and np.isfinite(float(qv)) else -1.0
     return max(ups, key=_q)
 
@@ -212,7 +212,7 @@ for i, mrid in enumerate(mouth_ids):
         continue
 
     width_m = float(row.get("width", np.nan) or np.nan)
-    q_bf  = float(row.get("bankfull_discharge_acc", np.nan) or np.nan)
+    q_bf  = float(row.get("bankfull_discharge_acc_m3s", np.nan) or np.nan)
     if not (np.isfinite(width_m) and width_m > 0 and np.isfinite(q_bf) and q_bf >= 0):
         log.warning(
             f"Mouth {i+1}/{len(mouth_ids)} — reach_id={reach_id_str}: "
@@ -407,7 +407,7 @@ for mp in mouths_data:
         ax.plot(lon, lat, "^", color=_CIRCLE_COLOR, markersize=7,
                 markeredgecolor="white", markeredgewidth=0.6, zorder=7)
 
-# Forcing points (outside first so red ones render on top)
+# Forcing points, in index order (red: inside a circle)
 if n_forcing > 0:
     for k in range(n_forcing):
         color = _BAD_COLOR if forcing_inside[k] else _OK_COLOR

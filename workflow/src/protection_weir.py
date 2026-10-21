@@ -471,8 +471,8 @@ def build_coastal_protection_weir(
     water_like, so the dike runs along their landward edge; the cells stay
     land otherwise (not sea in zsini_sea_cells, counted in flood metrics).
     channel_mask_gap_free: True when river_channel_mask comes from the same
-    burned DEM fed to hydromt_sfincs (regular-grid production builds,
-    13_build_sfincs.py); skips the 1-cell close_gaps() dilation, which would
+    burned DEM fed to hydromt_sfincs (rule 10, 10_depth_estimation_modelled.py);
+    skips the 1-cell close_gaps() dilation, which would
     leave an un-excavated ring around the channel.
     water_side_crest_on_grid: per-cell crest looked up on the water side of
     each edge (rule 10 passes the confined round's period-max water level).
@@ -546,11 +546,10 @@ def build_coastal_protection_weir(
     # Protected ocean pockets: cells still landuse==200 although the weir
     # puts them on the protected side.
     #  (a) Grid misalignment along the whole coast: the native landuse.tif
-    #      (~30 m) resampled via NEAREST-NEIGHBOR onto the ~70 m SFINCS grid
-    #      (rule grid_align_landuse, 09b) generalizes the coastline, so
-    #      land_mask is taken as ground truth; correct_sea_mask_from_grid_mask
-    #      (src/raster.py) reprojects it to native resolution and touches only
-    #      pixels still landuse==200 there.
+    #      (~30 m) resampled by mode onto the ~70 m SFINCS grid (rule
+    #      grid_align_landuse, 09b) generalizes the coastline, so land_mask is
+    #      taken as ground truth; callers subtract it from the landuse==200
+    #      cells on the same grid, without reprojection.
     #  (b) an ocean component surviving into water_like but not the main open
     #      ocean (the single largest water_like component, as for zsini in
     #      13_build_sfincs_skeleton.py), walled off by its own ring.
@@ -575,9 +574,8 @@ def build_coastal_protection_weir(
             f"{n_separately_ringed:,} ocean-classified (landuse==200) grid cell(s) form their "
             f"own separately-ringed pocket, disconnected from the main open ocean component"
         )
-    # protected_pocket_mask is deliberately broad (the whole protected side);
-    # the affected pixel count is only known after reprojection (see
-    # relabel_landuse_from_grid_mask's own return value), so none is logged.
+    # protected_pocket_mask is deliberately broad (the whole protected side),
+    # so no affected-cell count is logged.
 
     n_final = int(land_mask.sum())
 

@@ -55,23 +55,17 @@ def has_downstream_in_domain(rch_id_dn_raw, domain_reach_ids: set[str]) -> bool:
 
 def _domain_entry_point(line, domain_poly: Polygon) -> Point | None:
     # First entry along the line, even if it dips in and out several times.
+    # Point-only contact (touching the boundary) does not count as entering.
     clipped = line.intersection(domain_poly)
     if clipped.is_empty:
         return None
-    if clipped.geom_type == "Point":
-        return clipped
-    if clipped.geom_type == "MultiPoint":
-        return min(clipped.geoms, key=line.project)
-    if clipped.geom_type == "LineString":
-        pieces = [clipped]
-    elif clipped.geom_type == "MultiLineString":
-        pieces = list(clipped.geoms)
-    else:
+    parts = getattr(clipped, "geoms", [clipped])
+    pieces = [
+        piece for piece in parts if piece.geom_type == "LineString" and piece.length > 0
+    ]
+    if not pieces:
         return None
-    candidates = [Point(piece.coords[0]) for piece in pieces if len(piece.coords) > 0]
-    if not candidates:
-        return None
-    return min(candidates, key=line.project)
+    return min((Point(piece.coords[0]) for piece in pieces), key=line.project)
 
 
 def resolve_inside_domain_reaches(
@@ -394,7 +388,7 @@ def build_river_dataset(
     """Assemble river_forcing.nc: bankfull (AMAX/GEV), POT/GPD RP table, EVA diagnostics.
 
     The SFINCS discharge series is built later (rule 13,
-    build_design_discharge_matrix) from bankfull_discharge_m3s + a design RP
+    build_design_discharge_matrix) from mean_discharge_m3s + a design RP
     looked up in discharge_rp_table, so changing the RP needs no EVA rerun.
 
     Args:
@@ -734,7 +728,6 @@ def build_design_discharge_matrix(
     river_ds: xr.Dataset,
     active: np.ndarray,
     rp_yr: float | None | str,
-    discharge_multiplier: float = 1.0,
     event: dict | None = None,
 ) -> np.ndarray:
     """Return the (n_active, n_time) SFINCS discharge (m3 s-1) for a design RP.
@@ -744,11 +737,6 @@ def build_design_discharge_matrix(
       1. Q_f at rp_yr, log-RP interpolated (interpolate_discharge_at_rp).
       2. sinusoidal_wave(mean_discharge_m3s, Q_f, time, lead_days, period_hr). Riverine
          protection is NOT subtracted: the calibrated weirs represent it.
-      3. Scale the entire built hydrograph (bankfull lead-in AND event peak
-         alike) by discharge_multiplier, at build time, so river_forcing.nc,
-         rule 10's calibration and the skeleton build are independent of it.
-         Equivalent to scaling bankfull_discharge_m3s and Q_f, as sinusoidal_wave is
-         affine in its two endpoints.
 
     Args:
         active: Boolean mask over crossings (typically has_glofas).
@@ -803,8 +791,6 @@ def build_design_discharge_matrix(
                 f"{100 * info['start_fraction']:.0f}% of the peak, ramped in from the mean over "
                 f"{info['ramp_hr']:.1f} h"
             )
-            if discharge_multiplier != 1.0:
-                discharge_matrix = discharge_matrix * discharge_multiplier
             return discharge_matrix
         design_q = interpolate_discharge_at_rp(table, rps_yr, rp_yr)
 
@@ -813,8 +799,6 @@ def build_design_discharge_matrix(
         discharge_matrix[i] = sinusoidal_wave(
             lead_q[i], design_q[i], times, lead_days, period_hr
         )
-    if discharge_multiplier != 1.0:
-        discharge_matrix *= discharge_multiplier
     return discharge_matrix
 
 

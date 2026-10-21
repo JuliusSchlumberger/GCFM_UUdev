@@ -18,6 +18,7 @@ Usage:
     conda run -n <env> python prepare_modified_sword_dataset.py
 """
 
+import argparse
 import shutil
 import sqlite3
 import subprocess
@@ -25,23 +26,9 @@ import sys
 import time
 from pathlib import Path
 
-OGRINFO = Path(sys.prefix) / "Library" / "bin" / "ogrinfo.exe"
-if not OGRINFO.exists():
-    _which = shutil.which("ogrinfo")
-    if _which is None:
-        raise FileNotFoundError(
-            f"ogrinfo not found at {OGRINFO} or on PATH -- required to apply "
-            f"attribute updates to the GeoPackage (see module docstring)."
-        )
-    OGRINFO = Path(_which)
-
-# raw_data_root is a site setting; see config/site.example.yml.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
 from src.io import site_setting  # noqa: E402
 
-SWORD_DIR = Path(site_setting("raw_data_root")) / "SWORD"
-ORIGINAL_PATH = SWORD_DIR / "SWORD_global_v17c_unpublished.gpkg"
-MODIFIED_PATH = SWORD_DIR / "SWORD_global_v17c_unpublished_modified.gpkg"
 TABLE = "global_edges"
 
 # Absorbs floored expected widths (438.67 m actual vs. 438 expected is applied).
@@ -61,19 +48,41 @@ WIDTH_CHANGES: dict[str, tuple[float, float, str, str]] = {
 }
 
 
+def find_ogrinfo() -> Path:
+    """Return the ogrinfo executable of this env, else the one on PATH."""
+    ogrinfo = Path(sys.prefix) / "Library" / "bin" / "ogrinfo.exe"
+    if ogrinfo.exists():
+        return ogrinfo
+    found = shutil.which("ogrinfo")
+    if found is None:
+        raise FileNotFoundError(
+            f"ogrinfo not found at {ogrinfo} or on PATH -- required to apply "
+            f"attribute updates to the GeoPackage (see module docstring)."
+        )
+    return Path(found)
+
+
 def main() -> None:
     """Copy the original SWORD file and apply WIDTH_CHANGES to the copy."""
-    if not ORIGINAL_PATH.exists():
-        raise FileNotFoundError(f"Original SWORD file not found: {ORIGINAL_PATH}")
+    argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    ).parse_args()
+    ogrinfo = find_ogrinfo()
+    # raw_data_root is a site setting; see config/site.example.yml.
+    sword_dir = Path(site_setting("raw_data_root")) / "SWORD"
+    original_path = sword_dir / "SWORD_global_v17c_unpublished.gpkg"
+    modified_path = sword_dir / "SWORD_global_v17c_unpublished_modified.gpkg"
+    if not original_path.exists():
+        raise FileNotFoundError(f"Original SWORD file not found: {original_path}")
 
     t0 = time.time()
-    print(f"Copying {ORIGINAL_PATH.name} -> {MODIFIED_PATH.name} ...", flush=True)
-    shutil.copy2(ORIGINAL_PATH, MODIFIED_PATH)
+    print(f"Copying {original_path.name} -> {modified_path.name} ...", flush=True)
+    shutil.copy2(original_path, modified_path)
     print(f"  done ({time.time() - t0:.1f}s)", flush=True)
 
     # Read everything and close before writing: each ogrinfo call opens its
     # own connection and must not contend with a Python-side lock.
-    con = sqlite3.connect(MODIFIED_PATH)
+    con = sqlite3.connect(modified_path)
     cur = con.cursor()
 
     print("Building temporary index on reach_id ...", flush=True)
@@ -111,7 +120,7 @@ def main() -> None:
             continue
         sql = f"UPDATE {TABLE} SET width = {float(new_width)} WHERE reach_id = {int(reach_id)}"
         proc = subprocess.run(
-            [str(OGRINFO), "-dialect", "SQLite", "-sql", sql, str(MODIFIED_PATH)],
+            [str(ogrinfo), "-dialect", "SQLite", "-sql", sql, str(modified_path)],
             capture_output=True,
             text=True,
         )

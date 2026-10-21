@@ -46,6 +46,7 @@ from src.surge import (
     load_mdt,
     load_selected_stations,
     load_slr_fingerprint,
+    preview_station_rp_yr,
 )
 from src.profiling import ScriptProfiler
 
@@ -102,6 +103,14 @@ surge_dt      = snakemake.params.dt_hr
 # Diagnostic-preview RP only (storm_tide_at_rp_m columns, 07_surge_correction.png): the
 # "default" scenario's surge_rp_yr. Rule 13 uses the requested scenario's surge_rp_yr.
 surge_rp_yr = snakemake.params.surge_rp_yr
+station_rp_yr = preview_station_rp_yr(surge_rp_yr)
+surge_rp_is_numeric = station_rp_yr == surge_rp_yr
+if not surge_rp_is_numeric:
+    log.info(
+        f"Default scenario surge_rp_yr={surge_rp_yr!r} has no storm-tide RP: "
+        f"storm_tide_at_rp_m holds RP{station_rp_yr}; the water_level preview is the "
+        f"{surge_rp_yr!r} boundary"
+    )
 
 # The stations rule select_surge_stations (07a) chose.
 stations = load_selected_stations(
@@ -109,7 +118,7 @@ stations = load_selected_stations(
     domain_utm,
     domain_crs,
     snakemake.input.surge_stations,
-    rp_yr=surge_rp_yr,
+    rp_yr=station_rp_yr,
 )
 log.info(f"Most distant selected station: {stations['dist_m'].max() / 1000:.1f} km")
 
@@ -201,7 +210,7 @@ log.info(
 # station's wave amplitude = storm_tide_at_rp_raw_m_i; scalar calm_sea_level_m is for zsini.
 station_calm_sea_level_m = (stations["storm_tide_at_rp_m"] - stations["storm_tide_at_rp_raw_m"]).to_numpy()
 surge_ds = build_surge_dataset(
-    stations, t_surge, surge_lead, surge_period, surge_rp_yr,
+    stations, t_surge, surge_lead, surge_period, station_rp_yr,
     calm_sea_level_m=calm_sea_level_m, station_calm_sea_level_m=station_calm_sea_level_m,
 )
 
@@ -293,6 +302,13 @@ if hg_cfg["enabled"]:
         f"Storm-tide hydrographs: {len(hg_time_hr)} steps (+-{hg_window_hr:g} h), peak at "
         f"{hg_peak_hr:.0f} h, tide high water [{hg_tide.max(axis=1).min():.2f}, "
         f"{hg_tide.max(axis=1).max():.2f}] m (local MSL), match distance <= {np.nanmax(hg_match_km):.2f} km"
+    )
+elif not surge_rp_is_numeric:
+    # The cosine above rises to RP{station_rp_yr}; show the default scenario's own
+    # boundary instead (None: calm sea; 'Tide' raises, as rule 13 would).
+    surge_ds["water_level"] = (
+        ["station", "time"], build_design_surge_matrix(surge_ds, surge_rp_yr),
+        surge_ds["water_level"].attrs,
     )
 
 Path(snakemake.output.surge_forcing).parent.mkdir(parents=True, exist_ok=True)
@@ -429,9 +445,8 @@ else:
     )
     log.info(f"  Loaded GloFAS clip: {dict(glofas_clip.sizes)}")
 
-    # Persist the clipped subset so rule test_discharge_comparison (07) can reuse
-    # it directly instead of re-running this same ~120-150 s clip for the same
-    # basin/domain bounds.
+    # Persist the clipped subset as a rule output, reusable without re-running
+    # this ~120-150 s clip for the same basin/domain bounds.
     Path(snakemake.output.glofas_clip).parent.mkdir(parents=True, exist_ok=True)
     glofas_clip.to_netcdf(snakemake.output.glofas_clip)
     log.info(f"  Written GloFAS clip cache: {snakemake.output.glofas_clip}")
@@ -627,12 +642,11 @@ plot_forcing_timeseries(
     output_path=snakemake.output.plot_timeseries,
 )
 
-# EVA diagnostic plot for the active crossing with the highest design-flood discharge
+# EVA diagnostic plot for the active crossing with the highest q_rp100
 # Selected by discharge rather than raw SWORD reach "width": a crossing's
 # width and the accumulated flow at its matched GloFAS cell can diverge
-# (e.g. distributary vs. mainstem reaches). Selecting by flood_q directly ties
-# this diagnostic to the same quantity that drives the actual forcing and
-# protection-level correction.
+# (e.g. distributary vs. mainstem reaches). Selecting by q_rp100 ties this
+# diagnostic to discharge, the quantity that drives the forcing.
 active_idx = [i for i, g in enumerate(has_glofas) if g]
 if active_idx:
     # eva.q_rp100 is at the fixed diagnostic RP (eva_cfg["preview_rp_yr"]): a stable,

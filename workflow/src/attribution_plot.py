@@ -2,7 +2,7 @@
 
 Uses existing max_flood_depth.tif rasters of the river-only and coastal-only
 counterpart scenarios (RP-matched by 00_common.smk attribution_counterparts) and
-the spin-up (RP=1 river, calm sea). Called by rule attribution_mask
+the spin-up (mean river discharge, calm sea). Called by rule attribution_mask
 (18c_attribution_mask.py).
 """
 
@@ -109,9 +109,9 @@ def generate_attribution_maps(
                 _ax.remove()
         # Classes 1-3 (river/coastal/compound) always appear in the legend
         # regardless of whether this basin x scenario actually has any
-        # pixels in them; class 4 (spin-up/permanent water) never gets a
-        # legend entry -- it's plotted (in its own color) but not labelled,
-        # since it isn't a real attribution outcome.
+        # pixels in them; class 4 (spin-up/permanent water) is masked out of
+        # the map and gets no legend entry, since it isn't a real attribution
+        # outcome.
         ax.legend(
             handles=[
                 mpatches.Patch(color=colors, label=labels)

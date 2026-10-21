@@ -29,8 +29,12 @@ OBTAIN_TOOLS = {
 }
 TOOL_PATTERN = re.compile(r"tools/[A-Za-z0-9_]+\.py")
 FILE_PATTERN = re.compile(r"^[^\s{}]+\.[A-Za-z0-9]+$")
-# Geometries under an `auto/` folder are written by this tool; the rest are drawn by hand.
-GEOMETRY_TOOL = "tools/build_adaptation_lines.py"
+# `auto/<name>` geometries are built per basin by the workflow; the rest are drawn by hand.
+AUTO_PREFIX = "auto/"
+AUTO_BUILT = (
+    "built by rule `build_adaptation_lines` into "
+    "`<results_dir>/{basin_id}/adaptation_lines/<name>.geojson`"
+)
 HAND_DRAWN = "project-specific; obtain from the project team"
 
 HEADER = """# Input data
@@ -57,9 +61,9 @@ GEOMETRY_HEADER = """
 
 Generated from `config/adaptation_strategies.yml`. Measure files needed by the
 `adapt` target, relative to `<raw_data_root>`. Only the strategies selected with
-`target_strategies` need their files. Files under an `auto/` folder are written
-by `{tool}` from the basin's SFINCS skeleton
-(run by hand after `build`); the others are drawn per basin.
+`target_strategies` need their files. `auto/<name>` entries are not raw data:
+rule `build_adaptation_lines` derives them from the basin's SFINCS skeleton when
+an `adapt` job needs them; the others are drawn per basin.
 
 """
 
@@ -131,7 +135,9 @@ def _file_values(value: object):
     elif isinstance(value, list):
         for item in value:
             yield from _file_values(item)
-    elif isinstance(value, str) and FILE_PATTERN.match(value) and "/" in value:
+    elif isinstance(value, str) and (
+        value.startswith(AUTO_PREFIX) or (FILE_PATTERN.match(value) and "/" in value)
+    ):
         yield value
 
 
@@ -154,11 +160,10 @@ def render_geometry_table(strategies: dict) -> str:
         "|" + "---|" * len(GEOMETRY_COLUMNS),
     ]
     for path, users in adaptation_geometries(strategies).items():
-        auto = "auto" in Path(path).parts
         row = (
             f"`{path}`",
             ", ".join(f"`{u}`" for u in users),
-            f"`{GEOMETRY_TOOL}`" if auto else HAND_DRAWN,
+            AUTO_BUILT if path.startswith(AUTO_PREFIX) else HAND_DRAWN,
         )
         lines.append("| " + " | ".join(row) + " |")
     return "\n".join(lines) + "\n"
@@ -169,7 +174,7 @@ def render_page(catalogue: dict, strategies: dict) -> str:
     return (
         HEADER.format(missing=MISSING)
         + render_table(catalogue)
-        + GEOMETRY_HEADER.format(tool=GEOMETRY_TOOL)
+        + GEOMETRY_HEADER
         + render_geometry_table(strategies)
     )
 

@@ -1,10 +1,3 @@
-if scenario_params("default")["surge_rp_yr"] is None:
-    raise ValueError(
-        "scenario 'default' has surge_rp_yr=null -- rule get_boundary_forcings needs "
-        "a real, tabulated surge_rp_yr from it for its own diagnostic-preview RP "
-        "(storm_tide_at_rp_m/07_surge_correction.png); give 'default' a real surge_rp_yr."
-    )
-
 rule get_boundary_forcings:
     input:
         spec_basins_meta   = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
@@ -47,6 +40,8 @@ rule get_boundary_forcings:
         # Diagnostic-preview RP only (storm_tide_at_rp_m/storm_tide_at_rp_raw_m, 07_surge_correction.png),
         # taken from the "default" scenario so this basin-level rule stays off
         # the scenario axis; rule 13 uses the requested scenario's surge_rp_yr.
+        # 'Tide' or null: storm_tide_at_rp_m at RP1 (src.surge.preview_station_rp_yr)
+        # and a water_level preview of that boundary.
         surge_rp_yr = scenario_params("default")["surge_rp_yr"],
         surge_period_hr = config["boundary_forcings"]["surge"]["period_hr"],
         # Only the keys read here: the block also holds window_overrides_hr, and
@@ -61,7 +56,8 @@ rule get_boundary_forcings:
         # slr_m is not a param here: changing it would rerun rule 10's
         # calibration and the skeleton build, which only read the MDT-only
         # calm_sea_level_m. slr_m is instead a per-scenario param of rule
-        # build_sfincs/run_spinup, applied at build time to slr_fingerprint.
+        # build_sfincs, applied at build time to slr_fingerprint; the spin-up
+        # has no SLR.
         surge_slr = config["boundary_forcings"]["surge"]["slr"],
         # river
         river_period_hr = config["boundary_forcings"]["river"]["period_hr"],

@@ -15,7 +15,7 @@ class ScriptProfiler:
 
     Reads config["profiling"]["enabled"]. When True, wraps registered
     functions with LineProfiler and writes a timing report next to the
-    script's log file (same name, suffix _profile.txt). When disabled, or
+    script's log file (line_profiler_<log stem>.txt). When disabled, or
     line_profiler is missing, wrap() returns the function unchanged.
     """
 

@@ -3,6 +3,12 @@ scenarios_file: ./config/scenarios.yml
 adaptation:
   strategies_file: ./config/adaptation_strategies.yml
   measures_file: ./config/measures.yml
+  lines:                       # river-mouth closures of rule 13b build_adaptation_lines
+    direction_length_m: 300.0  # reach length (m) from the outlet used for the flow direction
+    max_tilt_deg: 60.0         # max angle (deg) between closure and the across-flow direction
+    max_half_length_m: 5000.0  # max closure length (m) on each side of the river centreline
+    ext_cells: 2               # cells the closure extends past the bank into land
+    pump_upstream_m: 200.0     # pump line starts this far (m) upstream of the closure
 
 profiling:
   enabled: false   # set to true to write line-level timing reports next to each log file
@@ -101,7 +107,7 @@ river_processing:
       nudging: {alpha: 1.0, passes: 3}
       least_squares: {apply: all, rmse_tol_m: 0.10, rho_m: 0.05, prior_weight_m: 0.05}  # rho_m: bed-slope regularisation; prior_weight_m: pull towards the normal depth where the level carries no depth information
     calibration_days: 1             # run duration (days) of rounds 1-2, and round 0's first chunk
-    round0_level: end_of_run        # end_of_run (mean of the last two outputs, after steady state) | period_max (old: max over the run)
+    round0_level: end_of_run        # end_of_run (mean of the last two outputs, after steady state) | period_max (max over the run)
     steady_state:                   # round 0 is continued from its restart file until steady (see 10_depth_estimation_modelled.py)
       median_dzs_3h_m: 0.01         # steady when the median |change| of the centreline water level over the last 3 h is below this ...
       p95_dzs_3h_m: 0.05            # ... and its 95th percentile is below this
@@ -109,7 +115,7 @@ river_processing:
       max_days: 5                   # stop extending after this total run length (warns if still not steady)
       flow_balance_tol: 0.05        # warn when |inflow - outflow| / inflow at the exits exceeds this
       fail: false                   # true: an unsteady or unbalanced round 0 stops the rule instead of warning
-    discharge_ramp_hr: 6.0        # linear ramp from each crossing's own bankfull_discharge_m3s up to the full calibration discharge over this many hours (from t=0), then held flat for the rest of the run -- avoids forcing the full (often many-times-bankfull) calibration discharge as an instantaneous step into an initially near-dry channel, which produces a startup shock wave that can persist/oscillate for the whole run instead of damping out. Mirrors production's own bankfull-lead-in-then-ramp hydrograph shape (src.river_forcing.build_design_discharge_matrix/sinusoidal_wave, rule 13/14's own spin-up), just linear instead of sinusoidal since calibration only needs to reach and hold the peak, not simulate a full event recession.
+    discharge_ramp_hr: 6.0        # linear ramp from each crossing's own bankfull_discharge_m3s up to the full calibration discharge over this many hours (from t=0), then held flat for the rest of the run -- avoids forcing the full (often many-times-bankfull) calibration discharge as an instantaneous step into an initially near-dry channel, which produces a startup shock wave that can persist/oscillate for the whole run instead of damping out. Mirrors production's own lead-in-then-ramp hydrograph shape (src.river_forcing.build_design_discharge_matrix/sinusoidal_wave, rule 13), just linear instead of sinusoidal since calibration only needs to reach and hold the peak, not simulate a full event recession.
     weir_crest_m: 1000.0            # confinement weir crest (m) for rounds 0 and 1 -- effectively never overtopped
     excavation_fraction: 0.8        # fraction of round 0's confined rise above the DEM (period_max_zs - dem_at_cell, per centerline cell) excavated as channel depth (river_depth_m). The mouth rules in 10_depth_estimation_modelled.py (coastal endpoint at natural bathymetry, bed floored upstream of it) are applied on top.
     # ── weir-building params (used by modelled_depth_estimation every round)
@@ -183,6 +189,7 @@ boundary_forcings:
       preview_rp_yr: 100.0          # diagnostic-only preview return period (yr) for rule get_boundary_forcings' own q_rp100/CI/plot-vertical-line and the has_glofas "ok" gate -- a fixed, basin-level constant, NOT derived from any requested scenario's own river_rp_yr (a scenario-derived value here previously made this basin-level rule's own output -- and therefore everything downstream, including the expensive depth calibration -- rerun on every scenario switch, and even made has_glofas itself vary depending on which scenario happened to be requested first). The actual production discharge_rp_table (rules 08/10/13) is always computed at every standard RP regardless of this value.
       bankfull_rp_yr: 1.5            # return period for bankfull discharge (yr, AMAX/GEV fit)
       ci_alpha: 0.95
+      n_boot: 200               # bootstrap resamples for the q_rp2/q_rp100 confidence intervals
       threshold_start_pct: 90.0
       threshold_step_pct: 1.0
       threshold_min_pct: 50.0   # floor: never drop below this percentile
@@ -199,10 +206,9 @@ boundary_forcings:
 
     bias_correction: # GRDC bias correction of GloFAS
       enabled: false            # set to false to disable GRDC bias correction globally
-      # Also used whenever GRDC is consulted at all, not just when the
-      # correction itself is applied: the raw GloFAS-vs-GRDC correlation
-      # diagnostic (compute_grdc_correlation) runs unconditionally,
-      # independent of `enabled` -- see src.extreme_values module docstring.
+      # The GloFAS-vs-GRDC correlation diagnostic (compute_grdc_correlation)
+      # runs only with `enabled: true`; bias_correct_discharge returns before
+      # it otherwise.
       grdc_search_radius_km: 15.0  # radius around inside-domain reach centroid to search
                                     # for a nearby GRDC gauge station (gauges are sparse,
                                     # hence a larger radius than glofas_search_radius_km)
@@ -284,8 +290,8 @@ sfincs:
                                   # shared by both the spin-up and main event runs
   spinup: # Spin-up simulation with constant forcings
     enabled: true                # run a spin-up + create a restart file before the main event run
-    spinup_days: 1               # days of constant bankfull forcing to reach steady river state
-    boundary_ramp_hr: 6.0     # the spin-up sea is held at each station's calm-sea level (the event lead-in's own level; the river stays at RP=1); the boundary ramps linearly from the sea's starting level (rounded basin mean) to those station levels over this many hours -- normally identical, but a step at the boundary sends a front in that can overtop the coastal dike (basin 2433835: a 0.30 m step gave up to +1.1 m at a 0.40 m crest)
+    spinup_days: 1               # days of constant mean-discharge forcing to reach steady river state
+    boundary_ramp_hr: 6.0     # the spin-up sea is held at each station's calm-sea level (the event lead-in's own level; the river stays at its mean discharge); the boundary ramps linearly from the sea's starting level (rounded basin mean) to those station levels over this many hours -- normally identical, but a step at the boundary sends a front in that can overtop the coastal dike (basin 2433835: a 0.30 m step gave up to +1.1 m at a 0.40 m crest)
     dthisout_s: 3600              # obs-point output interval during spinup (s) — for validation plot
     dtmapout_s: 3600              # map snapshot interval during spinup (s) — controls animation frame count
 

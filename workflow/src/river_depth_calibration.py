@@ -107,7 +107,7 @@ def compute_period_max_zs(zs: np.ndarray) -> np.ndarray:
     """Return per point the maximum water level over the whole run (zs: n_time x n_points).
 
     A persistent oscillation at a seed cell never meets a flatness tolerance
-    (check_convergence), but the peak is what depth/crest are sized against.
+    (is_steady), but the peak is what depth/crest are sized against.
     nanmax because SFINCS map output is NaN while a cell is dry (e.g. at t=0);
     NaN only for a point never wetted. Slice zs for a trailing-window peak.
     """
@@ -123,9 +123,9 @@ def gather_calibration_round_profile(
     """Return per-round calibration state along one seed's widest path.
 
     Reads round{i}/calibration_state.csv under calib_root for i in
-    0..n_rounds (dem, river_depth_m, weir_crest, zs). zs is the period-max water
-    level, except in round 0: the level the excavation used (end of run, period
-    max or GVF). weir_crest is NaN in round 0 (1000 m walls). rivers_utm may be in any CRS.
+    0..n_rounds (dem_m, river_depth_m, weir_crest_m, zs_m). zs_m is the period-max
+    water level, except in round 0: the level the excavation used (end of run,
+    period max or GVF). weir_crest_m is NaN in round 0 (1000 m walls). rivers_utm may be in any CRS.
 
     Returns:
         (path_rids, {round_idx: rows on the path with 'along_path_m', sorted}).

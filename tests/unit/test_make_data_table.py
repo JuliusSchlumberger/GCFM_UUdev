@@ -48,12 +48,12 @@ STRATEGIES = {
     "beta": {
         "measures": {
             "barrier": {"elevation": {"coastal": 1.0}, "locations": "site/b.geojson"},
-            "pumps": {"discharge": 5, "locations": "site/auto/pump.geojson"},
+            "pumps": {"discharge": 5, "locations": "auto/pump_river_mouth"},
         }
     },
     "alpha": {
         "measures": {
-            "levee": {"locations": "site/auto/pump.geojson", "merge": False},
+            "levee": {"locations": "auto/pump_river_mouth", "merge": False},
             "raising": {"raise_fraction": 1.0},
         }
     },
@@ -82,9 +82,9 @@ def test_geometry_table_lists_each_file_once_with_users_and_origin():
     assert len(rows) == 2
     auto_row, drawn_row = rows
     assert auto_row.startswith(
-        "| `site/auto/pump.geojson` | `alpha/levee`, `beta/pumps` |"
+        "| `auto/pump_river_mouth` | `alpha/levee`, `beta/pumps` |"
     )
-    assert "`tools/build_adaptation_lines.py`" in auto_row
+    assert "rule `build_adaptation_lines`" in auto_row
     assert drawn_row.startswith("| `site/b.geojson` | `beta/barrier` |")
     assert "project-specific" in drawn_row
 

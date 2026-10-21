@@ -14,13 +14,14 @@ forcing_mode (from scenario river_rp_yr/surge_rp_yr, scenario_params in 00_commo
   "coastal_only" — surge/tide boundary; discharge points kept with a zeroed
                    timeseries so the model structure matches other modes.
   "river_only"   — river discharge; flat boundary at river_only_flat_level_m,
-                   below terrain.gebco_max_depth_m so the coast stays dry; no
-                   inifile forwarded (uniform dry start).
+                   below terrain.gebco_max_depth_m. With the spin-up enabled
+                   the run starts from the spin-up restart (sea at its calm
+                   level); without it every cell starts dry (no inifile).
 
-discharge_multiplier (default 1.0) and slr_m (default 0.0, global-mean SLR in
-m scaled by each station's slr_fingerprint) are applied here at build time,
-never baked into river_forcing.nc / surge_forcing.nc, so changing them reruns
-only this scenario's build and event run.
+slr_m (default 0.0, global-mean SLR in m scaled by each station's
+slr_fingerprint) is applied here at build time, never baked into
+surge_forcing.nc, so changing it reruns only this scenario's build and event
+run.
 """
 
 import logging
@@ -83,7 +84,6 @@ elif surge_rp_yr is not None:
     surge_rp_yr = float(surge_rp_yr)
 compound_lag_hr   = float(snakemake.params.compound_lag_hr)
 river_event       = snakemake.params.river_event
-discharge_multiplier = float(snakemake.params.discharge_multiplier)
 # Target global-mean SLR (m); 0.0 when SLR is disabled, leaving the MDT-only fields.
 effective_slr_m = float(snakemake.params.slr_m) if snakemake.params.slr_enabled else 0.0
 # The spin-up restart has no SLR: the SLR term rises in over the event's first
@@ -134,10 +134,10 @@ sf.config.set("tstart", tref)
 sf.config.set("tstop", tstop)
 
 # ── initial conditions ──
-# river_only: every cell, ocean included, starts dry at its bed level
-# (zsini=-9999) and the below-GEBCO-clamp boundary keeps the coast dry, so only
-# the river contributes water. Other modes forward the skeleton's
-# spatially-varying inifile.
+# river_only: no inifile, so without a restart every cell, ocean included,
+# starts dry at its bed level (zsini=-9999). With the spin-up enabled the
+# rstfile takes precedence and the run starts from the spin-up state (sea at
+# its calm level). Other modes forward the skeleton's spatially-varying inifile.
 if forcing_mode == "river_only":
     ini_exclude_keys = frozenset({"inifile", "ncinifile"})
     log.info(
@@ -227,13 +227,11 @@ else:
 
     dis_df = pd.DataFrame(
         data=build_design_discharge_matrix(
-            river_ds, active, river_rp_yr,
-            discharge_multiplier=discharge_multiplier, event=river_event,
+            river_ds, active, river_rp_yr, event=river_event,
         ).T,
         index=river_times,
         columns=range(n_active),
     )
-    log.info(f"Discharge multiplier applied: x{discharge_multiplier:.3f}")
 
     if forcing_mode == "compound" and compound_lag_hr != 0 and len(river_times) > 1:
         dt_hr = float((river_times[1] - river_times[0]).total_seconds() / 3600.0)
@@ -278,8 +276,9 @@ sf.discharge_points.write()
 
 # ── sfincs.inp (hand-written; see module docstring) ──
 inp_settings: dict[str, object] = {}
-# rstfile: the basin-level run_spinup restart (RP=1 river + calm sea), a
-# sibling tree of sfincs_root, referenced by a computed relative path.
+# rstfile: the basin-level run_spinup restart (mean river discharge + calm
+# sea), used by every forcing mode including river_only; a sibling tree of
+# sfincs_root, referenced by a computed relative path.
 if include_rstart:
     tstart_event = tref + timedelta(days=spinup_days)
     rst_rel = os.path.relpath(spin_up_root / rst_fname, start=sfincs_root)
@@ -299,7 +298,7 @@ inp_settings |= {
     "storetwet": storetwet,
     "baro": 0,  # no wind/atmosphere data
     # HydroMT sets zsini=0.0; -9999 makes cells not in sfincs.ini start dry at
-    # bed level (for river_only, every cell).
+    # bed level (for river_only without a restart, every cell).
     "zsini": -9999.0,
 }
 
@@ -347,8 +346,7 @@ with xr.open_dataset(river_forcing_path, decode_times=False) as _rds:
     _n_cross      = int(_active_mask.sum())
     _dis_active   = (
         build_design_discharge_matrix(
-            _rds, _active_mask, river_rp_yr,
-            discharge_multiplier=discharge_multiplier, event=river_event,
+            _rds, _active_mask, river_rp_yr, event=river_event,
         )
         if _n_cross > 0 else np.zeros((0, len(_river_times)))
     )

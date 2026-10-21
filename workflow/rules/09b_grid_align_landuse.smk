@@ -1,6 +1,6 @@
 # Rule: resample landuse.tif (rule get_landuse, 05b, native resolution)
-# onto the shared SFINCS regular grid exactly ONCE, then build roughness
-# directly from that single coarse raster.
+# onto the shared SFINCS regular grid exactly ONCE (mode), and area-average
+# roughness onto the same grid from the native land-use source.
 #
 # Stored in SfincsModel's own orientation (row 0 on the origin side), so the
 # rasters line up cell for cell with every model's sf.grid.data and rules 10

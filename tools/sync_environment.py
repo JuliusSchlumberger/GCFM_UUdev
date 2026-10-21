@@ -9,6 +9,7 @@ non-zero so the file can be re-added. The portable environment.yml is edited by
 hand.
 """
 
+import argparse
 import os
 import re
 import shutil
@@ -59,6 +60,9 @@ def find_conda() -> str:
 
 def main() -> int:
     """Regenerate the lock file; return 1 if it changed, else 0."""
+    argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    ).parse_args()
     name = env_name(LOCK_FILE)
     result = subprocess.run(
         [find_conda(), "env", "export", "-n", name],

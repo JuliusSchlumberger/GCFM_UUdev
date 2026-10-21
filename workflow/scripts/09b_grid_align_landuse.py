@@ -6,14 +6,12 @@ roughness_on_grid.tif to sf.grid.data cell for cell. landuse_on_grid.tif is the
 single sea/land/roughness classification downstream: weir tracing and zsini sea
 cells (rule 10), rule 13's roughness and weir diagnostics.
 
-Landuse is a categorical field (Copernicus LC100 codes) -- resampled with
-nearest-neighbor, never averaged (averaging two different land-use codes
-produces a meaningless third code). Roughness is then built directly from
-this coarse classification via the same lookup-table reclassification
-05c_get_roughness.py uses on the native raster, rather than resampling a
-continuous roughness raster with a DIFFERENT interpolation method -- so
-"this cell's roughness" and "this cell's land-use code" always agree by
-construction.
+Landuse is a categorical field (Copernicus LC100 codes) -- resampled by mode
+(the most frequent source class per cell), never averaged (averaging two
+different land-use codes produces a meaningless third code). Manning's n is
+area-averaged onto the grid from the native land-use source via the
+05c_get_roughness.py lookup table, so a mixed cell gets a mixed roughness
+rather than that of its dominant class.
 
 Elevation stays at native resolution (the subgrid needs finer-than-cell
 detail); only the landuse/roughness/sea classification is grid-aligned.

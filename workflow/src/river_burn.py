@@ -75,7 +75,8 @@ def burn_river_channel(
             given, the burned cells are exactly its cells, not a per-reach
             polygon rasterization. Build it with build_channel_mask_regular on
             the same inputs so the calibration corridor, the excavation and the
-            weir corridor are the same cells (see 11b_burn_river_dem.py).
+            weir corridor are the same cells (rules modelled_depth_estimation
+            and build_sfincs_skeleton).
 
     Each reach's interpolation gets a synthetic anchor at along=0 and/or
     along=length from its direct neighbours' nearest anchors (averaged at a
@@ -87,7 +88,7 @@ def burn_river_channel(
         every channel buffer; terrain is the natural DEM on the same grid
         (float32, bilinear, NaN where no data), the elevation of every pixel the
         burn leaves untouched; stats is a dict with 'n_reaches_burned',
-        'n_reaches_skipped', 'n_pixels_burned'.
+        'n_reaches_skipped', 'n_pixels_burned', 'n_boundaries_blended'.
     """
     if (out_transform is None) != (out_shape is None):
         raise ValueError(

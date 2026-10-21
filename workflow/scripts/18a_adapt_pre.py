@@ -1,7 +1,7 @@
 """Apply a preprocessing adaptation strategy to a basin's SFINCS skeleton.
 
-Run by rule adapt_apply_pre. Applies each measure (e.g. offshore barriers, dike
-rings, pumps, retreat) in adaptation_strategies.yml order and writes the
+Run by rule adapt_apply_pre. Applies each measure (e.g. offshore barriers, coastal
+levees, pumps, retreat) in adaptation_strategies.yml order and writes the
 adapted model to adapted_root. Only touched components (weirs, drainage
 structures, subgrid) are rewritten; other geometry files are forwarded by
 relative reference. sfincs.msk and the subgrid rasters read by postprocessing

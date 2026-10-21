@@ -1,7 +1,8 @@
 """Calibrate river depth and riverbank weir crests with SFINCS; run by rule modelled_depth_estimation.
 
-Three fixed-duration runs of one minimal, disposable SFINCS model (regular
-grid, production subgrid setup), all with the production weir geometry
+Three runs of one minimal, disposable SFINCS model (regular
+grid, production subgrid setup; rounds 1-2 run calibration_days, round 0 is
+continued from its restart file until steady, river_depth_modelling.steady_state), all with the production weir geometry
 (src.protection_weir.build_coastal_protection_weir: coast and river banks in
 one water_like boundary). River forcing: a steady discharge at the protection
 RP (bankfull as fallback), ramped linearly from each crossing's bankfull over
@@ -13,7 +14,7 @@ too, at weir_crest_m (e.g. 1000 m): the confined level can exceed a low real
 coastal crest near the mouth and leak. Method modelled, per centerline cell
 (src.river_depth_calibration.compute_excavation_depth):
 
-    rise   = period_max_water_level - DEM_at_cell
+    rise   = round0_water_level - DEM_at_cell
     river_depth_m = excavation_fraction * max(rise, 0)
 
 then the mouth and no-dig rules. Method gvf: steady gradually-varied flow
@@ -36,16 +37,18 @@ coastal_protection_crest_m, so no edge is dropped.
 Round 2 -- verification with the production weir. Changes nothing; reports
 every edge whose water side exceeds its crest.
 
-period_max_water_level (excavation depth, per-cell diagnostics) is each
-cell's own MAXIMUM simulated water level over the entire run
+round0_water_level (river_depth_modelling.round0_level): end_of_run, the mean
+of the last two outputs of the steady round 0
+(src.river_depth_calibration.compute_end_of_run_zs), or period_max.
+period_max_water_level (rounds 1-2, per-cell diagnostics) is each cell's own
+MAXIMUM simulated water level over the run
 (src.river_depth_calibration.compute_period_max_zs, from the hourly zs
 field each round writes to its own sfincs_map.nc), not a
 windowed-flatness "converged"/stabilized value -- a persistent, non-damping
 oscillation at a discharge-injection cell never satisfies a flatness/trend
-tolerance no matter how long the run is extended. Sizing channel depth/
-crest only needs the worst-case (peak) forced water level, which the period
-maximum gives directly, oscillation or not, with no convergence check,
-retry, or restart-extension logic at all.
+tolerance no matter how long the run is extended. Sizing crests only needs
+the worst-case (peak) forced water level, which the period maximum gives
+directly, oscillation or not.
 
 A centerline cell's water level is the MAX across its channel cross-section:
 the shorter of its row and column channel_mask runs, extended one cell each
@@ -237,7 +240,7 @@ log.info(
     f"with Q > 0, max Q = {q_calib.max():.1f} m3/s"
 )
 
-# Real, steady coastal baseline (mean sea level + SLR/MDT correction) -- same
+# Real, steady coastal baseline (calm sea level, MDT-corrected, no SLR) -- same
 # value 13_build_sfincs.py/14_run_spinup.py use for their own initial/steady
 # conditions -- applied uniformly to every round.
 # coastal_protection_crest_m: the production coastal crest, the floor under
@@ -705,13 +708,13 @@ def _read_period_max_zs_field(round_root: Path) -> np.ndarray:
 def _run_calibration_round(round_label: str, round_root: Path, until_steady: bool = False):
     """Write and run whatever elevation/weir the caller just set up on the
     (shared) `sf` object, into round_root (the caller has already pointed
-    sf.root at this via sf.root.set()) -- a single fixed-duration run, no
-    restart/extension. Each round starts cold (no restart chained across
+    sf.root at this via sf.root.set()) -- one run of calibration_days,
+    extended only with until_steady. Each round starts cold (no restart chained across
     rounds -- the geometry changed between rounds, so resuming a previous
     round's dynamic state would be physically invalid).
 
-    No convergence/stabilization check: the per-cell water level used for
-    calibration is simply each cell's own maximum over the full run
+    Without until_steady there is no convergence check: the per-cell water
+    level used for calibration is simply each cell's own maximum over the full run
     (compute_period_max_zs), not a windowed-flatness "stabilized" value --
     see that function's own docstring for why (a persistent, non-damping
     oscillation at a discharge-injection cell never satisfies a flatness
@@ -823,7 +826,7 @@ def _update_reach_columns(river_depth_m: np.ndarray, weir_crest: np.ndarray | No
 
 def _write_calibration_state(round_root: Path, river_depth_m: np.ndarray, weir_crest: np.ndarray, zs: np.ndarray) -> None:
     cell_gdf.drop(columns="geometry").assign(
-        dem=dem_at_cell, river_depth_m=river_depth_m, weir_crest=weir_crest, zs=zs,
+        dem_m=dem_at_cell, river_depth_m=river_depth_m, weir_crest_m=weir_crest, zs_m=zs,
     ).to_csv(round_root / "calibration_state.csv", index=False)
 
 
@@ -1422,7 +1425,7 @@ log.info(f"Written: {snakemake.output.coastal_protection_weir} ({len(weir_gdf)} 
 # Real open sea on this rule's grid, no reprojection
 # Mostly a GRID-RESOLUTION MISALIGNMENT fix, not an isolated-pocket one --
 # the weir is traced on landuse_on_grid (rule grid_align_landuse, 09b:
-# native landuse.tif resampled via nearest-neighbor onto the much coarser
+# native landuse.tif resampled by mode onto the much coarser
 # SFINCS regular grid, ONCE, upstream), so the protected side disagrees with
 # native landuse.tif along the whole coast where coarse cell edges cut the
 # coastline (basin 2433835 has one connected sea component at native

@@ -23,8 +23,7 @@ log = logging.getLogger(__name__)
 
 
 # Distance (m) from a reach end within which an own anchor makes a borrowed
-# junction value redundant (src.river_burn.burn_river_channel/
-# _smoothed_weir_crest_profiles).
+# junction value redundant (src.river_burn.burn_river_channel).
 _BOUNDARY_BLEND_EPS_M = 1.0
 
 
@@ -38,8 +37,7 @@ def _junction_value(
     Used on both sides of the junction so their profiles meet; adopting the
     other side's raw value would only move the step. reach_data maps reach_id
     to (line, along_sorted, value_sorted) of any quantity (river bed in
-    src.river_burn.burn_river_channel, calibrated weir crest in src.river_burn's
-    smoothed-crest profiles).
+    src.river_burn.burn_river_channel).
     """
     up_entry = reach_data.get(up_reach_id)
     dn_entry = reach_data.get(dn_reach_id)
@@ -173,7 +171,7 @@ def fix_tjunction_tails(
 
     A SWORD artifact: at bifurcations one branch B starts at 98-99% along A,
     leaving an orphan tail (typically 18-111 m) that fragments the merged-line
-    connectivity burn_river_rect relies on. Per T-junction: trim A at B's
+    connectivity of the network. Per T-junction: trim A at B's
     start and prepend the tail to C, the reach starting nearest A's true end
     (within max_search_radius_m, else the tail is dropped). Run on the raw
     network before filtering, as A, B and C may not all be reachable.
@@ -558,7 +556,7 @@ def remove_reaches_with_missing_width(
 ) -> gpd.GeoDataFrame:
     """Fill or remove SWORD reaches with missing (nodata_value) 'width'/'max_width'.
 
-    Run before fix_width_max_width_order/clip_anomalous_max_width, whose swap
+    Run before fix_width_max_width_order (normalize_channel_widths), whose swap
     would otherwise move the sentinel into 'width'. One value missing: both
     columns take the other. Both missing: the reach is removed with its
     unbranched chain down to the next confluence and up to the next
@@ -734,8 +732,7 @@ def select_width_column(
     """Overwrite 'width' with ``width_column`` ("width": no-op, or "max_width").
 
     Every consumer then reads one channel width from 'width' (discharge split,
-    hydraulic depth, grid visibility, SFINCS rivwth). 'max_width' is kept
-    (e.g. for tests/plot_width_max_width_heatmap.py).
+    hydraulic depth, grid visibility, SFINCS rivwth). 'max_width' is kept.
     """
     if width_column not in ("width", "max_width"):
         raise ValueError(
@@ -759,7 +756,7 @@ def normalize_channel_widths(
     """Apply fix_width_max_width_order, then select_width_column.
 
     Apply wherever river_network.gpkg is read raw (rule clean_river_network and
-    rule boundary_forcings); it is deterministic, so both agree.
+    rule get_boundary_forcings); it is deterministic, so both agree.
     """
     rivers = fix_width_max_width_order(rivers, max_width_fill_m=max_width_fill_m)
     rivers = select_width_column(rivers, width_column=width_column)

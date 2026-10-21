@@ -79,17 +79,16 @@ def find_fathomdem_tiles(
 ) -> list[str]:
     """Return paths of existing FathomDEM tiles covering (lon_min, lat_min, lon_max, lat_max).
 
-    Tiles are named ``{n/s}{lat:02d}{e/w}{lon:03d}.tif`` (e.g. ``n00e010.tif``)
-    and matched here with uppercase N/E/S/W, which also resolves on
-    case-insensitive filesystems (e.g. Windows/NTFS). Absent tiles (ocean-only
-    cells) are skipped.
+    Tiles are named in lowercase ``{n/s}{lat:02d}{e/w}{lon:03d}.tif`` (e.g.
+    ``n00e010.tif``), matched exactly so case-sensitive filesystems resolve
+    them. Absent tiles (ocean-only cells) are skipped.
     """
     lon_min, lat_min, lon_max, lat_max = bounds
     tiles: list[str] = []
     for lat in range(math.floor(lat_min), math.ceil(lat_max)):
         for lon in range(math.floor(lon_min), math.ceil(lon_max)):
-            ns = "N" if lat >= 0 else "S"
-            ew = "E" if lon >= 0 else "W"
+            ns = "n" if lat >= 0 else "s"
+            ew = "e" if lon >= 0 else "w"
             fname = f"{ns}{abs(lat):02d}{ew}{abs(lon):03d}.tif"
             fpath = Path(topo_dir) / fname
             if fpath.exists():

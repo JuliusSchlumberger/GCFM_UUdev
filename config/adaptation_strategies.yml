@@ -5,7 +5,9 @@
 # method (pre/post) is chosen at the CLI and validated against measures.yml.
 
 # Relative `locations` paths below resolve against raw_data_root in
-# config/site.yml (see config/site.example.yml).
+# config/site.yml (see config/site.example.yml); `auto/<name>` is the basin's
+# <name>.geojson built by rule build_adaptation_lines into
+# <results_dir>/{basin_id}/adaptation_lines/.
 
 # Each block is a strategy FAMILY written at scale 1. The workflow generates
 # <family>_04/_09/_1 from `scales` (x0.4, x0.9, x1.0 on params flagged scale: true
@@ -29,10 +31,10 @@ advance:
 grey_protect_open:
   measures:
     coastal_levee: {elevation: {coastal: max_coastal_water_level, river: current_protection, compound: max_coastal_water_level},
-                    locations: adaptation_ebro/auto/coastal_protection_weir_PO.geojson,
+                    locations: auto/coastal_protection_weir_PO,
                     merge: false }
     river_levee: {elevation: {coastal: current_protection, river: max_river_water_level, compound: max_river_water_level},
-                    locations: adaptation_ebro/auto/river_protection_weir_PO.geojson,
+                    locations: auto/river_protection_weir_PO,
                     merge: false }
 
 # -----------------------------------------------------------------------------------------------
@@ -53,10 +55,10 @@ NbS_protect_open:
 protect_closed:
   measures:
     coastal_levee: {elevation: {coastal: max_coastal_water_level, river: current_protection, compound: max_coastal_water_level},
-                    locations: adaptation_ebro/auto/coastal_protection_weir_PC.geojson,
+                    locations: auto/coastal_protection_weir_PC,
                     merge: false}
     pumps:         {discharge: max_discharge, # same for all flood events
-                    locations: adaptation_ebro/auto/pump_river_mouth.geojson}
+                    locations: auto/pump_river_mouth}
 
 # -----------------------------------------------------------------------------------------------
 # ACCOMMODATE
