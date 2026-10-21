@@ -81,13 +81,19 @@ COMPONENT_OF_MEASURE = {
     "urban_raising": ("subgrid",),
 }
 
-# 3. Apply each measure in the strategy in the order given in adaptation_strategies.yml 
+# 3. Apply each measure in the strategy in the order given in adaptation_strategies.yml
 touched = set()
 applied = set()  # measures actually applied -- a measure can skip itself (see water_retention)
+# Elevation/roughness the next subgrid measure starts from: the basin's own,
+# until a subgrid measure has run -- then that measure's result, so a later
+# one (water_retention after nbs_land_reclamation) builds on it instead of
+# rebuilding the subgrid from the basin's own rasters and erasing it.
+current_dep = str(skeleton_root / "subgrid" / "dep_subgrid.tif")
+current_roughness = str(snakemake.input.roughness_native)
 for measure_type, raw_params in strategy_def["measures"].items():
     measure_def = measures_def[measure_type]
     resolved = {
-        k: (str(adaptation_root /v) if k in ("locations", "dep_subgrid") and isinstance(v, str) else v)
+        k: (str(adaptation_root /v) if k in ("locations", "dep_subgrid", "inlet") and isinstance(v, str) else v)
         for k, v in raw_params.items()
     }
     # NOTE: retreat/urban_raising specifically need the baseline flood map to determine which cells are eligible (retreated / raised)
@@ -95,10 +101,10 @@ for measure_type, raw_params in strategy_def["measures"].items():
 
     if measure_type in ("retreat", "nbs_land_reclamation", "water_retention", "urban_raising"):
         # dep_subgrid/roughness_native_path are never strategy-configured (see
-        # adaptation_strategies.yml's own comment) -- these measures always
-        # reuse this basin's own already-built elevation/roughness
-        resolved["dep_subgrid"] = str(skeleton_root / "subgrid" / "dep_subgrid.tif")
-        resolved["roughness_native_path"] = str(snakemake.input.roughness_native)
+        # adaptation_strategies.yml's own comment) -- the basin's own
+        # elevation/roughness, or an earlier subgrid measure's result
+        resolved["dep_subgrid"] = current_dep
+        resolved["roughness_native_path"] = current_roughness
 
     if measure_type in ("water_retention"): # also "water_retention_greening" here if used
         # baseline_excess_volume is never strategy-con figured either -- rule
@@ -170,6 +176,18 @@ for measure_type, raw_params in strategy_def["measures"].items():
                         **resolved)
     touched.update(COMPONENT_OF_MEASURE[measure_type])
     applied.add(measure_type)
+
+    if "subgrid" in COMPONENT_OF_MEASURE[measure_type]:
+        # copies, not the subgrid/ files themselves: the next subgrid measure
+        # rewrites those (write_dep_tif/write_man_tif) while reading its input
+        for src in ("dep_subgrid.tif", "manning_subgrid.tif"):
+            dst = adapted_root / f"after_{measure_type}_{src}"
+            shutil.copy2(adapted_root / "subgrid" / src, dst)
+            if src == "dep_subgrid.tif":
+                current_dep = str(dst)
+            else:
+                current_roughness = str(dst)
+        log.info(f"Next subgrid measure starts from {measure_type}'s elevation/roughness")
 
 # 3b. apply_retreat writes a reclassified adapted_root/retreat_landuse.tif
 # (urban cells it retreats relabeled to target_code) -- adapt_flood_metrics_pre

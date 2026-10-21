@@ -8,7 +8,7 @@ real 18a/18b job would use, plus the resolver's own log lines (matched weir
 segments, where the river maximum sits, ...).
 
 Usage (repo root, hmt_sfincs_dev env):
-    python tests/check_adaptation_scaling.py D:/GCFM_UU/results/2433835_V5_bigpoly_manual coast_500 river_500
+    python tests/KL_check_adaptation_scaling.py D:/GCFM_UU/results/2433835_V5_bigpoly_manual coast_100 river_100
 """
 
 import logging

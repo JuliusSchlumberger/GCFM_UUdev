@@ -40,7 +40,15 @@ default:                  # what plain `snakemake build` runs (no target_scenari
   slr_m: 0.3
   event: compound
 
-# Attribution runs (also uses spinup for the "always flooded" class)
+
+# ----------------------------------------------------------------------------------------
+mean_03SLR:               # mean conditions: average tide, mean river, SLR - for attribution runs
+  surge_rp: Tide
+  river_rp: Mean
+  discharge_multiplier: 1.0
+  slr_m: 0.3
+  event: compound
+
 coast_only:
   surge_rp: Tide
   river_rp: Null # No discharge forcing
@@ -64,14 +72,6 @@ coast_100_03SLR:
   slr_m: 0.3
   event: coastal
 
-coast_only_100: # needed? because Null will mean that the dynamics change
-  surge_rp: 100
-  river_rp: Null # No discharge forcing
-  discharge_multiplier: 1.0
-  slr_m: 0.3
-  event: coastal
-
-
 # ----------------------------------------------------------------------------------------
 # River flood
 river_100_03SLR:
@@ -81,25 +81,11 @@ river_100_03SLR:
   slr_m: 0.3
   event: river
 
-river_only_100: # needed? because Null will mean that the dynamics change
-  surge_rp: Null
-  river_rp: 100
-  discharge_multiplier: 1.0
-  slr_m: 0.3
-  event: river
-
-
-# Compound
-compound_100:
+# ----------------------------------------------------------------------------------------
+# Compound flood
+compound_100_03SLR:
   surge_rp: 100
   river_rp: 100
-  discharge_multiplier: 1.0
-  slr_m: 0.3
-  event: compound
-
-compound_500:
-  surge_rp: 500
-  river_rp: 500
   discharge_multiplier: 1.0
   slr_m: 0.3
   event: compound

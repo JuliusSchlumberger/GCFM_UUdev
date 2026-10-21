@@ -46,7 +46,7 @@ from src.plots import (  # noqa: E402
     read_raster_reprojected_for_plot,
 )
 
-BASIN_ID = "3279946"
+BASIN_ID = "2433835"
 # Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
 # Set it once in PowerShell, then restart your terminal (see
 # CONTRIBUTING.md "Local machine paths"):
@@ -262,6 +262,19 @@ ax2.set_yticks([])
 ax2.legend(
     handles=_lc_legend_handles(present), loc="lower right", fontsize=9, framealpha=0.9
 )
+
+for ax, panel in ((ax1, "(a)"), (ax2, "(b)")):
+    ax.text(
+        0.02,
+        0.98,
+        panel,
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=14,
+        fontweight="bold",
+        zorder=5,
+    )
 
 out_path = OUT_DIR / "fig_domain_input_data.png"
 fig.savefig(out_path, dpi=150, bbox_inches="tight")

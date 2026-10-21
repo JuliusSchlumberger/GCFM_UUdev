@@ -18,7 +18,6 @@ import matplotlib.dates as mdates
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 # Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
@@ -112,15 +111,21 @@ for (e, a), g in d.groupby(["event", "approach"]):
 # )
 
 # ------------------------------------------------------------------ 4. figures
-EVENT_ORDER = ["coast_500", "river_500"]  # , "compound_100c_500r"]
+EVENT_ORDER = ["coast_100_03SLR", "river_100_03SLR", "compound_100_03SLR"]
 events = sorted(d.event.unique(), key=EVENT_ORDER.index)
-# case-insensitive: plain sorted() puts "NbS_..." before "grey_..." (uppercase
-# N sorts before lowercase g in ASCII), not the intended alphabetical order
-measures = sorted(d.short.unique(), key=str.lower)
+MEASURE_ORDER = [
+    "advance",
+    "protect_closed",
+    "grey_protect_open",
+    "NbS_protect_open",
+    "accommodate",
+    "retreat",
+]
+measures = sorted(d.short.unique(), key=MEASURE_ORDER.index)
 
 STYLE = {
-    "PRE": dict(fmt="-o", color="#0072B2", label="Modelled (re-run)"),
-    "POST": dict(fmt="--s", color="#E69F00", label="Postprocessed (not re-run)"),
+    "PRE": dict(fmt="-o", color="#534eb8", label="Modelled (re-run)"),
+    "POST": dict(fmt="--s", color="#38b394", label="Postprocessed (not re-run)"),
 }
 
 
@@ -133,8 +138,8 @@ METRIC_INFO = [
     (
         "urban_exposed_km2",
         "residual urban exposure",
-        (0, 3),
-        [0, 0.25, 0.5, 1, 2, 3],
+        (0, 2),
+        [0, 0.25, 0.5, 1, 2],
     ),
     ("volume_m3", "residual flood volume", (0, 3), [0, 0.25, 0.5, 1, 1.5, 2, 2.5, 3]),
     ("mean_depth_m", "residual mean flood depth", (0, 2), [0, 0.25, 0.5, 1, 1.5, 2]),
@@ -148,6 +153,24 @@ SCALE_LABELS = {
     "1": "Full potential",
 }
 X_LABELS = [SCALE_LABELS[s] for s in PLOT_SCALES]
+
+# y-axis: linear from 0 to 1 (the reduction range), log-compressed above 1 so the
+# residual-risk band (> 1) stays a thin strip. ABOVE_ONE_SQUEEZE sets how thin:
+# each factor of 10 above 1 takes this many "units" of height (0-1 is one unit).
+ABOVE_ONE_SQUEEZE = 0.4
+
+
+def _y_forward(y):
+    y = np.asarray(y, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(y <= 1, y, 1 + ABOVE_ONE_SQUEEZE * np.log10(y))
+
+
+def _y_inverse(x):
+    x = np.asarray(x, dtype=float)
+    with np.errstate(over="ignore"):
+        return np.where(x <= 1, x, 10 ** ((x - 1) / ABOVE_ONE_SQUEEZE))
+
 
 for METRIC, LABEL, YLIM, YTICKS in METRIC_INFO:
     BL = baselines[METRIC].to_dict()
@@ -172,12 +195,14 @@ for METRIC, LABEL, YLIM, YTICKS in METRIC_INFO:
                 ratios = [1.0] + gg["ratio"].tolist()  # scale 0 = no adaptation
                 A.plot(X_LABELS, ratios, s["fmt"], color=s["color"], label=s["label"])
 
-            A.set_yscale("symlog", linthresh=0.05)
+            A.set_yscale("function", functions=(_y_forward, _y_inverse))
             A.set_ylim(*YLIM)
             # A.axhline(1, c="crimson", lw=0.8)
             A.axhspan(1, YLIM[1], color="crimson", alpha=0.07)
-            A.set_yticks(YTICKS)
-            A.set_yticklabels([f"{t:g}" for t in YTICKS], fontsize=7)
+            # only 1 and the top inside the thin band above 1, so its labels don't collide
+            ticks = [0, 0.25, 0.5, 0.75, 1, YLIM[1]]
+            A.set_yticks(ticks)
+            A.set_yticklabels([f"{t:g}" for t in ticks], fontsize=7)
             A.tick_params(labelsize=7, labelrotation=45)
             if i == 0:
                 A.set_title(label(e), fontsize=9)
@@ -223,7 +248,9 @@ i_main = np.nanargmax(rp_table[:, -1])
 # plot 1: all return periods
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5), facecolor="white")
 
-ax1.plot(river_ds["return_period"].values, rp_table[i_main], color="#1b4965")
+river_rp = river_ds["return_period"].values
+in_range = river_rp <= 1000
+ax1.plot(river_rp[in_range], rp_table[i_main][in_range], color="#1b4965")
 ax1.set_xscale("log")
 ax1.set_xlabel("Return period (years)")
 ax1.set_ylabel("Discharge (m3/s)")
@@ -246,8 +273,20 @@ ax2.set_ylabel("Water level (m)")
 ax2.set_title("Coastal water level")
 # ax2.legend(fontsize=7)
 
-for ax in (ax1, ax2):
+for ax, panel in ((ax1, "(a)"), (ax2, "(b)")):
     ax.grid(alpha=0.3)
+    ax.set_xlim(0.7, 1.5e3)
+    ax.axvline(100, color="grey", linestyle="--", linewidth=1)
+    ax.text(
+        0.02,
+        0.97,
+        panel,
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=12,
+        fontweight="bold",
+    )
 
 # fig.suptitle("Flood hazard return-period curves")
 fig.tight_layout()
@@ -268,7 +307,7 @@ plt.close(fig)
 # bottom, y-axis shared within each row so magnitudes are directly
 # comparable across scenarios (coast_500's surge peak vs. compound_500's,
 # river_500's discharge peak vs. compound_500's, etc.)
-SCENARIOS = ["coast_500", "river_500"]  # , "compound_100c_500r"]
+SCENARIOS = ["coast_100_03SLR", "river_100_03SLR", "compound_100_03SLR"]
 SCENARIO_COLOR = "#14b5dd"
 # if these scenarios' own slr_m (config/scenarios.yml, per-scenario) is 0.0,
 # the plotted water level IS the actual built forcing, with no SLR -- shown
@@ -418,21 +457,16 @@ plt.close(fig)
 print(f"Wrote {out_compare}")
 
 
-# Ranking plots -----------------------------------------------------------------------------------------------------------------
+# Ranking -----------------------------------------------------------------------------------------------------------------------
 # Rank the measures by residual urban exposure (1 = lowest) under the modelled
-# (PRE) and postprocessed (POST) approach -- one figure per event, one line per
-# measure linking its two ranks. Everything is computed from the numbers in
+# (PRE) and postprocessed (POST) approach. Everything is computed from the numbers in
 # metrics_comparison.csv: <metric> of the run / <metric> of the event's baseline row.
-RANK_EVENTS = ["coast_100"]  # any of coast_100, river_500, compound_100c_500r
 RANK_METRIC = "urban_exposed_km2"
-RANK_SCALE = "09"  # "1" = full potential; "09" / "04" also work
 TIE_DECIMALS = 2  # residual ratios equal at this precision share a rank ("=")
 # a reduction smaller than this fraction of the baseline (incl. an increase) counts as
 # "no effect", so all such measures tie for last; 0 = rank on the exact ratios
 NO_EFFECT_TOL = 0.05
 SCALE_MARKER = {"04": ("s", "#d62728"), "09": ("^", "#f0a30a"), "1": ("o", "#2ca02c")}
-MOVED_STYLE = dict(color="#1f2d3d", lw=2.2)  # rank changes by >= 2
-STAY_STYLE = dict(color="#b5d4ae", lw=1.6)  # rank changes by <= 1
 
 d["resid"] = d[RANK_METRIC] / d.event.map(baselines[RANK_METRIC])  # 1 = no change
 
@@ -453,148 +487,12 @@ def rank_by_residual(resid):
     return out
 
 
-unknown = [e for e in RANK_EVENTS if e not in events]
-if unknown:
-    raise ValueError(f"RANK_EVENTS {unknown} not in the results table; have {events}")
-
-marker, mcolor = SCALE_MARKER[RANK_SCALE]
-for e in RANK_EVENTS:
-    piv = d[(d.event == e) & (d.scale == RANK_SCALE)].pivot_table(
-        index="short", columns="approach", values="resid", observed=True
-    )
-    if not {"PRE", "POST"} <= set(piv.columns) or piv.dropna().empty:
-        print(
-            f"\n# {e}: no measure has both PRE and POST at scale {RANK_SCALE} -- skipped"
-        )
-        continue
-    w = piv.dropna()
-    L, R = rank_by_residual(w["PRE"]), rank_by_residual(w["POST"])
-
-    tab = pd.DataFrame(
-        {
-            "PRE": L["resid"],
-            "PRE_rank": L["rank"],
-            "POST": R["resid"],
-            "POST_rank": R["rank"],
-        }
-    ).loc[L.index]
-    tab["shift"] = tab["POST_rank"] - tab["PRE_rank"]
-    print(
-        f"\n# {e}: {RANK_METRIC} / baseline ({baselines.at[e, RANK_METRIC]:.2f}), "
-        f"scale {RANK_SCALE}; rank 1 = lowest, rows ordered by PRE"
-    )
-    print(tab.round(3).to_string())
-
-    fig, ax = plt.subplots(figsize=(9, 0.45 * len(measures) + 1.8), facecolor="white")
-    ax.set_xlim(0, 1)
-    ax.set_ylim(len(measures) + 0.5, 0.5)  # rank 1 at the top
-    ax.axis("off")
-    ax.set_title(label(e), fontsize=11, pad=26)
-    ax.text(
-        0,
-        1,
-        "Modelled (reference)",
-        transform=ax.transAxes,
-        ha="left",
-        va="bottom",
-        color=STYLE["PRE"]["color"],
-        fontweight="bold",
-    )
-    ax.text(
-        1,
-        1,
-        "Postprocessed",
-        transform=ax.transAxes,
-        ha="right",
-        va="bottom",
-        color=STYLE["POST"]["color"],
-        fontweight="bold",
-    )
-    ax.plot([0, 0.40], [0.5, 0.5], color=STYLE["PRE"]["color"], lw=1.5, clip_on=False)
-    ax.plot([0.60, 1], [0.5, 0.5], color=STYLE["POST"]["color"], lw=1.5, clip_on=False)
-
-    for m in w.index:
-        yl, yr = L.at[m, "row"], R.at[m, "row"]
-        moved = abs(L.at[m, "rank"] - R.at[m, "rank"]) >= 2
-        ax.plot(
-            [0.42, 0.58],
-            [yl, yr],
-            zorder=2 if moved else 1,
-            **(MOVED_STYLE if moved else STAY_STYLE),
-        )
-
-        rank_l = ("=" if L.at[m, "tied"] else "") + str(L.at[m, "rank"])
-        rank_r = ("=" if R.at[m, "tied"] else "") + str(R.at[m, "rank"])
-        ax.text(0.00, yl, rank_l, ha="left", va="center", fontsize=9, color="gray")
-        ax.plot(0.055, yl, marker=marker, color=mcolor, ms=6, ls="none", clip_on=False)
-        ax.text(0.08, yl, pretty(m), ha="left", va="center", fontsize=10)
-        ax.text(
-            0.40,
-            yl,
-            f"{L.at[m, 'resid']:.2f}",
-            ha="right",
-            va="center",
-            fontsize=9,
-            color="gray",
-        )
-
-        ax.text(
-            0.60,
-            yr,
-            f"{R.at[m, 'resid']:.2f}",
-            ha="left",
-            va="center",
-            fontsize=9,
-            color="gray",
-        )
-        ax.text(0.66, yr, rank_r, ha="left", va="center", fontsize=9, color="gray")
-        ax.plot(0.735, yr, marker=marker, color=mcolor, ms=6, ls="none", clip_on=False)
-        ax.text(0.76, yr, pretty(m), ha="left", va="center", fontsize=10)
-
-    fig.legend(
-        handles=[
-            Line2D(
-                [],
-                [],
-                marker=marker,
-                color=mcolor,
-                ls="none",
-                ms=6,
-                label=SCALE_LABELS[RANK_SCALE],
-            ),
-            Line2D([], [], label="Moved 2 or more ranks", **MOVED_STYLE),
-            Line2D([], [], label="Within ±1 rank", **STAY_STYLE),
-            Line2D([], [], ls="none", label="= tied rank"),
-        ],
-        loc="lower center",
-        bbox_to_anchor=(0.5, 0.035),
-        ncol=4,
-        frameon=False,
-        fontsize=8,
-    )
-    if NO_EFFECT_TOL > 0:
-        fig.text(
-            0.5,
-            0.01,
-            f"Reductions below {NO_EFFECT_TOL:.0%} of baseline count as "
-            "no effect and share a rank.",
-            ha="center",
-            fontsize=7,
-            color="gray",
-        )
-    fig.tight_layout(rect=[0, 0.09, 1, 1])
-    out = OUT_DIR / f"fig_rank_comparison_{e}_{RANK_METRIC}_scale{RANK_SCALE}.png"
-    fig.savefig(out, dpi=150, facecolor="white")
-    plt.close(fig)
-    print(f"Wrote {out.name} to {OUT_DIR}")
-
-
 # Rank scatter ------------------------------------------------------------------------------------------------------------------
 # Modelled rank (x) vs postprocessed rank (y) of every measure, one dot per measure and
-# scale, coloured by scale. Ranks are within each scale, exactly as in the slope chart
-# above (same RANK_METRIC / TIE_DECIMALS / NO_EFFECT_TOL). Dots on the diagonal keep
+# scale, coloured by scale. Ranks are within each scale, using RANK_METRIC /
+# TIE_DECIMALS / NO_EFFECT_TOL from the ranking settings above. Dots on the diagonal keep
 # their rank; the shaded band marks +-SCATTER_BAND ranks.
-SCATTER_EVENTS = ["coast_100"]  # any of coast_100, river_500, compound_100c_500r
+SCATTER_EVENTS = ["coast_100_03SLR"]  # any of coast_100, river_500, compound_100c_500r
 SCATTER_BAND = 1
 SCATTER_DOT_SIZES = (40, 90, 150)  # one per scale in SCALES: small (04) -> big (1)
 

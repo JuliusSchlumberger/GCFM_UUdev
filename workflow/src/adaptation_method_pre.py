@@ -213,28 +213,49 @@ def _is_current_protection(elevation) -> bool:
     return isinstance(elevation, dict) and bool(elevation.get("current"))
 
 
-def _levee_crests(new_gdf, elevation, baseline_gdf, max_match_distance_m: float):
+def _levee_crests(
+    new_gdf,
+    elevation,
+    baseline_gdf,
+    max_match_distance_m: float,
+    raise_by: Optional[float] = None,
+):
     """Crest for every segment of a new levee trace.
 
-    A number -> that crest on every segment. current_protection ({"current":
-    True, "fill_crest": x}) -> each new segment keeps the crest of the
-    baseline weir segment it lies on (its midpoint within
-    max_match_distance_m of it -- the same midpoint rule as
-    merge_weir_preserve_unmatched, so a segment only touching the baseline
-    at one endpoint is not "on" it), and a segment with no baseline levee
-    under it (e.g. protect_closed's river-mouth closure) gets fill_crest.
+    A number, no raise_by -> that crest on every segment. A number with
+    raise_by (src.adaptation_scaling adds it to every levee resolved from a
+    max water level) -> each new segment gets the crest of the baseline weir
+    segment it lies on + raise_by, so the levee keeps today's profile and is
+    never lowered; a segment with no baseline levee under it (e.g.
+    protect_closed's river-mouth closure) gets the number itself.
+    current_protection ({"current": True, "fill_crest": x}) -> each new
+    segment keeps its baseline crest, and a segment with no baseline levee
+    under it gets fill_crest. "Lies on" = its midpoint within
+    max_match_distance_m of the baseline segment -- the same midpoint rule as
+    merge_weir_preserve_unmatched, so a segment only touching the baseline at
+    one endpoint is not "on" it.
     """
-    if not _is_current_protection(elevation):
+    current = _is_current_protection(elevation)
+    if not current and raise_by is None:
         return elevation
 
-    fill_crest = float(elevation["fill_crest"])
+    if current:
+        label, add, fill_crest = (
+            "current_protection",
+            0.0,
+            float(elevation["fill_crest"]),
+        )
+    else:
+        label, add, fill_crest = (
+            f"raise by {raise_by:.2f} m",
+            float(raise_by),
+            float(elevation),
+        )
     baseline = (
         _flatten_elevation_from_z(baseline_gdf) if baseline_gdf is not None else None
     )
     if baseline is None or baseline.empty:
-        print(
-            f"  current_protection: no baseline weir -- every segment gets fill_crest {fill_crest:.2f} m"
-        )
+        print(f"  {label}: no baseline weir -- every segment gets {fill_crest:.2f} m")
         return np.full(len(new_gdf), fill_crest)
 
     base_crest = np.array([float(np.max(z)) for z in baseline["elevation"]])
@@ -242,12 +263,12 @@ def _levee_crests(new_gdf, elevation, baseline_gdf, max_match_distance_m: float)
     mids = shapely.line_interpolate_point(new_gdf.geometry.values, 0.5, normalized=True)
     nearest = STRtree(base_geoms).nearest(mids)
     matched = shapely.distance(mids, base_geoms[nearest]) <= max_match_distance_m
-    crests = np.where(matched, base_crest[nearest], fill_crest)
+    crests = np.where(matched, base_crest[nearest] + add, fill_crest)
     print(
-        f"  current_protection: {int(matched.sum())} of {len(new_gdf)} segments keep their "
-        f"baseline crest ({crests[matched].min() if matched.any() else float('nan'):.2f}-"
-        f"{crests[matched].max() if matched.any() else float('nan'):.2f} m), "
-        f"{int((~matched).sum())} without a baseline levee get fill_crest {fill_crest:.2f} m"
+        f"  {label}: {int(matched.sum())} of {len(new_gdf)} segments on a baseline levee "
+        f"-> crest {crests[matched].min() if matched.any() else float('nan'):.2f}-"
+        f"{crests[matched].max() if matched.any() else float('nan'):.2f} m, "
+        f"{int((~matched).sum())} without a baseline levee get {fill_crest:.2f} m"
     )
     return crests
 
@@ -278,6 +299,7 @@ def apply_river_levee(
     dz: Optional[float] = None,
     merge: bool = True,
     max_match_distance_m: float = 2.0,
+    raise_by: Optional[float] = None,
     **kwargs,
 ) -> SfincsModel:
     """
@@ -314,13 +336,18 @@ def apply_river_levee(
         max_match_distance_m : (Optional) Nearest-neighbour distance used to
             match `locations`'s geometry against the existing weir (see
             merge_weir_preserve_unmatched in protection_weir.py src).
+        raise_by  : (Optional, auto-added by src.adaptation_scaling, merge=False only)
+            Raise every segment on an existing levee by this much instead of
+            setting it to `elevation` -- see _levee_crests.
 
     Returns:
         Modified SfincsModel object.
     """
     if merge:
-        if _is_current_protection(elevation):
-            raise ValueError("river_levee: current_protection needs merge: false")
+        if _is_current_protection(elevation) or raise_by is not None:
+            raise ValueError(
+                "river_levee: current_protection / raise_by need merge: false"
+            )
         mod.weirs.create(
             locations=locations,
             elevation=elevation,
@@ -334,7 +361,7 @@ def apply_river_levee(
 
     new_gdf = _read_levee_trace(mod, locations)
     new_gdf["elevation"] = _levee_crests(
-        new_gdf, elevation, mod.weirs.data, max_match_distance_m
+        new_gdf, elevation, mod.weirs.data, max_match_distance_m, raise_by
     )
     new_gdf["par1"] = par1
 
@@ -714,6 +741,8 @@ def apply_water_retention(
     rst_path: Optional[str] = None,
     ind_path: Optional[str] = None,
     out_rst_path: Optional[str] = None,
+    inlet: Optional[Path] = None,
+    inlet_sill_below_crest: float = 0.2,
     **kwargs,
 ) -> SfincsModel:
     """
@@ -818,6 +847,12 @@ def apply_water_retention(
                                  mod.root.path / <rst_path's own filename> -- i.e. this
                                  strategy's own adapted_root, same convention as the raised
                                  dep_subgrid/landuse outputs of sibling measures.
+        inlet                   : (Optional) Polyline(s) along the existing levee where the
+                                 zone takes in river water: those levee segments get their
+                                 own crest - inlet_sill_below_crest, and the ring weir is
+                                 left out wherever the zone runs along an existing levee.
+                                 None: ring weir all around, no inlet (as before).
+        inlet_sill_below_crest  : (Optional) Inlet sill depth below the existing crest [m], default 0.2
 
     Returns:
         Modified SfincsModel object.
@@ -1015,7 +1050,13 @@ def apply_water_retention(
         weir_source_kwargs = dict(dep=dep_subgrid)
         weir_source_note = "original terrain (no existing protection weir found nearby)"
 
-    zone_boundary = gpd.GeoDataFrame(geometry=[zone_geom.boundary], crs=mod.crs)
+    ring = zone_geom.boundary
+    if inlet is not None and nearby_weir is not None and not nearby_weir.empty:
+        # where the zone runs along an existing levee, that levee is its wall:
+        # no ring there, so river water reaching the zone (inlet, overtopping)
+        # isn't held back by a second weir behind the levee
+        ring = ring.difference(nearby_weir.buffer(150.0).union_all())
+    zone_boundary = gpd.GeoDataFrame(geometry=[ring], crs=mod.crs)
     mod.weirs.create(
         locations=zone_boundary,
         buffer=weir_buffer,
@@ -1023,6 +1064,22 @@ def apply_water_retention(
         merge=True,
         **weir_source_kwargs,
     )
+
+    if inlet is not None:
+        # inlet: the existing levee segments under the `inlet` polyline get
+        # their own crest - inlet_sill_below_crest (raise_by < 0, see
+        # _levee_crests)
+        print(
+            f"  Retention inlet: levee segments on {Path(str(inlet)).name} lowered by {inlet_sill_below_crest:.2f} m"
+        )
+        apply_river_levee(
+            mod,
+            locations=inlet,
+            elevation=weir_source_kwargs.get("elevation", 0.0) - inlet_sill_below_crest,
+            par1=weir_par1,
+            merge=False,
+            raise_by=-inlet_sill_below_crest,
+        )
 
     # roughness is unchanged by this measure, but subgrid.create rebuilds tables
     # from scratch -- feed it this basin's own already-built native-resolution
@@ -1177,6 +1234,7 @@ def apply_coastal_levee(
     dz: Optional[float] = None,
     merge: bool = True,
     max_match_distance_m: float = 2.0,
+    raise_by: Optional[float] = None,
     **kwargs,
 ) -> SfincsModel:
     """
@@ -1218,13 +1276,18 @@ def apply_coastal_levee(
             reprojection noise, while staying well under half a grid cell so
             it can't conflate two genuinely different segments. Too tight
             silently leaves old segments in place instead of replacing them.
+        raise_by  : (Optional, auto-added by src.adaptation_scaling, merge=False only)
+            Raise every segment on an existing levee by this much instead of
+            setting it to `elevation` -- see _levee_crests.
 
     Returns:
         Modified SfincsModel object.
     """
     if merge:
-        if _is_current_protection(elevation):
-            raise ValueError("coastal_levee: current_protection needs merge: false")
+        if _is_current_protection(elevation) or raise_by is not None:
+            raise ValueError(
+                "coastal_levee: current_protection / raise_by need merge: false"
+            )
         mod.weirs.create(
             locations=locations,
             elevation=elevation,  # adds absolute elevation
@@ -1238,7 +1301,7 @@ def apply_coastal_levee(
 
     new_gdf = _read_levee_trace(mod, locations)
     new_gdf["elevation"] = _levee_crests(
-        new_gdf, elevation, mod.weirs.data, max_match_distance_m
+        new_gdf, elevation, mod.weirs.data, max_match_distance_m, raise_by
     )
     new_gdf["par1"] = par1
 
@@ -1270,10 +1333,16 @@ def apply_pumps(
     """
     Adds a pump structure to the SFINCS model, based on user-supplied locations and parameters.
 
+    `discharge` is the measure's TOTAL capacity, split evenly over the pump
+    lines in `locations` -- SFINCS gives every line in sfincs.drn its own
+    discharge, so passing it unsplit multiplied the capacity by the number
+    of lines (advance's 7 pumps). The postprocessing pumps rule uses the same
+    total.
+
     Args:
         mod            : (Required) Open SfincsModel object (HydroMT)
         locations      : (Required from measures.yml) Path, data source name, or GeoDataFrame with the pump locations
-        discharge      : (Required from measures.yml) Pump discharge capacity [m3/s]
+        discharge      : (Required from measures.yml) Total pump discharge capacity [m3/s], over all lines
         stype          : (Optional) Pump type (default "pump")
         alpha          : (Optional) Pump efficiency coefficient (default 0.5)
         width          : (Optional) Pump width [m] (default 1.0)
@@ -1284,11 +1353,16 @@ def apply_pumps(
         closing_time   : (Optional) Time [s] it takes for the barrier/pump to close (default 600.0)
         merge          : (Optional) If True, merge with any existing drainage structures instead of overwriting.
     """
+    n_lines = len(_read_levee_trace(mod, locations))
+    print(
+        f"  Pumps: total capacity {discharge:.1f} m3/s over {n_lines} line(s) = "
+        f"{discharge / n_lines:.1f} m3/s each"
+    )
 
     mod.drainage_structures.create(
         locations=locations,
         stype=stype,
-        discharge=discharge,
+        discharge=discharge / n_lines,
         alpha=alpha,
         width=width,
         sill_elevation=sill_elevation,

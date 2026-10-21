@@ -259,6 +259,12 @@ sfincs:
     min_inundation_depth_m: 0.0  # threshold for counting a cell as flooded in sanity checks
     animation_fps: 1             # frames per second for flood progression animation
 
+# Event-run flood animations (02_flood_animation.mp4, rule run_event and
+# adapt_run_event_pre) are only made for these scenarios -- every other run
+# gets an empty placeholder file. Request on the command line, e.g.
+#   --config animation_scenarios="['river_100_03SLR']"
+animation_scenarios: []
+
 # Flood metrics (rule 17)
 metrics:
   hmin: 0.05                     # min depth (m) for a pixel to count as flooded

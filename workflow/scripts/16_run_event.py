@@ -134,8 +134,16 @@ animation_out_path = Path(snakemake.output.animation_flood_progress)
 csv_out_path        = Path(snakemake.output.flood_timeseries_csv)
 animation_out_path.parent.mkdir(parents=True, exist_ok=True)
 
-da_h = compute_flood_progression(sfincs_root, sea_mask_path)
-if da_h is None:
+# Animation only for scenarios listed in config animation_scenarios (e.g.
+# --config animation_scenarios="['river_100_03SLR']"); otherwise an empty
+# placeholder, so the declared output still exists.
+make_animation = snakemake.wildcards.scenario in snakemake.config.get("animation_scenarios", [])
+
+da_h = compute_flood_progression(sfincs_root, sea_mask_path) if make_animation else None
+if not make_animation:
+    log.info("Flood animation skipped (scenario not in animation_scenarios) -- empty placeholder")
+    animation_out_path.touch()
+elif da_h is None:
     log.warning(
         "compute_flood_progression returned None (no 'zs' in sfincs_map.nc) — "
         "skipping flood animation and flood-timeseries CSV"
@@ -155,6 +163,7 @@ else:
     )
     log.info(f"Flood animation written: {animation_out_path}")
 
+if da_h is not None or not make_animation:  # i.e. not the "no zs" case above
     # da_h (all frames, mesh resolution) is only needed for the animation
     # above. compute_flood_timeseries_stats below rasterizes one frame at a
     # time onto a fine subgrid raster via hydromt_sfincs's celltree-based

@@ -11,7 +11,8 @@ three already-computed max_flood_depth.tif rasters (no new SFINCS runs):
   driver)
 
 Counterpart scenarios are resolved by 00_common.smk's attribution_counterparts
-(RP-matched against the target scenario's own river_rp/surge_rp) -- this
+(one driver at the target scenario's own RP, the other at mean conditions,
+same slr_m) -- this
 module itself is result-path-agnostic, driven entirely by the paths it's
 given. Called once per basin x scenario by 18c_attribution_mask.py (rule
 attribution_mask, 18c_attribution_mask.smk).

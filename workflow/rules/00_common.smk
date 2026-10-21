@@ -205,32 +205,51 @@ def scenario_params(name):
     }
 
 def attribution_counterparts(scenario):
-    """-> (river_only_scenario, coastal_only_scenario): the two sibling
-    single-driver scenario names whose own RP matches `scenario`'s own
-    river_rp/surge_rp exactly (river_rp=X & surge_rp=None / surge_rp=Y &
-    river_rp=None) -- e.g. coast_500 (surge=500, river=2) pairs with
-    river_only (river=2) and coast_only_500 (surge=500); river_500
-    (surge=2, river=500) pairs with river_only_500 and coast_only (surge=2).
-    Raises if scenarios.yml has no such sibling defined yet (e.g. coast_100
-    has no coast_only_100 counterpart) -- confirmed with the user rather
-    than silently guessing a mismatched RP."""
+    """-> (river_scenario, coastal_scenario) the attribution mask compares
+    `scenario` against: each keeps ONE driver at `scenario`'s own event level
+    and puts the other at mean conditions (surge_rp Tide / river_rp Mean),
+    with the same slr_m (SLR is part of the sea, not a separate driver):
 
-    river_rp = SCENARIO_DEFS[scenario]["river_rp"]
-    surge_rp = SCENARIO_DEFS[scenario]["surge_rp"]
+      river side   : river_rp = scenario's river_rp, surge_rp = Tide
+      coastal side : surge_rp = scenario's surge_rp, river_rp = Mean
 
-    def _find(rp_key, other_key, rp_val):
-        matches = [n for n, s in SCENARIO_DEFS.items()
-                   if s.get(rp_key) == rp_val and s.get(other_key) is None]
+    So coast_100_03SLR (100 / Mean) pairs with the mean-conditions run
+    (Tide / Mean) and itself; river_100_03SLR (Tide / 100) with itself and
+    the mean-conditions run; compound_100_03SLR (100 / 100) with
+    river_100_03SLR and coast_100_03SLR. Cells flooded in both (class 3)
+    are then flooded by either driver alone -- for a single-driver scenario,
+    already under mean conditions. The other driver is never null: a null
+    sea is a flat boundary far below sea level (13_build_sfincs.py,
+    river_only), which removes the sea's backwater from the river run.
+    `scenario` itself is preferred when it matches. Raises if scenarios.yml
+    has no matching scenario rather than guessing a mismatched one."""
+
+    s0 = SCENARIO_DEFS[scenario]
+    slr = s0.get("slr_m", 0.0)
+
+    def _norm(v):
+        return v.strip().lower() if isinstance(v, str) else v
+
+    def _find(want):
+        def ok(s):
+            return s.get("slr_m", 0.0) == slr and all(
+                _norm(s.get(k, 1.0 if k == "discharge_multiplier" else None)) == _norm(v)
+                for k, v in want.items()
+            )
+        if ok(s0):
+            return scenario
+        matches = [n for n, s in SCENARIO_DEFS.items() if ok(s)]
         if not matches:
             raise ValueError(
-                f"No {rp_key}={rp_val}-matched, {other_key}=None sibling scenario "
-                f"for {scenario!r} -- add one to config/scenarios.yml"
+                f"No attribution counterpart {want} with slr_m={slr} for "
+                f"{scenario!r} -- add one to config/scenarios.yml"
             )
         return matches[0]
 
-    river_only = _find("river_rp", "surge_rp", river_rp)
-    coastal_only = _find("surge_rp", "river_rp", surge_rp)
-    return river_only, coastal_only
+    river = _find({"river_rp": s0["river_rp"], "surge_rp": "tide",
+                   "discharge_multiplier": s0.get("discharge_multiplier", 1.0)})
+    coastal = _find({"surge_rp": s0["surge_rp"], "river_rp": "mean"})
+    return river, coastal
 
 
 # What to run: CLI override, else just the "default" scenario.
@@ -402,7 +421,7 @@ def strategy_measure_input_paths(strategy):
     paths = []
     for _measure_params in STRATEGY_DEFS[strategy]["measures"].values():
         for _k, _v in _measure_params.items():
-            if _k in ("locations", "dep_subgrid") and isinstance(_v, str):
+            if _k in ("locations", "dep_subgrid", "inlet") and isinstance(_v, str):
                 paths.append(adaptation_input_path(_v))
     return paths
 
