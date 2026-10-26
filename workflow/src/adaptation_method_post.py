@@ -1,6 +1,7 @@
 # Applied AFTER the SFINCS run, directly to the flood depth raster.
 # No model re-run required.
 
+import logging
 import shutil
 import numpy as np
 import rasterio
@@ -12,7 +13,9 @@ import geopandas as gpd
 from shapely.ops import polygonize, unary_union
 from rasterio.features import geometry_mask
 
+from src.adaptation_scaling import _max_river_waterlevel
 from src.grid import cell_area_m2
+from src.sfincs_run import parse_sfincs_inp
 
 # Types of flooding attribution classes (used in the attribution mask)
 # 1 = river-only
@@ -96,14 +99,19 @@ def apply_river_levee(
     scenario_root: str,
     output_dir: str,
     elevation: float,
+    locations: str,
     strategy_measures: dict = None,
     **kwargs,
 ) -> dict:
     """
     Post-processing river levee rule.
     Logic:
-      - Read max river water level (e.g. obs points / dis forcing) from the scenario model.
-      - If river_height > max river water level: remove flooding in class 1 (river-only).
+      - Max river water level = the baseline's highest zsmax along the levee's
+        own `locations` line, the same reference max_river_waterlevel sizes the
+        levee against (src.adaptation_scaling), so a levee below scale 1 is
+        overtopped. (The observation points sit downstream of the levee's
+        upstream end and gave a lower level, so scale 0.9 counted as holding.)
+      - If river_height >= max river water level: remove flooding in class 1 (river-only).
       - Class 3 (compound) flooding is only removed if BOTH levees hold, since
         either source alone could cause it -- this function owns that joint
         decision (apply_coastal_levee defers class 3 to here whenever a
@@ -120,10 +128,20 @@ def apply_river_levee(
 
     mod = SfincsModel(root=scenario_root, mode="r")
 
-    # River water level (observation points)
-    riv_wl = mod.get_component("output")
-    riv_wl.read()
-    max_river_wl = float(riv_wl.data["point_zs"].max())
+    # River water level along the levee line, rounded like the resolved
+    # elevation (round(scale * level, 4)) so scale 1 compares equal
+    inp = parse_sfincs_inp(Path(scenario_root) / "sfincs.inp")
+    max_river_wl = round(
+        _max_river_waterlevel(
+            Path(locations),
+            Path(scenario_root) / "sfincs_map.nc",
+            float(inp["dx"]),
+            f"EPSG:{int(float(inp['epsg']))}",
+            "river_levee (post)",
+            logging.getLogger(__name__),
+        ),
+        4,
+    )
 
     river_current = _is_current_protection(elevation)
     river_holds = (not river_current) and elevation >= max_river_wl
@@ -552,15 +570,15 @@ def _uniform_layer_depth(depths: np.ndarray, volume: float, cell_area: float) ->
     return float((volume / cell_area - shallower[k]) / (n - k))
 
 
-def _river_flood_duration_s(scenario_root: str) -> float:
+def _unpumped_river_volume_m3(scenario_root: str, discharge: float) -> float:
     """
-    Time [s] within the event run (tstart..tstop of the scenario's
-    sfincs.inp) during which the river discharge (sfincs.dis) is above the
-    level it starts the event at, i.e. the level the spin-up leaves it at
-    (bankfull for a river RP scenario): the duration of the river flood
-    wave. Counted when any discharge point is above its own starting level.
-    0 when the run has no discharge forcing or the discharge never rises
-    (e.g. river_rp Mean or Null).
+    River volume [m3] within the event run (tstart..tstop of the scenario's
+    sfincs.inp) that pumps of total capacity `discharge` [m3/s] cannot
+    discharge: integral of max(Q_river(t) - discharge, 0) dt, with Q_river
+    the total river discharge (sfincs.dis, summed over all discharge
+    points, as `discharge` is the total over all pump lines). The part of
+    the hydrograph above the pump-capacity line. 0 when the run has no
+    discharge forcing or the pumps match its peak.
     """
     import pandas as pd
 
@@ -579,13 +597,12 @@ def _river_flood_duration_s(scenario_root: str) -> float:
     t1 = (pd.to_datetime(inp["tstop"], format=fmt) - tref).total_seconds()
 
     dis = np.atleast_2d(np.loadtxt(dis_path))
-    t, q = dis[:, 0], dis[:, 1:]
+    t, q = dis[:, 0], dis[:, 1:].sum(axis=1)
     # 1-min grid over the event run, linear between the forcing steps (as
-    # SFINCS interpolates them); start level = discharge at tstart.
+    # SFINCS interpolates them)
     tt = np.arange(t0, t1, 60.0)
-    q_tt = np.column_stack([np.interp(tt, t, q[:, i]) for i in range(q.shape[1])])
-    rising = (q_tt > q_tt[0]).any(axis=1)
-    return float(np.count_nonzero(rising) * 60.0)
+    q_tt = np.interp(tt, t, q)
+    return float(np.maximum(q_tt - discharge, 0.0).sum() * 60.0)
 
 
 # Advance/ Protect-closed
@@ -596,37 +613,40 @@ def apply_pumps(
     Post-processing pumps rule.
 
     Logic:
-        - Computes the pumped volume as discharge capacity [m3/s] * flood
-          duration [s]: the time within the event run during which the
-          river discharge is above the level the spin-up leaves it at
-          (_river_flood_duration_s), i.e. the duration of the river flood
-          wave. Not the whole simulation: flood water does not drain within
-          the run and the run includes calm lead-in/tail hours, so duration
-          from the run length or from the flood volume time series would
-          cover the whole event. 0 when the discharge never rises (e.g.
-          river_rp Mean), so the pumps then remove nothing.
-        - Removes that volume from the river and compound cells (attribution
-          classes 1, 3) of the max flood depth map as a uniform layer: the
-          pumped volume is split evenly over the wet cells, cells without
-          enough water are set to 0, and the volume they could not give is
-          split evenly over the cells that still have water, until all of it
-          is removed (computed directly by _uniform_layer_depth). Every cell
-          loses min(depth, d); if the pumped volume exceeds all the water in
-          those cells, they all become 0.
+        - Assumes the barrier the pumps sit behind closes the river mouth,
+          so all river discharge must be pumped and any discharge above the
+          pump capacity floods the area behind it. The river + compound
+          flood volume (attribution classes 1, 3) of the max flood depth map
+          is limited to that unpumped volume, integral of
+          max(Q_river(t) - discharge, 0) dt over the event run
+          (_unpumped_river_volume_m3). The flood map itself only caps it:
+          the pumps never leave more water than the map holds.
+        - Removes the difference (map volume - unpumped volume, if
+          positive) from those cells as a uniform layer: it is split evenly
+          over the wet cells, cells without enough water are set to 0, and
+          the volume they could not give is split evenly over the cells
+          that still have water, until all of it is removed (computed
+          directly by _uniform_layer_depth). Every cell loses min(depth, d).
+        - Pumps matching the peak river discharge leave nothing unpumped,
+          so those cells all become 0; well below the peak the unpumped
+          volume exceeds the map's own and nothing changes.
 
-    This replaces an earlier binary rule (fully remove river+compound
-    flooding if discharge >= peak river discharge, else no removal at all)
-    with a graded, volume-based reduction so small/partial pump capacities
-    show up as partial relief instead of nothing.
+    This replaces an earlier rule that removed capacity x flood duration
+    from the flood cells, which spent all pump capacity on floodplain water
+    as if the river itself needed no pumping (at 0.4 x the peak discharge
+    it already removed ~20x all river flood water in river_100_03SLR).
+    Note the flood map comes from a run with the mouth open: the rule only
+    scales its volume, it does not move flooding to where water would pond
+    behind a closed mouth.
 
     Args:
         flood_map_path : path to the max flood depth raster to reduce (may
                          already reflect earlier measures in the chain)
         scenario_root  : the scenario's sfincs/ model root (sfincs.inp/.dis for
-                         the flood duration); attribution_mask.tif lives in
-                         its parent folder
+                         the unpumped river volume); attribution_mask.tif
+                         lives in its parent folder
         output_dir     : where to write the reduced raster
-        discharge      : pump discharge capacity [m3/s]
+        discharge      : total pump discharge capacity [m3/s]
 
     Returns:
         dict with method and output raster path
@@ -634,9 +654,8 @@ def apply_pumps(
     out_path = Path(output_dir) / "max_flood_depth.tif"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Flood duration: time the river discharge is above its spin-up level.
-    duration_s = _river_flood_duration_s(scenario_root)
-    pumped_volume = discharge * duration_s
+    # River discharge above the pump capacity, which stays behind as flood water
+    unpumped_volume = _unpumped_river_volume_m3(scenario_root, discharge)
 
     with rasterio.open(flood_map_path) as src:
         flood, prof = src.read(1), src.profile
@@ -654,29 +673,26 @@ def apply_pumps(
     )  # river and compound
     depths = flood[target_mask].astype(np.float64)
     target_area = depths.size * cell_area
-    reduction_depth = _uniform_layer_depth(depths, pumped_volume, cell_area)
+    current_volume = float(depths.sum() * cell_area)
+    removed_volume = max(current_volume - unpumped_volume, 0.0)
+    reduction_depth = _uniform_layer_depth(depths, removed_volume, cell_area)
     remaining = np.maximum(depths - reduction_depth, 0.0)
 
     # Drained cells -> NODATA, not 0.0: downstream metrics count "flooded" via
     # notnull (see apply_water_retention).
     flood_new = flood.copy()
     flood_new[target_mask] = np.where(remaining <= 0, prof["nodata"], remaining)
-    realized_volume = float((depths.sum() - remaining.sum()) * cell_area)
-    cap_note = (
-        " [pumped volume exceeds all river+compound flood water; those cells are now dry]"
-        if realized_volume < pumped_volume * (1 - 1e-6)
-        else ""
-    )
+    remaining_volume = float(remaining.sum() * cell_area)
 
     prof.update(dtype="float32")
     with rasterio.open(out_path, "w", **prof) as dst:
         dst.write(flood_new.astype("float32"), 1)
 
     print(
-        f"  Applied pumps to river+compound flooding: discharge={discharge:.1f} m3/s x "
-        f"flood duration (river above spin-up level)={duration_s / 3600:.1f} h -> pumped volume={pumped_volume:.0f} m3, "
+        f"  Applied pumps to river+compound flooding: discharge={discharge:.1f} m3/s -> "
+        f"unpumped river volume={unpumped_volume:.0f} m3 vs flood volume={current_volume:.0f} m3, "
         f"reduction depth={reduction_depth:.4f} m over {target_area / 1e6:.2f} km2, "
-        f"realized={realized_volume:.0f} m3{cap_note}."
+        f"remaining={remaining_volume:.0f} m3."
     )
 
     return {"method": "flood_map", "out_raster": str(out_path)}

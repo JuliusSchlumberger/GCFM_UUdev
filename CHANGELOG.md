@@ -4,9 +4,56 @@ Newest changes first. See `Reference_memory.txt` for the current, up-to-date
 description of how the pipeline works; this file only describes *what changed
 and why*.
 
-# 2026-10-21: edits to adaptation strategies and adjustment to scenarios for attribution runs
+# 2026-10-26: Change the way pump capacity is calculated in post approach, analysis scripts moved to own folder (-KL)
 
-## event flood animations only on request (-KL)
+## analysis scripts moved to their own folder (-KL)
+
+The analysis and figure scripts lived in `tests/` next to the pipeline's
+diagnostics. They now have their own top-level folder, `analysis/`, without
+the `KL_` prefix and renamed. The scripts find the repo from their own location one level down, as before,
+so `analysis/` needs no path changes. `tests/` keeps the pipeline checks.
+
+## Change the way pump capacity is calculated in post approach
+`apply_pumps` (src/adaptation_method_post.py) removed capacity x flood
+duration from the river + compound flood cells. That spends all pump
+capacity on floodplain water, as if the river itself needed no pumping.
+Behind a closed mouth (protect_closed's coastal levee, advance's offshore
+barrier), the pumps must first carry the whole river to sea. The duration
+also covered the whole 336 h window (the river stays above its start level
+throughout). So in river_100_03SLR, scale 0.4 (1510 m3/s) already removed
+1.8e9 m3 against 8.2e7 m3 of flood water, and post-processing cleared all
+river flooding at every scale.
+
+Now the river + compound flood volume is limited to the river volume the
+pumps cannot discharge, integral of max(Q_river(t) - capacity, 0) dt over the
+event (new `_unpumped_river_volume_m3`, discharge summed over all
+`sfincs.dis` points, replacing `_river_flood_duration_s`). The difference is
+removed as the same uniform layer as before. river_100_03SLR: scale 0.4
+leaves 9.2e8 m3 unpumped (full risk), 0.9 leaves 3.0e7 m3 (about 36% of the
+flood volume), 1 leaves 0 (fully drained). The flood map is from an
+open-mouth run, so the rule scales the volume of its flooding and does not
+move it to where water would pond behind the closed mouth. Rerun the
+protect_closed and advance post-processing runs (`--forcerun
+adapt_metrics_post`, since Snakemake does not track changes to src modules).
+
+# 2026-10-23: event flood time series only on request (-KL)
+
+## event flood time series only on request
+
+`16_run_event.py` (rules run_event and adapt_run_event_pre) rasterized every
+map frame onto the subgrid for `flood_timeseries.csv` after each SFINCS run:
+~12 min per run with the 168 h event window (337 hourly frames), single
+threaded while the job holds all `--cores`. Nothing downstream reads the CSV
+(metrics, strategy sizing and the comparison all use zsmax). Now only for
+scenarios listed in the new top-level config key `timeseries_scenarios`
+(default `[]`), like `animation_scenarios`; every other run writes a
+header-only CSV, so the rules' declared outputs are unchanged. As with the
+animation change, add `--rerun-triggers mtime params input` to avoid
+rerunning finished event runs because the script changed.
+
+# 2026-10-21: edits to adaptation strategies and adjustment to scenarios for attribution runs (-KL)
+
+## event flood animations only on request
 
 `16_run_event.py` (rules run_event and adapt_run_event_pre) made a flood
 animation (`02_flood_animation.mp4`) for every event run, which took ~15 min

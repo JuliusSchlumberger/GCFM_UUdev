@@ -8,6 +8,7 @@ Step 3: agreement diagnostics (figures in results section)
 """
 
 import os
+import textwrap
 from pathlib import Path
 import numpy as np
 import xarray as xr
@@ -111,7 +112,17 @@ for (e, a), g in d.groupby(["event", "approach"]):
 # )
 
 # ------------------------------------------------------------------ 4. figures
+# scale-response figures: POST-PRE differences in residual ratio smaller than this
+# are left unshaded
+SHADE_TOL = 0.01
+SHADE_ALPHA = 0.13  # opacity of that shading (and its legend patches)
+
 EVENT_ORDER = ["coast_100_03SLR", "river_100_03SLR", "compound_100_03SLR"]
+EVENT_LABELS = {
+    "coast_100_03SLR": "Coastal flood",
+    "river_100_03SLR": "River flood",
+    "compound_100_03SLR": "Compound flood",
+}
 events = sorted(d.event.unique(), key=EVENT_ORDER.index)
 MEASURE_ORDER = [
     "advance",
@@ -131,6 +142,11 @@ STYLE = {
 
 def label(s):
     return s.replace("_", " ").title()
+
+
+def event_label(e):
+    """Figure title for a flood event: EVENT_LABELS, else the tidied scenario name."""
+    return EVENT_LABELS.get(e, label(e))
 
 
 METRIC_INFO = [
@@ -172,14 +188,48 @@ def _y_inverse(x):
         return np.where(x <= 1, x, 10 ** ((x - 1) / ABOVE_ONE_SQUEEZE))
 
 
+def shade_divergence(ax, modelled, post, n=200):
+    """
+    Fill between the PRE (modelled) and POST curves: POST colour where POST
+    is above PRE (POST underestimates effectiveness), PRE colour where it is
+    below. Interpolates each segment between neighbouring categorical x
+    positions in the _y_forward space, so the fill follows the plotted lines,
+    and leaves segments with a NaN at either end unshaded.
+    """
+    pre_t = _y_forward(modelled)
+    post_t = _y_forward(post)
+    xp = np.arange(len(pre_t))
+    # one grid over all segments, so each colour is one polygon (no seams at the
+    # points); np.interp gives NaN on any segment with a NaN end, left unshaded
+    x = np.linspace(0, xp[-1], n * xp[-1] + 1)
+    pre_y = _y_inverse(np.interp(x, xp, pre_t))
+    post_y = _y_inverse(np.interp(x, xp, post_t))
+    diff = post_y - pre_y
+    for where, ap in ((diff > SHADE_TOL, "POST"), (diff < -SHADE_TOL, "PRE")):
+        ax.fill_between(
+            x,
+            pre_y,
+            post_y,
+            where=where,
+            color=STYLE[ap]["color"],
+            alpha=SHADE_ALPHA,
+            linewidth=0,
+            zorder=0,
+        )
+
+
 for METRIC, LABEL, YLIM, YTICKS in METRIC_INFO:
     BL = baselines[METRIC].to_dict()
     d["ratio"] = d[METRIC] / d.event.map(BL)
 
+    # extra width on the right for the legend; on A4 this tall figure is limited
+    # by page height, so the extra width doesn't shrink it further
+    LEGEND_W = 2.0
+    fig_w = 3 * len(events) + LEGEND_W
     fig, axes = plt.subplots(
         len(measures),
         len(events),
-        figsize=(3 * len(events), 2.7 * len(measures)),
+        figsize=(fig_w, 2.7 * len(measures)),
         sharex=True,
         sharey=True,
         squeeze=False,
@@ -190,10 +240,20 @@ for METRIC, LABEL, YLIM, YTICKS in METRIC_INFO:
             A = axes[i, j]
             g = d[(d.event == e) & (d.short == ms)]
 
+            curves = {}
             for ap, s in STYLE.items():
                 gg = g[g.approach == ap].set_index("scale").reindex(SCALES)
                 ratios = [1.0] + gg["ratio"].tolist()  # scale 0 = no adaptation
-                A.plot(X_LABELS, ratios, s["fmt"], color=s["color"], label=s["label"])
+                A.plot(
+                    X_LABELS,
+                    ratios,
+                    s["fmt"],
+                    color=s["color"],
+                    label=s["label"],
+                    zorder=3,
+                )
+                curves[ap] = ratios
+            shade_divergence(A, curves["PRE"], curves["POST"])
 
             A.set_yscale("function", functions=(_y_forward, _y_inverse))
             A.set_ylim(*YLIM)
@@ -202,28 +262,47 @@ for METRIC, LABEL, YLIM, YTICKS in METRIC_INFO:
             # only 1 and the top inside the thin band above 1, so its labels don't collide
             ticks = [0, 0.25, 0.5, 0.75, 1, YLIM[1]]
             A.set_yticks(ticks)
-            A.set_yticklabels([f"{t:g}" for t in ticks], fontsize=7)
-            A.tick_params(labelsize=7, labelrotation=45)
+            A.set_yticklabels([f"{t:g}" for t in ticks], fontsize=11)
+            A.tick_params(labelsize=11, labelrotation=45)
+            # end each rotated label at its tick, so neighbouring labels don't overlap
+            plt.setp(A.get_xticklabels(), ha="right", rotation_mode="anchor")
             if i == 0:
-                A.set_title(label(e), fontsize=9)
+                A.set_title(event_label(e), fontsize=13)
             if j == 0:
-                A.set_ylabel(LABEL, fontsize=8)
+                A.set_ylabel(LABEL, fontsize=12)
                 A.annotate(
                     label(ms),
-                    xy=(-0.42, 0.5),
+                    xy=(-0.5, 0.5),
                     xycoords="axes fraction",
-                    fontsize=11,
+                    fontsize=14,
                     rotation=90,
                     va="center",
                     ha="center",
                 )
 
     handles, labels = axes[0, 0].get_legend_handles_labels()
+    for ap, text in (("POST", "underestimates"), ("PRE", "overestimates")):
+        handles.append(
+            Patch(facecolor=STYLE[ap]["color"], alpha=SHADE_ALPHA, edgecolor="none")
+        )
+        labels.append(f"Post-processed {text} effectiveness")
     handles.append(Patch(facecolor="crimson", alpha=0.1, edgecolor="none"))
     labels.append("Residual risk")
-    axes[0, 0].legend(handles, labels, fontsize=8)
-    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    # one column on the right, long labels wrapped to keep it narrow
+    right = 1 - LEGEND_W / fig_w
+    fig.legend(
+        handles,
+        [textwrap.fill(t, 16, break_on_hyphens=False) for t in labels],
+        loc="center left",
+        bbox_to_anchor=(right, 0.5),
+        ncol=1,
+        frameon=False,
+        fontsize=11,
+        labelspacing=1.2,
+    )
+    plt.tight_layout(rect=[0, 0, right, 1])
     fig.savefig(OUT_DIR / f"fig_scale_response_{METRIC}.png", dpi=150)
+    plt.close(fig)
 
 print(
     f"\nWrote outputs to {OUT_DIR}: tidy_scenarios.csv, post_vs_pre_wide.csv, "
@@ -358,7 +437,7 @@ for j, scen in enumerate(SCENARIOS):
         axes[i, j].grid(alpha=0.3)
         axes[i, j].spines[["top", "right"]].set_visible(False)
 
-    axes[0, j].set_title(scen)
+    axes[0, j].set_title(event_label(scen))
 
 axes[0, 0].set_ylabel("Water level (m)")
 axes[1, 0].set_ylabel("Discharge (m³/s)")
@@ -577,7 +656,7 @@ for e in SCATTER_EVENTS:
     ax.set_yticks(range(1, n + 1))
     ax.set_xlabel("Modelled rank")
     ax.set_ylabel("Postprocessed rank")
-    ax.set_title(f"Rank scatter - {label(e)}", fontsize=11)
+    ax.set_title(f"Rank scatter - {event_label(e)}", fontsize=11)
     ax.legend(loc="upper left", frameon=False, fontsize=8)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)

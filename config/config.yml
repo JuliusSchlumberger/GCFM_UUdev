@@ -265,6 +265,12 @@ sfincs:
 #   --config animation_scenarios="['river_100_03SLR']"
 animation_scenarios: []
 
+# Same for the per-timestep flooded area / flood volume CSV
+# (flood_timeseries.csv): only computed for these scenarios, every other run
+# gets a header-only CSV. Nothing downstream reads it (metrics use zsmax).
+#   --config timeseries_scenarios="['river_100_03SLR']"
+timeseries_scenarios: []
+
 # Flood metrics (rule 17)
 metrics:
   hmin: 0.05                     # min depth (m) for a pixel to count as flooded

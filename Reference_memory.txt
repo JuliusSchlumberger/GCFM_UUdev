@@ -1583,7 +1583,9 @@ animation output (see "MESH-NATIVE ANIMATION" below for why they diverged)
 — flood_volume_m3's max over the CSV is the physically correct peak total
 flood volume (volume actually present in the domain at one real instant),
 which is NOT the same as summing each pixel's own zsmax envelope maximum
-(different pixels can peak at different times).
+(different pixels can peak at different times). Since 2026-10-23 the CSV is
+only computed for scenarios in config timeseries_scenarios (default [], like
+animation_scenarios); every other run writes a header-only CSV.
 
 Quadtree grid support (rules 13/14/15/16, src/quadtree_refinement.py, and
 the regular/quadtree dispatch throughout src/protection_weir.py,

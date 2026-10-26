@@ -89,3 +89,11 @@ compound_100_03SLR:
   discharge_multiplier: 1.0
   slr_m: 0.3
   event: compound
+
+# Storm gloria - Validation (0.7m surge)
+storm_gloria:
+  surge_rp: 1000 # (0.5m)
+  river_rp: Mean
+  discharge_multiplier: 1.0
+  slr_m: 0.2
+  event: coastal

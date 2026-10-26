@@ -32,7 +32,8 @@ Outputs
 sfincs_map.nc                    SFINCS map output for the event run.
 event/01_inundation_ratio.png    Envelope (zsmax) flooded/dry map.
 event/02_flood_animation.mp4     Instantaneous depth animation.
-event/flood_timeseries.csv       Per-timestep flooded_area_km2 / flood_volume_m3.
+event/flood_timeseries.csv       Per-timestep flooded_area_km2 / flood_volume_m3
+                                 (only for timeseries_scenarios, else header-only).
 """
 
 import gc
@@ -138,6 +139,11 @@ animation_out_path.parent.mkdir(parents=True, exist_ok=True)
 # --config animation_scenarios="['river_100_03SLR']"); otherwise an empty
 # placeholder, so the declared output still exists.
 make_animation = snakemake.wildcards.scenario in snakemake.config.get("animation_scenarios", [])
+# Same for the flood time series CSV (timeseries_scenarios): rasterizing every
+# map frame onto the subgrid took ~12 min per run; skipped runs get a
+# header-only CSV.
+make_timeseries = snakemake.wildcards.scenario in snakemake.config.get("timeseries_scenarios", [])
+_EMPTY_TIMESERIES = pd.DataFrame(columns=["time", "flooded_area_km2", "flood_volume_m3"])
 
 da_h = compute_flood_progression(sfincs_root, sea_mask_path) if make_animation else None
 if not make_animation:
@@ -149,9 +155,7 @@ elif da_h is None:
         "skipping flood animation and flood-timeseries CSV"
     )
     animation_out_path.touch()
-    pd.DataFrame(columns=["time", "flooded_area_km2", "flood_volume_m3"]).to_csv(
-        csv_out_path, index=False
-    )
+    _EMPTY_TIMESERIES.to_csv(csv_out_path, index=False)
 else:
     animate_flood_progression(
         da_h, domain_poly,
@@ -182,15 +186,19 @@ if da_h is not None or not make_animation:  # i.e. not the "no zs" case above
     # above, which sums each pixel's own peak regardless of when it
     # occurred), so the max of flood_volume_m3 here is the physically
     # correct peak total flood volume for the event.
-    df = compute_flood_timeseries_stats(
-        sfincs_root, skeleton_root, sea_mask_path, min_inundation_depth_m,
-    )
-    if df is None:
-        log.warning(
-            "compute_flood_timeseries_stats returned None (missing zs or "
-            "bed level) — writing empty CSV"
+    if not make_timeseries:
+        log.info("Flood timeseries skipped (scenario not in timeseries_scenarios) -- header-only CSV")
+        df = _EMPTY_TIMESERIES
+    else:
+        df = compute_flood_timeseries_stats(
+            sfincs_root, skeleton_root, sea_mask_path, min_inundation_depth_m,
         )
-        df = pd.DataFrame(columns=["time", "flooded_area_km2", "flood_volume_m3"])
+        if df is None:
+            log.warning(
+                "compute_flood_timeseries_stats returned None (missing zs or "
+                "bed level) — writing empty CSV"
+            )
+            df = _EMPTY_TIMESERIES
     csv_out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(csv_out_path, index=False)
 
@@ -202,7 +210,7 @@ if da_h is not None or not make_animation:  # i.e. not the "no zs" case above
             f"(area {df['flooded_area_km2'].iloc[i_peak]:.2f} km²) at "
             f"t={df['time'].iloc[i_peak]}"
         )
-    else:
+    elif make_timeseries:
         log.warning("Flood timeseries is empty — no output timesteps found")
 
 log.info("Done")

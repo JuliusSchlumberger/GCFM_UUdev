@@ -22,7 +22,7 @@ from matplotlib.patches import Patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
 from src.plots import read_raster_reprojected_for_plot  # noqa: E402
-from KL_csi import THRESHOLD, contingency, land_mask, wet_map  # noqa: E402
+from analysis.pre_post_map_agreement import THRESHOLD, contingency, land_mask, wet_map  # noqa: E402
 
 BASIN_ID = "2433835"
 # Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
