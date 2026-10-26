@@ -30,7 +30,7 @@ from hydromt_sfincs import SfincsModel
 from src.log import setup_logging
 from src.plots import plot_max_inundation_map, plot_water_level_timeseries
 from src.river_network import outflow_crossing_mask
-from src.postprocessing import compute_max_inundation
+from src.postprocessing import compute_max_inundation, read_land_bed_level
 from src.river_burn import build_centerline_cells_regular
 from src.sfincs_run import (
     FORCING_FILE_KEYS,
@@ -57,7 +57,7 @@ timeout_s           = int(snakemake.params.timeout_s)
 water_level_buffer_m = snakemake.params.water_level_buffer_m
 boundary_ramp_hr = float(snakemake.params.boundary_ramp_hr)
 land_polygons_path  = Path(snakemake.input.land_mask_on_grid)  # plot background
-sea_mask_path       = Path(snakemake.input.sea_mask)
+land_bed_level_path = Path(snakemake.input.land_bed_level)
 river_network_path  = Path(snakemake.input.clean_river_network)
 domain_gpkg_path    = Path(snakemake.input.domain_gpkg)
 surge_forcing_path  = Path(snakemake.input.surge_forcing)
@@ -251,7 +251,7 @@ log.info(f"Validation plot written: {plot_path}")
 plot_inundation_path = Path(snakemake.output.plot_max_inundation)
 
 da_hmax, _da_dep = compute_max_inundation(
-    spin_up_root, skeleton_root, sea_mask_path, hmin=0.0,
+    spin_up_root, read_land_bed_level(land_bed_level_path), hmin=0.0,
 )
 if da_hmax is None:
     raise RuntimeError(f"No 'zsmax' in the SFINCS spin-up output of {spin_up_root}")

@@ -37,6 +37,9 @@ landuse:
   # with THIS basin's own river network (rule 06) buffered as a barrier so the sea
   # stops at the river mouths instead of running up every channel. Barrier width
   # per reach = max(SWORD width / 2 * factor, min_width_m). See src/landuse.py.
+  water_code: 80                    # land-use class of water (ESA WorldCover and LC100): the only pixels
+                                    # rule 09 samples the river water level from, and the class rule 08b
+                                    # gives every non-sea pixel of the river channel
   river_barrier_width_factor: 1.0
   river_barrier_min_width_m: 30.0   # floor for reaches with a missing/zero width
   roughness_aggregation: area_mean  # area_mean | conveyance -- how Manning's n from
@@ -77,7 +80,7 @@ flopros_range:
 
 # ── River network processing (rules 06, 08, 09, 10, 11) ──────────────────────
 river_processing:
-  channel_manning_n: 0.03           # channel Manning n: GVF solve and burned-channel subgrid roughness (rule 10), tidal damping check (rule 11)
+  channel_manning_n: 0.03           # channel Manning n: GVF solve (rule 10), roughness inside the river channel (rules 05c, 09b), tidal damping check (rule 11)
   flow_accumulation:
     discharge_variable: bankfull_discharge_m3s
   width_qa:  # rule 08 (and 07): SWORD width checks
@@ -87,16 +90,18 @@ river_processing:
     force_exclude:                  # reach ids always excluded when they are a bifurcation arm
       - 23261000641                 # 1248635: Amsterdam-Rijnkanaal leaving the Waal at Tiel (not canal-flagged in SWORD)
     force_include: []               # reach ids never excluded by the automatic rule
-  river_depth_modelling:  # rule modelled_depth_estimation (10): SFINCS runs that set river depth and dike crests
-    method: modelled                # modelled: round 0 (confined SFINCS run) + excavation_fraction | gvf: river bed from steady gradually-varied flow fitted to SWORD wse (src/gvf*.py); round 0 is not run, rounds 1-2 still set the crests
-    gvf:  # method gvf only (GVF plan WP1-WP3; Neal et al. 2021, WRR 57, e2020WR028301)
-      node_spacing_m: 500           # GVF node spacing along each reach
-      target_smoothing_m: 5000      # running-mean length of the target level (removes SWORD's 0.1 m steps); never across a structure
-      step_threshold_m: 0.5         # a level drop larger than this at a junction is a structure (weir/lock/dam); a rise this large is cut likewise (inconsistent SWORD levels)
-      structure_min_drop_m: 0.2     # smallest drop that counts as a structure at a SWORD obstruction reach (obstr_type 1-4)
-      use_sword_obstructions: true
-      cut_rising_edges: true
-      structures: []                # reach ids with a structure at their downstream end
+  water_surface:  # rule 09: smoothed FathomDEM river water surface (src/water_surface.py); conditions the DEM channels and is the GVF target
+    node_spacing_m: 500             # node spacing along each reach (also the GVF nodes)
+    median_half_window_m: 1000      # median of the water centreline pixels (landuse.water_code) within this distance of each node (drops stray peaks and dips; islands are skipped)
+    smoothing_m: 5000               # running-mean length after the downstream-monotone fit; never across a cut
+    step_threshold_m: 0.5           # a reach-level drop larger than this at a junction is a structure (weir/lock/dam); a rise this large is cut
+    structure_min_drop_m: 0.2       # smallest drop that counts as a structure at a SWORD obstruction reach (obstr_type 1-4)
+    use_sword_obstructions: true
+    split_at_structures: false      # false: smooth across structures (weirs/locks open in floods; no step in the flood bed); true: keep the level drop as a step
+    cut_rising_edges: true          # a downstream rise is inconsistent data: cut, so it does not lift the levels upstream
+    structures: []                  # reach ids with a structure at their downstream end
+  river_depth_modelling:  # rule modelled_depth_estimation (10): river bed from GVF, then two SFINCS runs that set and verify the dike crests
+    gvf:  # river bed from steady gradually-varied flow fitted to the water_surface (rule 09) at GloFAS mean discharge (src/gvf*.py; Neal et al. 2021, WRR 57, e2020WR028301)
       slope_floor: 1.0e-5           # smallest target slope used for the slope scale and the normal-depth prior
       mouth_level_tol_m: 0.5        # a network end is a sea mouth if its target is within this of mean sea level (or its end is sea / water body)
       q_min_m3s: 1.0                # reaches with at most this discharge are not inverted (depth from a width-depth fit of the inverted reaches)
@@ -106,18 +111,9 @@ river_processing:
       water_body: {min_width_m: 1000, sea_class_fraction: 0.5}  # wide sea-class / GEBCO-floor sections keep the DEM bed and the target level
       nudging: {alpha: 1.0, passes: 3}
       least_squares: {apply: all, rmse_tol_m: 0.10, rho_m: 0.05, prior_weight_m: 0.05}  # rho_m: bed-slope regularisation; prior_weight_m: pull towards the normal depth where the level carries no depth information
-    calibration_days: 1             # run duration (days) of rounds 1-2, and round 0's first chunk
-    round0_level: end_of_run        # end_of_run (mean of the last two outputs, after steady state) | period_max (max over the run)
-    steady_state:                   # round 0 is continued from its restart file until steady (see 10_depth_estimation_modelled.py)
-      median_dzs_3h_m: 0.01         # steady when the median |change| of the centreline water level over the last 3 h is below this ...
-      p95_dzs_3h_m: 0.05            # ... and its 95th percentile is below this
-      chunk_days: 1                 # length of each continuation
-      max_days: 5                   # stop extending after this total run length (warns if still not steady)
-      flow_balance_tol: 0.05        # warn when |inflow - outflow| / inflow at the exits exceeds this
-      fail: false                   # true: an unsteady or unbalanced round 0 stops the rule instead of warning
+    calibration_days: 1             # run duration (days) of SFINCS rounds 1-2
     discharge_ramp_hr: 6.0        # linear ramp from each crossing's own bankfull_discharge_m3s up to the full calibration discharge over this many hours (from t=0), then held flat for the rest of the run -- avoids forcing the full (often many-times-bankfull) calibration discharge as an instantaneous step into an initially near-dry channel, which produces a startup shock wave that can persist/oscillate for the whole run instead of damping out. Mirrors production's own lead-in-then-ramp hydrograph shape (src.river_forcing.build_design_discharge_matrix/sinusoidal_wave, rule 13), just linear instead of sinusoidal since calibration only needs to reach and hold the peak, not simulate a full event recession.
-    weir_crest_m: 1000.0            # confinement weir crest (m) for rounds 0 and 1 -- effectively never overtopped
-    excavation_fraction: 0.8        # fraction of round 0's confined rise above the DEM (period_max_zs - dem_at_cell, per centerline cell) excavated as channel depth (river_depth_m). The mouth rules in 10_depth_estimation_modelled.py (coastal endpoint at natural bathymetry, bed floored upstream of it) are applied on top.
+    weir_crest_m: 1000.0            # confinement weir crest (m) for round 1 -- effectively never overtopped
     # ── weir-building params (used by modelled_depth_estimation every round)
     min_component_cells: 30           # discard small isolated land islands or water patches below this cell count on either side -- neither gets a weir ring around it
     unprotected_ocean_wetlands: false # true: wetland/lagoon patches (80 = permanent water/tidal flats, 90 = herbaceous wetland, and 95 = mangroves under ESA WorldCover; src.landuse.OCEAN_WETLAND_CLASSES) sharing a cell edge with the open sea are left on the SEAWARD side of the coastal dike -- the dike runs along their landward edge and they flood freely (still counted as land in flood metrics). false: the dike follows the open-sea (200) boundary.
@@ -255,7 +251,7 @@ sfincs:
                                  # narrower than a cell are carried by the subgrid tables.
     resolution_overrides_m:      # optional per-basin dx (m), keyed by basin id -- e.g. to keep a
       4267691: 150               # very large delta within the memory of the machine it is built on
-    rotated: true                # true: fit the grid to the minimum ROTATED rectangle around the delta
+    rotated: false                # true: fit the grid to the minimum ROTATED rectangle around the delta
                                  # polygon (fewer inactive cells for elongated, oblique deltas); false:
                                  # axis-aligned (north-up) grid. Fitted once in rule 02 (see src/grid.py);
                                  # changing it reruns a basin from rule 02 onward. Only the MODEL grid
@@ -303,3 +299,45 @@ sfincs:
 metrics:
   hmin: 0.05                     # min depth (m) for a pixel to count as flooded
   urban_landuse_code: 50         # landuse code for urban areas in the landuse raster (used for urban flood metrics)
+
+# ── Snakemake threads per rule (rule_threads, 00_common.smk) ──
+# all = the whole --cores budget; SFINCS rules pass their threads to OMP_NUM_THREADS.
+resources:
+  threads:
+    split_delta_polygons:                 1
+    determine_model_domain:               1
+    get_river_network:                    1
+    prepare_landuse:                      1
+    get_land_polygons:                    1
+    get_protection_levels:                1
+    get_elevation:                        1
+    get_landuse:                          1
+    get_roughness:                        1
+    plot_river_network:                   1
+    select_surge_stations:                1
+    extract_gtsm_series:                  1
+    storm_tide_hydrographs:               1
+    get_boundary_forcings:                1
+    clean_river_network:                  1
+    build_sfincs_grid:                    1
+    channel_landuse:                      1
+    enforce_river_monotonicity:           1
+    grid_align_landuse:                   1
+    modelled_depth_estimation:            all
+    test_upstream_boundary:               1
+    test_bifurcation_calibration_options: 1
+    build_sfincs_skeleton:                1
+    land_bed_level:                       1
+    build_adaptation_lines:               1
+    build_sfincs:                         1
+    run_spinup:                           all
+    sanity_checks:                        1
+    run_event:                            all
+    compute_flood_metrics:                1
+    attribution_mask:                     1
+    adapt_apply_pre:                      1
+    adapt_build_forcing_pre:              1
+    adapt_run_event_pre:                  all
+    adapt_flood_metrics_pre:              1
+    adapt_metrics_post:                   1
+    adapt_compare:                        1

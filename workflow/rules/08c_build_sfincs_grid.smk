@@ -14,6 +14,7 @@ rule build_sfincs_grid:
         sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sfincs_grid.json"),
     params:
         resolution_m = lambda wildcards: grid_resolution_m(wildcards.basin_id),
+    threads: rule_threads("build_sfincs_grid")
     log:
         "logs/{basin_id}/08c_build_sfincs_grid.log"
     script:

@@ -15,6 +15,7 @@ rule clean_river_network:
         discharge_variable = config["river_processing"]["flow_accumulation"]["discharge_variable"],
         max_width_fill_m   = config["river_processing"]["width_qa"]["max_width_fill_m"],
         canal_routing      = config["river_processing"]["canal_routing"],
+    threads: rule_threads("clean_river_network")
     log:
         "logs/{basin_id}/08_clean_river_network.log"
     script:

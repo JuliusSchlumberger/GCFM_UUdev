@@ -8,16 +8,23 @@ import pandas as pd
 import pytest
 import rioxarray  # noqa: F401
 import xarray as xr
+from affine import Affine
+from hydromt.gis.raster_utils import full_from_transform
 from hydromt_sfincs import utils as sfincs_utils
 from shapely.geometry import box
 from src import postprocessing
 from src.postprocessing import (
     _coarsen_for_memory,
+    _downscale_depth,
+    _nearest_cell_index,
     compute_excess_volume,
     compute_flood_progression,
     compute_flood_timeseries_stats,
     compute_max_inundation,
     compute_risk_metrics,
+    land_bed_level,
+    read_land_bed_level,
+    write_land_bed_level,
 )
 
 CRS = "EPSG:32631"
@@ -60,11 +67,13 @@ def synthetic_run(monkeypatch):
     )
     monkeypatch.setattr(postprocessing, "load_sfincs_output", lambda _d: mod)
     monkeypatch.setattr(postprocessing, "get_bed_level", lambda *_a, **_k: dep)
-    return SimpleNamespace(zs=zs, zsmax=zsmax, dep=dep)
+    monkeypatch.setattr(postprocessing, "DataCatalog", lambda: mod.data_catalog)
+    land = land_bed_level("root", "sea.tif")
+    return SimpleNamespace(zs=zs, zsmax=zsmax, dep=dep, land=land)
 
 
 def test_max_depth_is_upper_bound_of_every_timestep(synthetic_run):
-    hmax, dep = compute_max_inundation("run", "root", "sea.tif", hmin=0.0)
+    hmax, dep = compute_max_inundation("run", synthetic_run.land, hmin=0.0)
     assert hmax.shape == dep.shape == synthetic_run.dep.shape
     for t in range(synthetic_run.zsmax.sizes["timemax"]):
         zs_t = synthetic_run.zsmax.isel(timemax=t)
@@ -74,7 +83,7 @@ def test_max_depth_is_upper_bound_of_every_timestep(synthetic_run):
 
 
 def test_max_depth_non_negative_and_sea_masked(synthetic_run):
-    hmax, dep = compute_max_inundation("run", "root", "sea.tif", hmin=0.05)
+    hmax, dep = compute_max_inundation("run", synthetic_run.land, hmin=0.05)
     assert np.nanmin(hmax.values) >= 0.05
     # sea column 0 of the 100 m grid covers columns 0-1 of the 50 m grid
     assert dep.isel(x=slice(0, 2)).isnull().all()
@@ -85,7 +94,7 @@ def test_max_depth_non_negative_and_sea_masked(synthetic_run):
 def test_max_inundation_returns_none_without_zsmax(synthetic_run, monkeypatch):
     mod = SimpleNamespace(output=SimpleNamespace(data={}))
     monkeypatch.setattr(postprocessing, "load_sfincs_output", lambda _d: mod)
-    assert compute_max_inundation("run", "root", "sea.tif") == (None, None)
+    assert compute_max_inundation("run", synthetic_run.land) == (None, None)
 
 
 def test_flood_progression_depth_non_negative_and_sea_masked(synthetic_run):
@@ -103,12 +112,85 @@ def test_flood_progression_rejects_unknown_variable():
 
 
 def test_timeseries_area_bounded_by_domain_and_volume_non_negative(synthetic_run):
-    df = compute_flood_timeseries_stats("run", "root", "sea.tif", threshold_m=0.1)
+    df = compute_flood_timeseries_stats("run", synthetic_run.land, threshold_m=0.1)
     assert len(df) == synthetic_run.zs.sizes["time"]
     domain_km2 = synthetic_run.dep.size * 50.0 * 50.0 / 1e6
     assert (df["flooded_area_km2"] >= 0).all()
     assert (df["flooded_area_km2"] <= domain_km2).all()
     assert (df["flood_volume_m3"] >= 0).all()
+
+
+def _cells_and_subgrid(rotation_deg, zs_nodata):
+    """Coarse 3-frame zs and a finer, offset bed level reaching past the cell grid."""
+    rng = np.random.default_rng(1)
+    cells = (
+        Affine.translation(X0, Y0)
+        * Affine.rotation(rotation_deg)
+        * Affine.scale(100.0, -100.0)
+    )
+    zs = full_from_transform(cells, (3, 6, 5), nodata=zs_nodata, crs=CRS, name="zs")
+    zs_values = rng.uniform(-0.5, 2.0, zs.shape).astype("float32")
+    zs_values[:, 0, 0] = zs_nodata
+    zs = zs.copy(data=zs_values).rename({"dim0": "time"})
+    zs.encoding["_FillValue"] = zs_nodata  # as read from sfincs_map.nc
+    subgrid = cells * Affine.translation(-0.37, -0.81) * Affine.scale(1 / 3)
+    dep = full_from_transform(subgrid, (23, 21), crs=CRS, name="dep")
+    dep = dep.copy(data=rng.uniform(-1.0, 1.5, dep.shape).astype("float32"))
+    return zs, dep
+
+
+@pytest.mark.parametrize("rotation_deg", [0.0, 23.0])
+@pytest.mark.parametrize("zs_nodata", [np.nan, -9999.0])
+def test_downscale_depth_is_bit_identical_to_downscale_floodmap(
+    rotation_deg, zs_nodata
+):
+    zs, dep = _cells_and_subgrid(rotation_deg, zs_nodata)
+    cell_index = _nearest_cell_index(zs.isel(time=0), dep)
+    assert (cell_index == -1).any() and (cell_index >= 0).any()
+    for t in range(zs.sizes["time"]):
+        frame = zs.isel(time=t)
+        expected = sfincs_utils.downscale_floodmap(frame, dep, hmin=0.0).values
+        h = _downscale_depth(frame.values, frame.raster.nodata, cell_index, dep.values)
+        assert h.dtype == expected.dtype
+        assert np.isfinite(expected).sum() > expected.size // 4
+        np.testing.assert_array_equal(h, expected)
+
+
+def test_timeseries_stats_match_per_frame_downscale_floodmap(synthetic_run):
+    df = compute_flood_timeseries_stats("run", synthetic_run.land, threshold_m=0.1)
+    water = np.zeros(synthetic_run.dep.shape, dtype=bool)
+    water[:, :2] = True  # sea column 0 of the 100 m grid
+    for t in range(synthetic_run.zs.sizes["time"]):
+        h = sfincs_utils.downscale_floodmap(
+            synthetic_run.zs.isel(time=t), synthetic_run.dep, hmin=0.0
+        ).values
+        h[water] = np.nan
+        assert df["flooded_area_km2"].iloc[t] == np.sum(h > 0.1) * 50.0 * 50.0 / 1e6
+        np.testing.assert_allclose(
+            df["flood_volume_m3"].iloc[t], np.nansum(h) * 50.0 * 50.0, rtol=1e-6
+        )
+
+
+def test_land_bed_level_masks_sea_and_keeps_land_values(synthetic_run):
+    land = synthetic_run.land
+    assert land.isel(x=slice(0, 2)).isnull().all()
+    np.testing.assert_array_equal(
+        land.isel(x=slice(2, None)).values,
+        synthetic_run.dep.isel(x=slice(2, None)).values,
+    )
+
+
+@pytest.mark.parametrize("rotation_deg", [0.0, 23.0])
+def test_land_bed_level_file_round_trip_is_exact(rotation_deg, tmp_path):
+    _, dep = _cells_and_subgrid(rotation_deg, np.nan)
+    dep = dep.where(dep > 0.0)
+    path = tmp_path / "land_bed_level.nc"
+    write_land_bed_level(dep, path)
+    back = read_land_bed_level(path)
+    np.testing.assert_array_equal(back.values, dep.values)
+    assert back.raster.transform == dep.raster.transform
+    for c in dep.coords:
+        np.testing.assert_array_equal(back[c].values, dep[c].values)
 
 
 def test_coarsen_for_memory_is_noop_when_it_fits_and_shrinks_otherwise(synthetic_run):
@@ -128,7 +210,7 @@ def _write(da, path, nodata):
 
 
 def test_risk_metrics_areas_are_consistent(synthetic_run, tmp_path):
-    hmax, dep = compute_max_inundation("run", "root", "sea.tif", hmin=0.05)
+    hmax, dep = compute_max_inundation("run", synthetic_run.land, hmin=0.05)
     lu = np.full(dep.shape, 10, dtype="int16")
     lu[:4, :] = 50
     lu_path = _write(

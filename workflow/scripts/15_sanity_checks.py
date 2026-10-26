@@ -15,7 +15,7 @@ from shapely.geometry import Polygon
 
 from src.log import setup_logging
 from src.plots import animate_flood_progression, plot_inundation_check
-from src.postprocessing import compute_flood_progression, compute_max_inundation, inundation_stats
+from src.postprocessing import compute_flood_progression, compute_max_inundation, inundation_stats, read_land_bed_level
 
 log = setup_logging(snakemake.log[0])
 
@@ -27,7 +27,6 @@ domain_gpkg_path   = Path(snakemake.input.domain_gpkg)
 plot_out_path      = Path(snakemake.output.plot_inundation_ratio)
 animation_out_path      = Path(snakemake.output.animation_flood_progress)
 spin_up_root            = Path(snakemake.params.spin_up_root)
-skeleton_root           = Path(snakemake.params.skeleton_root)
 threshold_m             = float(snakemake.params.min_inundation_depth_m)
 animation_fps           = int(snakemake.params.animation_fps)
 
@@ -41,10 +40,8 @@ plot_out_path.parent.mkdir(parents=True, exist_ok=True)
 basin_id   = spin_up_root.parent.name
 spinup_dir = spin_up_root
 
-# The subgrid reference raster lives in skeleton_root; spin_up only
-# references it by relative path.
 da_hmax, da_dep = compute_max_inundation(
-    spinup_dir, skeleton_root, sea_mask_path,
+    spinup_dir, read_land_bed_level(snakemake.input.land_bed_level),
     hmin=threshold_m,
 )
 if da_hmax is None or da_dep is None:

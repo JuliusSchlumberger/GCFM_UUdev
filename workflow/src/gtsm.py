@@ -4,6 +4,8 @@ Source: Copernicus CDS sis-water-level-change-timeseries-cmip6. Files are laid
 out by time (one per month, all ~43,000 stations), so any station subset needs
 every monthly file. Files: {folder}/reanalysis_{waterlevel|surge}_hourly_YYYY_MM_v3.nc,
 unzipped from the yearly CDS archives (tools/download_cds_waterlevel.py).
+tools/subset_gtsm_stations.py reads them once into a station subset that rule
+extract_gtsm_series reads.
 """
 
 from __future__ import annotations
@@ -14,11 +16,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 log = logging.getLogger(__name__)
 
 # variable name in the monthly files, per catalogue dataset
 GTSM_VARIABLES = {"waterlevel": "waterlevel", "surge": "surge"}
+SOURCE = (
+    "Copernicus CDS sis-water-level-change-timeseries-cmip6, GTSM v3 reanalysis, hourly"
+)
 _SLAB_GAP = 2000  # station indices closer than this are read as one contiguous slab
 
 
@@ -130,3 +136,62 @@ def extract_station_series(
         index=pd.DatetimeIndex(np.concatenate([p[0] for p in parts])),
     )
     return df[~df.index.duplicated()].sort_index()
+
+
+def build_station_subset(
+    folders: dict[str, str | Path], station_idx: np.ndarray, n_workers: int = 1
+) -> xr.Dataset:
+    """Return hourly series of every GTSM_VARIABLES entry at station_idx, on common hours.
+
+    folders: monthly-file folder per GTSM_VARIABLES key. The dataset also carries
+    every GTSM station's id and position (dimension `gtsm_station`), so a reader
+    can tell a station left out of the subset from a point with no GTSM station.
+    """
+    ids, lon, lat = station_coordinates(folders["surge"])
+    station_idx = np.asarray(station_idx, dtype=int)
+    series = {
+        name: extract_station_series(folders[name], var, station_idx, n_workers)
+        for name, var in GTSM_VARIABLES.items()
+    }
+    time = series["surge"].index.intersection(series["waterlevel"].index)
+    return xr.Dataset(
+        {
+            name: (
+                ("time", "station"),
+                df.loc[time].to_numpy(dtype="float32"),
+                {"units": "m"},
+            )
+            for name, df in series.items()
+        },
+        coords={
+            "time": time,
+            "station_id": ("station", ids[station_idx]),
+            "all_station_id": ("gtsm_station", ids),
+            "all_lon": ("gtsm_station", lon),
+            "all_lat": ("gtsm_station", lat),
+        },
+        attrs={"source": SOURCE},
+    )
+
+
+def subset_positions(
+    subset: xr.Dataset, lons: np.ndarray, lats: np.ndarray, max_km: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (GTSM station ids, positions along `station`) of each (lon, lat) in a subset.
+
+    Raises ValueError if a point has no GTSM station within max_km, or if its
+    station is missing from the subset (rebuild it with tools/subset_gtsm_stations.py).
+    """
+    idx, _ = match_stations(
+        lons, lats, subset["all_lon"].values, subset["all_lat"].values, max_km
+    )
+    ids = subset["all_station_id"].values[idx]
+    position = {int(s): i for i, s in enumerate(subset["station_id"].values)}
+    missing = sorted({int(s) for s in ids} - position.keys())
+    if missing:
+        raise ValueError(
+            f"GTSM station(s) {missing} are not in the station subset; rebuild it with "
+            f"tools/subset_gtsm_stations.py after rule select_surge_stations has run for "
+            f"every basin"
+        )
+    return ids, np.array([position[int(s)] for s in ids])

@@ -13,8 +13,9 @@ when measures.yml flags it `scale: true`. A param value is one of:
 - current_protection: today's baseline weir crest, never scaled
 - {fixed: x}: x, never scaled
 
-A measure's `locations` is a path under raw_data_root, or `auto/<name>`: the
-basin's <name>.geojson written by rule build_adaptation_lines.
+A measure's `locations` is a path under adaptation_data_root, in which `{basin_id}`
+stands for the basin, or `auto/<name>`: the basin's <name>.geojson written by
+rule build_adaptation_lines.
 """
 
 import os
@@ -29,6 +30,7 @@ DERIVED_PARAMS = {"max_coastal_water_level", "max_river_water_level", "max_disch
 UNSCALED_DERIVED_PARAMS = {"current_protection"}
 
 AUTO_LOCATIONS_PREFIX = "auto/"
+BASIN_PLACEHOLDER = "{basin_id}"
 # Files rule build_adaptation_lines writes per basin as <name>.geojson.
 ADAPTATION_LINE_NAMES = (
     "coastal_protection_weir_PC",  # protect_closed: coast + mouth closure(s)
@@ -51,19 +53,25 @@ def auto_line_name(location: str) -> str | None:
     return name
 
 
-def location_path(location: str, raw_data_root: str, lines_dir: str) -> str:
-    """Return the file of a locations value: lines_dir for auto/, else raw_data_root."""
+def location_path(
+    location: str, adaptation_data_root: str, lines_dir: str, basin_id: str
+) -> str:
+    """Return the file of a locations value: lines_dir for auto/, else adaptation_data_root."""
     name = auto_line_name(location)
     if name is not None:
         return f"{lines_dir}/{name}.geojson"
-    return str(Path(raw_data_root) / location)
+    return str(
+        Path(adaptation_data_root) / location.replace(BASIN_PLACEHOLDER, str(basin_id))
+    )
 
 
-def with_auto_locations(strategy_def: dict, lines_dir: str | Path) -> dict:
-    """Return strategy_def with every `auto/<name>` locations as an absolute path.
+def resolve_locations(strategy_def: dict, lines_dir: str | Path, basin_id: str) -> dict:
+    """Return strategy_def with its locations resolved for one basin.
 
-    The adapt scripts join locations onto raw_data_root; an absolute path
-    survives that join unchanged, so only auto/ entries move.
+    `auto/<name>` becomes an absolute path into lines_dir: the adapt scripts join
+    locations onto adaptation_data_root, and an absolute path survives that join
+    unchanged. Other locations keep their adaptation_data_root-relative form with
+    `{basin_id}` filled in.
     """
     lines_dir = Path(os.path.abspath(lines_dir)).as_posix()
 
@@ -71,7 +79,9 @@ def with_auto_locations(strategy_def: dict, lines_dir: str | Path) -> dict:
         if param != "locations" or not isinstance(value, str):
             return value
         name = auto_line_name(value)
-        return value if name is None else f"{lines_dir}/{name}.geojson"
+        if name is not None:
+            return f"{lines_dir}/{name}.geojson"
+        return value.replace(BASIN_PLACEHOLDER, str(basin_id))
 
     return {
         **strategy_def,

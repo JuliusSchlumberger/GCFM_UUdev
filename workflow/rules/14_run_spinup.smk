@@ -6,9 +6,7 @@ rule run_spinup:
     input:
         skeleton_inp         = results_path("{basin_id}/sfincs_skeleton/sfincs.inp"),
         land_mask_on_grid    = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
-        # Corrected sea/land classification (rule 10, grid-aligned): cells the
-        # final weir protects are land, so they are not masked as open sea.
-        sea_mask             = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
+        land_bed_level       = results_path("{basin_id}/sfincs_skeleton/land_bed_level.nc"),
         domain_gpkg          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
         surge_forcing        = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
@@ -31,9 +29,7 @@ rule run_spinup:
         timeout_s                 = config["sfincs"]["simulation"]["timeout_s"],
         water_level_buffer_m      = config["sfincs"]["boundary_setup"]["water_level_buffer_m"],
         boundary_ramp_hr          = config["sfincs"]["spinup"]["boundary_ramp_hr"],
-    # Whole --cores budget: SFINCS multi-threads (OMP_NUM_THREADS), so other
-    # jobs would only compete for CPU.
-    threads: workflow.cores
+    threads: rule_threads("run_spinup")
     log:
         "logs/{basin_id}/14_run_spinup.log"
     script:

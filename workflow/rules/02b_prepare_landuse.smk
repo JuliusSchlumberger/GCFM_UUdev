@@ -17,9 +17,9 @@ rule prepare_landuse:
         spec_basins_meta = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
         domain_gpkg      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         # Always required: the product (lc100) or the sea reference (esa_worldcover).
-        global_landuse   = catalogue_path("land_use"),
+        global_landuse   = raw_input("land_use"),
         worldcover       = (
-            catalogue_path("land_use_esa_worldcover")
+            raw_input("land_use_esa_worldcover")
             if config["landuse"]["source"] == "esa_worldcover" else []
         ),
         # Barrier for the sea fill: this basin's clipped network (rule 06).
@@ -33,6 +33,7 @@ rule prepare_landuse:
         source                     = config["landuse"]["source"],
         river_barrier_width_factor = config["landuse"]["river_barrier_width_factor"],
         river_barrier_min_width_m  = config["landuse"]["river_barrier_min_width_m"],
+    threads: rule_threads("prepare_landuse")
     log:
         "logs/{basin_id}/02b_prepare_landuse.log"
     script:

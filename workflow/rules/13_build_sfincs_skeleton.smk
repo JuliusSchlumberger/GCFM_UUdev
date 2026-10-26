@@ -18,9 +18,6 @@ rule build_sfincs_skeleton:
         # otherwise), and its per-cell mean for the main-grid "dep".
         river_burned_subgrid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_subgrid.tif"),
         river_burned_dem_sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"),
-        # Channel Manning n under the burned channel (method gvf; all nodata
-        # for method modelled), first in the subgrid roughness list.
-        river_roughness_subgrid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_roughness_subgrid.tif"),
         elevation_conditioned_sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"),
         river_elevation_max = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_elevation_max.json"),
         coastal_protection_weir = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"),
@@ -63,6 +60,7 @@ rule build_sfincs_skeleton:
         n_top_crossings    = config["sfincs"]["observation_points"]["n_top_crossings"],
         n_per_crossing     = config["sfincs"]["observation_points"]["n_per_crossing"],
         max_downstream_hops = config["sfincs"]["observation_points"]["max_downstream_hops"],
+    threads: rule_threads("build_sfincs_skeleton")
     log:
         "logs/{basin_id}/13_build_sfincs_skeleton.log"
     script:

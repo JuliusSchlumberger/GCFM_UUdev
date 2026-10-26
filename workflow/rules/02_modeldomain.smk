@@ -8,6 +8,7 @@ rule determine_model_domain:
         delta_buffer_m = config["domain"]["delta_buffer_m"],
         # Fitted here so the clipping bbox covers the whole (rotated) grid.
         rotated        = lambda wildcards: grid_rotated(wildcards.basin_id),
+    threads: rule_threads("determine_model_domain")
     log:
         "logs/{basin_id}/02_determine_model_domain.log"
     script:

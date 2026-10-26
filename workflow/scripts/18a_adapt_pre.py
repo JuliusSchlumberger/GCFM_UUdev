@@ -15,12 +15,13 @@ from hydromt_sfincs import SfincsModel
 
 from src.adaptation_method_pre import dispatch_rules
 from src.adaptation_scaling import resolve_forcing_params
-from src.hydromt_sfincs_patch import use_float32_subgrid_write
+from src.hydromt_sfincs_patch import patch_subgrid_write
 from src.log import setup_logging
+from src.postprocessing import land_bed_level, write_land_bed_level
 from src.sfincs_run import parse_sfincs_inp, write_sfincs_inp, write_weir_file
 
 log = setup_logging(snakemake.log[0])
-use_float32_subgrid_write()
+patch_subgrid_write()
 
 # 0. params and inputs
 skeleton_inp_path = Path(snakemake.input.skeleton_inp)
@@ -181,4 +182,9 @@ touched_files = {key: sf.config.get(key) for c, key in COMPONENT_FILEKEY.items()
 write_sfincs_inp(
     adapted_root / "sfincs.inp", skeleton_cfg, skeleton_root, {}, touched_files,
     exclude_files=frozenset(touched_files),
+)
+
+# 6. Land bed level of the adapted model, read by its event run and metrics.
+write_land_bed_level(
+    land_bed_level(adapted_root, snakemake.output.sea_mask), snakemake.output.land_bed_level
 )

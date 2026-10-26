@@ -92,6 +92,9 @@ def delta():
             "river_network_clean": river,
             "outflow_points": outflow,
         },
+        "08b_channel_landuse": {
+            "landuse_channels": da(np.where(river_row, 80, landuse))
+        },
         "09_condition_elevation": {
             "elevation_conditioned_m": da(elevation_conditioned)
         },
@@ -105,6 +108,9 @@ def delta():
             "weir_crest_m": weir,
         },
         "13_build_sfincs_skeleton": {"zsini_m": da(np.where(land, np.nan, 0.0))},
+        "13c_land_bed_level": {
+            "land_bed_level_m": da(np.where(land, elevation, np.nan))
+        },
         "14_run_spinup": {"max_depth_m": da(max_depth * 0.2)},
         "16_run_event": {
             "max_depth_m": da(max_depth),

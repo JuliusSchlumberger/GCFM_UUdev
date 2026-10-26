@@ -19,6 +19,14 @@ from shapely.geometry import box
 log = logging.getLogger(__name__)
 
 FLOAT_NODATA = -9999.0  # nodata of every float32 raster the pipeline writes
+# Lossless creation options for float32 GeoTIFFs (rasterio/GDAL keywords).
+FLOAT_GTIFF_COMPRESSION = {
+    "compress": "deflate",
+    "predictor": 3,
+    "tiled": True,
+    "blockxsize": 256,
+    "blockysize": 256,
+}
 
 
 def reproject_nan_aware(

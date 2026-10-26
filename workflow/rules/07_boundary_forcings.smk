@@ -3,8 +3,8 @@ rule get_boundary_forcings:
         spec_basins_meta   = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
         domain_gpkg        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         spec_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network.gpkg"),
-        river_discharge = catalogue_path("river_discharge"),
-        surge_data = catalogue_path("storm_tide_return_periods"),
+        river_discharge = raw_input("river_discharge"),
+        surge_data = raw_input("storm_tide_return_periods"),
         surge_stations = results_path("{basin_id}/preprocessing_inputs/forcing/surge_stations.json"),
         # Tide + surge shapes per return period at the same surge stations.
         storm_tide_hydrographs = lambda wc: (
@@ -13,10 +13,10 @@ rule get_boundary_forcings:
             else []
         ),
         land_polygons = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
-        grdc_data = catalogue_path("grdc_discharge"),
-        mdt_data = catalogue_path("mdt_cnes_cls22"),
-        slr_data = lambda wc: (
-            catalogue_path("slr_ar6_regional")
+        grdc_data = raw_input("grdc_discharge"),
+        mdt_data = raw_input("mdt_cnes_cls22"),
+        slr_data = (
+            raw_input("slr_ar6_regional")
             if config["boundary_forcings"]["surge"]["slr"]["enabled"]
             else []
         ),
@@ -70,6 +70,9 @@ rule get_boundary_forcings:
         bias_correction            = config["boundary_forcings"]["river"]["bias_correction"],
         # Preview plot only; the scenario's river event is built in rule build_sfincs.
         river_event                = config["boundary_forcings"]["river"]["event_hydrograph"],
+    threads: rule_threads("get_boundary_forcings")
+    resources:
+        raw_io=1,
     log:
         "logs/{basin_id}/07_boundary_forcings.log"
     script:

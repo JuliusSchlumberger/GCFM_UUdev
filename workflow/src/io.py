@@ -12,6 +12,7 @@ SITE_ENV_VARS = {
     "results_dir": "GCFM_RESULTS_DIR",
     "raw_data_root": "GCFM_RAW_DATA_ROOT",
     "sfincs_exe": "GCFM_SFINCS_EXE",
+    "adaptation_data_root": "GCFM_ADAPTATION_DATA_ROOT",
 }
 
 

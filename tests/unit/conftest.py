@@ -42,16 +42,25 @@ def network():
 
 
 @pytest.fixture(scope="session")
-def gvf_cfg() -> dict:
-    """Return a complete ``river_depth_modelling.gvf`` block on a coarse test grid."""
+def water_surface_cfg() -> dict:
+    """Return a complete ``river_processing.water_surface`` block on a coarse test grid."""
     return {
         "node_spacing_m": 500,
-        "target_smoothing_m": 3000,
+        "median_half_window_m": 1000,
+        "smoothing_m": 3000,
         "step_threshold_m": 0.5,
         "structure_min_drop_m": 0.2,
         "use_sword_obstructions": True,
+        "split_at_structures": False,
         "cut_rising_edges": True,
         "structures": [],
+    }
+
+
+@pytest.fixture(scope="session")
+def gvf_cfg() -> dict:
+    """Return a complete ``river_depth_modelling.gvf`` block."""
+    return {
         "slope_floor": 1.0e-5,
         "mouth_level_tol_m": 0.5,
         "q_min_m3s": 1.0,

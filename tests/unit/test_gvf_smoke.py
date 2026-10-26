@@ -1,5 +1,7 @@
 """Smoke tests for the GVF pipeline driver (src.gvf)."""
 
+from types import SimpleNamespace
+
 import geopandas as gpd
 import numpy as np
 import pytest
@@ -7,12 +9,14 @@ import xarray as xr
 from shapely.geometry import LineString
 from src.gvf import (
     GvfRun,
+    carry_bed_to_sea,
     depth_segments,
     mean_seed_discharge,
     run_gvf,
     slot_levels,
     values_at_points,
 )
+from src.water_surface import build_water_surface, surface_table
 
 CRS = "EPSG:32631"
 H_MAX = 30.0
@@ -24,7 +28,6 @@ def _rivers() -> gpd.GeoDataFrame:
             "reach_id": ["1", "2"],
             "rch_id_dn": ["[2]", "[]"],
             "width": [120.0, 150.0],
-            "wse": [6.0, 3.0],
             "obstr_type": [0, 0],
         },
         geometry=[
@@ -35,18 +38,31 @@ def _rivers() -> gpd.GeoDataFrame:
     )
 
 
+def _samples(lines):
+    """FathomDEM-like centreline samples: reach 1 at ~6 m, reach 2 at ~3 m."""
+    base = {"1": 6.0, "2": 3.0}
+    out = {}
+    for r, line in lines.items():
+        along = np.arange(0.0, line.length, 30.0)
+        out[r] = (along, base[r] - 1e-4 * along)
+    return out
+
+
 @pytest.fixture(scope="module")
-def gvf_run(gvf_cfg) -> GvfRun:
+def gvf_run(gvf_cfg, water_surface_cfg) -> GvfRun:
+    surface, _ = build_water_surface(_rivers(), _samples, water_surface_cfg)
     return run_gvf(
         _rivers(),
         {"1": 400.0, "2": 400.0},
-        np.zeros(2),
+        surface_table(surface, CRS),
+        surface.net.structure_edges,
         lambda x, y, w: np.zeros(len(x)),
         lambda x, y: np.full(len(x), np.nan),
         sea_level_m=0.0,
         gebco_floor_m=-10.0,
         outflow_reaches=set(),
         manning_n=0.03,
+        surface_cfg=water_surface_cfg,
         cfg=gvf_cfg,
     )
 
@@ -93,3 +109,39 @@ def test_values_at_points_bounded_by_slot_values_and_nan_off_network(gvf_run):
     assert np.all((out[:4] >= z.min()) & (out[:4] <= z.max()))
     # bed falls downstream along this monotone-target chain
     assert out[0] >= out[3]
+
+
+def _carry_run(reaches, z, cls):
+    """Fake GvfRun: reaches = {id: (slot ids downstream, downstream ids)}."""
+    downstream = {r: list(d) for r, (_, d) in reaches.items()}
+
+    def upstream():
+        up = {r: [] for r in reaches}
+        for r, dns in downstream.items():
+            for d in dns:
+                up[d].append(r)
+        return up
+
+    net = SimpleNamespace(
+        reach_ids=list(reaches),
+        downstream=downstream,
+        upstream=upstream,
+        reach_slots={r: np.array(s) for r, (s, _) in reaches.items()},
+    )
+    return SimpleNamespace(
+        targets=SimpleNamespace(net=net),
+        problem=SimpleNamespace(slot_class=np.array(cls, dtype=object)),
+        result=SimpleNamespace(z=np.array(z, dtype=float)),
+    )
+
+
+def test_sea_slots_take_the_river_bed_unless_gebco_is_deeper():
+    run = _carry_run(
+        {"a": ([0, 1], ["c"]), "b": ([2, 3], ["c"]), "c": ([4, 5, 6], [])},
+        z=[-9.0, -10.0, -7.0, -8.0, -2.7, -12.0, -1.5],
+        cls=["invert"] * 4 + ["fixed_bed", "water_body", "fixed_bed"],
+    )
+    z = carry_bed_to_sea(run)
+    # confluence: the deepest incoming river bed (-10) is carried into the sea reach
+    np.testing.assert_array_equal(z, [-9.0, -10.0, -7.0, -8.0, -10.0, -12.0, -10.0])
+    assert np.all(z <= run.result.z)  # never raises a bed

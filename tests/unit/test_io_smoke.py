@@ -21,6 +21,7 @@ SITE_VALUES = {
     "results_dir": "/site/results",
     "raw_data_root": "/site/raw_data",
     "sfincs_exe": "/site/bin/sfincs",
+    "adaptation_data_root": "/site/adaptation_inputs",
 }
 
 

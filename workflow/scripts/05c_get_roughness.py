@@ -11,13 +11,14 @@ conveyance, so at 10 m the 100 samples per cell see ~49 distinct values, not ~5.
 An exact subdivision keeps CRS and alignment with elevation/subgrid.
 """
 
+import geopandas as gpd
 import rasterio
-
 from src.domain import load_domain
 from src.landuse import write_roughness_raster
 from src.log import setup_logging
 from src.plots import plot_roughness
 from src.profiling import ScriptProfiler
+from src.river_burn import channel_polygons
 
 log = setup_logging(snakemake.log[0])
 
@@ -40,6 +41,11 @@ unmapped, info = write_roughness_raster(
     snakemake.output.spec_roughness,
     method=method,
     refine_to_source=True,
+    channel=(
+        channel_polygons(gpd.read_file(snakemake.input.river_network).to_crs(ref_meta["crs"])),
+        ref_meta["crs"],
+        float(snakemake.params.channel_manning_n),
+    ),
 )
 if unmapped:
     log.warning(

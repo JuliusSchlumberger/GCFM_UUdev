@@ -3,20 +3,19 @@
 # return period, at the basin's own surge stations. Consumed by rule
 # get_boundary_forcings (07) when boundary_forcings.surge.hydrograph.enabled.
 #
-#   select_surge_stations   domain + COAST-RP           -> surge_stations.json
-#   extract_gtsm_series     surge_stations.json + GTSM  -> gtsm_hourly.nc
-#   storm_tide_hydrographs  gtsm_hourly.nc + COAST-RP   -> storm_tide_hydrographs.nc
+#   select_surge_stations   domain + COAST-RP                  -> surge_stations.json
+#   extract_gtsm_series     surge_stations.json + GTSM subset  -> gtsm_hourly.nc
+#   storm_tide_hydrographs  gtsm_hourly.nc + COAST-RP          -> storm_tide_hydrographs.nc
 #
-# extract_gtsm_series reads every monthly file of the global reanalysis
-# (~60 GB), so it sits behind the small surge_stations.json: Snakemake compares
-# checksums of small inputs, so rewriting it unchanged does not re-trigger the
-# extraction. The GTSM folders are params, not inputs, for the same reason.
+# The GTSM subset holds every basin's stations, read once from the global
+# monthly reanalysis by tools/subset_gtsm_stations.py. It is a param, not an
+# input: rebuilding it for a new basin must not rerun the other basins.
 
 rule select_surge_stations:
     input:
         spec_basins_meta = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
         domain_gpkg      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
-        surge_data       = catalogue_path("storm_tide_return_periods"),
+        surge_data       = raw_input("storm_tide_return_periods"),
     output:
         surge_stations = results_path("{basin_id}/preprocessing_inputs/forcing/surge_stations.json"),
     params:
@@ -24,6 +23,7 @@ rule select_surge_stations:
         max_surge_stations     = config["boundary_forcings"]["surge"]["max_stations"],
         surge_dedupe_radius_km = config["boundary_forcings"]["surge"]["dedupe_radius_km"],
         search_radii_km        = config["boundary_forcings"]["surge"]["search_radii_km"],
+    threads: rule_threads("select_surge_stations")
     log:
         "logs/{basin_id}/07a_select_surge_stations.log"
     script:
@@ -36,11 +36,9 @@ rule extract_gtsm_series:
     output:
         gtsm_hourly = results_path("{basin_id}/preprocessing_inputs/forcing/gtsm_hourly.nc"),
     params:
-        gtsm_water_level_dir = catalogue_path("gtsm_total_water_level"),
-        gtsm_surge_dir       = catalogue_path("gtsm_surge_residual"),
-        max_match_km         = config["boundary_forcings"]["surge"]["hydrograph"]["max_match_km"],
-    # Disk-bound, not CPU-bound: more readers do not help on a hard disk.
-    threads: 2
+        gtsm_station_subset = catalogue_path("gtsm_station_subset"),
+        max_match_km        = config["boundary_forcings"]["surge"]["hydrograph"]["max_match_km"],
+    threads: rule_threads("extract_gtsm_series")
     log:
         "logs/{basin_id}/07b_extract_gtsm_series.log"
     script:
@@ -50,7 +48,7 @@ rule extract_gtsm_series:
 rule storm_tide_hydrographs:
     input:
         gtsm_hourly = results_path("{basin_id}/preprocessing_inputs/forcing/gtsm_hourly.nc"),
-        surge_data  = catalogue_path("storm_tide_return_periods"),
+        surge_data  = raw_input("storm_tide_return_periods"),
     output:
         hydrographs = results_path("{basin_id}/preprocessing_inputs/forcing/storm_tide_hydrographs.nc"),
         plot        = results_path("{basin_id}/preprocessing_inputs/visuals/07c_storm_tide_hydrographs.png"),
@@ -60,6 +58,7 @@ rule storm_tide_hydrographs:
         match_window_m = config["boundary_forcings"]["surge"]["hydrograph"]["match_window_m"],
         match_on       = config["boundary_forcings"]["surge"]["hydrograph"]["match_on"],
         max_match_km   = config["boundary_forcings"]["surge"]["hydrograph"]["max_match_km"],
+    threads: rule_threads("storm_tide_hydrographs")
     log:
         "logs/{basin_id}/07c_storm_tide_hydrographs.log"
     script:

@@ -1,4 +1,4 @@
-"""Enforce monotonic river elevations and resample to the SFINCS grid; rule enforce_river_monotonicity."""
+"""Build the smoothed river water surface and condition the DEM to it; rule enforce_river_monotonicity."""
 
 import json
 from pathlib import Path
@@ -6,6 +6,7 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import rasterio
+import xarray as xr
 from rasterio.crs import CRS as RasterioCRS
 from rasterio.enums import Resampling
 from rasterio.transform import Affine
@@ -14,37 +15,63 @@ from rasterio.warp import reproject
 from src.grid import load_grid_def
 from src.log import setup_logging
 from src.profiling import ScriptProfiler
+from src.plots import plot_water_surface_profiles
 from src.raster import FLOAT_NODATA
-from src.river_conditioning import enforce_river_monotonicity
+from src.river_network import normalize_reach_id
+from src.surge import read_calm_sea_level_m
+from src.water_surface import (
+    build_water_surface,
+    condition_channels_to_surface,
+    sample_centrelines,
+    write_water_surface,
+)
 
 log = setup_logging(snakemake.log[0])
 profiler = ScriptProfiler(snakemake)
-enforce_river_monotonicity = profiler.wrap(enforce_river_monotonicity)
+build_water_surface = profiler.wrap(build_water_surface)
+condition_channels_to_surface = profiler.wrap(condition_channels_to_surface)
 
-# Conditioning reads topology/width only (reach_id, rch_id_dn, is_seed, width),
-# never river_depth_m, so it does not depend on depth estimation.
-
-rivers = gpd.read_file(snakemake.input.river_network)
+merged_path = snakemake.input.elevation_merged
+landuse_path = snakemake.input.landuse
+with rasterio.open(merged_path) as _src:
+    dem_crs = _src.crs
+rivers = gpd.read_file(snakemake.input.river_network).to_crs(dem_crs)
 log.info(f"Loaded {len(rivers)} reaches from river_network_clean.gpkg")
 
-n_modified, n_checked, centerline_max_m = enforce_river_monotonicity(
-    rivers=rivers,
-    elevation_path=snakemake.input.elevation_merged,
-    output_path=snakemake.output.elevation_conditioned,
+with xr.open_dataset(snakemake.input.surge_forcing, decode_times=False) as _surge_ds:
+    calm_sea_level_m = read_calm_sea_level_m(_surge_ds)
+surface, rivers_oriented = build_water_surface(
+    rivers,
+    lambda lines: sample_centrelines(
+        lines, merged_path, landuse_path, int(snakemake.params.water_code)
+    ),
+    dict(snakemake.params.water_surface),
+    sea_level_m=calm_sea_level_m,
 )
-n_total_pixels = sum(n_modified.values())
-pct_modified = 100.0 * n_total_pixels / n_checked if n_checked else 0.0
-log.info(
-    f"Conditioning complete: {n_total_pixels}/{n_checked} pixel(s) lowered "
-    f"({pct_modified:.1f}%) across {len(n_modified)} reach(es)"
+write_water_surface(surface, snakemake.output.water_surface, dem_crs)
+log.info(f"Written: {snakemake.output.water_surface}")
+condition_channels_to_surface(
+    surface, rivers_oriented, merged_path, landuse_path, snakemake.output.elevation_conditioned
 )
-log.info(f"Max conditioned centerline elevation: {centerline_max_m:.2f} m")
+log.info(f"Written: {snakemake.output.elevation_conditioned}")
+
+seeds = sorted(
+    normalize_reach_id(r) for r, s in zip(rivers_oriented["reach_id"], rivers_oriented.get("is_seed", [])) if bool(s)
+)
+plot_water_surface_profiles(
+    surface,
+    rivers_oriented,
+    seeds,
+    snakemake.output.plot_water_surface,
+    f"Basin {snakemake.wildcards.basin_id}: river water surface (rule 09) along each seed's widest arm",
+)
 
 # Elevation ceiling for the active-cell mask in rules 10/13
-# (plus sfincs.grid.active_mask.elevation_buffer_m); seed reaches attain it.
+# (plus sfincs.grid.active_mask.elevation_buffer_m): the highest surface level.
+centerline_max_m = float(np.nanmax(surface.level_m))
 with open(snakemake.output.river_elevation_max, "w") as f:
     json.dump({"river_elevation_max_m": centerline_max_m}, f, indent=2)
-log.info(f"Written: {snakemake.output.river_elevation_max}")
+log.info(f"Written: {snakemake.output.river_elevation_max} ({centerline_max_m:.2f} m)")
 
 # Resample once onto the shared SFINCS grid so rules 10 and 13 use the
 # identical coarse base layer for sf.elevation.create().

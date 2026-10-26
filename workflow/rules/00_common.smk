@@ -6,7 +6,7 @@ from src.io import load_catalogue, catalogue_entry,read_geometry, raw_input_path
 from src.io import general_path as _gen_path
 from src.river_forcing import derive_forcing_mode
 from src.adaptation_strategies import (
-    ADAPTATION_LINE_NAMES, expand_strategies, location_path, with_auto_locations,
+    ADAPTATION_LINE_NAMES, expand_strategies, location_path, resolve_locations,
 )
 import geopandas as gpd
 
@@ -31,6 +31,32 @@ def sfincs_exe_path(wildcards=None):
 def catalogue_path(name):
     """Return the raw-data path of a catalogue entry."""
     return raw_input_path(CATALOGUE, name)
+
+def catalogue_region_paths(name):
+    """Return one raw-data path per region of a catalogue entry with a {region} file_path."""
+    return [raw_input_path(CATALOGUE, name).format(region=r) for r in catalogue_entry(CATALOGUE, name)["regions"]]
+
+def _existing_raw(paths):
+    missing = [p for p in paths if not os.path.exists(p)]
+    if missing:
+        raise FileNotFoundError(f"raw input(s) missing under raw_data_root: {missing}; see docs/data.md")
+    return paths
+
+# Snakemake drops a job whose raw input is missing when its outputs exist, even
+# under --forceall, and silently reuses those outputs; an input function that
+# raises makes the job fail at DAG construction instead.
+def raw_input(name):
+    """Return an input function for a catalogue entry's path; it fails if the path is missing."""
+    path = catalogue_path(name)
+    return lambda wildcards: _existing_raw([path])[0]
+
+def raw_region_inputs(name):
+    """Return an input function for catalogue_region_paths(name); it fails if any is missing."""
+    paths = catalogue_region_paths(name)
+    return lambda wildcards: _existing_raw(paths)
+
+# Manual SWORD reach widths (src.sword.apply_width_corrections).
+SWORD_WIDTH_CORRECTIONS = "config/sword_width_corrections.csv"
 
 def general_path(name):
     """Return the general path of a catalogue entry."""
@@ -65,6 +91,15 @@ RESULTS_DIR = config["results_dir"]
 def results_path(pattern):
     """Return pattern prefixed with the results directory."""
     return f"{RESULTS_DIR}/{pattern}"
+
+
+# ── per-rule threads (config resources) ──
+_RES_CFG = config["resources"]
+
+def rule_threads(rule):
+    """Return a rule's threads from config; "all" is the whole --cores budget."""
+    value = _RES_CFG["threads"][rule]
+    return workflow.cores if value == "all" else int(value)
 
 
 # ── SFINCS main-grid resolution ──
@@ -231,10 +266,13 @@ RST_FNAME   = f"sfincs.{_spinup_end.strftime('%Y%m%d.%H%M%S')}.rst"
 with open(config["adaptation"]["strategies_file"]) as _f:
     STRATEGY_DEFS_RAW = _yaml.safe_load(_f) or {}
 
-# Strategy measure files live under the catalogue's raw-data root (site setting
-# raw_data_root), except `auto/<name>` lines, built per basin by rule
-# build_adaptation_lines.
-ADAPT_CATALOGUE_ROOT = CATALOGUE["meta"]["root"]
+def adaptation_data_root():
+    """Return the root of the strategies' measure files (site setting adaptation_data_root).
+
+    Called only by adapt jobs, so the other targets do not require the setting.
+    `auto/<name>` lines are built per basin by rule build_adaptation_lines instead.
+    """
+    return site_setting("adaptation_data_root")
 
 with open(config["adaptation"]["measures_file"]) as _f:
     _MEASURES_RAW = _yaml.safe_load(_f) or {}
@@ -263,14 +301,15 @@ def strategy_measure_input_paths(strategy, basin_id):
     for _measure_params in STRATEGY_DEFS[strategy]["measures"].values():
         for _k, _v in _measure_params.items():
             if _k == "locations" and isinstance(_v, str):
-                paths.append(location_path(_v, ADAPT_CATALOGUE_ROOT, adaptation_lines_dir(basin_id)))
+                paths.append(location_path(_v, adaptation_data_root(), adaptation_lines_dir(basin_id), basin_id))
     return paths
 
 def basin_strategy_def(wildcards):
-    """Return strategy_def_for() with `auto/` locations pointing at the basin's lines."""
-    return with_auto_locations(
+    """Return strategy_def_for() with locations resolved for the basin."""
+    return resolve_locations(
         strategy_def_for(wildcards.strategy, wildcards.scenario),
         adaptation_lines_dir(wildcards.basin_id),
+        wildcards.basin_id,
     )
 
 

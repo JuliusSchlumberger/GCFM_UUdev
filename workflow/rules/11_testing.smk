@@ -25,6 +25,7 @@ rule test_upstream_boundary:
         amplitude_threshold_fraction = config["testing"]["upstream_boundary_check"]["amplitude_threshold_fraction"],
         surge_rp_yr                  = config["testing"]["upstream_boundary_check"]["surge_rp_yr"],
         surge_period_hr              = config["boundary_forcings"]["surge"]["period_hr"],
+    threads: rule_threads("test_upstream_boundary")
     log:
         "logs/{basin_id}/11_upstream_boundary_check.log"
 
@@ -34,7 +35,7 @@ rule test_upstream_boundary:
 
 rule test_bifurcation_calibration_options:
     """
-    Plot bifurcation discharge partitioning for original vs modified SWORD.
+    Plot bifurcation discharge partitioning without vs with the manual SWORD widths.
 
     Rebuilds both networks from raw SWORD as rules 06 + 08 do; one figure per
     bifurcation. Diagnostic only; does not gate build_sfincs.
@@ -46,12 +47,13 @@ rule test_bifurcation_calibration_options:
         river_forcing          = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
         # Figure background; this rule runs before the SFINCS grid exists.
         land_polygons          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
-        river_network_original = catalogue_path("river_network_original"),
-        river_network          = catalogue_path("river_network"),
+        sword_regions          = raw_region_inputs("river_network"),
+        width_corrections      = SWORD_WIDTH_CORRECTIONS,
     output:
         plot_dir = directory(results_path("{basin_id}/preprocessing_inputs/visuals/11b_bifurcation_calibration_options")),
     params:
         discharge_variable = config["river_processing"]["flow_accumulation"]["discharge_variable"],
+    threads: rule_threads("test_bifurcation_calibration_options")
     log:
         "logs/{basin_id}/11b_bifurcation_calibration_options.log"
     script:

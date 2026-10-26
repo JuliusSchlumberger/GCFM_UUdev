@@ -30,17 +30,17 @@ rule get_elevation:
     input:
         spec_basins_meta        = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
         domain_gpkg             = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
-        global_topography_tiles = catalogue_path("fathomdem"),
-        global_bathymetry       = catalogue_path("coastal_bathymetry"),
+        global_topography_tiles = raw_input("fathomdem"),
+        global_bathymetry       = raw_input("coastal_bathymetry"),
         # Sea/land: land use 200 = sea, the criterion zsini, weir tracing and
         # the water-level boundary also use.
         landuse_source          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"),
         land_polygons           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
         # Datum-correction inputs (mandatory — FathomDEM's native EGM2008 datum
         # must not be blended with GEBCO/COAST-RP/MDT, which share GOCO06s).
-        goco06s_gfc = catalogue_path("goco06s"),
-        egm2008_gfc = catalogue_path("egm2008_geoid"),
-        mdt         = catalogue_path("mdt_cnes_cls22"),
+        goco06s_gfc = raw_input("goco06s"),
+        egm2008_gfc = raw_input("egm2008_geoid"),
+        mdt         = raw_input("mdt_cnes_cls22"),
     output:
         elevation_merged = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"),
         plot_elevation   = results_path("{basin_id}/preprocessing_inputs/visuals/05a_elevation.png"),
@@ -49,6 +49,9 @@ rule get_elevation:
         gebco_max_depth_m   = config["terrain"]["gebco_max_depth_m"],
         gebco_min_depth_m   = config["terrain"]["gebco_min_depth_m"],
         coast_blend_m       = config["terrain"]["coast_blend_m"],
+    threads: rule_threads("get_elevation")
+    resources:
+        raw_io=1,
     log:
         "logs/{basin_id}/05a_elevation.log"
     script:
@@ -78,6 +81,7 @@ rule get_landuse:
         sea_mask      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sea_mask.tif"),
         plot_landuse  = results_path("{basin_id}/preprocessing_inputs/visuals/05b_landuse.png"),
         plot_sea_mask = results_path("{basin_id}/preprocessing_inputs/visuals/05b_sea_mask.png"),
+    threads: rule_threads("get_landuse")
     log:
         "logs/{basin_id}/05b_landuse.log"
     script:
@@ -101,13 +105,17 @@ rule get_roughness:
         landuse_source        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"),
         # Grid reference only.
         elevation_merged      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"),
-        matching_lu_roughness = catalogue_path("lu_to_roughness_lookup"),
+        matching_lu_roughness = raw_input("lu_to_roughness_lookup"),
         land_polygons              = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
+        # The channel takes channel_manning_n (src.river_burn.channel_polygons).
+        river_network         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
     output:
         spec_roughness = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"),
         plot_roughness = results_path("{basin_id}/preprocessing_inputs/visuals/05c_roughness.png"),
     params:
         roughness_aggregation = config["landuse"]["roughness_aggregation"],
+        channel_manning_n     = config["river_processing"]["channel_manning_n"],
+    threads: rule_threads("get_roughness")
     log:
         "logs/{basin_id}/05c_roughness.log"
     script:

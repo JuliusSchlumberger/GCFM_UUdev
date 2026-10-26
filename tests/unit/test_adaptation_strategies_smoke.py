@@ -6,8 +6,8 @@ import pytest
 from src.adaptation_strategies import (
     expand_strategies,
     location_path,
+    resolve_locations,
     scale_tag,
-    with_auto_locations,
 )
 
 MEASURES = {
@@ -103,26 +103,39 @@ def test_unknown_measure_fails_with_measures_file_name():
 def test_auto_location_resolves_to_the_basin_lines_and_others_to_raw_root(tmp_path):
     lines_dir = (tmp_path / "results" / "1" / "adaptation_lines").as_posix()
     assert (
-        location_path("auto/pump_river_mouth", "/raw", lines_dir)
+        location_path("auto/pump_river_mouth", "/raw", lines_dir, "1")
         == f"{lines_dir}/pump_river_mouth.geojson"
     )
-    assert location_path("site/dike.geojson", "/raw", lines_dir) == str(
+    assert location_path("site/dike.geojson", "/raw", lines_dir, "1") == str(
         Path("/raw") / "site/dike.geojson"
+    )
+    assert location_path("site_{basin_id}/dike.geojson", "/raw", lines_dir, "1") == str(
+        Path("/raw") / "site_1/dike.geojson"
     )
 
 
 def test_auto_location_becomes_absolute_and_survives_the_raw_root_join(tmp_path):
     exp = _expand(_strategies(crest=4.0, locations="auto/coastal_protection_weir_PC"))
     lines_dir = tmp_path / "adaptation_lines"
-    sdef = with_auto_locations(exp.strategy_def_for("wall_1", "plain"), lines_dir)
+    sdef = resolve_locations(exp.strategy_def_for("wall_1", "plain"), lines_dir, "1")
     resolved = sdef["measures"]["dike"]["locations"]
     assert resolved == f"{lines_dir.as_posix()}/coastal_protection_weir_PC.geojson"
     assert Path("/raw") / resolved == Path(resolved)
     assert sdef["measures"]["dike"]["crest"] == 4.0
-    plain = with_auto_locations(
-        _expand(_strategies(crest=4.0)).strategy_def_for("wall_1", "plain"), lines_dir
+    plain = resolve_locations(
+        _expand(_strategies(crest=4.0)).strategy_def_for("wall_1", "plain"),
+        lines_dir,
+        "1",
     )
     assert plain["measures"]["dike"]["locations"] == "site/dike.geojson"
+    per_basin = resolve_locations(
+        _expand(
+            _strategies(crest=4.0, locations="site_{basin_id}/dike.geojson")
+        ).strategy_def_for("wall_1", "plain"),
+        lines_dir,
+        "7",
+    )
+    assert per_basin["measures"]["dike"]["locations"] == "site_7/dike.geojson"
 
 
 def test_unknown_auto_line_fails_at_expansion():

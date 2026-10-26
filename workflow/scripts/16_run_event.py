@@ -25,6 +25,7 @@ from src.postprocessing import (
     compute_flood_timeseries_stats,
     compute_max_inundation,
     inundation_stats,
+    read_land_bed_level,
 )
 from src.sfincs_run import run_sfincs_subprocess
 
@@ -32,14 +33,13 @@ log = setup_logging(snakemake.log[0])
 
 # ── params ──
 sfincs_root                = Path(snakemake.params.sfincs_root)
-# The subgrid reference raster lives here; sfincs_root only references it.
-skeleton_root              = Path(snakemake.params.skeleton_root)
 sfincs_exe                 = Path(snakemake.params.sfincs_exe)
 timeout_s                  = int(snakemake.params.timeout_s)
 min_inundation_depth_m     = float(snakemake.params.min_inundation_depth_m)
 animation_fps               = int(snakemake.params.animation_fps)
 land_polygons_path         = Path(snakemake.input.land_mask_on_grid)  # plot background
 sea_mask_path               = Path(snakemake.input.sea_mask)
+da_land_dep                 = read_land_bed_level(snakemake.input.land_bed_level)
 river_network_path          = Path(snakemake.input.clean_river_network)
 domain_gpkg_path            = Path(snakemake.input.domain_gpkg)
 
@@ -66,7 +66,7 @@ log.info(f"Event map output written: {sfincs_map_path} ({sfincs_map_path.stat().
 plot_ratio_path = Path(snakemake.output.plot_inundation_ratio)
 
 da_hmax, da_dep = compute_max_inundation(
-    sfincs_root, skeleton_root, sea_mask_path, hmin=min_inundation_depth_m,
+    sfincs_root, da_land_dep, hmin=min_inundation_depth_m,
 )
 if da_hmax is None or da_dep is None:
     raise RuntimeError(f"No 'zsmax' or bed level in the SFINCS event output of {sfincs_root}")
@@ -116,7 +116,7 @@ gc.collect()
 # At the subgrid-downscaled resolution of compute_max_inundation, one
 # frame at a time; da_h is mesh resolution and unmasked.
 df = compute_flood_timeseries_stats(
-    sfincs_root, skeleton_root, sea_mask_path, min_inundation_depth_m,
+    sfincs_root, da_land_dep, min_inundation_depth_m,
 )
 if df is None:
     raise RuntimeError(f"No 'zs' in the SFINCS event output of {sfincs_root}")

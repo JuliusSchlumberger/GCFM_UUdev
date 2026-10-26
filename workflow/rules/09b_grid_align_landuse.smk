@@ -1,4 +1,4 @@
-# Rule: resample landuse.tif (rule get_landuse, 05b, native resolution)
+# Rule: resample landuse_channels.tif (rule channel_landuse, 08b; native resolution)
 # onto the shared SFINCS regular grid exactly ONCE (mode), and area-average
 # roughness onto the same grid from the native land-use source.
 #
@@ -12,10 +12,12 @@ rule grid_align_landuse:
         spec_basins_meta      = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
         domain_gpkg           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sfincs_grid.json"),
-        landuse                = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
+        landuse                = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_channels.tif"),
         # Roughness is area-averaged from the native source, as in rule 05c.
         landuse_source         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"),
-        matching_lu_roughness  = catalogue_path("lu_to_roughness_lookup"),
+        matching_lu_roughness  = raw_input("lu_to_roughness_lookup"),
+        # The channel takes channel_manning_n (src.river_burn.channel_polygons).
+        river_network          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
     output:
         landuse_on_grid          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_on_grid.tif"),
         roughness_on_grid        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness_on_grid.tif"),
@@ -25,7 +27,9 @@ rule grid_align_landuse:
         plot_roughness_on_grid   = results_path("{basin_id}/preprocessing_inputs/visuals/09b_roughness_on_grid.png"),
     params:
         roughness_aggregation = config["landuse"]["roughness_aggregation"],
+        channel_manning_n     = config["river_processing"]["channel_manning_n"],
         resolution_m = lambda wildcards: grid_resolution_m(wildcards.basin_id),
+    threads: rule_threads("grid_align_landuse")
     log:
         "logs/{basin_id}/09b_grid_align_landuse.log"
     script:

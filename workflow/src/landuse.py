@@ -38,10 +38,12 @@ import logging
 import math
 from pathlib import Path
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
 from affine import Affine
+from rasterio.features import rasterize
 from rasterio.warp import Resampling, reproject, transform_bounds
 from rasterio.windows import Window, from_bounds
 from src.geometry import pick_utm_crs
@@ -557,6 +559,52 @@ def read_roughness_lookup(lookup_path: str | Path) -> dict[int, float]:
     )
 
 
+def polygon_mask(polys: list, shape: tuple[int, int], transform) -> np.ndarray:
+    """Return the pixels whose centre lies in any of ``polys`` (same CRS as transform)."""
+    if not polys:
+        return np.zeros(shape, dtype=bool)
+    return rasterize(
+        [(p, 1) for p in polys],
+        out_shape=shape,
+        transform=transform,
+        fill=0,
+        dtype=np.uint8,
+    ).astype(bool)
+
+
+def write_channel_landuse(
+    landuse_path: str | Path,
+    polys: list,
+    polys_crs,
+    water_code: int,
+    out_path: str | Path,
+) -> dict[int, int]:
+    """Write landuse_path with every non-sea pixel inside the channel set to water_code.
+
+    polys: the channel (src.river_burn.channel_polygons). Sea (LANDUSE_SEA_CODE)
+    is kept, so the open-sea classification does not change. Returns the
+    pixel count per original class that was converted.
+    """
+    with rasterio.open(landuse_path) as src:
+        lu = src.read(1)
+        profile = src.profile.copy()
+        transform, crs = src.transform, src.crs
+    channel = polygon_mask(
+        list(gpd.GeoSeries(polys, crs=polys_crs).to_crs(crs).geometry),
+        lu.shape,
+        transform,
+    )
+    convert = channel & (lu != LANDUSE_SEA_CODE) & (lu != water_code)
+    if profile.get("nodata") is not None:
+        convert &= lu != profile["nodata"]
+    classes, counts = np.unique(lu[convert], return_counts=True)
+    out = np.where(convert, np.asarray(water_code, dtype=lu.dtype), lu)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(out_path, "w", **profile) as dst:
+        dst.write(out, 1)
+    return {int(c): int(n) for c, n in zip(classes, counts)}
+
+
 def aggregate_manning(
     n_fine: np.ndarray,
     src_transform,
@@ -610,8 +658,13 @@ def write_roughness_raster(
     out_path: str | Path,
     method: str = "area_mean",
     refine_to_source: bool = False,
+    channel: tuple[list, object, float] | None = None,
 ) -> tuple[set[int], dict]:
     """Write Manning's n area-averaged from the land-use source onto ref_meta's grid.
+
+    channel: (polygons, their CRS, n): every source pixel whose centre lies in
+    a polygon takes n before the averaging (src.river_burn.channel_polygons and
+    river_processing.channel_manning_n, the n the river bed was fitted with).
 
     refine_to_source: write on ref_meta's grid subdivided by an integer
     factor to about the source pixel size (~10 m under WorldCover, since
@@ -652,6 +705,12 @@ def write_roughness_raster(
             **_GTIFF_CREATION,
         }
         src_nodata = int(src.nodata) if src.nodata is not None else LANDUSE_NODATA
+        channel_polys, channel_n = [], np.nan
+        if channel is not None:
+            polys, polys_crs, channel_n = channel
+            channel_polys = list(
+                gpd.GeoSeries(polys, crs=polys_crs).to_crs(src.crs).geometry
+            )
 
         unmapped: set[int] = set()
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
@@ -670,6 +729,11 @@ def write_roughness_raster(
                 n_fine, missing = landuse_to_manning(
                     lu_block, lu_to_n, nodata=src_nodata
                 )
+                if channel_polys:
+                    in_channel = polygon_mask(
+                        channel_polys, lu_block.shape, src.window_transform(win)
+                    )
+                    n_fine = np.where(in_channel, np.float32(channel_n), n_fine)
                 unmapped |= missing
                 n_block = aggregate_manning(
                     n_fine,

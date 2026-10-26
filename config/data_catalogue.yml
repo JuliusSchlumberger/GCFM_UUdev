@@ -93,30 +93,21 @@ datasets:
       see the description's centimeters-unit caveat.
 
   - name: river_network
-    # SWORD (SWOT River Database) v17c, "unpublished" custom export, reach-
-    # level layer -- MANUALLY CORRECTED variant: for a set of specific
-    # tributaries, main_side and width/max_width were adjusted based on
-    # Google Earth imagery and expert knowledge, to improve discharge-
-    # partitioning behaviour at bifurcations SWORD's own attributes get
-    # wrong. This modified file is the pipeline's DEFAULT river network
-    # source (rule get_river_network reads this entry directly). The
-    # unmodified original is kept as the separate `river_network_original`
-    # entry, used by rule test_bifurcation_calibration_options (script
-    # 11b_bifurcation_calibration_options.py) for a before/after comparison.
-    # Geometry and rch_id_up/rch_id_dn topology are UNCHANGED from the
-    # original -- only attribute values differ for the adjusted reaches.
-    #
-    # v17c carries a richer field set than the official v17b release,
-    # including main_path_id, is_mainstem_edge, path_seg_pos, rch_id_up_main/
-    # rch_id_dn_main, hydro_dist_out, hydro_dist_hw, subnetwork_id,
-    # continent, etc. rch_id_up/rch_id_dn are a Python-list-repr string
-    # (e.g. "[id1, id2]"), NOT the whitespace-separated convention v17b uses.
-    description: SWORD (SWOT River Database) v17c "unpublished" export, global reach-level vector river network, manually corrected for specific bifurcating tributaries.
-    source: "Derived from SWORD (SWOT River Database) v17c (unpublished export; see raw_data/SWORD/v17c_release_notes.pdf and v17c_variable_reference.pdf) with manual attribute corrections based on Google Earth imagery and expert knowledge."
+    # SWORD v17c, published release: one GeoPackage per region, layer
+    # "reaches". Rule get_river_network (06) reads every region within the
+    # domain box (src.sword.read_sword_reaches), maps the published topology
+    # (rch_id_dn_1..4 / rch_id_up_1..4, 0 = none) to the bracketed id
+    # strings the pipeline uses, and applies the manual widths in
+    # config/sword_width_corrections.csv. wse, width and slope are the static
+    # MERIT Hydro / SRTM values carried over from v17b; the SWOT statistics
+    # (wse_obs_*, width_obs_*, slope_obs_*, n_obs) are separate fields.
+    description: SWORD (SWOT River Database) v17c, global reach-level vector river network with SWOT observation statistics, one file per region.
+    source: "Altenau, E. H., Pavelsky, T. M., Durand, M. T., Yang, X., Frasson, R. P. d. M., & Bendezu, L. (2021). The Surface Water and Ocean Topography (SWOT) Mission River Database (SWORD): A global river network for satellite data products. Water Resources Research, 57, e2021WR030054. https://doi.org/10.1029/2021WR030054 . Data: SWORD v17c (July 2026, exported May 2026), see SWORD/v17c/v17c_release_notes.md and v17c_variable_reference.md."
     provider: ogr
     file_format: GeoPackage
-    file_path: SWORD/SWORD_global_v17c_unpublished_modified.gpkg
-    layer_name: global_edges
+    file_path: SWORD/v17c/sword_{region}_v17c.gpkg
+    regions: [AF, AS, EU, NA, OC, SA]
+    layer_name: reaches
     storage: GPKG
     encoding: UTF-8
     crs:
@@ -125,92 +116,53 @@ datasets:
       type: Geographic (2D)
       units: degrees
       datum: World Geodetic System 1984 ensemble (EPSG:6326)
-      accuracy_m: 2
     geometry:
       type: LineString
       geometry_column: geom
-    feature_count: 248672
+    feature_count: 248673
     coverage:
       latitude_range: [-52.0002, 82.3108]
       longitude_range: [-179.9999, 179.9999]
-    primary_key: fid
     fields_of_interest:
-      x:
-        type: Real
-        description: Longitude of the node or reach ranging from 180°E to 180°W (decimal degrees).
-      y:
-        type: Real
-        description: Latitude of the node or reach ranging from 90°S to 90°N (decimal degrees).
       reach_id:
         type: Integer64
-        description:  unique identifier for each river reach
+        description: Unique reach identifier.
       width:
         type: Real
-        description:  reach-averaged width in meters
+        description: Reach-averaged width (m).
       max_width:
         type: Real
-        description:   Maximum width value across the channel for each node or reach that includes island and bar areas (in meters).
-      lakeflag:
-        type: Integer
-        description: "GRWL water body identifier for each reach: 0 – river, 1 – lake/reservoir, 2 – canal, 3 – tidally influenced river."
-      rch_id_up:
-        type: String
-        length: 80
-        description: IDs of upstream reaches (presented as list "[rch_id_up1, rch_id_up2,...]").
-      rch_id_dn:
-        type: String
-        length: 80
-        description: IDs of downstream reaches (presented as list "[rch_id_dn1, rch_id_dn2,...]").
+        description: Maximum channel width across the reach including islands and bars (m); 30 is a fill value.
+      wse:
+        type: Real
+        description: Water surface elevation from MERIT Hydro (m, EGM2008), 0.1 m steps.
+      wse_obs_p10:
+        type: Real
+        description: SWOT water surface elevation percentiles p10 ... p90 over all qualifying overpasses (m); -9999 without observations.
       slope:
         type: Real
-        description:  # add once known — likely reach slope, units to confirm (m/m or m/km)
+        description: MERIT/SRTM reach slope magnitude (m/km).
+      lakeflag:
+        type: Integer
+        description: "0 river, 1 lake/reservoir, 2 canal, 3 tidally influenced river."
+      obstr_type:
+        type: Integer
+        description: "0 none, 1 dam, 2 lock, 3 low-head, 4 falls (v17c variable reference). Value 5 also occurs, is undocumented, and is read as 0 (src.sword); the published value is kept in obstr_type_published."
+      rch_id_dn_1:
+        type: Integer64
+        description: Downstream reach ids rch_id_dn_1 ... rch_id_dn_4 (0 = none); upstream likewise rch_id_up_1 ... 4.
+      n_rch_down:
+        type: Integer
+        description: Number of downstream reaches.
       main_side:
         type: Integer
-        description: "SWORD's own primary-vs-secondary channel classification: 0 = reach is part of the main channel/mainstem; 1 or 2 = reach is a secondary/side channel."
+        description: "0 main channel, 1 or 2 side channel."
       main_path_id:
         type: Integer64
-        description: ID of the main path of the river arm to which the reach belongs (multiple reaches can share the same main_path_id if they belong to the same river arm). Used as the same-river-arm grouping key at bifurcations (src.river_network.trace_seed_mainstem_paths, compute_river_elevation_profile), together with is_mainstem_edge.
-      is_mainstem_edge:
+        description: Main path group id; same-river-arm grouping key at bifurcations (src.river_network).
+      is_mainstem:
         type: Integer
-        description: Flags whether a reach is part of the SWORD-identified mainstem (vs. a distributary/side-channel edge). Tie-breaker at bifurcations when more than one downstream candidate shares main_path_id.
-      path_seg_pos:
-        type: Integer64
-        description: position within main path of river arm (0 = most upstream, increasing downstream)
-
-  - name: river_network_original
-    # Unmodified SWORD v17c "unpublished" export -- same schema/feature
-    # count as `river_network`, but WITHOUT the manual main_side/width
-    # corrections. Used only for the "before" comparison in rule
-    # test_bifurcation_calibration_options; not read by any production rule
-    # (rule get_river_network reads `river_network`, the modified/default
-    # version).
-    description: SWORD (SWOT River Database) v17c "unpublished" export, global reach-level vector river network, unmodified.
-    source: "SWORD (SWOT River Database) v17c (unpublished export; see raw_data/SWORD/v17c_release_notes.pdf and v17c_variable_reference.pdf)."
-    provider: ogr
-    file_format: GeoPackage
-    file_path: SWORD/SWORD_global_v17c_unpublished.gpkg
-    layer_name: global_edges
-    storage: GPKG
-    encoding: UTF-8
-    crs:
-      epsg: 4326
-      name: WGS 84
-      type: Geographic (2D)
-      units: degrees
-      datum: World Geodetic System 1984 ensemble (EPSG:6326)
-      accuracy_m: 2
-    geometry:
-      type: LineString
-      geometry_column: geom
-    feature_count: 248672
-    coverage:
-      latitude_range: [-52.0002, 82.3108]
-      longitude_range: [-179.9999, 179.9999]
-    primary_key: fid
-    fields_of_interest:
-      # Same schema as `river_network` -- see that entry for full field
-      # documentation. main_side and width/max_width are the fields that
-      # differ (uncorrected) relative to `river_network`.
+        description: 1 if the reach is on the mainstem path of its main_path_id group.
 
   - name: coastal_bathymetry
     description: Global terrain model for ocean and land providing elevation in meters on a 15 arc-second interval grid. Bathymetry over oceans plus land topography in one continuous grid.
@@ -509,10 +461,10 @@ datasets:
     description: >
       Hourly total water level (tide + surge + mean sea level) of the GTSMv3 reanalysis
       1950-2024 at ~43,000 output stations worldwide, one NetCDF per month holding every
-      station (reanalysis_waterlevel_hourly_YYYY_MM_v3.nc, variable `waterlevel`). Read by
-      rule extract_gtsm_series at each basin's own surge stations (COAST-RP's coastal
-      stations are GTSM output stations) to derive the storm-tide hydrograph components
-      (rule storm_tide_hydrographs). The folder holds the yearly CDS archives unzipped.
+      station (reanalysis_waterlevel_hourly_YYYY_MM_v3.nc, variable `waterlevel`). Read once
+      by tools/subset_gtsm_stations.py into gtsm_station_subset (COAST-RP's coastal
+      stations are GTSM output stations), from which the storm-tide hydrograph components
+      are derived (rule storm_tide_hydrographs). The folder holds the yearly CDS archives unzipped.
     source: "Copernicus CDS sis-water-level-change-timeseries-cmip6 (GTSMv3 reanalysis, hourly). Downloaded with tools/download_cds_waterlevel.py"
     provider: xarray
     file_format: NetCDF
@@ -527,6 +479,18 @@ datasets:
     provider: xarray
     file_format: NetCDF
     file_path: GTSM_storm_tide_hourly/storm_surge_residual/
+
+  - name: gtsm_station_subset
+    description: >
+      Hourly total water level and surge residual of the GTSMv3 reanalysis at the GTSM
+      stations behind every basin's surge stations, one station-chunked NetCDF (variables
+      `waterlevel`, `surge`; every GTSM station's id and position on dimension
+      `gtsm_station`). Built once from gtsm_total_water_level and gtsm_surge_residual;
+      rebuild after adding a basin. Read by rule extract_gtsm_series.
+    source: "Derived from gtsm_total_water_level and gtsm_surge_residual with tools/subset_gtsm_stations.py"
+    provider: xarray
+    file_format: NetCDF
+    file_path: GTSM_storm_tide_hourly/station_subset.nc
 
 
   - name: river_discharge

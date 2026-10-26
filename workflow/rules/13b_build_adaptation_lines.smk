@@ -24,6 +24,7 @@ rule build_adaptation_lines:
         min_component_cells        = config["river_processing"]["river_depth_modelling"]["min_component_cells"],
         unprotected_ocean_wetlands = config["river_processing"]["river_depth_modelling"]["unprotected_ocean_wetlands"],
         closure                    = config["adaptation"]["lines"],
+    threads: rule_threads("build_adaptation_lines")
     log:
         "logs/{basin_id}/13b_build_adaptation_lines.log"
     script:

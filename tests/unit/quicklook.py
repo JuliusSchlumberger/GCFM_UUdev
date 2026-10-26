@@ -54,6 +54,7 @@ STAGES: dict[str, dict[str, Panel]] = {
         "river_network_clean": _WIDTH,
         "outflow_points": _OUTLINE,
     },
+    "08b_channel_landuse": {"landuse_channels": _LANDUSE},
     "09_condition_elevation": {"elevation_conditioned_m": _ELEV},
     "09b_grid_align_landuse": {
         "landuse_on_grid": _LANDUSE,
@@ -65,6 +66,7 @@ STAGES: dict[str, dict[str, Panel]] = {
         "weir_crest_m": Panel("vector", "m", 0.0, 10.0, "magma", column="crest_m"),
     },
     "13_build_sfincs_skeleton": {"zsini_m": _ELEV},
+    "13c_land_bed_level": {"land_bed_level_m": _ELEV},
     "14_run_spinup": {"max_depth_m": _DEPTH},
     "16_run_event": {
         "max_depth_m": _DEPTH,

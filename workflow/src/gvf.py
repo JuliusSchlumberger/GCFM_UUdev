@@ -1,8 +1,8 @@
 """Run the GVF river-bed estimate for rule 10 (``river_depth_modelling.method: gvf``).
 
-Ties src.gvf_target and src.gvf_solver to the pipeline. SWORD ``wse`` is
-paired with GloFAS mean discharge: SWORD v17c levels are long-term means of
-SWOT/altimetry observations. values_at_points yields ``zbed_anchors`` for
+Ties src.gvf_target and src.gvf_solver to the pipeline. The target is rule
+09's smoothed FathomDEM water surface (src.water_surface), paired with the
+GloFAS mean discharge. values_at_points yields ``zbed_anchors`` for
 src.river_burn.burn_river_channel.
 """
 
@@ -13,13 +13,19 @@ from dataclasses import dataclass
 
 import geopandas as gpd
 import numpy as np
-import rasterio
 from shapely.geometry import LineString, Point
 from shapely.ops import substring
 from src.gvf_solver import GvfProblem, GvfResult, invert_bed, slot_diagnostics
-from src.gvf_target import NODE_INVERT, NODE_NO_FLOW, GvfTargets, build_gvf_targets
+from src.gvf_target import (
+    NODE_FIXED_BED,
+    NODE_INVERT,
+    NODE_NO_FLOW,
+    NODE_WATER_BODY,
+    GvfTargets,
+    build_gvf_targets,
+)
 from src.io import require_keys
-from src.river_network import normalize_reach_id
+from src.river_network import kahn_order, normalize_reach_id
 
 log = logging.getLogger(__name__)
 
@@ -41,22 +47,6 @@ def mean_seed_discharge(river_ds, active: np.ndarray) -> dict[str, float]:
     )
 
 
-def geoid_offset_at(
-    goco_path, egm_path, lon: np.ndarray, lat: np.ndarray
-) -> np.ndarray:
-    """Return N_EGM2008 - N_GOCO06s (m) at WGS84 points (nearest cell of the global field).
-
-    Puts SWORD's EGM2008 ``wse`` in the model datum, as rule 05a does for FathomDEM.
-    """
-    from src.raster import compute_geoid_offset_arr
-
-    off, transform, _ = compute_geoid_offset_arr(goco_path, egm_path)
-    rows, cols = rasterio.transform.rowcol(transform, np.asarray(lon), np.asarray(lat))
-    rows = np.clip(np.asarray(rows), 0, off.shape[0] - 1)
-    cols = np.clip(np.asarray(cols), 0, off.shape[1] - 1)
-    return off[rows, cols].astype(float)
-
-
 @dataclass
 class GvfRun:
     """Hold everything rule 10 needs from a GVF solve."""
@@ -70,26 +60,30 @@ class GvfRun:
 def run_gvf(
     rivers_m: gpd.GeoDataFrame,
     reach_q: dict[str, float],
-    datum_offset_m: np.ndarray,
+    surface_nodes,
+    structure_edges: set[tuple[str, str]],
     sample_sea_fraction,
     sample_dem,
     sea_level_m: float,
     gebco_floor_m: float,
     outflow_reaches: set[str],
     manning_n: float,
+    surface_cfg: dict,
     cfg: dict,
 ) -> GvfRun:
     """Build the GVF target and invert the bed.
 
     Args:
         rivers_m: Cleaned network in the model CRS (metric).
-        datum_offset_m: Per reach (``rivers_m`` order), N_EGM2008 - N_GOCO06s.
+        surface_nodes, structure_edges: rule 09's water surface
+            (src.water_surface.read_water_surface).
         sample_sea_fraction: Callable (x, y, width) -> sea-class fraction.
         sample_dem: Callable (x, y) -> merged (unconditioned) DEM.
         sea_level_m: Mean sea level in the model datum (``calm_sea_level_m``).
         gebco_floor_m: Lowest level of the clamped GEBCO bathymetry.
         outflow_reaches: Reaches flagged ``is_delta_outflow``; never a sea mouth.
         manning_n: Channel Manning n (``river_processing.channel_manning_n``).
+        surface_cfg: ``river_processing.water_surface``.
         cfg: The ``river_depth_modelling.gvf`` config block.
 
     A network end is a sea mouth unless it is a free outflow, and only if its
@@ -120,10 +114,12 @@ def run_gvf(
     targets = build_gvf_targets(
         rivers_m,
         reach_q,
-        datum_offset_m,
+        surface_nodes,
+        structure_edges,
         sample_sea_fraction,
         sample_dem,
         gebco_floor_m,
+        surface_cfg,
         cfg,
     )
     net = targets.net
@@ -198,6 +194,42 @@ def values_at_points(
         ch = np.array([line.project(Point(float(x[i]), float(y[i]))) for i in idx])
         out[idx] = np.interp(ch, net.reach_chainage[r], per_slot[net.reach_slots[r]])
     return out
+
+
+def carry_bed_to_sea(run: GvfRun) -> np.ndarray:
+    """Return the slot beds with every sea slot no higher than the river bed above it.
+
+    Fixed-bed and water-body slots (sea class, src.gvf_target.classify_nodes)
+    take their bed from the DEM, i.e. GEBCO's coarse coastal bathymetry, which
+    leaves a sill where a river channel enters the sea (2433835: -10.4 m ->
+    -2.7 m over 0.5 km). Each such slot takes min(DEM bed, the bed of the
+    nearest estimated slot upstream), carried on downstream through the
+    network; at a confluence the deepest incoming bed is carried. The GVF
+    solve itself is unchanged.
+    """
+    net = run.targets.net
+    z = np.asarray(run.result.z, dtype=float).copy()
+    cls = run.problem.slot_class
+    sea = np.isin(cls, (NODE_FIXED_BED, NODE_WATER_BODY))
+    upstream = net.upstream()
+    order, _ = kahn_order(net.reach_ids, lambda r: net.downstream[r])
+    carried: dict[str, float] = {}
+    for r in order:
+        incoming = [
+            carried[u] for u in upstream[r] if np.isfinite(carried.get(u, np.nan))
+        ]
+        bed = min(incoming) if incoming else np.nan
+        for slot in net.reach_slots[r]:
+            if sea[slot]:
+                if np.isfinite(bed) and np.isfinite(z[slot]):
+                    z[slot] = min(z[slot], bed)
+            elif np.isfinite(z[slot]):
+                bed = z[slot]
+        carried[r] = bed
+    n = int((z < run.result.z - 1e-9).sum())
+    if n:
+        log.info(f"GVF bed carried into {n} sea slot(s) below their GEBCO bed")
+    return z
 
 
 def slot_levels(run: GvfRun) -> np.ndarray:

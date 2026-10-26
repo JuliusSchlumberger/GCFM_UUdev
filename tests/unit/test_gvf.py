@@ -17,12 +17,10 @@ from src.gvf_target import (
     NODE_INVERT,
     NODE_WATER_BODY,
     GvfTargets,
-    build_gvf_targets,
     build_node_network,
     detect_structure_edges,
     enforce_non_increasing,
     orient_downstream,
-    reach_target_levels,
 )
 from src.river_network import build_downstream_adjacency
 
@@ -56,7 +54,7 @@ def _targets(
     spacing=500.0,
     structures=None,
 ):
-    """GvfTargets with a prescribed target eta_fn(x, y) instead of SWORD wse."""
+    """GvfTargets with a prescribed target eta_fn(x, y)."""
     dn = build_downstream_adjacency(rivers)
     net = build_node_network(rivers, dn, spacing, structures)
     eta = np.asarray(eta_fn(net.node_x, net.node_y), dtype=float)
@@ -74,9 +72,12 @@ def _targets(
         dem=np.full(net.n_nodes, np.nan) if dem is None else dem(net),
         reach_q={r: float(q[r]) for r in net.reach_ids},
         reach_width={r: float(w) for r, w in zip(rivers["reach_id"], rivers["width"])},
-        reach_level={},
-        rising_edges=[],
     )
+
+
+def _levels(rivers):
+    """Per-reach level from the spec's 'wse' column."""
+    return dict(zip(rivers["reach_id"], rivers["wse"].astype(float)))
 
 
 def test_froude_includes_depth_and_critical_depth_gives_one():
@@ -252,7 +253,7 @@ def test_structure_separates_nodes_and_sets_upstream_level():
         }
     )
     dn = build_downstream_adjacency(rivers)
-    edges, _ = detect_structure_edges(rivers, dn, reach_target_levels(rivers))
+    edges, _ = detect_structure_edges(rivers, dn, _levels(rivers))
     assert edges == {("1", "2")}
     t = _targets(
         rivers,
@@ -290,38 +291,6 @@ def test_orient_downstream_reverses_upstream_lines():
     assert out.geometry.iloc[1].coords[0] == (10000.0, 0.0)
 
 
-def test_target_builder_monotone_single_junction_value_and_datum(gvf_cfg):
-    rivers = _reaches(_chain_spec())
-    cfg = gvf_cfg
-    t0 = build_gvf_targets(
-        rivers,
-        {"1": 100.0, "2": 100.0, "3": 60.0, "4": 40.0},
-        0.0,
-        lambda x, y, w: np.zeros(len(x)),
-        lambda x, y: np.full(len(x), np.nan),
-        gebco_floor_m=-10.0,
-        cfg=cfg,
-    )
-    for a, b, _ in t0.net.node_edges():
-        assert t0.eta_target[a] >= t0.eta_target[b] - 1e-9
-    # one node where reach 2 splits into 3 and 4
-    j = t0.net.reach_nodes["2"][-1]
-    assert t0.net.reach_nodes["3"][0] == j == t0.net.reach_nodes["4"][0]
-    # no 0.1 m steps left: largest node-to-node drop well below the quantum
-    drops = [t0.eta_target[a] - t0.eta_target[b] for a, b, _ in t0.net.node_edges()]
-    assert max(drops) < 0.1
-    t1 = build_gvf_targets(
-        rivers,
-        {"1": 100.0, "2": 100.0, "3": 60.0, "4": 40.0},
-        0.25,
-        lambda x, y, w: np.zeros(len(x)),
-        lambda x, y: np.full(len(x), np.nan),
-        gebco_floor_m=-10.0,
-        cfg=cfg,
-    )
-    assert np.allclose(t1.eta_target - t0.eta_target, 0.25)
-
-
 def test_rising_level_is_reported_not_a_structure():
     rivers = _reaches(
         {
@@ -330,7 +299,7 @@ def test_rising_level_is_reported_not_a_structure():
         }
     )
     dn = build_downstream_adjacency(rivers)
-    edges, rising = detect_structure_edges(rivers, dn, reach_target_levels(rivers))
+    edges, rising = detect_structure_edges(rivers, dn, _levels(rivers))
     assert edges == set()
     assert rising == [("1", "2", pytest.approx(1.2))]
 
@@ -344,7 +313,7 @@ def test_lock_with_small_drop_is_a_structure_but_not_without_drop():
         }
     )
     dn = build_downstream_adjacency(rivers)
-    edges, _ = detect_structure_edges(rivers, dn, reach_target_levels(rivers))
+    edges, _ = detect_structure_edges(rivers, dn, _levels(rivers))
     assert edges == {("1", "2")}
 
 

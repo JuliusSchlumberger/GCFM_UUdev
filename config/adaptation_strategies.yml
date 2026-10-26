@@ -4,8 +4,9 @@
 # name = {strategy} wildcard.  scale = the concrete param values, specified HERE.
 # method (pre/post) is chosen at the CLI and validated against measures.yml.
 
-# Relative `locations` paths below resolve against raw_data_root in
-# config/site.yml (see config/site.example.yml); `auto/<name>` is the basin's
+# Relative `locations` paths below resolve against adaptation_data_root in
+# config/site.yml (see config/site.example.yml), with `{basin_id}` replaced by
+# the basin id, so each basin needs its own files; `auto/<name>` is the basin's
 # <name>.geojson built by rule build_adaptation_lines into
 # <results_dir>/{basin_id}/adaptation_lines/.
 
@@ -21,9 +22,9 @@ scales: [0.4, 0.9, 1.0]
 advance:
   measures:
     offshore_barrier: {elevation: {coastal: max_coastal_water_level, river: {fixed: 0.4}, compound: max_coastal_water_level},
-                      locations: adaptation_ebro/offshore_island.geojson }
+                      locations: "{basin_id}/offshore_island.geojson" }
     pumps: {discharge: {coastal: max_discharge, river: max_discharge, compound: max_discharge},
-            locations: adaptation_ebro/advance_pumps.geojson }
+            locations: "{basin_id}/advance_pumps.geojson" }
 
 
 # -----------------------------------------------------------------------------------------------
@@ -43,12 +44,12 @@ NbS_protect_open:
   measures:
     nbs_land_reclamation: {attenuation_rate: 0.25, # Wamsley: The relationship indicates that storm surge was reduced by 1 m for every 14.5 km inland
                            distance: 2000,
-                           locations: adaptation_ebro/land_reclamation.geojson,
+                           locations: "{basin_id}/land_reclamation.geojson",
                            target_code: 90, # wetlands
                            min_elevation: 0, # floor [m above datum] so foreshore fronted by low mudflats still emerges as land, not just barely-submerged
                            }
     water_retention: {storage_fraction: 1,
-                      locations: adaptation_ebro/water_retention_area_river.geojson}
+                      locations: "{basin_id}/water_retention_area_river.geojson"}
 
 # -----------------------------------------------------------------------------------------------
 # PROTECT-CLOSED

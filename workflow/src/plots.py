@@ -1313,6 +1313,167 @@ def plot_clean_network_discharge(
     _save(fig, output_path)
 
 
+# SWORD obstr_type -> label and colour of a structure marker.
+_STRUCTURE_STYLE = {
+    1: ("dam", "tab:red"),
+    4: ("falls", "tab:red"),
+    2: ("lock", "tab:orange"),
+    3: ("low-head", "tab:orange"),
+    0: ("level step only", "0.4"),
+    -1: ("rising level, cut", "tab:purple"),
+}
+
+
+def plot_water_surface_profiles(
+    surface,
+    rivers: gpd.GeoDataFrame,
+    seeds: list[str],
+    output_path: str,
+    title: str,
+) -> None:
+    """Plot the rule 09 water surface along each seed's widest downstream path.
+
+    One panel per seed: FathomDEM pixels along the centreline, the water pixels
+    the surface is built from (grey) and the skipped ones (islands, banks, sea;
+    orange), node medians (black crosses), the smoothed surface (blue), structure junctions
+    coloured by the SWORD obstruction type of either reach (the surface is
+    smoothed across them unless split_at_structures), and rising-level cuts.
+
+    Args:
+        surface: src.water_surface.WaterSurface (with its centreline samples).
+        rivers: The reaches the surface was built from ('reach_id', 'width',
+            'rch_id_dn', optionally 'obstr_type').
+        seeds: Seed reach ids, one panel each.
+    """
+    from src.river_network import normalize_reach_id, trace_widest_path
+
+    net = surface.net
+    obstr = {}
+    if "obstr_type" in rivers.columns:
+        obstr = dict(
+            zip(
+                rivers["reach_id"].map(normalize_reach_id),
+                pd.to_numeric(rivers["obstr_type"], errors="coerce")
+                .fillna(0)
+                .astype(int),
+            )
+        )
+    seeds = [s for s in seeds if s in net.reach_line] or []
+    n = max(len(seeds), 1)
+    fig, axes = plt.subplots(n, 1, figsize=(12, 3.6 * n), squeeze=False)
+    if not seeds:
+        axes[0, 0].text(
+            0.5,
+            0.5,
+            "No seed reach",
+            ha="center",
+            va="center",
+            transform=axes[0, 0].transAxes,
+        )
+    used_styles: set[int] = set()
+    for ax, seed in zip(axes[:, 0], seeds):
+        path = [r for r in trace_widest_path(rivers, seed) if r in net.reach_line]
+        offset = 0.0
+        for k, r in enumerate(path):
+            along, value = surface.skipped.get(r, (np.array([]), np.array([])))
+            ax.plot(
+                (offset + along) / 1000,
+                value,
+                ".",
+                ms=1.5,
+                color="tab:orange",
+                alpha=0.6,
+                rasterized=True,
+                label="other pixels (skipped)" if k == 0 else None,
+            )
+            along, value = surface.samples.get(r, (np.array([]), np.array([])))
+            ax.plot(
+                (offset + along) / 1000,
+                value,
+                ".",
+                ms=1.5,
+                color="0.72",
+                rasterized=True,
+                label="FathomDEM water pixels" if k == 0 else None,
+            )
+            ids, ch = net.reach_nodes[r], net.reach_chainage[r]
+            ax.plot(
+                (offset + ch) / 1000,
+                surface.level_raw_m[ids],
+                "x",
+                ms=3,
+                color="k",
+                label="node median" if k == 0 else None,
+            )
+            ax.plot(
+                (offset + ch) / 1000,
+                surface.level_m[ids],
+                "-",
+                lw=1.5,
+                color="tab:blue",
+                label="smoothed surface" if k == 0 else None,
+            )
+            offset += net.reach_length[r]
+            nxt = path[k + 1] if k + 1 < len(path) else None
+            if nxt is not None and (
+                (r, nxt) in surface.structures or (r, nxt) in net.structure_edges
+            ):
+                if (r, nxt) in surface.structures:
+                    t = max(obstr.get(r, 0), obstr.get(nxt, 0))
+                    t = t if t in _STRUCTURE_STYLE and t > 0 else 0
+                else:
+                    t = -1
+                used_styles.add(t)
+                ax.axvline(
+                    offset / 1000,
+                    color=_STRUCTURE_STYLE[t][1],
+                    lw=0.9,
+                    ls="--",
+                    zorder=0,
+                )
+        finite = (
+            np.concatenate([surface.level_m[net.reach_nodes[r]] for r in path])
+            if path
+            else np.array([0.0])
+        )
+        lo, hi = float(np.nanmin(finite)), float(np.nanmax(finite))
+        # Wide enough for the skipped pixels too (an island under the line);
+        # percentiles keep single spikes from flattening the surface.
+        pixels = np.concatenate(
+            [
+                np.asarray(s.get(r, ((), ()))[1], dtype=float)
+                for s in (surface.samples, surface.skipped)
+                for r in path
+            ]
+            or [np.array([])]
+        )
+        pixels = pixels[np.isfinite(pixels)]
+        if pixels.size:
+            lo = min(lo, float(np.percentile(pixels, 1)))
+            hi = max(hi, float(np.percentile(pixels, 99)))
+        pad = max(0.5, 0.1 * (hi - lo))
+        ax.set_ylim(lo - pad, hi + pad)
+        ax.set_xlim(0, max(offset, 1.0) / 1000)
+        ax.set_title(
+            f"seed {seed}: {len(path)} reach(es) along the widest arm", fontsize=9
+        )
+        ax.set_ylabel("level (m, model datum)")
+        ax.grid(alpha=0.3, lw=0.5)
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    handles += [
+        Line2D([0], [0], color=_STRUCTURE_STYLE[t][1], ls="--", lw=0.9)
+        for t in sorted(used_styles)
+    ]
+    labels += [f"structure: {_STRUCTURE_STYLE[t][0]}" for t in sorted(used_styles)]
+    axes[0, 0].legend(
+        handles, labels, loc="upper right", fontsize=7, framealpha=0.9, ncol=2
+    )
+    axes[-1, 0].set_xlabel("distance from seed (km)")
+    fig.suptitle(title, fontsize=10)
+    fig.tight_layout()
+    _save(fig, output_path)
+
+
 def plot_river_depth_width(
     segments: gpd.GeoDataFrame,
     land_mask_path: str,

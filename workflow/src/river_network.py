@@ -814,14 +814,17 @@ def line_window_cells(
     transform,
     shape: tuple[int, int],
     cell_mask: np.ndarray | None = None,
+    along_step_m: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     """Return (rows, cols, along_m) of grid cells in footprint, None if there are none.
 
     Cells are those footprint touches (all_touched=True), or, with cell_mask
     (boolean, `shape`), the set cells within footprint's bounding window.
     rows/cols index the full grid; along_m is the distance of each cell
-    centre's projection from line's start. The window is built from the
-    transformed bounds corners, so a positive-y-scale (SFINCS) transform works.
+    centre's projection from line's start (with ``along_step_m``: the chainage
+    of the nearest point on the line densified at that step, within half a step
+    of the projection and far faster on long lines). The window is built from
+    the transformed bounds corners, so a positive-y-scale (SFINCS) transform works.
     """
     bminx, bminy, bmaxx, bmaxy = footprint.bounds
     corners = [(bminx, bminy), (bmaxx, bminy), (bminx, bmaxy), (bmaxx, bmaxy)]
@@ -850,8 +853,21 @@ def line_window_cells(
 
     rows_idx, cols_idx = np.where(inside)
     xs, ys = rasterio.transform.xy(win_transform, rows_idx, cols_idx)
-    pts = shapely.points(np.asarray(xs), np.asarray(ys))
-    along = shapely.line_locate_point(line, pts)
+    if along_step_m:
+        from scipy.spatial import cKDTree
+
+        chain = np.linspace(
+            0.0, line.length, max(2, int(np.ceil(line.length / along_step_m)) + 1)
+        )
+        dense = shapely.get_coordinates(shapely.line_interpolate_point(line, chain))
+        _, nearest = cKDTree(dense).query(
+            np.column_stack([np.asarray(xs), np.asarray(ys)])
+        )
+        along = chain[nearest]
+    else:
+        along = shapely.line_locate_point(
+            line, shapely.points(np.asarray(xs), np.asarray(ys))
+        )
     return rows_idx + row_off, cols_idx + col_off, along
 
 

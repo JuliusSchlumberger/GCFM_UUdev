@@ -42,7 +42,10 @@ the sea mask (land use 200).
 **05c `get_roughness`.** Writes Manning's n on the elevation grid subdivided to
 about the land-use pixel size, area-averaged from the land-use source rather
 than taken from the dominant class (`landuse.roughness_aggregation`:
-`area_mean` or `conveyance`, the harmonic mean).
+`area_mean` or `conveyance`, the harmonic mean). Inside the river channel (each
+cleaned reach buffered by `width/2`, `src.river_burn.channel_polygons`) every
+source pixel takes `river_processing.channel_manning_n` before the averaging,
+the n the river bed is fitted with (rule 10), so it runs after rule 08.
 
 **06 `get_river_network` / `plot_river_network`.** Clips SWORD to the domain.
 The clip runs before 02b because the network is the barrier of the open-sea
@@ -50,7 +53,8 @@ fill; its figure needs rule 03 and is a separate rule.
 
 **07a-c `select_surge_stations`, `extract_gtsm_series`, `storm_tide_hydrographs`.**
 Select the COAST-RP stations that force the sea boundary, extract their hourly
-GTSM water level and surge, and derive per-station average tide and per-RP surge
+GTSM water level and surge from the station subset (built once for all basins by
+`tools/subset_gtsm_stations.py` after `select_surge_stations` has run), and derive per-station average tide and per-RP surge
 shapes (enabled by `boundary_forcings.surge.hydrograph.enabled`).
 
 **07 `get_boundary_forcings`.** Writes `surge_forcing.nc` and `river_forcing.nc`:
@@ -62,19 +66,48 @@ river crossing. See [Forcing](#forcing).
 07 crossings, fixes widths and routes bankfull discharge through it; see
 [River network](#river-network).
 
+**08b `channel_landuse`.** Writes `landuse_channels.tif`: land use with every
+non-sea pixel of the river channel (the same polygons) set to water
+(`landuse.water_code`, 80), so built-up or crop pixels under the river count
+neither as exposed nor as dry land. Every rule after 09 reads it; rule 09
+keeps the original, whose islands it must see to skip them.
+
 **08c `build_sfincs_grid`.** Subdivides the grid frame at the basin resolution
 and writes `{basin_id}_sfincs_grid.json`, the one grid every later rule uses; see
 [Grid](#grid).
 
-**09 `enforce_river_monotonicity`.** Conditions the DEM so elevation never rises
-downstream along the cleaned centrelines and across the channel width (Kahn
-topological order; a reach starts at the minimum of its parents' end values).
-Writes the conditioned DEM at native resolution and on the model grid, and
-`river_elevation_max.json`, which caps the active cells at
-`river_elevation_max_m + sfincs.grid.active_mask.elevation_buffer_m`.
+**09 `enforce_river_monotonicity`.** Builds the river water surface from
+FathomDEM and conditions the DEM to it (`src.water_surface`, settings under
+`river_processing.water_surface`). FathomDEM's channels carry a flattened water
+surface: flat per water body, dropping in steps, with stray peaks (bridges,
+bars, bank pixels) and dips. On the node network (see *Nodes* under method
+`gvf`): the median of the water pixels (land use = `landuse.water_code`, 80)
+along the centreline within `median_half_window_m` (1000) of each node, the
+window running on into the neighbouring reaches; islands, bars and banks the
+centreline crosses are skipped, so their nodes take the level of the water
+around them (gaps are filled from neighbouring nodes) (so a short lock or bridge
+reach is outvoted by the river around it); structures detected where the reach
+level drops (see *Structures*) but, with `split_at_structures: false`
+(default), smoothed across: weirs and locks open in floods, and a mean-flow
+level drop kept as a step would become a step in the flood bed; a downstream
+rise is cut (`cut_rising_edges`); made non-increasing
+downstream by a length-weighted isotonic regression on the whole node graph
+(Hildreth's dual coordinate ascent, in node-disjoint edge batches, so loops
+and junctions are solved together); smoothed over `smoothing_m` (5000), never
+across a cut, ends mirrored so a slope runs through; non-increasing
+again. Nodes of a network part without any water pixel take `calm_sea_level_m`. Every land pixel
+of each channel buffer (`width/2`) is set to that surface (lower wins where
+buffers overlap); sea pixels keep their GEBCO bed. Writes the surface
+(`river_water_surface.gpkg`, layers `nodes` and `structures`: the GVF target),
+the conditioned DEM at native resolution and on the model grid, and
+`river_elevation_max.json` (highest surface level), which caps the active
+cells at `river_elevation_max_m + sfincs.grid.active_mask.elevation_buffer_m`. The figure `visuals/09_water_surface.png` shows, per seed along
+its widest arm, the FathomDEM water pixels, node medians, smoothed surface and
+structure junctions by SWORD obstruction type.
 
-**09b `grid_align_landuse`.** Resamples land use onto the model grid once (mode)
-and area-averages roughness onto it from the native source. These are the only
+**09b `grid_align_landuse`.** Resamples `landuse_channels.tif` onto the model grid
+once (mode) and area-averages roughness onto it from the native source, with the
+channel at `channel_manning_n` as in rule 05c. These are the only
 grid-level land-use and roughness fields downstream.
 
 **10 `modelled_depth_estimation`.** Sets river depth, burns the channel and
@@ -104,6 +137,13 @@ times).
 water-level and discharge forcing, and hand-writes `sfincs.inp` with relative
 references to the skeleton files (HydroMT's config writer makes references
 outside the model root absolute).
+
+**13c `land_bed_level`.** Once per basin: the skeleton's subgrid bed level on
+the grid flood depths are computed on, masked to NaN on open sea (the corrected
+`zsini_sea_cells_on_grid.tif`). Spin-up, sanity checks, event runs, flood
+metrics and attribution read it, so its non-null pixels are the land domain of
+every flood statistic; `adapt_apply_pre` writes the same file for each adapted
+skeleton.
 
 **14 `run_spinup`, 15 `sanity_checks`.** One spin-up per basin; see
 [Spin-up](#spin-up). Rule 15 reports the share of land pixels wetted during
@@ -214,11 +254,14 @@ opened read-only (`"r"`) and redirected to a new root with
 
 ## River network
 
-The production network is the manually corrected SWORD v17c export
-(`river_network`, `SWORD_global_v17c_unpublished_modified.gpkg`: `width`,
-`max_width` and `main_side` adjusted for selected bifurcating tributaries). The
-unmodified file (`river_network_original`) is read only by rule 11's
-bifurcation comparison. Reach ids are normalised with `str(int(float(x)))`
+The network is SWORD v17c (`river_network`: one GeoPackage per region, layer
+`reaches`), read by `src.sword.read_sword_reaches`, which maps the published
+topology (`rch_id_dn_1..4`, `rch_id_up_1..4`) to the `rch_id_dn`/`rch_id_up`
+list strings used downstream. Rule 06 then overwrites `width` on the reaches in
+`config/sword_width_corrections.csv` (from satellite-image inspection; the rule
+stops if a reach's SWORD width no longer matches the expected value) and marks
+them `width_source = manual`. Rule 11's bifurcation comparison runs the network
+without and with these widths. Reach ids are normalised with `str(int(float(x)))`
 (`src.river_network.normalize_reach_id`) before any dict or set operation;
 `rch_id_dn` is a list string split on commas and whitespace.
 
@@ -237,53 +280,41 @@ arm is a canal.
 
 ## River depth and crest calibration
 
-Rule 10 is the only source of river depth and weir crests. It builds one
-disposable SFINCS model (production grid and subgrid set-up, production weir
-geometry) and runs it in rounds:
+Rule 10 is the only source of river depth and weir crests. Round 0 sets the
+river bed by GVF (no SFINCS run); one disposable SFINCS model (production grid
+and subgrid set-up, production weir geometry) then runs twice:
 
 | round | weir | channel | sea boundary | purpose |
 |---|---|---|---|---|
-| 0 (method `modelled`) | every edge at `weir_crest_m` (1000 m) | un-excavated | `calm_sea_level_m` | water level for the excavation depth; continued from restart files in `chunk_days` steps until steady (median and 95th-percentile 3-h change below 0.01 and 0.05 m) or `max_days` (5) |
-| 1 | 1000 m | excavated | storm tide at the FLOPROS coastal RP | crest per weir edge |
-| 2 | production crests | excavated | as round 1 | verification: reports overtopped edges, changes nothing |
+| 0 | -- | GVF bed | -- | river bed (no SFINCS run) |
+| 1 | every edge at `weir_crest_m` (1000 m) | burned GVF bed | storm tide at the FLOPROS coastal RP | crest per weir edge |
+| 2 | production crests | as round 1 | as round 1 | verification: reports overtopped edges, changes nothing |
 
-River forcing in every round is a steady discharge at the FLOPROS riverine
+River forcing in both SFINCS rounds is a steady discharge at the FLOPROS riverine
 return period (`river_protection_rp_yr`, log-RP interpolated from the discharge
 table; bankfull when absent), ramped linearly from each crossing's bankfull over
 `discharge_ramp_hr` to avoid a startup shock in a near-dry channel.
 
-**Depth, method `modelled`.** Per centreline cell, with the round-0 level the
-mean of the last two hourly outputs (`round0_level: end_of_run`) and the maximum
-across the channel cross-section:
-`river_depth_m = excavation_fraction × max(level − DEM, 0)` (`excavation_fraction`
-0.8). The last cell of a mouth reach keeps the natural bathymetry (depth 0) and
-upstream beds are floored to it; sea cells and cells at the GEBCO depth floor are
-not excavated.
-
-**Depth, method `gvf`.** River bed from a steady gradually-varied-flow solution
-fitted to SWORD water-surface elevations at the mean discharge (Neal et al.,
+**Depth (GVF).** River bed from a steady gradually-varied-flow solution
+fitted to rule 09's water surface at the mean discharge (Neal et al.,
 2021, WRR 57, e2020WR028301; `src/gvf*.py`, settings under
-`river_depth_modelling.gvf`). Round 0 is not run; rounds 1-2 still set the
-crests. Only this method writes a channel roughness
-(`river_processing.channel_manning_n`, 0.03); with `modelled` the channel takes
-the land-use roughness.
+`river_depth_modelling.gvf`). The channel the bed is burned into carries the
+solver's roughness (`river_processing.channel_manning_n`, 0.03) in
+`roughness.tif` and `roughness_on_grid.tif` (rules 05c and 09b), so the subgrid
+tables of rules 10 and 13 and the main grid see the n the bed was fitted for.
 
 - *Discharge.* GloFAS `mean_discharge_m3s` at the seed crossings, accumulated
   through the network like the calibration discharge (summed at confluences,
-  width split at bifurcations, canal arms excluded). SWORD v17c levels are
-  long-term means of SWOT/altimetry observations, so they pair with the mean
-  discharge.
-- *Nodes* (`src.gvf_target`). Every `node_spacing_m` (500) along each reach,
+  width split at bifurcations, canal arms excluded), paired with the FathomDEM
+  surface taken as the mean water level.
+- *Nodes* (`src.gvf_target`). Every `water_surface.node_spacing_m` (500) along each reach,
   ends included. Reach lines are reversed where they run upstream
   (`orient_downstream`). Reach ends meeting at a junction share one node; ends
   either side of a structure stay separate, so the level can drop across it.
-- *Target level.* SWORD `wse` (EGM2008, 0.1 m steps) plus N_EGM2008 −
-  N_GOCO06s at the reach, placed at the reach midpoint and interpolated along
-  the network to the nodes; smoothed over `target_smoothing_m` (5000), never
-  across a structure; made non-increasing downstream by a length-weighted
-  isotonic regression on the whole node graph (Hildreth's dual coordinate
-  ascent, so loops and junctions are solved together), then a final clip.
-- *Structures*, at junctions only: the level drops by more than
+- *Target level.* Rule 09's water surface, interpolated by chainage onto the
+  same nodes (same oriented lines, spacing and structure edges).
+- *Structures* (rule 09; the surface and node network are split there only with
+  `split_at_structures`), at junctions only: the reach level drops by more than
   `step_threshold_m` (0.5), or either reach is a SWORD obstruction
   (`obstr_type` 1-4, `use_sword_obstructions`) with a drop of at least
   `structure_min_drop_m` (0.2), or the upstream reach is listed in
@@ -293,7 +324,11 @@ the land-use roughness.
   mostly sea class (fraction > `sea_class_fraction`, 0.5) or with the DEM at the
   GEBCO floor; bed from the DEM, level from the target. `fixed_bed`: other
   mostly-sea nodes; bed from the DEM, forward solve only. `invert`: bed
-  estimated.
+  estimated. In the channel rule 10 burns, every `water_body` and `fixed_bed`
+  node then takes the lower of its DEM bed and the bed of the nearest estimated
+  node upstream (deepest one at a confluence; `src.gvf.carry_bed_to_sea`), so
+  GEBCO's coarse coastal bathymetry leaves no sill where the river enters the
+  sea; the solve itself is unchanged.
 - *Forward model* (`src.gvf_solver`), rectangular channel of width w,
   discharge Q, Manning n:
   `dh/dx = (S0 − Sf) / (1 − Fr²)`, `Sf = n² Q² / (A² R^(4/3))`, `A = w h`,

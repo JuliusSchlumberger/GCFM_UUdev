@@ -13,6 +13,7 @@ rule run_event:
         land_mask_on_grid    = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
         # Corrected sea/land classification; weir-protected cells are land.
         sea_mask             = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
+        land_bed_level       = results_path("{basin_id}/sfincs_skeleton/land_bed_level.nc"),
         domain_gpkg          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
     output:
@@ -22,11 +23,8 @@ rule run_event:
         flood_timeseries_csv       = results_path("{basin_id}/runs/{scenario}/visuals/flood_timeseries.csv"),
     params:
         sfincs_root                = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),
-        # The subgrid reference raster lives in the skeleton; sfincs_root only references it.
-        skeleton_root              = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         **run_event_params(),
-    # Whole --cores budget, as rule run_spinup.
-    threads: workflow.cores
+    threads: rule_threads("run_event")
     log:
         "logs/{basin_id}/runs/{scenario}/16_run_event.log"
     script:

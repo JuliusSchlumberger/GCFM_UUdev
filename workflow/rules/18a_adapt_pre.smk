@@ -11,9 +11,9 @@ rule adapt_apply_pre:
     input:
         skeleton_inp       = results_path("{basin_id}/sfincs_skeleton/sfincs.inp"),
         baseline_flood_map = results_path("{basin_id}/runs/{scenario}/visuals/max_flood_depth.tif"),
-        landuse            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
+        landuse            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_channels.tif"),
         roughness_native   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"),
-        lu_roughness_lookup = catalogue_path("lu_to_roughness_lookup"),
+        lu_roughness_lookup = raw_input("lu_to_roughness_lookup"),
         sea_mask           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
         # water_retention sizing reference from rule attribution_mask (18c);
         # only required by strategies that use water_retention.
@@ -32,15 +32,18 @@ rule adapt_apply_pre:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sfincs.inp"),
         retreat_landuse = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/retreat_landuse.tif"),
         sea_mask   = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sea_mask.tif"),
+        # As rule land_bed_level, for the adapted skeleton and sea mask.
+        land_bed_level = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/land_bed_level.nc"),
         rstart     = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/" + RST_FNAME),
     params:
         strategy_def       = basin_strategy_def,
         measures_def       = MEASURES_DEFS,
         baseline_sfincs_root = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),
-        adaptation_root    = ADAPT_CATALOGUE_ROOT,
+        adaptation_root    = lambda wildcards: adaptation_data_root(),
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         adapted_root       = lambda wildcards: results_path(
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
+    threads: rule_threads("adapt_apply_pre")
     log: "logs/{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/18a_adapt_pre.log"
     script: "../scripts/18a_adapt_pre.py"
 
@@ -66,6 +69,7 @@ rule adapt_build_forcing_pre:
         # Holds the strategy-local restart written by adapt_apply_pre.
         spin_up_root  = lambda wildcards: results_path(
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
+    threads: rule_threads("adapt_build_forcing_pre")
     log: "logs/{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/13_build_sfincs.log"
     script: "../scripts/13_build_sfincs.py"
 
@@ -78,6 +82,7 @@ rule adapt_run_event_pre:
         # Plot background.
         land_mask_on_grid   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
         sea_mask            = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sea_mask.tif"),
+        land_bed_level      = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/land_bed_level.nc"),
         domain_gpkg         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
     output:
@@ -88,11 +93,8 @@ rule adapt_run_event_pre:
     params:
         sfincs_root   = lambda wildcards: results_path(
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs"),
-        # Adapted skeleton: subgrid dep/roughness differ for `retreat`.
-        skeleton_root = lambda wildcards: results_path(
-            f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
         **run_event_params(),
-    threads: workflow.cores
+    threads: rule_threads("adapt_run_event_pre")
     log: "logs/{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/16_run_event.log"
     script: "../scripts/16_run_event.py"
 
@@ -101,7 +103,7 @@ rule adapt_flood_metrics_pre:
     input:
         sfincs_map_nc = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),
         landuse       = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/retreat_landuse.tif"),
-        sea_mask      = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sea_mask.tif"),
+        land_bed_level = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/land_bed_level.nc"),
         delta_polygon = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
     output:
         flood_map_tif = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/max_flood_depth.tif"),
@@ -109,11 +111,10 @@ rule adapt_flood_metrics_pre:
     params:
         sfincs_root   = lambda wildcards: results_path(
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs"),
-        skeleton_root = lambda wildcards: results_path(
-            f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
         hmin = config["metrics"]["hmin"], urban_code = config["metrics"]["urban_landuse_code"],
         # Lets 17_flood_metrics.py exclude a water_retention zone from the metrics.
         strategy_def    = basin_strategy_def,
-        adaptation_root = ADAPT_CATALOGUE_ROOT,
+        adaptation_root = lambda wildcards: adaptation_data_root(),
+    threads: rule_threads("adapt_flood_metrics_pre")
     log: "logs/{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/17_flood_metrics.log"
     script: "../scripts/17_flood_metrics.py"

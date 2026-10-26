@@ -12,7 +12,7 @@ rule attribution_mask:
         # Spin-up (mean river discharge, calm sea) has no max_flood_depth.tif; the script
         # derives one from sfincs_map.nc as rule 17 does.
         spinup_map_nc = results_path("{basin_id}/spin_up/sfincs_map.nc"),
-        sea_mask      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
+        land_bed_level = results_path("{basin_id}/sfincs_skeleton/land_bed_level.nc"),
         skeleton_inp  = results_path("{basin_id}/sfincs_skeleton/sfincs.inp"),  # mod_ref, for the diagnostic plot's own basemap
         # Plot background.
         land_mask_on_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
@@ -28,5 +28,6 @@ rule attribution_mask:
         skeleton_root   = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         spin_up_root    = lambda wildcards: results_path(f"{wildcards.basin_id}/spin_up"),
         hmin = config["metrics"]["hmin"],
+    threads: rule_threads("attribution_mask")
     log: "logs/{basin_id}/runs/{scenario}/18c_attribution_mask.log"
     script: "../scripts/18c_attribution_mask.py"

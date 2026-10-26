@@ -25,10 +25,9 @@ OBTAIN_TOOLS = {
     "gtsm_total_water_level": "tools/download_cds_waterlevel.py",
     "land_use_esa_worldcover": "tools/build_esa_worldcover_vrt.py",
     "river_discharge": "tools/download_glofas.py",
-    "river_network": "tools/prepare_modified_sword_dataset.py",
 }
 TOOL_PATTERN = re.compile(r"tools/[A-Za-z0-9_]+\.py")
-FILE_PATTERN = re.compile(r"^[^\s{}]+\.[A-Za-z0-9]+$")
+FILE_PATTERN = re.compile(r"^(?:[^\s{}]|\{basin_id\})+\.[A-Za-z0-9]+$")
 # `auto/<name>` geometries are built per basin by the workflow; the rest are drawn by hand.
 AUTO_PREFIX = "auto/"
 AUTO_BUILT = (
@@ -60,7 +59,8 @@ GEOMETRY_HEADER = """
 ## Adaptation geometries
 
 Generated from `config/adaptation_strategies.yml`. Measure files needed by the
-`adapt` target, relative to `<raw_data_root>`. Only the strategies selected with
+`adapt` target, relative to `<adaptation_data_root>` (site setting
+`adaptation_data_root`). Only the strategies selected with
 `target_strategies` need their files. `auto/<name>` entries are not raw data:
 rule `build_adaptation_lines` derives them from the basin's SFINCS skeleton when
 an `adapt` job needs them; the others are drawn per basin.

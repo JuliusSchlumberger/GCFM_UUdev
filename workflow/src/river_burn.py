@@ -342,7 +342,16 @@ def constrain_to_coarse_channel_mask(
     return np.where(mask_on_native, burned_arr, np.nan)
 
 
-def _channel_buffer_polygons(rivers: gpd.GeoDataFrame, width_column: str) -> list:
+def channel_polygons(rivers: gpd.GeoDataFrame, width_column: str = "width") -> list:
+    """Return each reach's channel: its centreline buffered by width / 2, in the rivers' CRS.
+
+    The one definition of the channel: rule 10 burns the bed into it, and the
+    channel land use and Manning n (rules 05c, 08b, 09b) are set inside it.
+    Reaches without a positive width are skipped. Raises ValueError for a
+    geographic CRS, where width / 2 would be read as degrees.
+    """
+    if rivers.crs is not None and rivers.crs.is_geographic:
+        raise ValueError(f"channel_polygons needs a metric CRS, got {rivers.crs}")
     polys = []
     for row in rivers.itertuples(index=False):
         width_m = getattr(row, width_column, np.nan)
@@ -371,7 +380,7 @@ def build_channel_mask_regular(
     nearest-neighbour resampling of a fine mask, which drops narrow reaches
     and pinches the channel shut.
     """
-    polys = _channel_buffer_polygons(rivers, width_column)
+    polys = channel_polygons(rivers, width_column)
     if not polys:
         return np.zeros(out_shape, dtype=bool)
     return rio_rasterize(

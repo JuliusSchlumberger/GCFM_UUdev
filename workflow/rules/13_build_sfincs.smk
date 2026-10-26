@@ -21,6 +21,7 @@ rule build_sfincs:
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         sfincs_root        = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),
         spin_up_root       = lambda wildcards: results_path(f"{wildcards.basin_id}/spin_up"),
+    threads: rule_threads("build_sfincs")
     log:
         "logs/{basin_id}/runs/{scenario}/13_build_sfincs.log"
     script:

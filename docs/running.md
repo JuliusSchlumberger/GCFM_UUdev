@@ -25,10 +25,16 @@ snakemake build      --cores 4 --config target_basins="[2433835]" target_scenari
 ```
 
 Preview any run with `-n` (dry run). For basin `2433835` and scenario
-`default`, on an empty `<results_dir>`, `preprocess` has 22 jobs, `build` 25 and
-`all` 28. The rules that run SFINCS take the whole `--cores` budget as solver
-threads, so more cores speed up a single basin; independent basins also run in
-parallel.
+`default`, on an empty `<results_dir>`, `preprocess` has 23 jobs, `build` 27 and
+`all` 30. Threads per rule are set under `resources.threads` in
+`config/config.yml`: the SFINCS rules take the whole `--cores` budget as solver
+threads, so a SFINCS run occupies the machine while it runs.
+
+Rules that read large raw inputs (`get_elevation`, `get_river_network`,
+`get_boundary_forcings`) claim one unit of the `raw_io`
+resource. The workflow profile `workflow/profiles/default/config.yaml` limits it
+to 1, so these reads do not compete for one disk; on a parallel file system
+raise it, for example `--resources raw_io=4`.
 
 Useful Snakemake flags: `--forceall` (rerun every job of the target),
 `--forcerun <rule>` (rerun a rule and everything downstream), `--until <rule>`,
@@ -83,8 +89,10 @@ spin-up restart and the spin-up map.
   off, the workflow stops at DAG construction) and the `build` outputs,
   including the spin-up restart and spin-up map;
 - for strategies whose measures have `locations:`, the geometry files under
-  `<raw_data_root>` listed in [data.md](data.md#adaptation-geometries) (for
-  example `advance` needs `adaptation_ebro/offshore_island.geojson`);
+  `<adaptation_data_root>` listed in [data.md](data.md#adaptation-geometries),
+  drawn per basin: `{basin_id}` in a path is the basin id (for example `advance`
+  on basin 2433835 needs `2433835/offshore_island.geojson`), and a
+  missing file stops the workflow at DAG construction;
   `accommodate` and `retreat` need none;
 - nothing extra for `locations: auto/<name>` (`grey_protect_open`,
   `protect_closed`): rule `build_adaptation_lines` (13b) derives these lines from
@@ -103,9 +111,9 @@ snakemake adapt --cores 4 --config target_basins="[2433835]" target_scenarios="[
 ```
 
 `advance_1`, the smallest adaptation case, reads
-`adaptation_ebro/offshore_island.geojson`, and `compound_100`
+`<adaptation_data_root>/2433835/offshore_island.geojson`, and `compound_100`
 has the siblings `river_only_100` and `coast_only_100`. On an empty `<results_dir>`
-the dry run (`-n`) of this command lists 37 jobs, including `preprocess` and the
+the dry run (`-n`) of this command lists 39 jobs, including `preprocess` and the
 `build` of all three scenarios.
 
 | method | rule | what it does |

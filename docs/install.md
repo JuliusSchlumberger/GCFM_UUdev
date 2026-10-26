@@ -58,9 +58,9 @@ section of both files; no source clone is needed. The same section installs
 
 `workflow/src/hydromt_sfincs_patch.py` fixes a memory bug in that release at
 run time: `SfincsSubgridTable.write_netcdf` copies float32 subgrid arrays into
-float64 buffers, which runs out of memory on about 1e6 active cells. The scripts
-that write a SFINCS model (rules 10, 13 and 18a) call
-`use_float32_subgrid_write()` first. The fix applies only to `2.0.0rc2`; any
+float64 buffers, which runs out of memory on about 1e6 active cells; the patched
+writer also zlib-compresses the file. The scripts that write a SFINCS model
+(rules 10, 13 and 18a) call `patch_subgrid_write()` first. The fix applies only to `2.0.0rc2`; any
 other installed version logs a warning and runs unpatched.
 
 ## SFINCS executable
@@ -93,8 +93,9 @@ cp config/site.example.yml config/site.yml
 | key | environment variable | points to | needed by |
 |---|---|---|---|
 | `results_dir` | `GCFM_RESULTS_DIR` | `<results_dir>`, where outputs are written | every run |
-| `raw_data_root` | `GCFM_RAW_DATA_ROOT` | `<raw_data_root>`, root of every `file_path` in `config/data_catalogue.yml` and every measure file in `config/adaptation_strategies.yml` | every run |
+| `raw_data_root` | `GCFM_RAW_DATA_ROOT` | `<raw_data_root>`, root of every `file_path` in `config/data_catalogue.yml` | every run |
 | `sfincs_exe` | `GCFM_SFINCS_EXE` | `<sfincs_exe>`, the SFINCS binary | every run, dry runs included (any path for `-n`) |
+| `adaptation_data_root` | `GCFM_ADAPTATION_DATA_ROOT` | `<adaptation_data_root>`, root of the per-basin measure files in `config/adaptation_strategies.yml` | the `adapt` target |
 
 For example:
 
@@ -102,6 +103,7 @@ For example:
 results_dir: /data/gcfm/results
 raw_data_root: /data/gcfm/raw_data
 sfincs_exe: /opt/sfincs/bin/sfincs
+adaptation_data_root: /data/gcfm/adaptation_inputs
 ```
 
 Quote Windows paths with single quotes or use forward slashes. All code reads
@@ -124,7 +126,7 @@ earlier setup before the first run, and unset any you do not intend:
 
 ```bash
 env | grep GCFM_
-unset GCFM_RESULTS_DIR GCFM_RAW_DATA_ROOT GCFM_SFINCS_EXE
+unset GCFM_RESULTS_DIR GCFM_RAW_DATA_ROOT GCFM_SFINCS_EXE GCFM_ADAPTATION_DATA_ROOT
 ```
 
 ```powershell

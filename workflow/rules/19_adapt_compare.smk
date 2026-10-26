@@ -21,5 +21,6 @@ rule adapt_compare:
         ),
     output:
         comparison_csv = results_path("{basin_id}/runs/metrics_comparison.csv"),
+    threads: rule_threads("adapt_compare")
     log: "logs/{basin_id}/runs/19_adapt_compare.log"
     script: "../scripts/19_adapt_compare.py"

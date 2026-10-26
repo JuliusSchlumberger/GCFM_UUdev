@@ -1,14 +1,11 @@
-"""Plot discharge partitioning at each bifurcation for original vs modified SWORD.
+"""Plot discharge partitioning at each bifurcation without vs with the manual SWORD widths.
 
 Run by rule test_bifurcation_calibration_options (diagnostic only). Rebuilds
-the cleaned network from raw SWORD for both sources (data catalogue
-"river_network_original" and "river_network", the modified file with manually
-corrected reach attributes) using the rule 06 + 08 cleaning functions and the
-production width-based bifurcation split.
-
-Assumes both SWORD files share geometry and rch_id_up/rch_id_dn topology (only
-attribute values differ), so river_forcing.nc seed crossings, adjacency and
-bifurcations are taken once and reused for both.
+the cleaned network from SWORD v17c twice, without and with
+config/sword_width_corrections.csv, using the rule 06 + 08 cleaning functions
+and the production width-based bifurcation split. Only widths differ, so
+river_forcing.nc seed crossings, adjacency and bifurcations are taken once and
+reused for both.
 
 Two panels where canonical 'width' differs in the neighbourhood, else one.
 Line width ∝ accumulated discharge (shared scale). Labels:
@@ -28,7 +25,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from shapely.geometry import box as shapely_box
 
 from src.domain import load_domain
 from src.geometry import pick_utm_crs
@@ -36,6 +32,7 @@ from src.log import setup_logging
 from src.plots import save_figure
 from src.profiling import ScriptProfiler
 from src.river_forcing import load_forcing_crossings, snap_crossings_to_reaches
+from src.sword import apply_width_corrections, read_sword_reaches, read_width_corrections
 from src.river_network import (
     _as_linestring,
     accumulate_discharge,
@@ -60,34 +57,25 @@ DISCHARGE_VARIABLE = snakemake.params.discharge_variable
 N_STEPS = 3
 WIDTH_DIFF_TOLERANCE_M = 0.01  # below this |width_orig - width_mod| is floating-point noise
 
-ORIGINAL_SWORD_PATH = snakemake.input.river_network_original
-MODIFIED_SWORD_PATH = snakemake.input.river_network
+SWORD_REGIONS = list(snakemake.input.sword_regions)
+WIDTH_CORRECTIONS = read_width_corrections(snakemake.input.width_corrections)
 
 
 def clip_and_preclean(
-    global_path: str,
+    corrected: bool,
     wgs84_bounds: tuple[float, float, float, float],
     delta_polygon: gpd.GeoDataFrame,
     seed_q: dict[str, float],
 ) -> gpd.GeoDataFrame:
-    """Clip a raw river network to the domain and apply the width-independent cleaning.
+    """Clip SWORD to the domain and apply the width-independent cleaning.
 
-    Mirrors rule 06 plus the non-width part of rule 08; width normalisation,
-    mouth-width monotonicity and discharge accumulation are left to the caller.
+    Mirrors rule 06 (manual widths only if ``corrected``) plus the non-width
+    part of rule 08; width normalisation, mouth-width monotonicity and
+    discharge accumulation are left to the caller.
     """
-    clip_gdf = gpd.GeoDataFrame(geometry=[shapely_box(*wgs84_bounds)], crs="EPSG:4326")
-    probe_crs = gpd.read_file(global_path, rows=0).crs
-    bbox = (
-        clip_gdf.to_crs(probe_crs).total_bounds
-        if probe_crs is not None and probe_crs != clip_gdf.crs
-        else wgs84_bounds
-    )
-    river_gdf = gpd.read_file(global_path, bbox=tuple(bbox), engine="pyogrio")
-    clip_src = (
-        clip_gdf if river_gdf.crs is None or river_gdf.crs == clip_gdf.crs
-        else clip_gdf.to_crs(river_gdf.crs)
-    )
-    rivers = gpd.clip(river_gdf, clip_src).copy()
+    rivers = read_sword_reaches(SWORD_REGIONS, wgs84_bounds)
+    if corrected:
+        rivers = apply_width_corrections(rivers, WIDTH_CORRECTIONS)
     rivers = fix_tjunction_tails(rivers)
 
     reachable = collect_downstream_main_paths(rivers, set(seed_q.keys()))
@@ -188,13 +176,13 @@ if not seed_q:
 else:
     log.info(f"Basin {basin_id}: {len(seed_q)} seed reach(es), reused across both SWORD sources")
 
-    log.info(f"Basin {basin_id}: original SWORD")
-    rivers_orig = clip_and_preclean(ORIGINAL_SWORD_PATH, wgs84_bounds, delta_polygon, seed_q)
+    log.info(f"Basin {basin_id}: SWORD without manual widths")
+    rivers_orig = clip_and_preclean(False, wgs84_bounds, delta_polygon, seed_q)
     rivers_orig = apply_base_width_rule(rivers_orig)
     rivers_orig = compute_discharge(rivers_orig, seed_q)
 
-    log.info(f"Basin {basin_id}: modified SWORD")
-    rivers_mod = clip_and_preclean(MODIFIED_SWORD_PATH, wgs84_bounds, delta_polygon, seed_q)
+    log.info(f"Basin {basin_id}: SWORD with manual widths")
+    rivers_mod = clip_and_preclean(True, wgs84_bounds, delta_polygon, seed_q)
     rivers_mod = apply_base_width_rule(rivers_mod)
     rivers_mod = compute_discharge(rivers_mod, seed_q)
 

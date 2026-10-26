@@ -19,16 +19,17 @@ detail); only the landuse/roughness/sea classification is grid-aligned.
 
 from pathlib import Path
 
+import geopandas as gpd
 import numpy as np
 import rasterio
 from rasterio.warp import Resampling, reproject
-
 from src.domain import load_domain
 from src.grid import load_grid_def
 from src.landuse import write_roughness_raster
 from src.log import setup_logging
 from src.plots import plot_landuse, plot_roughness
 from src.raster import vectorize_land_mask_on_grid
+from src.river_burn import channel_polygons
 
 log = setup_logging(snakemake.log[0])
 
@@ -97,6 +98,11 @@ unmapped, _info = write_roughness_raster(
     # The model's own "manning" field: stays on the model grid, unlike rule
     # 05c's, which is subdivided for the subgrid.
     refine_to_source=False,
+    channel=(
+        channel_polygons(gpd.read_file(snakemake.input.river_network).to_crs(src_crs)),
+        src_crs,
+        float(snakemake.params.channel_manning_n),
+    ),
 )
 if unmapped:
     log.warning(

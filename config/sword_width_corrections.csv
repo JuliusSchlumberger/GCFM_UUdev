@@ -1,0 +1,14 @@
+# Manual SWORD reach widths from satellite-image inspection, applied by rule
+# get_river_network (06) via src.sword.apply_width_corrections. expected_width_m
+# is SWORD's width; a reach whose SWORD width differs from it by more than 1 m
+# stops the rule (wrong reach_id or changed source data).
+reach_id,expected_width_m,width_m,delta,note
+74230100061,1020,270,Mississippi,
+74230100101,432,250,Mississippi,
+74230100091,438,200,Mississippi,
+23261000101,249,200,Rhine-Meuse,Beneden Merwede
+23261001751,367,450,Rhine-Meuse,Nieuwe Merwede
+23261000055,490,150,Rhine-Meuse,Hollandse Ijssel
+23250801081,139,80,Rhine-Meuse,Meuse
+23261001795,189,110,Rhine-Meuse,Afgedamde Maas
+23250800915,271,90,Rhine-Meuse,Donge

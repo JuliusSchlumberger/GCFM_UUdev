@@ -56,5 +56,5 @@ jobs:
       # Every third-party package tests/unit imports at module level, directly
       # or through src; keep in sync (see CLAUDE.md). A pip list is faster
       # than building the conda env from environment.yml.
-      - run: pip install pytest numpy pandas xarray geopandas shapely rasterio pyproj rioxarray scipy matplotlib "pyextremes[lmoments]" pymannkendall netCDF4 pyyaml openpyxl "hydromt-sfincs==2.0.0rc2"
+      - run: pip install pytest numpy pandas xarray geopandas pyogrio shapely rasterio pyproj rioxarray scipy matplotlib "pyextremes[lmoments]" pymannkendall netCDF4 pyyaml openpyxl "hydromt-sfincs==2.0.0rc2"
       - run: pytest

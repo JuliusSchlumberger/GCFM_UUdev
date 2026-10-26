@@ -16,28 +16,17 @@ Node network:
   of a structure (a weir, lock or dam) are kept as separate nodes, so the
   level can drop across it.
 
-Target level (``target_source: sword_wse``):
-
-- SWORD's per-reach ``wse`` (EGM2008, 0.1 m steps) plus the geoid offset
-  N_EGM2008 - N_GOCO06s at the reach, i.e. the model datum (GOCO06s).
-- Placed at each reach's midpoint and interpolated by along-network distance
-  to the nodes (towards the up- and downstream neighbours' midpoints).
-- Smoothed over ``target_smoothing_m`` (removes the 0.1 m quantisation), never
-  across a structure.
-- Made non-increasing downstream (one weighted isotonic regression over the
-  whole node graph, enforce_non_increasing, then a final clip).
+Target level: the smoothed FathomDEM water surface rule 09 writes
+(src.water_surface), interpolated by chainage onto the same node network
+(same oriented lines, node spacing and structure edges).
 
 Structures are only placed at reach junctions: the edge from reach u to its
 downstream reach d is a structure if the level drops by more than
 ``step_threshold_m``, if u or d is a SWORD obstruction reach (``obstr_type``
 1-4) and the level drops by at least ``structure_min_drop_m``, or if u is in
-the manual ``structures`` list.
-
-An edge where the level RISES downstream by more than ``step_threshold_m``
-is inconsistent data (1248635: the IJssel's SWORD level is 1.1 m above the
-Nederrijn reach it branches from). With ``cut_rising_edges`` (default) it is
-cut like a structure, so the rise stays local; otherwise the monotone
-conditioning would lift every upstream node to the higher level.
+the manual ``structures`` list. An edge where the level RISES downstream by
+more than ``step_threshold_m`` is inconsistent data; it can be cut like a
+structure, so the rise stays local.
 """
 
 from __future__ import annotations
@@ -339,30 +328,6 @@ def build_node_network(
     )
 
 
-def reach_target_levels(
-    rivers: gpd.GeoDataFrame,
-    datum_offset_m: np.ndarray | float = 0.0,
-    wse_column: str = "wse",
-    min_valid_m: float = -1000.0,
-) -> dict[str, float]:
-    """Return the per-reach target level in the model datum.
-
-    Args:
-        rivers: Reaches with ``wse_column`` (SWORD: m above EGM2008).
-        datum_offset_m: N_EGM2008 - N_GOCO06s per reach (or one value), added
-            to ``wse`` -- the same correction rule 05a applies to FathomDEM.
-        wse_column: Column with the reach water-surface elevation.
-        min_valid_m: Values below it (SWORD's -9999 fill) count as missing.
-
-    Returns:
-        {reach_id: level (m, GOCO06s)}; missing values are NaN.
-    """
-    wse = pd.to_numeric(rivers[wse_column], errors="coerce").to_numpy(dtype=float)
-    wse = np.where(wse < min_valid_m, np.nan, wse)
-    level = wse + np.broadcast_to(np.asarray(datum_offset_m, dtype=float), wse.shape)
-    return {normalize_reach_id(r): float(v) for r, v in zip(rivers["reach_id"], level)}
-
-
 def detect_structure_edges(
     rivers: gpd.GeoDataFrame,
     downstream: dict[str, list[str]],
@@ -377,7 +342,7 @@ def detect_structure_edges(
     Args:
         rivers: Reaches with 'reach_id' and, optionally, 'obstr_type'.
         downstream: In-network downstream adjacency.
-        reach_level: Per-reach target level (:func:`reach_target_levels`).
+        reach_level: Per-reach level (median of its nodes' levels).
         step_threshold_m: Any drop larger than this is a structure.
         structure_min_drop_m: Smallest drop that counts as a structure at a
             SWORD obstruction reach.
@@ -416,61 +381,6 @@ def detect_structure_edges(
                 elif -drop > step_threshold_m:
                     rising.append((u, d, float(-drop)))
     return edges, rising
-
-
-def interpolate_node_targets(
-    net: GvfNetwork, reach_level: dict[str, float]
-) -> np.ndarray:
-    """Interpolate per-reach levels onto the nodes by along-network distance.
-
-    Each reach's level sits at its midpoint. Towards each end the level runs
-    linearly to the mean level of the neighbours on that side, placed at their
-    mean half-length beyond the end; neighbours across a structure are
-    ignored. A node shared by several reaches gets the mean of their values.
-    Nodes left without a value are filled from their graph neighbours.
-    """
-    up = net.upstream()
-    acc = np.zeros(net.n_nodes)
-    cnt = np.zeros(net.n_nodes)
-    for r in net.reach_ids:
-        length = net.reach_length[r]
-        pts: list[tuple[float, float]] = []
-        ups = [
-            u
-            for u in up[r]
-            if (u, r) not in net.structure_edges
-            and np.isfinite(reach_level.get(u, np.nan))
-        ]
-        if ups:
-            pts.append(
-                (
-                    -np.mean([net.reach_length[u] for u in ups]) / 2,
-                    np.mean([reach_level[u] for u in ups]),
-                )
-            )
-        if np.isfinite(reach_level.get(r, np.nan)):
-            pts.append((length / 2, reach_level[r]))
-        dns = [
-            d
-            for d in net.downstream[r]
-            if (r, d) not in net.structure_edges
-            and np.isfinite(reach_level.get(d, np.nan))
-        ]
-        if dns:
-            pts.append(
-                (
-                    length + np.mean([net.reach_length[d] for d in dns]) / 2,
-                    np.mean([reach_level[d] for d in dns]),
-                )
-            )
-        if not pts:
-            continue
-        px, pv = zip(*sorted(pts))
-        ids = net.reach_nodes[r]
-        np.add.at(acc, ids, np.interp(net.reach_chainage[r], px, pv))
-        np.add.at(cnt, ids, 1.0)
-    target = np.where(cnt > 0, acc / np.maximum(cnt, 1), np.nan)
-    return _fill_from_neighbours(target, net.node_edges())
 
 
 def _neighbours(n_nodes: int, edges: list[tuple[int, int, float]]) -> list[list[int]]:
@@ -513,7 +423,10 @@ def smooth_on_network(
     Repeated neighbour averaging (``x <- x/2 + mean(neighbours)/2``); each pass
     adds a variance of spacing^2 / 2 on a chain, so ``window^2 / (6 spacing^2)``
     passes match the variance of a ``window_m`` running mean. Edges are the
-    node network's, so nothing is smoothed across a structure.
+    node network's, so nothing is smoothed across a structure. A node with a
+    single neighbour (network end, either side of a structure) is mirrored
+    (ghost value 2 v_i - v_j), so it keeps its value and a linear trend runs
+    through to the ends instead of flattening there.
     """
     if window_m <= 0 or len(values) == 0:
         return values.copy()
@@ -521,7 +434,9 @@ def smooth_on_network(
     nb = _neighbours(len(values), edges)
     v = values.astype(float).copy()
     for _ in range(n_pass):
-        mean_nb = np.array([np.mean(v[j]) if j else v[i] for i, j in enumerate(nb)])
+        mean_nb = np.array(
+            [np.mean(v[j]) if len(j) > 1 else v[i] for i, j in enumerate(nb)]
+        )
         v = 0.5 * v + 0.5 * mean_nb
     return v
 
@@ -535,8 +450,22 @@ def node_topological_order(net: GvfNetwork) -> list[int]:
     return order
 
 
+def _edge_colouring(a: np.ndarray, b: np.ndarray, n_nodes: int) -> list[np.ndarray]:
+    """Greedy proper edge colouring: batches of edge indices with no shared node."""
+    used: list[set[int]] = [set() for _ in range(n_nodes)]
+    colour = np.empty(len(a), dtype=int)
+    for k, (ia, ib) in enumerate(zip(a, b)):
+        c = 0
+        while c in used[ia] or c in used[ib]:
+            c += 1
+        colour[k] = c
+        used[ia].add(c)
+        used[ib].add(c)
+    return [np.flatnonzero(colour == c) for c in range(int(colour.max()) + 1)]
+
+
 def enforce_non_increasing(
-    net: GvfNetwork, values: np.ndarray, tol_m: float = 1e-4, max_sweeps: int = 20000
+    net: GvfNetwork, values: np.ndarray, tol_m: float = 1e-3, max_sweeps: int = 20000
 ) -> np.ndarray:
     """Make node values non-increasing downstream with one value per node.
 
@@ -561,18 +490,17 @@ def enforce_non_increasing(
     inv_w = 1.0 / np.maximum(w, 1.0)
     denom = inv_w[a] + inv_w[b]
     lam = np.zeros(len(edges))
+    batches = _edge_colouring(a, b, net.n_nodes)
     for _ in range(max_sweeps):
-        worst = 0.0
-        for k in range(len(edges)):
+        # Edges in one batch share no node, so updating them together equals
+        # updating them one by one.
+        for k in batches:
             ia, ib = a[k], b[k]
-            g = v[ib] - v[ia]  # > 0: violation
-            delta = max(-lam[k], g / denom[k])
-            if delta != 0.0:
-                lam[k] += delta
-                v[ia] += delta * inv_w[ia]
-                v[ib] -= delta * inv_w[ib]
-            worst = max(worst, g)
-        if worst < tol_m:
+            delta = np.maximum(-lam[k], (v[ib] - v[ia]) / denom[k])
+            lam[k] += delta
+            v[ia] += delta * inv_w[ia]
+            v[ib] -= delta * inv_w[ib]
+        if np.max(v[b] - v[a]) < tol_m:
             break
     else:
         log.warning(
@@ -645,97 +573,83 @@ class GvfTargets:
     dem: np.ndarray
     reach_q: dict[str, float]
     reach_width: dict[str, float]
-    reach_level: dict[str, float]
-    rising_edges: list[tuple[str, str, float]]
 
 
 def build_gvf_targets(
     rivers: gpd.GeoDataFrame,
     reach_q: dict[str, float],
-    datum_offset_m: np.ndarray | float,
+    surface_nodes: pd.DataFrame,
+    structure_edges: set[tuple[str, str]],
     sample_sea_fraction,
     sample_dem,
     gebco_floor_m: float,
-    cfg: dict,
+    surface_cfg: dict,
+    gvf_cfg: dict,
 ) -> GvfTargets:
-    """Build the GVF node network and its target profile.
+    """Build the GVF node network and its target from rule 09's water surface.
 
     Args:
-        rivers: Cleaned network in a metric CRS, with 'reach_id', 'rch_id_dn',
-            'width', 'wse' and optionally 'obstr_type'.
-        reach_q: {reach_id: discharge (m3/s)} paired with ``wse``.
-        datum_offset_m: Per-reach (same order as ``rivers``) or scalar
-            N_EGM2008 - N_GOCO06s.
+        rivers: Cleaned network in the surface's metric CRS, with 'reach_id',
+            'rch_id_dn', 'width'.
+        reach_q: {reach_id: discharge (m3/s)} paired with the surface.
+        surface_nodes: src.water_surface.read_water_surface table ('reach_id',
+            'chainage_m', 'level_m', 'level_raw_m').
+        structure_edges: The structure edges rule 09 used.
         sample_sea_fraction: Callable (x, y, width) -> sea-class fraction of
             the cross-section at each node.
-        sample_dem: Callable (x, y) -> merged (unconditioned) DEM at each node,
-            NaN outside it.
+        sample_dem: Callable (x, y) -> conditioned DEM at each node, NaN outside it.
         gebco_floor_m: Lowest level of the clamped GEBCO bathymetry
             (``calm_sea_level_m - terrain.gebco_max_depth_m``).
-        cfg: The ``river_depth_modelling.gvf`` config block.
-
-    Returns:
-        The targets for src.gvf_solver.
+        surface_cfg: ``river_processing.water_surface`` (node spacing, smoothing).
+        gvf_cfg: ``river_processing.river_depth_modelling.gvf``.
     """
     from src.river_network import build_downstream_adjacency
 
-    where = "river_processing.river_depth_modelling.gvf"
     require_keys(
-        cfg,
-        (
-            "step_threshold_m",
-            "structure_min_drop_m",
-            "structures",
-            "use_sword_obstructions",
-            "cut_rising_edges",
-            "node_spacing_m",
-            "target_smoothing_m",
-            "slope_floor",
-            "water_body",
-        ),
-        where,
+        surface_cfg, ("node_spacing_m", "smoothing_m"), "river_processing.water_surface"
     )
-    wb = cfg["water_body"]
+    where = "river_processing.river_depth_modelling.gvf"
+    require_keys(gvf_cfg, ("slope_floor", "water_body"), where)
+    wb = gvf_cfg["water_body"]
     require_keys(wb, ("min_width_m", "sea_class_fraction"), f"{where}.water_body")
 
     downstream = build_downstream_adjacency(rivers)
     rivers, _ = orient_downstream(rivers, downstream)
-    reach_level = reach_target_levels(rivers, datum_offset_m)
-    structures, rising = detect_structure_edges(
-        rivers,
-        downstream,
-        reach_level,
-        step_threshold_m=float(cfg["step_threshold_m"]),
-        structure_min_drop_m=float(cfg["structure_min_drop_m"]),
-        manual=cfg["structures"] or [],
-        use_sword_obstructions=bool(cfg["use_sword_obstructions"]),
-    )
-    for u, d, rise in rising:
-        log.warning(
-            f"GVF target: level rises {rise:.2f} m from reach {u} to {d} (canal or SWORD error?)"
-        )
-    log.info(
-        f"GVF target: {len(structures)} structure junction(s): {sorted(structures)[:20]}"
-    )
-    if rising and bool(cfg["cut_rising_edges"]):
-        structures = structures | {(u, d) for u, d, _ in rising}
-        log.info(f"GVF target: {len(rising)} rising junction(s) cut like structures")
-
-    spacing = float(cfg["node_spacing_m"])
-    net = build_node_network(rivers, downstream, spacing, structures)
+    spacing = float(surface_cfg["node_spacing_m"])
+    net = build_node_network(rivers, downstream, spacing, structure_edges)
     edges = net.node_edges()
 
-    eta_raw = interpolate_node_targets(net, reach_level)
-    eta = smooth_on_network(eta_raw, edges, float(cfg["target_smoothing_m"]), spacing)
-    eta = enforce_non_increasing(net, eta)
+    eta = np.full(net.n_nodes, np.nan)
+    eta_raw = np.full(net.n_nodes, np.nan)
+    acc = np.zeros(net.n_nodes)
+    acc_raw = np.zeros(net.n_nodes)
+    cnt = np.zeros(net.n_nodes)
+    by_reach = {
+        r: g.sort_values("chainage_m") for r, g in surface_nodes.groupby("reach_id")
+    }
+    for r in net.reach_ids:
+        g = by_reach.get(r)
+        if g is None or g.empty:
+            continue
+        ids, ch = net.reach_nodes[r], net.reach_chainage[r]
+        np.add.at(acc, ids, np.interp(ch, g["chainage_m"], g["level_m"]))
+        np.add.at(acc_raw, ids, np.interp(ch, g["chainage_m"], g["level_raw_m"]))
+        np.add.at(cnt, ids, 1.0)
+    have = cnt > 0
+    eta[have] = acc[have] / cnt[have]
+    eta_raw[have] = acc_raw[have] / cnt[have]
+    missing = int((~have).sum())
+    if missing:
+        log.warning(
+            f"GVF target: {missing} node(s) on reaches without a water surface -- filled from neighbours"
+        )
+        eta = _fill_from_neighbours(eta, edges)
+        eta_raw = _fill_from_neighbours(eta_raw, edges)
 
     slope = smooth_on_network(
-        node_slope(net, eta),
-        edges,
-        float(cfg["target_smoothing_m"]),
-        spacing,
+        node_slope(net, eta), edges, float(surface_cfg["smoothing_m"]), spacing
     )
-    s_scale = np.maximum(slope, float(cfg["slope_floor"]))
+    s_scale = np.maximum(slope, float(gvf_cfg["slope_floor"]))
 
     reach_id_norm = [normalize_reach_id(r) for r in rivers["reach_id"]]
     reach_width = dict(
@@ -762,11 +676,10 @@ def build_gvf_targets(
         min_width_m=float(wb["min_width_m"]),
         sea_class_fraction=float(wb["sea_class_fraction"]),
     )
-    counts = pd.Series(node_class).value_counts().to_dict()
     log.info(
-        f"GVF target: {net.n_nodes} nodes on {len(net.reach_ids)} reaches; classes {counts}"
+        f"GVF target: {net.n_nodes} nodes on {len(net.reach_ids)} reaches; "
+        f"classes {pd.Series(node_class).value_counts().to_dict()}"
     )
-
     return GvfTargets(
         net=net,
         eta_target=eta,
@@ -776,6 +689,4 @@ def build_gvf_targets(
         dem=dem,
         reach_q={r: float(reach_q.get(r, 0.0)) for r in net.reach_ids},
         reach_width={r: float(reach_width[r]) for r in net.reach_ids},
-        reach_level=reach_level,
-        rising_edges=rising,
     )

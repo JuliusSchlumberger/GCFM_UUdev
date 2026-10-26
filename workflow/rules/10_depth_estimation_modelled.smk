@@ -1,9 +1,10 @@
-# Rule: SFINCS-based river depth and dike-crest calibration -- the only way
-# river depth and weir crests are set.
+# Rule: river depth from GVF and dike-crest calibration with SFINCS -- the only
+# way river depth and weir crests are set.
 #
-# The conditioned elevation (rule 09) is the un-excavated calibration bed: the
-# native version for the subgrid, the SFINCS-grid version as the
-# sf.elevation.create() base layer, identical to rule 13's.
+# The conditioned elevation (rule 09, channels at the smoothed water surface)
+# is the base the GVF bed is burned into: the native version for the subgrid,
+# the SFINCS-grid version as the sf.elevation.create() base layer, identical
+# to rule 13's.
 
 rule modelled_depth_estimation:
     input:
@@ -32,13 +33,10 @@ rule modelled_depth_estimation:
         # outline (flow leaves without reaching a coastal mouth): free outflow
         # boundary, as in rule 13. Always present, possibly empty.
         delta_outflow_points     = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_outflow_points.gpkg"),
-        # method gvf only: unconditioned DEM (bed floor of the burn, beds of
-        # water bodies) and the geoid models that put SWORD's EGM2008 wse in
-        # the model datum (GOCO06s), as rule 05a does for FathomDEM.
-        elevation_merged         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"),
-        landuse                  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
-        goco06s_gfc              = catalogue_path("goco06s"),
-        egm2008_gfc              = catalogue_path("egm2008_geoid"),
+        # Rule 09's smoothed water surface (the GVF target)
+        # and the land use for the sea share of each GVF cross-section.
+        water_surface            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_water_surface.gpkg"),
+        landuse                  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_channels.tif"),
     output:
         depth_estimated_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
         # The burned channel from round 0's per-cell excavation (as simulated
@@ -47,10 +45,6 @@ rule modelled_depth_estimation:
         # - river_burned_dem_sfincs_grid: per-cell mean of those subgrid pixels.
         river_burned_subgrid          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_subgrid.tif"),
         river_burned_dem_sfincs_grid  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"),
-        # Channel Manning n on the subgrid pixel grid (method gvf: n under the
-        # burned channel, nodata elsewhere; method modelled: all nodata).
-        # Listed first in every subgrid roughness_list, so it wins where valid.
-        river_roughness_subgrid       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_roughness_subgrid.tif"),
         # Traced weir; each edge's crest from round 1's water level on its
         # water side (verified in round 2), not derivable from per-reach values.
         coastal_protection_weir       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"),
@@ -83,17 +77,14 @@ rule modelled_depth_estimation:
         # Same station matching radius as rules 13/14; rounds 1-2 force the
         # coastal protection storm tide there.
         water_level_buffer_m = config["sfincs"]["boundary_setup"]["water_level_buffer_m"],
-        depth_method                 = config["river_processing"]["river_depth_modelling"]["method"],
         gvf                          = config["river_processing"]["river_depth_modelling"]["gvf"],
+        water_surface                = config["river_processing"]["water_surface"],
         channel_manning_n            = config["river_processing"]["channel_manning_n"],
         calibration_days             = config["river_processing"]["river_depth_modelling"]["calibration_days"],
-        round0_level                 = config["river_processing"]["river_depth_modelling"]["round0_level"],
         gebco_max_depth_m            = config["terrain"]["gebco_max_depth_m"],
-        steady_state                 = config["river_processing"]["river_depth_modelling"]["steady_state"],
         discharge_ramp_hr            = config["river_processing"]["river_depth_modelling"]["discharge_ramp_hr"],
         weir_crest_m                  = config["river_processing"]["river_depth_modelling"]["weir_crest_m"],
         weir_par1                     = config["river_processing"]["river_depth_modelling"]["weir_par1"],
-        excavation_fraction           = config["river_processing"]["river_depth_modelling"]["excavation_fraction"],
         weir_freeboard_m              = config["river_processing"]["river_depth_modelling"]["freeboard_m"],
         unprotected_ocean_wetlands    = config["river_processing"]["river_depth_modelling"]["unprotected_ocean_wetlands"],
         min_component_cells           = config["river_processing"]["river_depth_modelling"]["min_component_cells"],
@@ -102,8 +93,7 @@ rule modelled_depth_estimation:
         nr_subgrid_pixels  = config["sfincs"]["subgrid"]["nr_subgrid_pixels"],
         nr_levels          = config["sfincs"]["subgrid"]["nr_levels"],
         nrmax              = config["sfincs"]["subgrid"]["nrmax"],
-    # Whole --cores budget: SFINCS multi-threads, so other jobs would only compete for CPU.
-    threads: workflow.cores
+    threads: rule_threads("modelled_depth_estimation")
     log:
         "logs/{basin_id}/10_depth_estimation_modelled.log"
     script:

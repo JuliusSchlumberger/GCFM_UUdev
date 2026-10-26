@@ -8,7 +8,7 @@ from src.landuse import LANDUSE_SEA_CODE, warp_landuse_to_grid
 from src.log import setup_logging
 from src.plots import plot_landuse, plot_sea_mask
 from src.profiling import ScriptProfiler
-from src.raster import FLOAT_NODATA
+from src.raster import FLOAT_GTIFF_COMPRESSION, FLOAT_NODATA
 
 log = setup_logging(snakemake.log[0])
 
@@ -59,7 +59,7 @@ if elevation_nodata is not None:
 sea_mask_arr[~np.isfinite(elevation_arr)] = FLOAT_NODATA
 
 sea_mask_meta = ref_meta.copy()
-sea_mask_meta.update(nodata=FLOAT_NODATA)
+sea_mask_meta.update(nodata=FLOAT_NODATA, **FLOAT_GTIFF_COMPRESSION)
 
 n_water = int((sea_mask_arr == 1.0).sum())
 log.info(f"sea_mask: {n_water:,} sea px (landuse==200 only, no OSM land-polygon input)")

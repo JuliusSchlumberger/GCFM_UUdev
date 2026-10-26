@@ -28,7 +28,7 @@ from shapely.geometry import Polygon
 from hydromt_sfincs import SfincsModel
 
 from src.grid import create_model_grid, load_grid_def
-from src.hydromt_sfincs_patch import use_float32_subgrid_write
+from src.hydromt_sfincs_patch import patch_subgrid_write
 from src.landuse import LANDUSE_SEA_CODE
 from src.log import setup_logging
 from src.sfincs_run import create_active_mask, set_sea_and_outflow_boundaries, write_weir_file
@@ -44,7 +44,7 @@ plt.ioff()
 # ── logging ──
 setup_logging(snakemake.log[0], verbose=True)
 log = logging.getLogger(__name__)
-use_float32_subgrid_write()
+patch_subgrid_write()
 for _name in ("hydromt", "hydromt_sfincs"):
     _l = logging.getLogger(_name)
     _l.setLevel(logging.INFO)
@@ -69,7 +69,6 @@ zsini_sea_cells_path = Path(snakemake.input.zsini_sea_cells)
 surge_forcing_path    = Path(snakemake.input.surge_forcing)
 river_forcing_path    = Path(snakemake.input.river_forcing)
 river_burned_subgrid_path = Path(snakemake.input.river_burned_subgrid)
-river_roughness_subgrid_path = Path(snakemake.input.river_roughness_subgrid)
 river_burned_dem_sfincs_grid_path = Path(snakemake.input.river_burned_dem_sfincs_grid)
 elevation_conditioned_sfincs_grid_path = Path(snakemake.input.elevation_conditioned_sfincs_grid)
 river_elevation_max_path = Path(snakemake.input.river_elevation_max)
@@ -143,13 +142,6 @@ local_catalog = {
     "local_roughness_native": {
         "data_type": "RasterDataset",
         "uri": str(roughness_path),
-        "driver": "rasterio",
-    },
-    # Channel Manning n under the burned channel (rule 10): nodata outside
-    # it, so local_roughness_native fills the rest of the subgrid.
-    "local_river_roughness_subgrid": {
-        "data_type": "RasterDataset",
-        "uri": str(river_roughness_subgrid_path),
         "driver": "rasterio",
     },
     **({
@@ -353,7 +345,8 @@ log.info(
 subgrid_component = sf.subgrid
 subgrid_component.create(
     elevation_list=elevation_list_subgrid,
-    roughness_list=[{"manning": "local_river_roughness_subgrid"}, {"manning": "local_roughness_native"}],
+    # The channel's channel_manning_n is already in roughness.tif (rule 05c).
+    roughness_list=[{"manning": "local_roughness_native"}],
     river_list=river_list,
     nr_subgrid_pixels=nr_subgrid_pixels,
     nr_levels=nr_levels,

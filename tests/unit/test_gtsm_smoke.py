@@ -4,14 +4,21 @@ import netCDF4
 import numpy as np
 import pandas as pd
 import pytest
-from src.gtsm import extract_station_series, match_stations, station_coordinates
+import xarray as xr
+from src.gtsm import (
+    build_station_subset,
+    extract_station_series,
+    match_stations,
+    station_coordinates,
+    subset_positions,
+)
 
 _LON = np.array([4.0, 4.5, 5.0, 30.0])
 _LAT = np.array([52.0, 52.5, 53.0, -10.0])
 
 
-def _write_month(folder, year, month, n_hours, offset):
-    path = folder / f"reanalysis_waterlevel_hourly_{year}_{month:02d}_v3.nc"
+def _write_month(folder, year, month, n_hours, offset, var="waterlevel"):
+    path = folder / f"reanalysis_{var}_hourly_{year}_{month:02d}_v3.nc"
     with netCDF4.Dataset(path, "w") as ds:
         ds.createDimension("time", n_hours)
         ds.createDimension("stations", _LON.size)
@@ -23,9 +30,7 @@ def _write_month(folder, year, month, n_hours, offset):
         )
         ds.createVariable("station_x_coordinate", "f8", ("stations",))[:] = _LON
         ds.createVariable("station_y_coordinate", "f8", ("stations",))[:] = _LAT
-        v = ds.createVariable(
-            "waterlevel", "f4", ("time", "stations"), fill_value=-999.0
-        )
+        v = ds.createVariable(var, "f4", ("time", "stations"), fill_value=-999.0)
         data = offset + np.arange(n_hours)[:, None] + 1000.0 * np.arange(_LON.size)
         data = np.ma.masked_array(data, mask=np.zeros_like(data, dtype=bool))
         data.mask[0, 1] = True
@@ -74,3 +79,46 @@ def test_extract_station_series_spans_all_months_in_requested_order(gtsm_folder)
 def test_extract_station_series_raises_without_files(tmp_path):
     with pytest.raises(FileNotFoundError):
         extract_station_series(tmp_path, "waterlevel", np.array([0]))
+
+
+@pytest.fixture
+def gtsm_subset(tmp_path):
+    folders = {}
+    for var, offset in (("waterlevel", 0.0), ("surge", 0.5)):
+        folders[var] = tmp_path / var
+        folders[var].mkdir()
+        _write_month(folders[var], 2000, 1, 4, offset, var)
+    return build_station_subset(folders, np.array([3, 1]))
+
+
+def test_station_subset_keeps_requested_stations_and_all_positions(gtsm_subset):
+    np.testing.assert_array_equal(gtsm_subset["station_id"], [103, 101])
+    assert gtsm_subset.sizes["gtsm_station"] == _LON.size
+    assert gtsm_subset.sizes["time"] == 4
+    assert (
+        float(gtsm_subset["surge"][1, 0]) - float(gtsm_subset["waterlevel"][1, 0])
+        == 0.5
+    )
+
+
+def test_subset_positions_maps_points_to_subset_stations(gtsm_subset):
+    ids, pos = subset_positions(
+        gtsm_subset, np.array([4.5, 30.0]), np.array([52.5, -10.0]), 1.0
+    )
+    np.testing.assert_array_equal(ids, [101, 103])
+    np.testing.assert_array_equal(pos, [1, 0])
+
+
+def test_subset_positions_raises_for_station_outside_subset(gtsm_subset):
+    with pytest.raises(ValueError, match="not in the station subset"):
+        subset_positions(gtsm_subset, np.array([4.0]), np.array([52.0]), 1.0)
+
+
+def test_station_subset_survives_netcdf_round_trip(gtsm_subset, tmp_path):
+    path = tmp_path / "subset.nc"
+    gtsm_subset.to_netcdf(path)
+    with xr.open_dataset(path) as back:
+        expected = gtsm_subset.assign_coords(
+            time=gtsm_subset["time"].values.astype("datetime64[ns]")
+        )
+        xr.testing.assert_identical(back.load(), expected)

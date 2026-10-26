@@ -15,6 +15,7 @@ rule get_land_polygons:
         landuse_source   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"),
     output:
         land_polygons = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
+    threads: rule_threads("get_land_polygons")
     log:
         "logs/{basin_id}/03_land_polygons.log"
     script:

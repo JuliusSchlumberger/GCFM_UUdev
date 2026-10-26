@@ -42,30 +42,6 @@ def parse_sfincs_inp(path: str | Path) -> dict[str, str]:
     return cfg
 
 
-def set_sfincs_inp_keys(path: str | Path, updates: dict[str, object | None]) -> None:
-    """Set keys of an existing sfincs.inp in place; a value of None removes the key.
-
-    Missing keys are appended. Avoids hydromt: sf.write() rewrites every grid
-    and subgrid file; sf.config.write() absolutizes relative paths.
-    """
-    path = Path(path)
-    lines = path.read_text().splitlines()
-    todo = {k.lower(): v for k, v in updates.items()}
-    out = []
-    for line in lines:
-        key = line.partition("=")[0].strip().lower() if "=" in line else None
-        if key in todo:
-            value = todo.pop(key)
-            if value is not None:
-                out.append(f"{key:<20} = {value}")
-            continue
-        out.append(line)
-    for key, value in todo.items():
-        if value is not None:
-            out.append(f"{key:<20} = {value}")
-    path.write_text("\n".join(out) + "\n")
-
-
 def forward_geometry_files(
     cfg: dict[str, str],
     source_root: str | Path,
@@ -316,7 +292,7 @@ def run_sfincs_subprocess(
     ``cwd`` is where SFINCS resolves its relative file references. ``label`` is
     used only in error messages. ``n_threads`` sets OMP_NUM_THREADS for the
     subprocess only; SFINCS defaults to 1 thread when it is unset, so pass
-    ``snakemake.threads`` (with ``threads: workflow.cores`` on the rule).
+    ``snakemake.threads`` (rule threads from config ``resources``).
     None/0 leaves the environment unchanged.
     Raises RuntimeError on timeout or non-zero exit code.
     """

@@ -10,16 +10,17 @@ rule get_protection_levels:
     """
     input:
         specific_delta  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
-        flopros_table   = catalogue_path("protection_levels_flopros"),
-        geogunit_raster = catalogue_path("wri_geogunit_107"),
-        geogunit_list   = catalogue_path("wri_geogunit_107_list"),
-        global_landuse  = catalogue_path("land_use"),
+        flopros_table   = raw_input("protection_levels_flopros"),
+        geogunit_raster = raw_input("wri_geogunit_107"),
+        geogunit_list   = raw_input("wri_geogunit_107_list"),
+        global_landuse  = raw_input("land_use"),
     output:
         protection_levels = results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"),
         plot_protection   = results_path("{basin_id}/preprocessing_inputs/visuals/04_protection_levels.png"),
     params:
         default_rp_yr = config["flopros_range"]["default_rp_yr"],
         max_rp_yr     = config["flopros_range"]["max_rp_yr"],
+    threads: rule_threads("get_protection_levels")
     log:
         "logs/{basin_id}/04_protection_levels.log"
     script:

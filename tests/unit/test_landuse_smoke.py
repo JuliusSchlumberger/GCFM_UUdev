@@ -6,6 +6,7 @@ import rasterio
 from affine import Affine
 from rasterio.transform import from_origin
 from rasterio.warp import transform_bounds
+from shapely.geometry import box
 from src.landuse import (
     LANDUSE_NODATA,
     LANDUSE_SEA_CODE,
@@ -14,6 +15,7 @@ from src.landuse import (
     landuse_to_manning,
     read_roughness_lookup,
     warp_landuse_to_grid,
+    write_channel_landuse,
     write_landuse_source,
     write_roughness_raster,
 )
@@ -167,3 +169,63 @@ def test_roughness_raster_stays_within_lookup_bounds(tmp_path):
     assert valid.any()
     lo, hi = min(MANNING.values()), max(MANNING.values())
     assert np.all((n[valid] >= lo - 1e-6) & (n[valid] <= hi + 1e-6))
+
+
+def _ref_box(ref, fraction_x=1.0, margin_m=500.0):
+    """Box over the left fraction_x of a reference grid, past its outer edges (its CRS)."""
+    t = ref["transform"]
+    x0, y1 = t.c, t.f
+    x1 = x0 + ref["width"] * t.a * fraction_x
+    y0 = y1 + ref["height"] * t.e
+    return box(x0 - margin_m, y0 - margin_m, x1, y1 + margin_m)
+
+
+def test_channel_roughness_is_channel_n_inside_and_lookup_outside(tmp_path):
+    lc100, _ = _lc100(tmp_path, nodata_corner=False)
+    source = tmp_path / "landuse_source.tif"
+    write_landuse_source("copernicus_lc100", _bounds(), lc100, source)
+    ref = _utm_ref_meta()
+    plain, channel = tmp_path / "plain.tif", tmp_path / "channel.tif"
+    write_roughness_raster(source, _lookup_csv(tmp_path), ref, plain)
+    write_roughness_raster(
+        source,
+        _lookup_csv(tmp_path),
+        ref,
+        channel,
+        channel=([_ref_box(ref, 0.5)], ref["crs"], 0.0333),
+    )
+    with rasterio.open(plain) as a, rasterio.open(channel) as b:
+        n_plain, n_channel = a.read(1), b.read(1)
+    left, right = n_channel[:, :2], n_channel[:, 4:]
+    assert np.allclose(left, 0.0333, atol=1e-6)  # fully inside the channel
+    np.testing.assert_array_equal(right, n_plain[:, 4:])  # fully outside
+
+
+def test_channel_landuse_turns_land_into_water_and_keeps_sea(tmp_path):
+    ref = _utm_ref_meta(n=10, res_m=30.0)
+    lu = np.full((10, 10), 50, dtype=np.uint8)  # built-up
+    lu[:, 7:] = LANDUSE_SEA_CODE
+    lu[0, 0] = 40
+    path, out = tmp_path / "lu.tif", tmp_path / "lu_channels.tif"
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        dtype="uint8",
+        count=1,
+        height=10,
+        width=10,
+        crs=ref["crs"],
+        transform=ref["transform"],
+        nodata=LANDUSE_NODATA,
+    ) as dst:
+        dst.write(lu, 1)
+    t = ref["transform"]
+    channel = box(t.c, t.f - 4 * 30.0, t.c + 10 * 30.0, t.f)  # rows 0-3
+    converted = write_channel_landuse(path, [channel], ref["crs"], 80, out)
+    with rasterio.open(out) as src:
+        after = src.read(1)
+    assert np.all(after[:4, :7] == 80)  # land in the channel is water
+    assert np.all(after[:, 7:] == LANDUSE_SEA_CODE)  # sea stays sea
+    np.testing.assert_array_equal(after[4:], lu[4:])  # outside untouched
+    assert converted == {40: 1, 50: 4 * 7 - 1}

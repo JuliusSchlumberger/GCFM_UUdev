@@ -14,7 +14,7 @@ Everything is written under `<results_dir>/{basin_id}/`:
 | `preprocessing_inputs/domain/` | delta polygon, model domain, elevation, land use, roughness, river network (raw, cleaned, depth-calibrated), coastal protection weir, SFINCS grid definition |
 | `preprocessing_inputs/forcing/` | storm-tide hydrographs, surge and river forcing (`surge_forcing.nc`, `river_forcing.nc`) |
 | `preprocessing_inputs/visuals/` | one diagnostic figure per preprocessing rule |
-| `sfincs_skeleton/` | per-basin SFINCS model (`sfincs.inp`, `sfincs.weir`, `sfincs_subgrid.nc`) |
+| `sfincs_skeleton/` | per-basin SFINCS model (`sfincs.inp`, `sfincs.weir`, `sfincs_subgrid.nc`) and `land_bed_level.nc`, the bed level every flood depth is computed on (open sea masked) |
 | `spin_up/` | spin-up run, restart file and validation figures (when `sfincs.spinup.enabled`) |
 | `runs/{scenario}/sfincs/` | event run (`sfincs_map.nc`) |
 | `runs/{scenario}/visuals/` | maximum flood depth (`max_flood_depth.tif`), flood time series, animation |
@@ -39,7 +39,7 @@ Everything is written under `<results_dir>/{basin_id}/`:
    of `config/data_catalogue.yml`. Sources, versions, licences and how to obtain
    each dataset: [docs/data.md](docs/data.md). You also need a SFINCS executable.
 
-3. Copy the site settings and set the three paths. There is no fallback: the
+3. Copy the site settings and set the paths. There is no fallback: the
    pipeline stops and names the missing setting.
 
    ```bash
@@ -51,9 +51,10 @@ Everything is written under `<results_dir>/{basin_id}/`:
    | `results_dir` | `<results_dir>`, where outputs are written |
    | `raw_data_root` | `<raw_data_root>`, the root of every `file_path` in `config/data_catalogue.yml` |
    | `sfincs_exe` | `<sfincs_exe>`, the SFINCS binary (must be set for every run, dry runs included; any path works for `-n`) |
+   | `adaptation_data_root` | `<adaptation_data_root>`, the per-basin adaptation measure files (only for the `adapt` target) |
 
-   The environment variables `GCFM_RESULTS_DIR`, `GCFM_RAW_DATA_ROOT` and
-   `GCFM_SFINCS_EXE` override the file when set, for example:
+   The environment variables `GCFM_RESULTS_DIR`, `GCFM_RAW_DATA_ROOT`,
+   `GCFM_SFINCS_EXE` and `GCFM_ADAPTATION_DATA_ROOT` override the file when set, for example:
 
    ```bash
    export GCFM_RESULTS_DIR=/data/gcfm/results
@@ -68,7 +69,7 @@ Everything is written under `<results_dir>/{basin_id}/`:
    how to unset them: [docs/install.md](docs/install.md#site-settings).
 
 4. Check the job graph with a dry run on the smallest case (Ebro delta, basin
-   `2433835`, scenario `default`); it lists 22 jobs:
+   `2433835`, scenario `default`); it lists 23 jobs:
 
    ```bash
    snakemake -n preprocess --cores 1 --config target_basins="[2433835]" target_scenarios="['default']"
@@ -131,7 +132,7 @@ python tests/check_code_health.py      # syntax and src imports
 pre-commit run --all-files             # ruff, pyright, pydocstyle, lock-file sync
 ```
 
-`pytest -q` reports 274 passed in about 2 minutes. Tests that need real data
+`pytest -q` reports 325 passed in about 2 minutes. Tests that need real data
 carry the `needs_data` marker and are excluded by default. `pre-commit` needs a
 git clone and a one-time `pre-commit install`
 ([install.md](docs/install.md#pre-commit)).

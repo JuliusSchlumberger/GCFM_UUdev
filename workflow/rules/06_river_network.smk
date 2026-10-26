@@ -7,14 +7,18 @@
 
 rule get_river_network:
     """
-    Clip the global (modified) SWORD network to the domain bbox, unprocessed.
+    Clip SWORD v17c (all regions) to the domain bbox and apply the manual widths.
     """
     input:
         spec_basins_meta     = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
         domain_gpkg          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
-        global_river_network = catalogue_path("river_network"),
+        sword_regions        = raw_region_inputs("river_network"),
+        width_corrections    = SWORD_WIDTH_CORRECTIONS,
     output:
         spec_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network.gpkg"),
+    threads: rule_threads("get_river_network")
+    resources:
+        raw_io=1,
     log:
         "logs/{basin_id}/06_river_network.log"
     script:
@@ -32,6 +36,7 @@ rule plot_river_network:
         land_polygons      = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
     output:
         plot_river_network = results_path("{basin_id}/preprocessing_inputs/visuals/06_river_network.png"),
+    threads: rule_threads("plot_river_network")
     log:
         "logs/{basin_id}/06b_plot_river_network.log"
     script:

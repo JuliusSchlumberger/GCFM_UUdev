@@ -15,7 +15,7 @@ from src.adaptation_method_post import dispatch_rules
 from src.adaptation_scaling import resolve_forcing_params
 from src.log import setup_logging
 from src.plots import plot_inundation_check
-from src.postprocessing import compute_max_inundation, compute_risk_metrics
+from src.postprocessing import compute_max_inundation, compute_risk_metrics, read_land_bed_level
 
 log = setup_logging(snakemake.log[0])
 
@@ -23,7 +23,6 @@ log = setup_logging(snakemake.log[0])
 measures_def         = snakemake.params.measures_def
 adaptation_root      = Path(snakemake.params.adaptation_root)
 baseline_sfincs_root = Path(snakemake.params.baseline_sfincs_root)
-skeleton_root        = Path(snakemake.params.skeleton_root)
 hmin                 = float(snakemake.params.hmin)
 urban_code           = int(snakemake.params.urban_code)
 
@@ -77,8 +76,7 @@ for measure_type, raw_params in strategy_def["measures"].items():
 # da_dep (land-domain reference grid) is not on disk; re-derive it as rule 17 does.
 _, da_dep = compute_max_inundation(
     baseline_sfincs_root,
-    skeleton_root,
-    snakemake.input.sea_mask,
+    read_land_bed_level(snakemake.input.land_bed_level),
     hmin=hmin,
 )
 if da_dep is None:

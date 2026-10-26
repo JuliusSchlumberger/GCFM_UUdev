@@ -14,6 +14,7 @@ import pandas as pd
 import rioxarray  # noqa: F401 -- registers the .rio accessor used below
 import xarray as xr
 from affine import Affine
+from hydromt import DataCatalog
 from hydromt_sfincs import SfincsModel
 from hydromt_sfincs import utils as sfincs_utils
 
@@ -59,7 +60,7 @@ _ROTATED_MEMORY_FACTOR = 5.0
 
 
 def get_bed_level(
-    mod: SfincsModel,
+    data_catalog: DataCatalog,
     sfincs_root: str | Path,
     max_bytes: float | None = None,
 ) -> xr.DataArray:
@@ -87,7 +88,7 @@ def get_bed_level(
             f"(written by sf.subgrid.create(write_dep_tif=True)) is required"
         )
     if max_bytes is None:
-        return mod.data_catalog.get_rasterdataset(str(dep_subgrid_path))
+        return data_catalog.get_rasterdataset(str(dep_subgrid_path))
 
     with rasterio.open(dep_subgrid_path) as src:
         rotated = src.transform.b != 0 or src.transform.d != 0
@@ -95,7 +96,7 @@ def get_bed_level(
         cost *= _ROTATED_MEMORY_FACTOR if rotated else 1.0
         factor = int(np.ceil((cost / max_bytes) ** 0.5)) if cost > max_bytes else 1
         if factor == 1:
-            return mod.data_catalog.get_rasterdataset(str(dep_subgrid_path))
+            return data_catalog.get_rasterdataset(str(dep_subgrid_path))
         # Whole factor x factor blocks only (the remainder at the far edges is
         # trimmed), so the origin stays put and each coarse pixel is the plain
         # mean of its block's valid pixels.
@@ -119,7 +120,7 @@ def get_bed_level(
         with rasterio.open(tmp_path, "w", **profile) as dst:
             dst.write(coarse, 1)
         del coarse
-        da = mod.data_catalog.get_rasterdataset(tmp_path).load()
+        da = data_catalog.get_rasterdataset(tmp_path).load()
         da.close()
     finally:
         try:
@@ -153,23 +154,65 @@ def _coarsen_for_memory(da_ref: xr.DataArray, max_bytes: float = 5e8) -> xr.Data
     return da_coarse
 
 
-def compute_max_inundation(
-    run_dir: str | Path,
+def land_bed_level(
     sfincs_root: str | Path,
     sea_mask_path: str | Path,
-    hmin: float = 0.05,
     max_bytes: float = STATS_MAX_BYTES,
+) -> xr.DataArray:
+    """Return a model's bed level on its flood-depth grid, NaN on open sea.
+
+    The grid is ``get_bed_level`` within ``max_bytes``; open sea is where
+    ``sea_mask_path`` reads 1.0. Pass the CORRECTED sea/land classification
+    (``zsini_sea_cells_on_grid.tif``, rule modelled_depth_estimation) so
+    weir-protected fringe cells count as land. Its non-null pixels are the land
+    domain of every flood statistic. Rule land_bed_level writes it once per model.
+    """
+    catalog = DataCatalog()
+    # get_bed_level reads an oversized raster block-averaged from disk;
+    # _coarsen_for_memory is a no-op safety net.
+    da_dep = get_bed_level(catalog, sfincs_root, max_bytes=max_bytes)
+    da_dep = _coarsen_for_memory(da_dep, max_bytes=max_bytes)
+    da_sea = catalog.get_rasterdataset(str(sea_mask_path))
+    # Eager: a dask-backed mask would make da_dep lazy, breaking the .item()
+    # calls in 15_sanity_checks.py.
+    da_sea_grid = da_sea.raster.reproject_like(da_dep, method="nearest").compute()
+    return da_dep.where(da_sea_grid != 1.0).compute()
+
+
+def write_land_bed_level(da_land_dep: xr.DataArray, path: str | Path) -> None:
+    """Write ``land_bed_level`` output to netCDF, zlib-compressed.
+
+    netCDF keeps the x/y coordinates exactly; a GeoTIFF stores only the affine
+    transform, and on a rotated grid the coordinates rebuilt from it differ in
+    the last bits, which shifts pixel areas.
+    """
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    da = da_land_dep.rename("land_bed_level")
+    da.encoding = {}
+    # The 2-D coordinates of a rotated grid are most of the file; shuffle lets
+    # zlib shrink them about tenfold.
+    zlib = {"zlib": True, "complevel": 4, "shuffle": True}
+    encoding = {da.name: zlib, **{c: zlib for c in da.coords if da[c].ndim > 0}}
+    da.to_netcdf(path, encoding=encoding)
+
+
+def read_land_bed_level(path: str | Path) -> xr.DataArray:
+    """Return a ``write_land_bed_level`` raster in memory."""
+    with xr.open_dataarray(path) as da:
+        return da.load()
+
+
+def compute_max_inundation(
+    run_dir: str | Path,
+    da_land_dep: xr.DataArray,
+    hmin: float = 0.05,
 ) -> tuple[xr.DataArray, xr.DataArray] | tuple[None, None]:
     """Return max inundation depth (zsmax − dep), subgrid-downscaled and land-masked.
 
-    Uses ``hydromt_sfincs.utils.downscale_floodmap`` on ``get_bed_level``. Flood
-    depth and bed level are both masked to pixels where ``sea_mask_path``
-    reads 1.0 (genuinely open sea) — so open sea is excluded from both the
-    flooded count and the land-domain denominator. Pass the CORRECTED
-    sea/land classification (``zsini_sea_cells_on_grid.tif``, rule
-    modelled_depth_estimation) so weir-protected fringe cells count as land.
-    Returns (da_hmax, da_dep); da_dep's non-null pixel count is the land-domain
-    size. Both are None when ``zsmax`` is unavailable.
+    Uses ``hydromt_sfincs.utils.downscale_floodmap`` on ``da_land_dep``
+    (``land_bed_level``), so open sea is NaN in the depth too and drops out of
+    both the flooded count and the land-domain denominator.
+    Returns (da_hmax, da_land_dep); both are None when ``zsmax`` is unavailable.
     """
     mod = load_sfincs_output(run_dir)
     if "zsmax" not in mod.output.data:
@@ -179,24 +222,10 @@ def compute_max_inundation(
     if "timemax" in da_zsmax.dims:
         da_zsmax = da_zsmax.max(dim="timemax")
 
-    # get_bed_level reads an oversized raster block-averaged from disk;
-    # _coarsen_for_memory is a no-op safety net.
-    da_dep = get_bed_level(mod, sfincs_root, max_bytes=max_bytes)
-    da_dep = _coarsen_for_memory(da_dep, max_bytes=max_bytes)
-
-    da_hmax = sfincs_utils.downscale_floodmap(zsmax=da_zsmax, dep=da_dep, hmin=hmin)
-
-    da_sea = mod.data_catalog.get_rasterdataset(str(sea_mask_path))
-    # Compute eagerly: da_sea is dask-backed, and a dask-backed mask would force
-    # da_dep/da_hmax to become lazy too via .where() below — breaking the
-    # .item() calls in 15_sanity_checks.py ("'item' is not yet a valid method
-    # on dask arrays").
-    da_sea_grid = da_sea.raster.reproject_like(da_dep, method="nearest").compute()
-    water_mask = da_sea_grid == 1.0
-
-    da_dep = da_dep.where(~water_mask).compute()
-    da_hmax = da_hmax.where(~water_mask).compute()
-    return da_hmax, da_dep
+    da_hmax = sfincs_utils.downscale_floodmap(
+        zsmax=da_zsmax, dep=da_land_dep, hmin=hmin
+    )
+    return da_hmax.compute(), da_land_dep
 
 
 def inundation_stats(da_hmax: xr.DataArray, da_dep: xr.DataArray) -> dict:
@@ -256,21 +285,55 @@ def compute_flood_progression(
     return da_h.where(~water_mask)
 
 
+def _nearest_cell_index(da_cells: xr.DataArray, da_target: xr.DataArray) -> np.ndarray:
+    """Return the flat index into ``da_cells`` of each ``da_target`` pixel (-1 outside).
+
+    Runs the same ``reproject_like(method="nearest")`` that ``downscale_floodmap``
+    applies to the water level, on a raster of cell indices instead, so indexing
+    a frame with the result reproduces that reprojection.
+    """
+    da_index = da_cells.copy(
+        data=np.arange(da_cells.size, dtype=np.int32).reshape(da_cells.shape)
+    )
+    # A float _FillValue (NaN in sfincs_map.nc) in the encoding would override
+    # the integer nodata below.
+    da_index.encoding = {}
+    da_index.raster.set_nodata(-1)
+    da_index = da_index.raster.reproject_like(da_target, method="nearest")
+    return np.asarray(da_index.values)
+
+
+def _downscale_depth(
+    zs_cells: np.ndarray,
+    zs_nodata: float | None,
+    cell_index: np.ndarray,
+    dep: np.ndarray,
+) -> np.ndarray:
+    """Return ``downscale_floodmap(zs, dep, hmin=0.0)`` values via ``_nearest_cell_index``."""
+    zs_flat = np.asarray(zs_cells).ravel()
+    # One extra NaN slot, so index -1 (outside the cell grid) reads NaN.
+    zs_ext = np.empty(zs_flat.size + 1, dtype=zs_flat.dtype)
+    zs_ext[:-1] = zs_flat
+    zs_ext[-1] = np.nan
+    if zs_nodata is not None and not np.isnan(zs_nodata):
+        zs_ext[zs_ext == zs_nodata] = np.nan
+    h = (zs_ext[cell_index] - dep).astype("float32")
+    h[~(h > 0.0)] = np.nan
+    return h
+
+
 def compute_flood_timeseries_stats(
     run_dir: str | Path,
-    sfincs_root: str | Path,
-    sea_mask_path: str | Path,
+    da_land_dep: xr.DataArray,
     threshold_m: float,
-    max_bytes: float = STATS_MAX_BYTES,
 ) -> pd.DataFrame | None:
     """Return per-timestep flooded area (km^2) and flood volume (m^3), subgrid-downscaled.
 
-    Feeds ``flood_timeseries.csv``. Each frame is downscaled with
-    ``downscale_floodmap`` at ``hmin=0.0`` (NOT ``threshold_m``), so
-    ``flood_volume_m3`` sums ALL positive depth; ``threshold_m`` only decides
-    which pixels count towards ``flooded_area_km2``. Frames are processed one at
-    a time, so ``max_bytes`` bounds a SINGLE frame.
-    Returns None when ``zs`` is unavailable.
+    Feeds ``flood_timeseries.csv``. Each frame is downscaled onto ``da_land_dep``
+    (``land_bed_level``) as ``downscale_floodmap`` does at ``hmin=0.0`` (NOT
+    ``threshold_m``), so ``flood_volume_m3`` sums ALL positive depth;
+    ``threshold_m`` only decides which pixels count towards ``flooded_area_km2``.
+    Frames are processed one at a time. Returns None when ``zs`` is unavailable.
     """
     import pandas as pd
 
@@ -279,31 +342,28 @@ def compute_flood_timeseries_stats(
         return None
 
     da_zs_native = mod.output.data["zs"]
-
-    da_dep = get_bed_level(mod, sfincs_root, max_bytes=max_bytes)
-    da_dep = _coarsen_for_memory(da_dep, max_bytes=max_bytes)
-
-    da_sea = mod.data_catalog.get_rasterdataset(str(sea_mask_path))
-    da_sea_grid = da_sea.raster.reproject_like(da_dep, method="nearest").compute()
-    water_mask = da_sea_grid == 1.0
+    da_dep = da_land_dep
 
     res_x, res_y = da_dep.raster.res  # rotation-aware, unlike rio.resolution()
     pixel_area_m2 = abs(res_x * res_y)
 
     n_frames = da_zs_native.sizes["time"]
     times = da_zs_native["time"].values
+    cell_index = _nearest_cell_index(da_zs_native.isel(time=0), da_dep)
+    dep = np.asarray(da_dep.values)
     area_km2 = np.empty(n_frames)
     volume_m3 = np.empty(n_frames)
     for i in range(n_frames):
-        da_h_i = (
-            sfincs_utils.downscale_floodmap(
-                zsmax=da_zs_native.isel(time=i), dep=da_dep, hmin=0.0
-            )
-            .where(~water_mask)
-            .compute()
+        da_zs_i = da_zs_native.isel(time=i)
+        h = _downscale_depth(da_zs_i.values, da_zs_i.raster.nodata, cell_index, dep)
+        # Open sea is NaN in dep, so h is NaN there and never counts.
+        flooded = h > 0.0
+        area_km2[i] = (
+            np.count_nonzero(flooded & (h > threshold_m)) * pixel_area_m2 / 1e6
         )
-        area_km2[i] = float((da_h_i > threshold_m).sum().item()) * pixel_area_m2 / 1e6
-        volume_m3[i] = float(da_h_i.sum(skipna=True).item()) * pixel_area_m2
+        volume_m3[i] = (
+            float(np.where(flooded, h, np.float32(0.0)).sum()) * pixel_area_m2
+        )
 
     return pd.DataFrame(
         {"time": times, "flooded_area_km2": area_km2, "flood_volume_m3": volume_m3}

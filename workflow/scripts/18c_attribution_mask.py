@@ -16,8 +16,8 @@ from pathlib import Path
 
 from src.attribution_plot import generate_attribution_maps
 from src.log import setup_logging
-from src.postprocessing import compute_excess_volume, compute_max_inundation
-from src.raster import FLOAT_NODATA
+from src.postprocessing import compute_excess_volume, compute_max_inundation, read_land_bed_level
+from src.raster import FLOAT_GTIFF_COMPRESSION, FLOAT_NODATA
 
 log = setup_logging(snakemake.log[0])
 
@@ -29,7 +29,7 @@ out_folder = Path(snakemake.output.attribution_mask_tif).parent
 out_folder.mkdir(parents=True, exist_ok=True)
 
 da_hmax_spinup, _ = compute_max_inundation(
-    spin_up_root, skeleton_root, snakemake.input.sea_mask,
+    spin_up_root, read_land_bed_level(snakemake.input.land_bed_level),
     hmin=threshold,
 )
 if da_hmax_spinup is None:
@@ -38,7 +38,9 @@ if da_hmax_spinup is None:
         "did the spin-up (rule run_spinup) finish?"
     )
 spinup_tif = out_folder / "spinup_max_flood_depth.tif"
-da_hmax_spinup.raster.to_raster(str(spinup_tif), dtype="float32", nodata=FLOAT_NODATA)
+da_hmax_spinup.raster.to_raster(
+    str(spinup_tif), dtype="float32", nodata=FLOAT_NODATA, **FLOAT_GTIFF_COMPRESSION
+)
 log.info(f"Spin-up max flood depth written: {spinup_tif}")
 
 log.info(

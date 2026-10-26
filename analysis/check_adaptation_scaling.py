@@ -22,7 +22,7 @@ sys.path.insert(0, str(REPO / "workflow"))
 from src.adaptation_scaling import resolve_forcing_params  # noqa: E402
 from src.adaptation_strategies import (  # noqa: E402
     expand_strategies,
-    with_auto_locations,
+    resolve_locations,
 )
 from src.io import site_setting  # noqa: E402
 
@@ -54,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(results, scenarios):
     """Print the resolved measure parameters for every strategy x scenario."""
     results = Path(results)
-    raw_data_root = site_setting("raw_data_root")
+    adaptation_data_root = site_setting("adaptation_data_root")
     expansion = load_strategy_expansion()
     logging.basicConfig(
         level=logging.INFO, format="      %(message)s", stream=sys.stdout
@@ -67,13 +67,15 @@ def main(results, scenarios):
         for st in expansion.defs:
             print(f"  {st}")
             resolved = resolve_forcing_params(
-                with_auto_locations(
-                    expansion.strategy_def_for(st, sc), results / "adaptation_lines"
+                resolve_locations(
+                    expansion.strategy_def_for(st, sc),
+                    results / "adaptation_lines",
+                    results.name,
                 ),
                 baseline_sfincs_root=root,
                 baseline_map_nc=root / "sfincs_map.nc",
                 skeleton_weir=results / "sfincs_skeleton/sfincs.weir",
-                adaptation_root=raw_data_root,
+                adaptation_root=adaptation_data_root,
                 log=log,
             )
             for m, params in resolved["measures"].items():
