@@ -45,7 +45,7 @@ DOMAIN_DIR = BASIN_ROOT / "preprocessing_inputs" / "domain"
 LAND_POLYGONS_PATH = DOMAIN_DIR / f"{BASIN_ID}_land_polygons.gpkg"
 RIVER_NETWORK_PATH = DOMAIN_DIR / f"{BASIN_ID}_river_network_clean.gpkg"
 
-SCENARIOS = ["coast_100", "river_500", "compound_100c_500r"]
+SCENARIOS = ["coast_100_03SLR", "river_100_03SLR", "compound_100_03SLR"]
 
 ATTR_COLORS = ["#d1c740", "#3277d3", "#d883e9"]
 ATTR_LABELS = ["River", "Coastal", "Compound"]

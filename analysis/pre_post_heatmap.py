@@ -35,7 +35,8 @@ import matplotlib as mpl
 #   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
 BASIN = Path(os.environ["GCFM_RESULTS_DIR"]) / "2433835"
 RUNS = BASIN / "runs"
-EVENTS = ["coast_100", "river_500", "compound_100c_500r"]
+EVENTS = ["coast_100_03SLR", "river_100_03SLR", "compound_100_03SLR"]
+EVENT_TITLES = ["Coastal flood", "River flood", "Compound flood"]  # one per EVENTS
 SCALES = ["04", "09", "1"]  # low -> high implementation scale
 THRESHOLD = 0.05  # m, wet/dry cutoff (the pipeline's hmin)
 # land domain, as the pipeline's flood metrics define it (compute_max_inundation):
@@ -98,6 +99,108 @@ def contingency(wet_pre, wet_post, land, transform):
     )
 
 
+MEASURES = [
+    "retreat",
+    "accommodate",
+    "NbS_protect_open",
+    "grey_protect_open",
+    "protect_closed",
+    "advance",
+]
+MEASURE_LABELS = [
+    "Retreat",
+    "Accommodate",
+    "Nbs Protect Open",
+    "Grey Protect Open",
+    "Protect Closed",
+    "Advance",
+]
+HEATMAP_SCALES = ["1", "09", "04"]  # full potential -> highly ineffective
+SCALE_LABELS = {
+    "04": "Highly\nineffective",
+    "09": "Marginally\nineffective",
+    "1": "Full\npotential",
+}
+CSI_COLORS = ["#e57e7f", "#e9b1b5", "#fbe2d5", "#b4e4d9", "#7ad3b6"]  # low -> high
+CSI_BOUNDS = [0, 0.3, 0.5, 0.7, 0.9, 1.0]
+
+
+def plot_heatmap(df, numbers, out):
+    """CSI per event x measure x scale; ▲/▼ mark where POST over/under-floods PRE.
+
+    numbers=True writes the CSI value in each cell, otherwise only the bias marks.
+    """
+    df = df.assign(
+        scale=df.scale.astype(str),
+        bias=(df.hits_km2 + df.false_alarms_km2) / (df.hits_km2 + df.misses_km2),
+    )
+    cmap = ListedColormap(CSI_COLORS)
+    norm = BoundaryNorm(CSI_BOUNDS, cmap.N)
+
+    fig, axes = plt.subplots(1, 3, figsize=(10, 4.6), sharey=True)
+    for ax, e, t in zip(axes, EVENTS, EVENT_TITLES):
+        sub = df[df.event == e].set_index(["measure", "scale"])
+        Z = np.array(
+            [[sub.loc[(m, s), "CSI"] for s in HEATMAP_SCALES] for m in MEASURES]
+        )
+        B = np.array(
+            [[sub.loc[(m, s), "bias"] for s in HEATMAP_SCALES] for m in MEASURES]
+        )
+        ax.imshow(Z, cmap=cmap, norm=norm, aspect="auto")
+        for i in range(len(MEASURES)):
+            for j in range(len(HEATMAP_SCALES)):
+                z, b = Z[i, j], B[i, j]
+                mark = "▲" if b > 1.25 else ("▼" if b < 0.8 else "")
+                if numbers:
+                    text, size = f"{z:.2f}{' ' + mark if mark else ''}", 9
+                else:
+                    text, size = mark, 12
+                if text:
+                    ax.text(
+                        j,
+                        i,
+                        text,
+                        ha="center",
+                        va="center",
+                        fontsize=size,
+                        color="black",
+                    )
+        ax.set_xticks(range(3))
+        ax.set_xticklabels([SCALE_LABELS[s] for s in HEATMAP_SCALES], fontsize=8.5)
+        ax.set_title(t, fontsize=11)
+        ax.set_xticks(np.arange(-0.5, 3), minor=True)
+        ax.set_yticks(np.arange(-0.5, 6), minor=True)
+        ax.grid(which="minor", color="white", lw=1.5)
+        ax.tick_params(which="both", length=0)
+        for sp in ax.spines.values():
+            sp.set_visible(False)
+    axes[0].set_yticks(range(6))
+    axes[0].set_yticklabels(MEASURE_LABELS, fontsize=10)
+
+    cb = fig.colorbar(
+        mpl.cm.ScalarMappable(norm=norm, cmap=cmap),
+        ax=axes,
+        fraction=0.025,
+        pad=0.02,
+        spacing="uniform",
+    )
+    cb.set_ticks([(a + b) / 2 for a, b in zip(CSI_BOUNDS[:-1], CSI_BOUNDS[1:])])
+    cb.set_ticklabels(["<0.3", "0.3-0.5", "0.5-0.7", "0.7-0.9", "0.9-1"])
+    cb.ax.tick_params(length=0, labelsize=9)
+    cb.outline.set_visible(False)
+    cb.set_label("CSI (modelled vs postprocessed max flood depth)", fontsize=9)
+    fig.text(
+        0.02,
+        -0.02,
+        "▲ risk overestimated by postprocessed          "
+        "▼ risk underestimated by postprocessed",
+        fontsize=8.5,
+    )
+    fig.savefig(out, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote {out}")
+
+
 if __name__ == "__main__":
     rows = []
     land = None
@@ -144,175 +247,6 @@ if __name__ == "__main__":
         print(g.drop(columns="event").round(2).to_string(index=False))
     print(f"\nWrote {OUT_CSV}")
 
-
-# ------------------------------------------------------------------------------------------
-# Heat map with numbers
-df = pd.read_csv(OUT_CSV)
-df["bias"] = (df.hits_km2 + df.false_alarms_km2) / (df.hits_km2 + df.misses_km2)
-
-measures = [
-    "retreat",
-    "accommodate",
-    "NbS_protect_open",
-    "grey_protect_open",
-    "protect_closed",
-    "advance",
-]
-m_lab = [
-    "Retreat",
-    "Accommodate",
-    "Nbs Protect Open",
-    "Grey Protect Open",
-    "Protect Closed",
-    "Advance",
-]
-events = ["coast_100", "river_500", "compound_100c_500r"]
-e_lab = ["Coast\n100", "River\n500", "Compound\n100C 500R"]
-scales = [1, 9, 4]  # full potential -> highly ineffective
-scale_lab = {
-    4: "Highly\nineffective",
-    9: "Marginally\nineffective",
-    1: "Full\npotential",
-}
-
-colors = ["#e57e7f", "#e9b1b5", "#fbe2d5", "#b4e4d9", "#7ad3b6"]  # low -> high
-bounds = [0, 0.3, 0.5, 0.7, 0.9, 1.0]
-cmap = ListedColormap(colors)
-norm = BoundaryNorm(bounds, cmap.N)
-
-fig, axes = plt.subplots(1, 3, figsize=(10, 4.6), sharey=True)
-e_title = ["Coast 100", "River 500", "Compound 100C 500R"]
-for ax, e, t in zip(axes, events, e_title):
-    sub = df[df.event == e].set_index(["measure", "scale"])
-    Z = np.array([[sub.loc[(m, s), "CSI"] for s in scales] for m in measures])
-    B = np.array([[sub.loc[(m, s), "bias"] for s in scales] for m in measures])
-    ax.imshow(Z, cmap=cmap, norm=norm, aspect="auto")
-    for i in range(len(measures)):
-        for j in range(len(scales)):
-            z, b = Z[i, j], B[i, j]
-            mark = "▲" if b > 1.25 else ("▼" if b < 0.8 else "")
-            ax.text(
-                j,
-                i,
-                f"{z:.2f}{' ' + mark if mark else ''}",
-                ha="center",
-                va="center",
-                fontsize=9,
-                color="black",
-            )
-    ax.set_xticks(range(3))
-    ax.set_xticklabels([scale_lab[s] for s in scales], fontsize=8.5)
-    ax.set_title(t, fontsize=11)
-    ax.set_xticks(np.arange(-0.5, 3), minor=True)
-    ax.set_yticks(np.arange(-0.5, 6), minor=True)
-    ax.grid(which="minor", color="white", lw=1.5)
-    ax.tick_params(which="both", length=0)
-    for sp in ax.spines.values():
-        sp.set_visible(False)
-axes[0].set_yticks(range(6))
-axes[0].set_yticklabels(m_lab, fontsize=10)
-
-cb = fig.colorbar(
-    mpl.cm.ScalarMappable(norm=norm, cmap=cmap),
-    ax=axes,
-    fraction=0.025,
-    pad=0.02,
-    spacing="uniform",
-)
-cb.set_ticks([(a + b) / 2 for a, b in zip(bounds[:-1], bounds[1:])])
-cb.set_ticklabels(["<0.3", "0.3-0.5", "0.5-0.7", "0.7-0.9", "0.9-1"])
-cb.ax.tick_params(length=0, labelsize=9)
-cb.outline.set_visible(False)
-cb.set_label("CSI (modelled vs postprocessed max flood depth)", fontsize=9)
-fig.text(
-    0.02,
-    -0.02,
-    "▲ risk overestimated by postprocessed         "
-    "▼ risk underestimated by postprocessed",
-    fontsize=8.5,
-)
-fig.savefig(RUNS / "fig_csi_heatmap_numbers.png", dpi=300, bbox_inches="tight")
-
-
-# ------------------------------------------------------------------------------------------
-# No numbers but same pot:
-df = pd.read_csv(OUT_CSV)
-df["bias"] = (df.hits_km2 + df.false_alarms_km2) / (df.hits_km2 + df.misses_km2)
-
-measures = [
-    "retreat",
-    "accommodate",
-    "NbS_protect_open",
-    "grey_protect_open",
-    "protect_closed",
-    "advance",
-]
-m_lab = [
-    "Retreat",
-    "Accommodate",
-    "Nbs Protect Open",
-    "Grey Protect Open",
-    "Protect Closed",
-    "Advance",
-]
-events = ["coast_100", "river_500", "compound_100c_500r"]
-e_lab = ["Coast\n100", "River\n500", "Compound\n100C 500R"]
-scales = [1, 9, 4]  # full potential -> highly ineffective
-scale_lab = {
-    4: "Highly\nineffective",
-    9: "Marginally\nineffective",
-    1: "Full\npotential",
-}
-
-colors = ["#e57e7f", "#e9b1b5", "#fbe2d5", "#b4e4d9", "#7ad3b6"]  # low -> high
-bounds = [0, 0.3, 0.5, 0.7, 0.9, 1.0]
-cmap = ListedColormap(colors)
-norm = BoundaryNorm(bounds, cmap.N)
-
-fig, axes = plt.subplots(1, 3, figsize=(10, 4.6), sharey=True)
-e_title = ["Coast 100", "River 500", "Compound 100C 500R"]
-for ax, e, t in zip(axes, events, e_title):
-    sub = df[df.event == e].set_index(["measure", "scale"])
-    Z = np.array([[sub.loc[(m, s), "CSI"] for s in scales] for m in measures])
-    B = np.array([[sub.loc[(m, s), "bias"] for s in scales] for m in measures])
-    ax.imshow(Z, cmap=cmap, norm=norm, aspect="auto")
-    for i in range(len(measures)):
-        for j in range(len(scales)):
-            z, b = Z[i, j], B[i, j]
-            mark = "▲" if b > 1.25 else ("▼" if b < 0.8 else "")
-            if mark:
-                ax.text(
-                    j, i, mark, ha="center", va="center", fontsize=12, color="black"
-                )
-    ax.set_xticks(range(3))
-    ax.set_xticklabels([scale_lab[s] for s in scales], fontsize=8.5)
-    ax.set_title(t, fontsize=11)
-    ax.set_xticks(np.arange(-0.5, 3), minor=True)
-    ax.set_yticks(np.arange(-0.5, 6), minor=True)
-    ax.grid(which="minor", color="white", lw=1.5)
-    ax.tick_params(which="both", length=0)
-    for sp in ax.spines.values():
-        sp.set_visible(False)
-axes[0].set_yticks(range(6))
-axes[0].set_yticklabels(m_lab, fontsize=10)
-
-cb = fig.colorbar(
-    mpl.cm.ScalarMappable(norm=norm, cmap=cmap),
-    ax=axes,
-    fraction=0.025,
-    pad=0.02,
-    spacing="uniform",
-)
-cb.set_ticks([(a + b) / 2 for a, b in zip(bounds[:-1], bounds[1:])])
-cb.set_ticklabels(["<0.3", "0.3-0.5", "0.5-0.7", "0.7-0.9", "0.9-1"])
-cb.ax.tick_params(length=0, labelsize=9)
-cb.outline.set_visible(False)
-cb.set_label("CSI (modelled vs postprocessed max flood depth)", fontsize=9)
-fig.text(
-    0.02,
-    -0.02,
-    "▲ risk overestimated by postprocessed          "
-    "▼ risk underestimated by postprocessed",
-    fontsize=8.5,
-)
-fig.savefig(RUNS / "fig_csi_heatmap_no_numbers.png", dpi=300, bbox_inches="tight")
+    # one heat map with the CSI written in each cell, one with only the bias marks
+    plot_heatmap(df, numbers=True, out=RUNS / "fig_csi_heatmap_numbers.png")
+    plot_heatmap(df, numbers=False, out=RUNS / "fig_csi_heatmap_no_numbers.png")

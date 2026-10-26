@@ -25,16 +25,22 @@ Outputs (all in OUT_DIR = results/2433835/runs/):
   fig_elevation_map.png      standalone elevation panel
   fig_landuse_map.png        standalone land-use panel
   fig_domain_input_data.png  combined elevation | land-use, 1x2
+  fig_return_period_curves.png  river discharge | coastal water level RP curves, 1x2
+  fig_forced_hydrograph.png  built water-level / discharge forcing per scenario, 2x3
 """
 
+import json
 import os
 import sys
 from pathlib import Path
 
 import geopandas as gpd
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import shapely
+import xarray as xr
+from hydromt_sfincs import SfincsModel
 from matplotlib.colors import BoundaryNorm, ListedColormap, TwoSlopeNorm
 from matplotlib.patches import Patch
 
@@ -55,11 +61,13 @@ BASIN_ROOT = Path(os.environ["GCFM_RESULTS_DIR"]) / BASIN_ID
 RUNS_DIR = BASIN_ROOT / "runs"
 OUT_DIR = RUNS_DIR
 DOMAIN_DIR = BASIN_ROOT / "preprocessing_inputs" / "domain"
+FORCING_DIR = BASIN_ROOT / "preprocessing_inputs" / "forcing"
 LAND_POLYGONS_PATH = DOMAIN_DIR / f"{BASIN_ID}_land_polygons.gpkg"
 RIVER_NETWORK_PATH = DOMAIN_DIR / f"{BASIN_ID}_river_network_clean.gpkg"
 DOMAIN_POLYGON_PATH = DOMAIN_DIR / f"{BASIN_ID}_domain.gpkg"
 ELEVATION_PATH = DOMAIN_DIR / f"{BASIN_ID}_elevation_conditioned_sfincs_grid.tif"
 LANDUSE_PATH = DOMAIN_DIR / f"{BASIN_ID}_landuse_on_grid.tif"
+PROTECTION_PATH = DOMAIN_DIR / "protection_levels.json"
 
 # The SFINCS grid is rotated inside its bounding box, so ~45% of the raw
 # elevation raster is nodata outside the active grid -- capped, not the full
@@ -278,5 +286,171 @@ for ax, panel in ((ax1, "(a)"), (ax2, "(b)")):
 
 out_path = OUT_DIR / "fig_domain_input_data.png"
 fig.savefig(out_path, dpi=150, bbox_inches="tight")
+plt.close(fig)
+print(f"Wrote {out_path}")
+
+# --------------------------------------------------------- 4. return-period curves
+# decode_times=False: "time"'s units ("hours since simulation start") is a
+# relative offset, not a real calendar date -- xarray's CF-time decoder
+# chokes trying to parse "simulation start" as a reference date.
+river_ds = xr.open_dataset(FORCING_DIR / "river_forcing.nc", decode_times=False)
+surge_ds = xr.open_dataset(FORCING_DIR / "surge_forcing.nc", decode_times=False)
+
+# the single most significant river crossing (largest high-RP discharge),
+# same selection basis 07_get_boundary_forcings.py's own diagnostic plot uses
+active = river_ds["has_glofas"].values.astype(bool)
+rp_table = river_ds["discharge_rp_table"].values[active]
+i_main = np.nanargmax(rp_table[:, -1])
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5), facecolor="white")
+
+river_rp = river_ds["return_period"].values
+in_range = river_rp <= 1000
+ax1.plot(river_rp[in_range], rp_table[i_main][in_range], color="#1b4965")
+ax1.set_xscale("log")
+ax1.set_xlabel("Return period (years)")
+ax1.set_ylabel("Discharge (m3/s)")
+ax1.set_title("River discharge")
+
+table_rp = surge_ds["table_rp"].values
+storm_tide_table = surge_ds["storm_tide_rp_table"].values
+for i in range(storm_tide_table.shape[0]):
+    ax2.plot(table_rp, storm_tide_table[i], marker="o", markersize=3)
+ax2.set_xscale("log")
+ax2.set_xlabel("Return period (years)")
+ax2.set_ylabel("Water level (m)")
+ax2.set_title("Coastal water level")
+
+# each panel's own protection standard (FLOPROS, 04_protection_levels), next to the
+# 100-yr design event, so the gap between what's protected and what's forced shows
+protection = json.loads(PROTECTION_PATH.read_text())
+panel_protection = {ax1: protection["riverine_rp_yr"], ax2: protection["coastal_rp_yr"]}
+
+for ax, panel in ((ax1, "(a)"), (ax2, "(b)")):
+    ax.grid(alpha=0.3)
+    ax.set_xlim(0.7, 1.5e3)
+    ax.axvline(
+        100, color="#b44225", linestyle="--", linewidth=1, label="100-year event"
+    )
+    rp_protected = panel_protection[ax]
+    ax.axvline(
+        rp_protected,
+        color="grey",
+        linestyle="--",
+        linewidth=1.2,
+        label=f"Protection standard ({rp_protected:.0f}-year)",
+    )
+    # top left, just below the (a)/(b) panel letter
+    ax.legend(loc="upper left", bbox_to_anchor=(0, 0.9), fontsize=8, frameon=False)
+    ax.text(
+        0.02,
+        0.97,
+        panel,
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=12,
+        fontweight="bold",
+    )
+
+# fig.suptitle("Flood hazard return-period curves")
+fig.tight_layout()
+out_path = OUT_DIR / "fig_return_period_curves.png"
+fig.savefig(out_path, dpi=150, facecolor="white")
+plt.close(fig)
+river_ds.close()
+surge_ds.close()
+print(f"Wrote {out_path}")
+
+# --------------------------------------------------------- 5. forced hydrographs
+# The REAL, actually-built forcing for each scenario's own SFINCS run, read
+# straight off its sfincs.bzs/sfincs.dis via hydromt_sfincs (real calendar
+# time, RP/protection-floor/SLR/multiplier all already resolved). NOT
+# river_forcing.nc's/surge_forcing.nc's own stored 'discharge'/'water_level'
+# -- those are a basin-level, scenario-independent preview at a fixed
+# diagnostic RP, never what a specific scenario actually ran with (same fix
+# 13_build_sfincs.py's own 05_forcing.png already applies -- see its comment
+# above the forcing-plot block).
+# 2x3 grid: one column per scenario, water level on top / discharge on
+# bottom, y-axis shared within each row so magnitudes are directly
+# comparable across scenarios.
+SCENARIOS = ["coast_100_03SLR", "river_100_03SLR", "compound_100_03SLR"]
+SCENARIO_LABELS = {
+    "coast_100_03SLR": "Coastal flood",
+    "river_100_03SLR": "River flood",
+    "compound_100_03SLR": "Compound flood",
+}
+SCENARIO_COLOR = "#14b5dd"
+# if these scenarios' own slr_m (config/scenarios.yml, per-scenario) is 0.0,
+# the plotted water level IS the actual built forcing, with no SLR -- shown
+# as a flat reference line AT y=SLR_M (an illustrative SLR magnitude, not a
+# baseline+SLR shift) on the coastal scenarios only, so the flood peak's
+# height can be read directly against it.
+SLR_M = 0.5
+SLR_SCENARIOS = {"coast_100"}  # , "compound_100c_500r"}
+
+fig, axes = plt.subplots(
+    2,
+    len(SCENARIOS),
+    figsize=(3.2 * len(SCENARIOS), 5.5),
+    sharex=True,
+    sharey="row",
+    facecolor="white",
+)
+
+for j, scen in enumerate(SCENARIOS):
+    mod = SfincsModel(root=str(RUNS_DIR / scen / "sfincs"), mode="r")
+
+    wl_comp = mod.get_component("water_level")
+    wl_comp.read()
+    wl = wl_comp.data  # dims (time, index), var 'bzs'
+    wl_now = wl["bzs"].mean(dim="index").values
+    axes[0, j].plot(wl.time.values, wl_now, color=SCENARIO_COLOR, lw=1.8)
+
+    if scen in SLR_SCENARIOS:
+        axes[0, j].axhline(
+            SLR_M,
+            color=SCENARIO_COLOR,
+            lw=1.5,
+            linestyle=":",
+            label=f"{SLR_M:g} m SLR",
+        )
+        axes[0, j].legend(fontsize=7, frameon=False, loc="upper left")
+
+    dis_comp = mod.get_component("discharge_points")
+    dis_comp.read()
+    dis = dis_comp.data  # dims (time, index), var 'dis'
+    axes[1, j].plot(
+        dis.time.values, dis["dis"].mean(dim="index").values, color="#2411ce", lw=1.8
+    )
+
+    for i in (0, 1):
+        axes[i, j].grid(alpha=0.3)
+        axes[i, j].spines[["top", "right"]].set_visible(False)
+
+    axes[0, j].set_title(SCENARIO_LABELS.get(scen, scen))
+
+axes[0, 0].set_ylabel("Water level (m)")
+axes[1, 0].set_ylabel("Discharge (m³/s)")
+
+# sharex=True only links the axis range, not tick-label visibility, and
+# AutoDateLocator's default tick density (fine in 13_build_sfincs.py's own
+# single wide 10" figure) is too cluttered at this grid's ~3" column width --
+# force 12-hourly ticks instead and rotate labels to keep them legible.
+locator = mdates.HourLocator(byhour=[0, 12])
+formatter = mdates.ConciseDateFormatter(locator)
+for ax in axes.flat:
+    ax.label_outer()
+    ax.xaxis.set_major_locator(locator)
+    ax.xaxis.set_major_formatter(formatter)
+    ax.tick_params(axis="x", labelrotation=45)
+    # "2000" is just this pipeline's dummy simulation reference year, not a
+    # meaningful date -- drop ConciseDateFormatter's repeated offset text
+    ax.xaxis.get_offset_text().set_visible(False)
+
+fig.suptitle("Forcing hydrographs")
+fig.tight_layout()
+out_path = OUT_DIR / "fig_forced_hydrograph.png"
+fig.savefig(out_path, dpi=200, facecolor="white")
 plt.close(fig)
 print(f"Wrote {out_path}")
