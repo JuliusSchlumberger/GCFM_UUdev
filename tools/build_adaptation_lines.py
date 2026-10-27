@@ -55,6 +55,7 @@ from src.adaptation_lines import (  # noqa: E402
     KIND_COAST,
     KIND_ESTUARY,
     KIND_RIVER,
+    centrelines_off_sea,
     estuary_and_seal,
     label_weir_kinds,
     mouth_closures,
@@ -219,7 +220,12 @@ def main() -> None:
             transform,
         )
         seaward = seaward | ocean_linked_wetland_mask(landuse, seaward, grid)
-    channel = build_channel_mask_regular(rivers, "width", landuse.shape, transform)
+    channel = build_channel_mask_regular(
+        centrelines_off_sea(rivers, seaward, transform),
+        "width",
+        landuse.shape,
+        transform,
+    )
 
     kinds, kind_counts = label_weir_kinds(
         weir, seaward, channel, valid, transform, int(rdm["min_component_cells"])
@@ -308,6 +314,7 @@ def main() -> None:
         },
         "baseline_weir_kinds": pd.Series(kinds).value_counts().to_dict(),
         "facing_small_island": kind_counts["facing_small_island"],
+        "by_nearest_water": kind_counts["by_nearest_water"],
         "unresolved_as_river": kind_counts["unresolved_as_river"],
         "estuary_cells": int(estuary.sum()),
         "mouths": report,

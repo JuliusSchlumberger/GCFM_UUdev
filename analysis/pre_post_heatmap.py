@@ -1,15 +1,18 @@
 """
 Agreement of the postprocessed (POST) flood map with the modelled (PRE, re-run) flood
 map, per flood event and strategy (measure x scale). PRE is the reference. Cells are
-only wet (depth > THRESHOLD) or dry; dry-in-both is counted on land cells (see land_mask).
+only wet (depth > THRESHOLD) or dry; dry-in-both is counted only on land cells (see
+land_mask) that are wet in the no-adaptation baseline (<event>/visuals/max_flood_depth.tif),
+so it means both agree the measure protects the cell, not that it never floods.
 
     hits          wet in PRE and in POST
-    misses        wet in PRE, dry in POST  (POST under-credits the measure)
-    false alarms  dry in PRE, wet in POST  (POST over-credits the measure)
-    dry in both   dry in PRE and in POST   (correct negatives: agreeing there is no flood)
+    misses        wet in PRE, dry in POST  (POST over-credits the measure)
+    false alarms  dry in PRE, wet in POST  (POST under-credits the measure)
+    dry in both   dry in PRE and in POST   (protected in both: agreeing on the risk reduction)
 
     CSI    hits / (hits + misses + false alarms)         ignores the dry-in-both cells
-    agree  (hits + dry in both) / all land cells         counts them, but dominated by dry land
+    agree  (hits + dry in both) / all compared cells     counts them; high for weak measures,
+                                                         where most cells stay wet in both
     HSS    Heidke skill score: 2(hits*dry - misses*fa) / ((h+m)(m+d) + (h+fa)(fa+d))
            counts them but discounts the agreement expected by chance: 1 = perfect,
            0 = no better than chance, < 0 = worse than chance
@@ -76,23 +79,24 @@ def land_mask(like_path):
     return np.isfinite(on_grid(DEP_SUBGRID)) & (on_grid(SEA_MASK) != 1.0)
 
 
-def contingency(wet_pre, wet_post, land, transform):
+def contingency(wet_pre, wet_post, domain, transform):
     """Hits / misses / false alarms / dry-in-both (km2) and the scores.
 
     Wet cells count wherever they are (also on land reclaimed from the sea by NbS, which
-    the baseline sea mask still calls sea); dry-in-both counts baseline land cells only.
+    the baseline sea mask still calls sea, and on cells a measure floods that were dry in
+    the baseline); dry-in-both counts `domain` cells only (land wet in the baseline).
     """
     h = int((wet_pre & wet_post).sum())
     m = int((wet_pre & ~wet_post).sum())
     f = int((~wet_pre & wet_post).sum())
-    d = int((~wet_pre & ~wet_post & land).sum())
+    d = int((~wet_pre & ~wet_post & domain).sum())
     km2 = abs(transform.a * transform.e) / 1e6  # area of one cell
     denom = (h + m) * (m + d) + (h + f) * (f + d)
     return dict(
         hits_km2=h * km2,
         misses_km2=m * km2,
         false_alarms_km2=f * km2,
-        dry_both_km2=d * km2,
+        protected_both_km2=d * km2,
         CSI=h / (h + m + f) if h + m + f else float("nan"),
         agree=(h + d) / (h + m + f + d),
         HSS=2 * (h * d - m * f) / denom if denom else float("nan"),
@@ -213,6 +217,8 @@ if __name__ == "__main__":
             print(
                 f"{event}: {name} only has {'PRE' if name in pre else 'POST'} -- skipped"
             )
+        # no-adaptation flood map: dry-in-both only counts where this one is wet
+        wet_base, tf_base = wet_map(RUNS / event / "visuals" / "max_flood_depth.tif")
 
         for name in sorted(pre & post):
             measure, scale = name.rsplit("_", 1)
@@ -222,6 +228,10 @@ if __name__ == "__main__":
                 raise ValueError(
                     f"{event}/{name}: PRE and POST are not on the same grid"
                 )
+            if wet_base.shape != wet_pre.shape or tf_base != tf_pre:
+                raise ValueError(
+                    f"{event}/{name}: baseline and PRE are not on the same grid"
+                )
             if land is None:  # one grid for every run
                 land = land_mask(pre_dir / name / "max_flood_depth.tif")
                 print(
@@ -229,7 +239,7 @@ if __name__ == "__main__":
                 )
             rows.append(
                 dict(event=event, scale=scale, measure=measure)
-                | contingency(wet_pre, wet_post, land, tf_pre)
+                | contingency(wet_pre, wet_post, land & wet_base, tf_pre)
             )
 
     df = pd.DataFrame(rows)

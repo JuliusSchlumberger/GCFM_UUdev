@@ -17,6 +17,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 # Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
@@ -512,3 +513,154 @@ for e in SCATTER_EVENTS:
     fig.savefig(out, dpi=150, facecolor="white")
     plt.close(fig)
     print(f"Wrote {out.name} to {OUT_DIR}")
+
+
+# Metric bump chart -------------------------------------------------------------------------------------------------------------
+# Rank of every measure at BUMP_SCALE under each risk metric, one line per measure, so
+# crossing lines show where the choice of metric reorders the strategies. Rows are the
+# modelled (PRE) and postprocessed (POST) approach, columns events; ranks are within each
+# panel, using TIE_DECIMALS / NO_EFFECT_TOL from the ranking settings above. Tied measures
+# share a rank and are nudged apart by BUMP_NUDGE. Each panel notes Kendall's W across the
+# metrics (1 = every metric gives the same order).
+BUMP_METRICS = ["flooded_area_km2", "urban_exposed_km2", "volume_m3", "mean_depth_m"]
+BUMP_SCALE = "1"  # full potential
+BUMP_APPROACHES = {"PRE": "Modelled rank", "POST": "Postprocessed rank"}
+BUMP_NUDGE = 0.12  # rank units between tied lines
+# categorical slots 1-6 of the dataviz reference palette, in MEASURE_ORDER
+MEASURE_STYLE = dict(
+    zip(
+        MEASURE_ORDER,
+        zip(
+            ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"],
+            ["o", "s", "^", "D", "v", "P"],
+        ),
+    )
+)
+METRIC_SHORT = {
+    m: textwrap.fill(lbl.removeprefix("residual ").capitalize(), 10)
+    for m, lbl, *_ in METRIC_INFO
+}
+
+
+def kendalls_w(vals):
+    """Tie-corrected Kendall's W of a measures x metrics table of ranking values."""
+    vals = vals.dropna()
+    n, m = vals.shape
+    r = vals.rank(method="average")
+    s = ((r.sum(axis=1) - m * (n + 1) / 2) ** 2).sum()
+    t = sum((c**3 - c).sum() for c in (vals[col].value_counts() for col in vals))
+    denom = m**2 * (n**3 - n) - m * t
+    return 12 * s / denom if denom > 0 else np.nan
+
+
+frames = []
+for e in events:
+    for ap in BUMP_APPROACHES:
+        g = d[(d.event == e) & (d.scale == BUMP_SCALE) & (d.approach == ap)]
+        g = g.set_index("short")
+        for m in BUMP_METRICS if not g.empty else []:
+            r = rank_by_residual((g[m] / baselines.loc[e, m]).dropna())
+            frames.append(
+                r.assign(event=e, approach=ap, metric=m)
+                .rename_axis("measure")
+                .reset_index()
+            )
+bump = pd.concat(frames, ignore_index=True)
+# nudge tied lines apart in MEASURE_ORDER, so a tie held over several metrics stays parallel
+bump["order"] = bump.measure.map(MEASURE_ORDER.index)
+bump = bump.sort_values("order")
+tie = bump.groupby(["event", "approach", "metric", "rank"])["order"]
+bump["y"] = (
+    bump["rank"] + (tie.cumcount() - (tie.transform("size") - 1) / 2) * BUMP_NUDGE
+)
+
+ranks = bump.pivot_table(
+    index=["event", "measure"], columns=["metric", "approach"], values="rank"
+)[BUMP_METRICS]
+print(
+    f"\n# Rank per metric at scale {BUMP_SCALE} (1 = lowest residual), "
+    "modelled (PRE) vs postprocessed (POST)"
+)
+print(ranks.to_string())
+same = ranks.xs("PRE", axis=1, level=1) == ranks.xs("POST", axis=1, level=1)
+print("\n# Measures whose POST rank equals the PRE rank, per event and metric")
+print(same.groupby("event").sum().astype(int).to_string())
+
+fig_w, fig_h = 3.4 * len(events), 2.9 * len(BUMP_APPROACHES) + 0.9
+fig, axes = plt.subplots(
+    len(BUMP_APPROACHES),
+    len(events),
+    figsize=(fig_w, fig_h),
+    sharex=True,
+    sharey=True,
+    squeeze=False,
+    facecolor="white",
+)
+x = np.arange(len(BUMP_METRICS))
+for i, (ap, ap_label) in enumerate(BUMP_APPROACHES.items()):
+    for j, e in enumerate(events):
+        ax = axes[i, j]
+        p = bump[(bump.event == e) & (bump.approach == ap)]
+        if p.empty:
+            ax.set_axis_off()
+            continue
+        for ms, g in p.groupby("measure"):
+            color, marker = MEASURE_STYLE[ms]
+            ax.plot(
+                x,
+                g.set_index("metric").reindex(BUMP_METRICS)["y"],
+                color=color,
+                lw=2,
+                marker=marker,
+                ms=7,
+                mec="white",
+                mew=1,
+                zorder=3,
+            )
+        w = kendalls_w(p.pivot(index="measure", columns="metric", values="val"))
+        ax.set_title(f"W = {w:.2f}", loc="right", fontsize=8, color="#52514e")
+        if i == 0:
+            ax.set_title(event_label(e), loc="left", fontsize=11)
+        if j == 0:
+            ax.set_ylabel(ap_label, fontsize=10)
+        ax.set_xticks(x)
+        ax.set_xticklabels([METRIC_SHORT[m] for m in BUMP_METRICS], fontsize=9)
+        ax.set_ylim(len(measures) + 0.5, 0.5)  # rank 1 on top
+        ax.set_yticks(range(1, len(measures) + 1))
+        ax.grid(color="#e6e6e6", lw=0.6)
+        ax.set_axisbelow(True)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+
+handles = [
+    Line2D([], [], color=c, marker=mk, lw=2, ms=7, mec="white", mew=1)
+    for c, mk in (MEASURE_STYLE[ms] for ms in measures)
+]
+fig.legend(
+    handles,
+    [pretty(ms) for ms in measures],
+    loc="upper center",
+    ncol=len(measures),
+    frameon=False,
+    fontsize=9,
+)
+note = (
+    f"{SCALE_LABELS[BUMP_SCALE]} scale; rank 1 = lowest residual. Ties share the lowest"
+    " rank. W = Kendall's coefficient of concordance across metrics."
+)
+if NO_EFFECT_TOL > 0:
+    note += f" Reductions below {NO_EFFECT_TOL:.0%} of baseline count as no effect."
+fig.text(
+    0.5,
+    0.005,
+    textwrap.fill(note, 150),
+    ha="center",
+    va="bottom",
+    fontsize=7,
+    color="gray",
+)
+plt.tight_layout(rect=[0, 0.03, 1, 1 - 0.45 / fig_h])
+out = OUT_DIR / f"fig_rank_bump_metrics_{BUMP_SCALE}.png"
+fig.savefig(out, dpi=150, facecolor="white")
+plt.close(fig)
+print(f"Wrote {out.name} to {OUT_DIR}")
