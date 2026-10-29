@@ -2,6 +2,8 @@
 
 Reads metrics_comparison.csv; risk reduction is relative to the matching event's
 baseline row. Also plots return-period curves, forcing hydrographs and rankings.
+Writes to <results_dir>/2433835/figures/analysis/ (90_results_figures_<quantity>.png);
+the basin comparison of return-period curves to <results_dir>/figures/analysis/.
 """
 
 import matplotlib
@@ -13,7 +15,7 @@ from hydromt_sfincs import SfincsModel
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from _common import label, script_parser, site_path
+from _common import analysis_dir, analysis_path, label, script_parser, site_path
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
@@ -50,7 +52,8 @@ def main():
     build_parser().parse_args()
 
     # results_dir is a site setting; see config/site.example.yml.
-    OUT_DIR = site_path("results_dir") / "2433835/runs"
+    BASIN_ID = "2433835"
+    OUT_DIR = site_path("results_dir") / BASIN_ID / "runs"
     CSV = OUT_DIR / "metrics_comparison.csv"
     METRICS = ["flooded_area_km2", "urban_exposed_km2", "mean_depth_m", "volume_m3"]
     SCALES = ["04", "09", "1"]  # strategy-name suffix, low -> high implementation scale
@@ -234,11 +237,13 @@ def main():
         labels.append("Residual risk")
         axes[0, 0].legend(handles, labels, fontsize=8)
         plt.tight_layout(rect=[0, 0, 1, 0.97])
-        fig.savefig(OUT_DIR / f"fig_scale_response_{METRIC}.png", dpi=150)
+        fig.savefig(
+            analysis_path(BASIN_ID, __file__, f"scale_response_{METRIC}.png"), dpi=150
+        )
 
     print(
-        f"\nWrote outputs to {OUT_DIR}: tidy_scenarios.csv, post_vs_pre_wide.csv, "
-        "spearman_by_event_metric.csv, fig_scale_response_<metric>.png"
+        f"\nWrote outputs to {analysis_dir(BASIN_ID)}: "
+        "90_results_figures_scale_response_<metric>.png"
     )
 
     # Time series plots
@@ -286,7 +291,11 @@ def main():
 
     # fig.suptitle("Flood hazard return-period curves")
     fig.tight_layout()
-    fig.savefig(OUT_DIR / "fig_return_period_curves.png", dpi=150, facecolor="white")
+    fig.savefig(
+        analysis_path(BASIN_ID, __file__, "return_period_curves.png"),
+        dpi=150,
+        facecolor="white",
+    )
     plt.close(fig)
 
     # plot 2: forced hydrograph, read from each scenario's sfincs.bzs/sfincs.dis
@@ -365,14 +374,21 @@ def main():
 
     fig.suptitle("Forcing hydrographs")
     fig.tight_layout()
-    fig.savefig(OUT_DIR / "fig_forced_hydrograph.png", dpi=200, facecolor="white")
+    fig.savefig(
+        analysis_path(BASIN_ID, __file__, "forced_hydrograph.png"),
+        dpi=200,
+        facecolor="white",
+    )
     plt.close(fig)
 
     river_ds.close()
     surge_ds.close()
-    print(f"Wrote fig_return_period_curves.png, fig_forced_hydrograph.png to {OUT_DIR}")
+    print(
+        "Wrote 90_results_figures_return_period_curves.png, _forced_hydrograph.png "
+        f"to {analysis_dir(BASIN_ID)}"
+    )
 
-    # Combined return-period curves: the panels of fig_return_period_curves.png with
+    # Combined return-period curves: the panels of return_period_curves.png with
     # every basin in COMPARE_BASINS overlaid, one colour per basin.
     COMPARE_BASINS = ["2433835", "3279946"]
     BASIN_LABELS = {"3279946": "Chao Phraya (3279946)"}  # default: basin_id
@@ -433,8 +449,10 @@ def main():
 
     fig.suptitle("Flood hazard return-period curves -- basin comparison")
     fig.tight_layout()
-    out_compare = RESULTS_ROOT / (
-        "fig_return_period_curves_comparison_" + "_vs_".join(COMPARE_BASINS) + ".png"
+    out_compare = analysis_path(
+        None,
+        __file__,
+        "return_period_curves_comparison_" + "_vs_".join(COMPARE_BASINS) + ".png",
     )
     fig.savefig(out_compare, dpi=150, facecolor="white")
     plt.close(fig)
@@ -599,10 +617,14 @@ def main():
                 color="gray",
             )
         fig.tight_layout(rect=[0, 0.09, 1, 1])
-        out = OUT_DIR / f"fig_rank_comparison_{e}_{RANK_METRIC}_scale{RANK_SCALE}.png"
+        out = analysis_path(
+            BASIN_ID,
+            __file__,
+            f"rank_comparison_{e}_{RANK_METRIC}_scale{RANK_SCALE}.png",
+        )
         fig.savefig(out, dpi=150, facecolor="white")
         plt.close(fig)
-        print(f"Wrote {out.name} to {OUT_DIR}")
+        print(f"Wrote {out.name} to {out.parent}")
 
     # Rank scatter
     # PRE rank (x) vs POST rank (y), one dot per measure and scale; ranks within each
@@ -705,10 +727,10 @@ def main():
             )
         fig.text(0.5, 0.01, note, ha="center", fontsize=7, color="gray")
         fig.subplots_adjust(left=0.08, right=0.82, bottom=0.10, top=0.94)
-        out = OUT_DIR / f"fig_rank_scatter_{e}_{RANK_METRIC}.png"
+        out = analysis_path(BASIN_ID, __file__, f"rank_scatter_{e}_{RANK_METRIC}.png")
         fig.savefig(out, dpi=150, facecolor="white")
         plt.close(fig)
-        print(f"Wrote {out.name} to {OUT_DIR}")
+        print(f"Wrote {out.name} to {out.parent}")
 
 
 if __name__ == "__main__":

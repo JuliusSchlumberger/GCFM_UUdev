@@ -7,6 +7,8 @@ plus freeboard_m, rounded up to 0.1 m, it is the floor of every built weir
 segment. Pure-coastal segments sit at that floor; segments holding back higher
 river water (banks, the mouth) are higher, so the weir's max can be set by
 inland reaches unrelated to surge. Older results layouts are tried as fallbacks.
+Writes <results_dir>/<basin_id>/figures/analysis/
+90_plot_surge_vs_dike_crest_comparison.png.
 
 Usage:
     conda run -n <env> python analysis/plot_surge_vs_dike_crest.py [basin_id] [scenario_surge_rp]
@@ -30,6 +32,7 @@ import yaml
 from _common import (  # noqa: E402
     REPO_ROOT,
     add_basin_id_argument,
+    analysis_path,
     first_existing,
     script_parser,
     site_path,
@@ -68,8 +71,6 @@ def main() -> None:
         SCENARIO_DEFS = yaml.safe_load(fh) or {}
     # results_dir is a site setting; see config/site.example.yml.
     RESULTS_DIR = site_path("results_dir")
-    FIGS_DIR = REPO_ROOT / "figs" / "surge_vs_dike_crest"
-    FIGS_DIR.mkdir(parents=True, exist_ok=True)
 
     basin_dir = RESULTS_DIR / BASIN_ID
 
@@ -286,7 +287,7 @@ def main() -> None:
     fig.suptitle(f"Surge level vs. coastal dike crest — basin {BASIN_ID}", fontsize=13)
     fig.tight_layout()
 
-    out_path = FIGS_DIR / f"{BASIN_ID}_surge_vs_dike_crest.png"
+    out_path = analysis_path(BASIN_ID, __file__, "comparison.png")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     log.info(f"\nPlot written: {out_path}")

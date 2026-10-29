@@ -12,7 +12,9 @@ Line width ∝ accumulated discharge (shared scale). Labels:
 reach) and bifurcation% = Q(reach)/Q(bifurcation reach); bifurcation% alone
 at confluences.
 
-Reads <results_dir>/<basin_id>/preprocessing_inputs/; writes to figs/bifurcation_options/.
+Reads <results_dir>/<basin_id>/preprocessing_inputs/; writes one figure per
+bifurcation root reach to
+<results_dir>/<basin_id>/figures/analysis/90_check_bifurcation_options_<reach_id>.png.
 
 Usage:
     python analysis/check_bifurcation_options.py [basin_id]
@@ -32,7 +34,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from _common import REPO_ROOT, add_basin_id_argument, script_parser, site_path
+from _common import (
+    REPO_ROOT,
+    add_basin_id_argument,
+    analysis_dir,
+    script_parser,
+    site_path,
+)
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
 from src.domain import load_domain
@@ -58,6 +66,7 @@ from src.sword import (
 )
 
 log = logging.getLogger(__name__)
+STEM = Path(__file__).stem
 
 
 def rule_io(basin_id: str, out_dir: Path) -> SimpleNamespace:
@@ -86,7 +95,7 @@ def rule_io(basin_id: str, out_dir: Path) -> SimpleNamespace:
             ],
             width_corrections=str(REPO_ROOT / "config" / "sword_width_corrections.csv"),
         ),
-        output=SimpleNamespace(plot_dir=str(out_dir / basin_id)),
+        output=SimpleNamespace(plot_dir=str(out_dir)),
         params=SimpleNamespace(
             discharge_variable=cfg["river_processing"]["flow_accumulation"][
                 "discharge_variable"
@@ -417,7 +426,7 @@ def run(snk: SimpleNamespace) -> None:
                 fontsize=12,
             )
             fig.tight_layout(rect=(0, 0, 1, 0.92))
-            out_path = plot_dir / f"{root_reach_id}.png"
+            out_path = plot_dir / f"90_{STEM}_{root_reach_id}.png"
             save_figure(fig, out_path, dpi=150)
             log.info(f"Written: {out_path}")
 
@@ -429,7 +438,8 @@ def main() -> None:
     add_basin_id_argument(parser)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    run(rule_io(str(args.basin_id), REPO_ROOT / "figs" / "bifurcation_options"))
+    basin_id = str(args.basin_id)
+    run(rule_io(basin_id, analysis_dir(basin_id)))
 
 
 if __name__ == "__main__":

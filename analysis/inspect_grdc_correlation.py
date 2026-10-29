@@ -2,8 +2,9 @@
 
 Finds the nearest GRDC station for each has_glofas crossing in river_forcing.nc
 regardless of boundary_forcings.bias_correction.enabled, and writes one overview
-PNG per matched crossing to figs/grdc_overview/<basin_id>/. Never writes to
-results/ and never applies the bias correction. Basins come from the catalogue's
+PNG per matched crossing to <results_dir>/<basin_id>/figures/analysis/
+(90_inspect_grdc_correlation_crossing_<i>_cell_(<lat>,<lon>).png). Never
+applies the bias correction. Basins come from the catalogue's
 delta_polygons (as BASINS in Snakemake); basins without river_forcing.nc
 (rule 04) are skipped.
 
@@ -21,7 +22,13 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import yaml
-from _common import REPO_ROOT, script_parser, site_path  # noqa: E402
+from _common import (  # noqa: E402
+    REPO_ROOT,
+    analysis_dir,
+    analysis_path,
+    script_parser,
+    site_path,
+)
 from shapely.geometry import Polygon
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
@@ -259,9 +266,6 @@ def main():
             crs="EPSG:4326",
         )
 
-        out_dir = REPO_ROOT / "figs" / "grdc_overview"
-        out_dir.mkdir(parents=True, exist_ok=True)
-
         n_written = 0
         n_no_station = 0
         n_skipped = 0
@@ -296,9 +300,8 @@ def main():
             )
             grdc_times, grdc_values = load_grdc_series(GRDC_PATH, grdc_id)
 
-            label = (
-                f"basin_{basin_id}_crossing_{i}_cell_({cell_lat:.3f},{cell_lon:.3f})"
-            )
+            crossing = f"crossing_{i}_cell_({cell_lat:.3f},{cell_lon:.3f})"
+            label = f"basin_{basin_id}_{crossing}"
             diagnostics = compute_grdc_correlation(
                 times_arr,
                 glofas_values,
@@ -323,13 +326,13 @@ def main():
                 highlight_crossing_idx=i,
                 highlight_station_id=grdc_id,
                 diagnostics=diagnostics,
-                output_path=out_dir / f"grdc_overview_{label}.png",
+                output_path=analysis_path(basin_id, __file__, f"{crossing}.png"),
                 label=label,
             )
             n_written += 1
 
         print(
-            f"basin {basin_id}: {n_written} plot(s) written to {out_dir}, "
+            f"basin {basin_id}: {n_written} plot(s) written to {analysis_dir(basin_id)}, "
             f"{n_skipped} match(es) with overlap < {min_overlap_days} d, "
             f"{n_no_station} crossing(s) with no GRDC station within {grdc_radius_m / 1000:.1f} km"
         )

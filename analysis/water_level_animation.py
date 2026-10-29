@@ -5,6 +5,8 @@ sea excluded, as for 02_flood_animation.mp4 (compute_flood_progression): raw `zs
 fails as a flood threshold where the bed is below the datum, e.g. a polder at
 about -8 m behind a coastal levee + pumps. Only `pre` runs have a `zs` time
 series and their own sfincs.bzs; `post` writes a single max_flood_depth.tif.
+Writes <results_dir>/<BASIN_ID>/figures/analysis/
+90_water_level_animation_<scenario>_<strategy>.mp4.
 
 Edit the CONFIG block below and run directly:
     python analysis/water_level_animation.py
@@ -16,7 +18,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
-from _common import REPO_ROOT, script_parser, site_path  # noqa: E402
+from _common import REPO_ROOT, analysis_path, script_parser, site_path  # noqa: E402
 from matplotlib.animation import FFMpegWriter, FuncAnimation
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
@@ -91,7 +93,7 @@ def main():
         / "domain"
         / f"{BASIN_ID}_zsini_sea_cells_on_grid.tif"
     )
-    out_path = sfincs_root.parent / "03_water_level_animation.mp4"
+    out_path = analysis_path(BASIN_ID, __file__, f"{SCENARIO}_{STRATEGY}.mp4")
 
     # flood depth time series
     mod, da_event = _load_h(sfincs_root, sea_mask_path)
@@ -152,7 +154,6 @@ def main():
         fargs=(da_h, cax_h, ts_line, ax),
     )
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     anim.save(
         str(out_path),
         writer=FFMpegWriter(fps=FPS, extra_args=["-crf", "15", "-pix_fmt", "yuv420p"]),

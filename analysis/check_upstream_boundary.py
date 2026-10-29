@@ -22,9 +22,9 @@ both, so the bed's offset from rule 10's surface cancels.
 
 Parameters from testing.upstream_boundary_check; the options override them.
 
-Writes to figs/upstream_boundary_check/: <basin>_forcing_points.csv (one row
-per forcing point x (Q, SWL) pair), <basin>_profile_<reach>.png per forcing
-point, <basin>_upstream_boundary_check.png (map of dWL at Q_mean, SWL_ext).
+Writes to <results_dir>/<basin>/figures/analysis/: 90_check_upstream_boundary_forcing_points.csv
+(one row per forcing point x (Q, SWL) pair), _profile_<reach>.png per forcing
+point, _map.png (map of dWL at Q_mean, SWL_ext).
 --extra-reach evaluates a boundary at the upstream end of further reaches.
 
 Usage:
@@ -45,7 +45,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
-from _common import REPO_ROOT, add_basin_id_argument, script_parser, site_path
+from _common import (
+    REPO_ROOT,
+    add_basin_id_argument,
+    analysis_dir,
+    analysis_path,
+    script_parser,
+    site_path,
+)
 from _upstream_profile import (
     boundary_verdict,
     efolding_length,
@@ -571,17 +578,13 @@ def main() -> None:
         default=[],
         help="evaluate a boundary at these reaches' upstream ends",
     )
-    parser.add_argument(
-        "--out-dir", type=Path, default=REPO_ROOT / "figs" / "upstream_boundary_check"
-    )
     args = parser.parse_args()
     for key, value in config_options().items():
         if getattr(args, key) is None:
             setattr(args, key, value)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     basin_id = str(args.basin_id)
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    table, profiles, ctx = check_basin(basin_id, args.out_dir, args)
+    table, profiles, ctx = check_basin(basin_id, analysis_dir(basin_id), args)
     tag = _git_hash()
     params = (
         f"level_tol {args.level_tol_m:g} m, margin {args.margin_km:g} km, SWL_ext = max over "
@@ -593,7 +596,7 @@ def main() -> None:
         plot_profile(
             prof,
             args,
-            args.out_dir / f"{basin_id}_profile_{c['reach_id']}.png",
+            analysis_path(basin_id, __file__, f"profile_{c['reach_id']}.png"),
             f"Basin {basin_id}, {c['source']} reach {c['reach_id']} at {c['x_f_km']:.1f} km: {verdict} at Q_mean, "
             f"SWL_ext; dWL {m['delta_f']:.3f} m, x_inf {m['x_inf'] / 1000:.1f} km\n{params}",
         )
@@ -601,10 +604,10 @@ def main() -> None:
         basin_id,
         ctx,
         profiles,
-        args.out_dir / f"{basin_id}_upstream_boundary_check.png",
+        analysis_path(basin_id, __file__, "map.png"),
         f"Basin {basin_id}: sea influence on the river level at Q_mean, SWL_ext\n{params}",
     )
-    csv = args.out_dir / f"{basin_id}_forcing_points.csv"
+    csv = analysis_path(basin_id, __file__, "forcing_points.csv")
     table.to_csv(csv, index=False)
     ref = table[table["reference"]]
     show = [

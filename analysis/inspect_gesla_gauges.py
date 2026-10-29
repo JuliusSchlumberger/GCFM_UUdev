@@ -7,9 +7,10 @@ domain with >= 10 complete years in 1950-2024, and screens each against its
 nearest GTSM station: duplicate sites, marsh/river networks (CRMS, USGS),
 datum steps in the monthly gauge - GTSM difference, hourly timing lag and
 correlation of the mean-removed levels. Heights stay on each gauge's own
-datum, so only variability is compared. Writes gesla_screen.csv,
-gesla_coverage.csv and one figure per basin to figs/gesla_overview/. Never
-writes to results/.
+datum, so only variability is compared. Writes one figure per basin to
+<results_dir>/<basin>/figures/analysis/90_inspect_gesla_gauges_screen.png and
+the cross-basin inspect_gesla_gauges_screen.csv and _coverage.csv to
+<results_dir>/figures/analysis/.
 
 GESLA files are read from <raw_data_root>/GESLA_v41/ (station files and
 GESLA4-1_ALL.csv).
@@ -31,7 +32,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
-from _common import REPO_ROOT, script_parser, site_path
+from _common import REPO_ROOT, analysis_path, script_parser, site_path
 from scipy import stats
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
@@ -376,7 +377,7 @@ def coverage_row(basin: str, gauges: pd.DataFrame, screen: pd.DataFrame) -> dict
     }
 
 
-def plot_basin(basin: str, screen: pd.DataFrame, monthly: dict, out: Path) -> None:
+def plot_basin(basin: str, screen: pd.DataFrame, monthly: dict, out_png: Path) -> None:
     """One panel per screened gauge: monthly gauge - GTSM (mean removed) with steps; status in the title."""
     if screen.empty or not monthly:
         return
@@ -401,8 +402,7 @@ def plot_basin(basin: str, screen: pd.DataFrame, monthly: dict, out: Path) -> No
         f"Basin {basin}: monthly GESLA gauge - GTSM water level (own datums, mean removed)"
     )
     fig.tight_layout()
-    out.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out / f"gesla_screen_{basin}.png", dpi=110)
+    fig.savefig(out_png, dpi=110)
     plt.close(fig)
 
 
@@ -419,7 +419,6 @@ def main() -> None:
 
     results_dir = site_path("results_dir")
     gesla_dir = site_path("raw_data_root") / "GESLA_v41"
-    out = REPO_ROOT / "figs" / "gesla_overview"
     meta = read_metadata(gesla_dir / "GESLA4-1_ALL.csv")
     basins = [
         d
@@ -441,12 +440,15 @@ def main() -> None:
             )
         coverage.append(coverage_row(d.name, gauges, screen))
         screens.append(screen)
-        plot_basin(d.name, screen, monthly, out)
+        plot_basin(
+            d.name, screen, monthly, analysis_path(d.name, __file__, "screen.png")
+        )
         log.info(f"{d.name}: {coverage[-1]}")
-    out.mkdir(parents=True, exist_ok=True)
-    pd.concat(screens, ignore_index=True).to_csv(out / "gesla_screen.csv", index=False)
+    pd.concat(screens, ignore_index=True).to_csv(
+        analysis_path(None, __file__, "screen.csv"), index=False
+    )
     cov = pd.DataFrame(coverage)
-    cov.to_csv(out / "gesla_coverage.csv", index=False)
+    cov.to_csv(analysis_path(None, __file__, "coverage.csv"), index=False)
     print(cov.to_string(index=False))
 
 

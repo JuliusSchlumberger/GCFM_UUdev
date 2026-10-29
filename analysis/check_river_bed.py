@@ -3,13 +3,15 @@
 Re-runs rule 10's surface (``src.water_surface.build_water_surface``) and the
 round-0 bed (``src.river_bed.estimate_river_bed_from_files``) on a basin's rule
 08-09 outputs with the current code and config, no SFINCS, writing nothing
-under results_dir. Writes per basin to the output directory: metrics JSON,
+under the pipeline's outputs. Writes per basin to
+<results_dir>/<basin>/figures/analysis/90_check_river_bed_*: metrics JSON,
 node table, bed jumps with their cause, SWOT slope ratios per reach, the
-surface GPKG, and one profile figure per forcing-point mainstem. The rule-10
-surface on disk is kept as ``surface10_m`` for before/after comparison.
+surface GPKG, and one profile figure per forcing-point mainstem; the summary
+and log to <results_dir>/figures/analysis/check_river_bed_summary.csv, _run.log.
+The rule-10 surface on disk is kept as ``surface10_m`` for before/after comparison.
 
 Usage:
-    python analysis/check_river_bed.py [basin_id ...] [--out-dir DIR]
+    python analysis/check_river_bed.py [basin_id ...]
 """
 
 import json
@@ -19,7 +21,14 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from _common import DEFAULT_BASIN_ID, REPO_ROOT, script_parser, site_path
+from _common import (
+    DEFAULT_BASIN_ID,
+    REPO_ROOT,
+    analysis_dir,
+    analysis_path,
+    script_parser,
+    site_path,
+)
 from _upstream_profile import (
     forward_levels,
     mainstem_profile,
@@ -27,6 +36,7 @@ from _upstream_profile import (
     surface_mismatch,
 )
 
+STEM = Path(__file__).stem
 JUMP_M = 1.0
 LEVEL_TOL_M = 0.1
 
@@ -100,7 +110,7 @@ def run_round0(basin_id: str, cfg: dict, out_dir: Path):
     rivers = gpd.read_file(dom / f"{basin_id}_river_network_clean.gpkg")
     paths = {
         "water_surface_disk": dom / f"{basin_id}_river_water_surface.gpkg",
-        "water_surface": out_dir / f"{basin_id}_river_water_surface.gpkg",
+        "water_surface": out_dir / f"90_{STEM}_river_water_surface.gpkg",
         "elevation_merged": dom / f"{basin_id}_elevation_merged.tif",
     }
     merged, landuse = paths["elevation_merged"], dom / f"{basin_id}_landuse.tif"
@@ -438,7 +448,7 @@ def check_basin(basin_id: str, out_dir: Path, cfg: dict) -> dict:
             sea,
             swot,
             f"river bed check {basin_id}, mainstem of {fp.reach_id} ({tag})",
-            out_dir / f"{basin_id}_mainstem_{fp.reach_id}.png",
+            out_dir / f"90_{STEM}_mainstem_{fp.reach_id}.png",
         )
     mismatch = pd.concat(mism, ignore_index=True) if mism else pd.DataFrame()
     agg = (
@@ -466,11 +476,11 @@ def check_basin(basin_id: str, out_dir: Path, cfg: dict) -> dict:
             "forcing_points": int(len(mism)),
         }
     )
-    t.to_csv(out_dir / f"{basin_id}_nodes.csv", index=False)
-    jumps.to_csv(out_dir / f"{basin_id}_jumps.csv", index=False)
-    swot.to_csv(out_dir / f"{basin_id}_swot.csv", index=False)
-    mismatch.to_csv(out_dir / f"{basin_id}_forward_misfit.csv", index=False)
-    (out_dir / f"{basin_id}_metrics.json").write_text(
+    t.to_csv(out_dir / f"90_{STEM}_nodes.csv", index=False)
+    jumps.to_csv(out_dir / f"90_{STEM}_jumps.csv", index=False)
+    swot.to_csv(out_dir / f"90_{STEM}_swot.csv", index=False)
+    mismatch.to_csv(out_dir / f"90_{STEM}_forward_misfit.csv", index=False)
+    (out_dir / f"90_{STEM}_metrics.json").write_text(
         json.dumps(m, indent=1), encoding="utf-8"
     )
     return m
@@ -481,19 +491,15 @@ def main() -> None:
     parser.add_argument(
         "basin_ids", nargs="*", default=[DEFAULT_BASIN_ID], help="basin ids"
     )
-    parser.add_argument(
-        "--out-dir", type=Path, default=REPO_ROOT / "figs" / "river_bed_check"
-    )
     args = parser.parse_args()
     sys.path.insert(0, str(REPO_ROOT / "workflow"))
     from src.log import setup_logging
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    setup_logging(str(args.out_dir / "check_river_bed.log"))
+    setup_logging(str(analysis_path(None, __file__, "run.log")))
     cfg = _config()
     rows = []
     for b in args.basin_ids:
-        m = check_basin(str(b), args.out_dir, cfg)
+        m = check_basin(str(b), analysis_dir(b), cfg)
         rows.append(
             {k: v for k, v in m.items() if not isinstance(v, dict | list)}
             | {
@@ -505,7 +511,7 @@ def main() -> None:
             }
         )
     summary = pd.DataFrame(rows).set_index("basin_id").T
-    summary.to_csv(args.out_dir / "summary.csv")
+    summary.to_csv(analysis_path(None, __file__, "summary.csv"))
     print(summary.to_string())
 
 

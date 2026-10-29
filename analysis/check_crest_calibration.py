@@ -16,8 +16,8 @@ Checks / reports:
      should be (near-)identical: the finite crests of round 2 hold back the
      same water the 1000 m walls of round 1 did.
 
-Figure (figs/crest_calibration_check/{basin_id}_crest_margin.png): weir
-segments coloured by margin (map) + margin histogram per segment type.
+Figure (<results_dir>/<basin_id>/figures/analysis/90_check_crest_calibration_margin.png):
+weir segments coloured by margin (map) + margin histogram per segment type.
 
 Usage:
     conda run -n <env> python analysis/check_crest_calibration.py [basin_id]
@@ -41,6 +41,7 @@ import xarray as xr
 from _common import (  # noqa: E402
     REPO_ROOT,
     add_basin_id_argument,
+    analysis_path,
     script_parser,
     site_path,
 )
@@ -70,8 +71,6 @@ def main() -> None:
 
     # results_dir is a site setting; see config/site.example.yml.
     RESULTS_DIR = site_path("results_dir")
-    FIGS_DIR = REPO_ROOT / "figs" / "crest_calibration_check"
-    FIGS_DIR.mkdir(parents=True, exist_ok=True)
 
     prep = RESULTS_DIR / BASIN_ID / "preprocessing_inputs"
     calib_root = prep / "depth_crest_calibration"
@@ -279,7 +278,7 @@ def main() -> None:
     ax_hist.set_title("Margin distribution (< 0 = overtopped)")
     ax_hist.legend()
     fig.tight_layout()
-    out = FIGS_DIR / f"{BASIN_ID}_crest_margin.png"
+    out = analysis_path(BASIN_ID, __file__, "margin.png")
     fig.savefig(out, dpi=150)
     log.info(f"Figure written: {out}")
 

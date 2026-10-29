@@ -23,9 +23,9 @@ Amplification (needs a finished run of --scenario):
 - per station: zsmax and the excess in the station's cell, and the peak lag
   of zs there against the boundary peak (map output interval).
 
-Writes to figs/surge_boundary_check/: <basin>_stations.csv,
-<basin>_surge_boundary_check.png, <basin>_amplification_profile.csv/.png;
-surge_boundary_summary.csv (one row per basin).
+Writes to <results_dir>/<basin>/figures/analysis/: 90_check_surge_boundary_stations.csv,
+_map.png and _amplification_profile.csv/.png; and the cross-basin
+<results_dir>/figures/analysis/check_surge_boundary_summary.csv (one row per basin).
 
 Usage:
     python analysis/check_surge_boundary.py [basin_id ...] [--all] [--scenario NAME]
@@ -46,7 +46,14 @@ import numpy as np
 import pandas as pd
 import rasterio
 import xarray as xr
-from _common import DEFAULT_BASIN_ID, REPO_ROOT, script_parser, site_path
+from _common import (
+    DEFAULT_BASIN_ID,
+    REPO_ROOT,
+    analysis_dir,
+    analysis_path,
+    script_parser,
+    site_path,
+)
 from check_river_bed import _git_hash
 from scipy.ndimage import distance_transform_edt
 from scipy.spatial import cKDTree
@@ -59,7 +66,7 @@ from src.surge import calm_sea_levels
 
 log = logging.getLogger(__name__)
 
-OUT_DIR = REPO_ROOT / "figs" / "surge_boundary_check"
+STEM = Path(__file__).stem
 MASK_WL_BOUNDARY = 2
 BND_MATCH_TOL_M = 5.0  # sfincs.bnd stores coordinates to 0.1 m
 EXCESS_LIM_M = 0.5  # fixed colour scale of the excess map
@@ -540,7 +547,7 @@ def plot_basin(
         f"surge boundary check | basin {basin_id} | scenario {scenario} | {tag}"
     )
     fig.tight_layout()
-    out = [out_dir / f"{basin_id}_surge_boundary_check.png"]
+    out = [out_dir / f"90_{STEM}_map.png"]
     fig.savefig(out[0], dpi=130)
     plt.close(fig)
 
@@ -566,7 +573,7 @@ def plot_basin(
         )
         ax.legend(fontsize=8)
         fig.tight_layout()
-        out.append(out_dir / f"{basin_id}_amplification_profile.png")
+        out.append(out_dir / f"90_{STEM}_amplification_profile.png")
         fig.savefig(out[-1], dpi=130)
         plt.close(fig)
     return out
@@ -649,7 +656,6 @@ def main() -> int:
     rp_yr = args.rp_yr if args.rp_yr is not None else (scenario_rp_yr or 100.0)
     gebco_dir = _gebco_dir()
     tag = _git_hash()
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     summaries, failed = [], []
     for basin_id in basin_ids:
@@ -684,15 +690,19 @@ def main() -> int:
             failed.append(basin_id)
             continue
         res["stations"].to_csv(
-            OUT_DIR / f"{basin_id}_stations.csv", index=False, float_format="%.4f"
+            analysis_path(basin_id, __file__, "stations.csv"),
+            index=False,
+            float_format="%.4f",
         )
         if not res["profile"].empty:
             res["profile"].to_csv(
-                OUT_DIR / f"{basin_id}_amplification_profile.csv",
+                analysis_path(basin_id, __file__, "amplification_profile.csv"),
                 index=False,
                 float_format="%.4f",
             )
-        figs = plot_basin(res, basin_id, args.scenario, rp_yr, OUT_DIR, tag)
+        figs = plot_basin(
+            res, basin_id, args.scenario, rp_yr, analysis_dir(basin_id), tag
+        )
         if not res["summary"]["has_run"]:
             log.warning(
                 f"{basin_id}: no finished run '{args.scenario}'; station screen only"
@@ -710,10 +720,9 @@ def main() -> int:
             print(f"  {f}")
 
     if summaries:
-        pd.DataFrame(summaries).to_csv(
-            OUT_DIR / "surge_boundary_summary.csv", index=False, float_format="%.4f"
-        )
-        print(f"Summary: {OUT_DIR / 'surge_boundary_summary.csv'}")
+        summary_csv = analysis_path(None, __file__, "summary.csv")
+        pd.DataFrame(summaries).to_csv(summary_csv, index=False, float_format="%.4f")
+        print(f"Summary: {summary_csv}")
     return 1 if failed else 0
 
 

@@ -4,7 +4,9 @@ Values are design return periods (years): the median of a country's sub-national
 FLOPROS units per hazard, on Natural Earth "admin_0_countries" (via cartopy,
 cached after the first run). Needs only the raw FLOPROS table, no basin run.
 Countries without a value are grey, not given the per-basin default of
-src.protection_levels.identify_dominant_protection.
+src.protection_levels.identify_dominant_protection. Writes
+plot_global_protection_levels_riverine.png and _coastal.png to
+<results_dir>/figures/analysis/.
 
 Usage:
     conda run -n <env> python analysis/plot_global_protection_levels.py
@@ -22,7 +24,7 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
-from _common import REPO_ROOT, script_parser  # noqa: E402
+from _common import REPO_ROOT, analysis_path, script_parser  # noqa: E402
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
 from src.io import load_catalogue, raw_input_path
@@ -30,8 +32,6 @@ from src.plots import _save
 from src.protection_levels import load_flopros_table
 
 log = logging.getLogger(__name__)
-
-FIGS_DIR = REPO_ROOT / "figs" / "protection_levels"
 
 
 def plot_global_protection_map(
@@ -105,8 +105,6 @@ def main() -> None:
     script_parser(__doc__).parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    FIGS_DIR.mkdir(parents=True, exist_ok=True)
-
     with open(REPO_ROOT / "config" / "config.yml") as fh:
         config = yaml.safe_load(fh)
 
@@ -131,8 +129,8 @@ def main() -> None:
     countries_gdf = gpd.read_file(countries_path)
     log.info(f"Loaded {len(countries_gdf)} country polygon(s)")
 
-    riverine_path = FIGS_DIR / "global_protection_levels_riverine.png"
-    coastal_path = FIGS_DIR / "global_protection_levels_coastal.png"
+    riverine_path = analysis_path(None, __file__, "riverine.png")
+    coastal_path = analysis_path(None, __file__, "coastal.png")
     plot_global_protection_map(
         flopros_df, countries_gdf, str(riverine_path), str(coastal_path)
     )

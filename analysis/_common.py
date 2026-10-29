@@ -18,6 +18,33 @@ def site_path(key: str) -> Path:
     return Path(site_setting(key))
 
 
+def analysis_dir(basin_id: str | int | None = None) -> Path:
+    """Return (and create) <results_dir>/<basin_id>/figures/analysis/, or the cross-basin one.
+
+    basin_id None: <results_dir>/figures/analysis/, for outputs spanning
+    several basins (summaries, global overviews).
+    """
+    root = site_path("results_dir")
+    out = (
+        (root / str(basin_id) if basin_id is not None else root)
+        / "figures"
+        / "analysis"
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def analysis_path(basin_id: str | int | None, script: str, quantity: str) -> Path:
+    """Return the path of one output of an analysis script.
+
+    Per basin: 90_<script stem>_<quantity> in the basin's analysis folder, so
+    these sort after the pipeline's own diagnostics; cross-basin (basin_id
+    None): <script stem>_<quantity>. script is the caller's __file__.
+    """
+    prefix = "90_" if basin_id is not None else ""
+    return analysis_dir(basin_id) / f"{prefix}{Path(script).stem}_{quantity}"
+
+
 def script_parser(doc: str | None) -> argparse.ArgumentParser:
     """Return an argument parser whose help text is the script's module docstring."""
     return argparse.ArgumentParser(

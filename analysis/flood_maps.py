@@ -4,9 +4,9 @@ Scenarios: the SCENARIOS list (coast_100, river_500, compound_100c_500r). Panels
 of rule 15's plot_inundation_check (land polygons + river network), so depth and
 attribution columns share identical panel geometry.
 
-Outputs (all in OUT_DIR = results/2433835/runs/):
-  fig_flood_map_<scenario>.png          one per scenario, depth map alone
-  fig_flood_attribution_comparison.png  3 rows (event) x 2 cols (depth | attribution)
+Outputs (all in <results_dir>/2433835/figures/analysis/):
+  90_flood_maps_flood_map_<scenario>.png    one per scenario, depth map alone
+  90_flood_maps_attribution_comparison.png  3 rows (event) x 2 cols (depth | attribution)
 """
 
 from __future__ import (
@@ -18,7 +18,13 @@ import sys
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
-from _common import REPO_ROOT, label, script_parser, site_path  # noqa: E402
+from _common import (  # noqa: E402
+    REPO_ROOT,
+    analysis_path,
+    label,
+    script_parser,
+    site_path,
+)
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
@@ -120,7 +126,6 @@ def main() -> None:
 
     # results_dir is a site setting; see config/site.example.yml.
     basin_root = site_path("results_dir") / BASIN_ID
-    out_dir = basin_root / "runs"
 
     # per-scenario figures
     for scen in SCENARIOS:
@@ -145,7 +150,7 @@ def main() -> None:
             framealpha=0.9,
         )
         fig.tight_layout()
-        out_path = out_dir / f"fig_flood_map_{scen}.png"
+        out_path = analysis_path(BASIN_ID, __file__, f"flood_map_{scen}.png")
         fig.savefig(out_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
         print(f"Wrote {out_path}")
@@ -210,7 +215,7 @@ def main() -> None:
 
     # fig.suptitle(f"Flood depth and source attribution by event -- basin {BASIN_ID}", fontsize=14)
     fig.tight_layout()
-    out_path = out_dir / "fig_flood_attribution_comparison.png"
+    out_path = analysis_path(BASIN_ID, __file__, "attribution_comparison.png")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Wrote {out_path}")

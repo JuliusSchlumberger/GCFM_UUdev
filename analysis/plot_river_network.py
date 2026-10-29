@@ -1,8 +1,8 @@
 """Plot a basin's clipped SWORD river network over the land mask.
 
 Reads <results_dir>/<basin_id>/preprocessing_inputs/domain/; writes
-figs/river_network/<basin_id>_river_network.png. The cleaned network is
-plotted by rule clean_river_network itself.
+<results_dir>/<basin_id>/figures/analysis/90_plot_river_network_map.png. The
+cleaned network is plotted by rule clean_river_network itself.
 
 Usage:
     python analysis/plot_river_network.py [basin_id]
@@ -10,10 +10,15 @@ Usage:
 
 import logging
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
-from _common import REPO_ROOT, add_basin_id_argument, script_parser, site_path
+from _common import (
+    REPO_ROOT,
+    add_basin_id_argument,
+    analysis_path,
+    script_parser,
+    site_path,
+)
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
 from src.domain import load_domain
@@ -22,10 +27,9 @@ from src.plots import plot_river_network
 log = logging.getLogger(__name__)
 
 
-def rule_io(basin_id: str, out_dir: Path) -> SimpleNamespace:
+def rule_io(basin_id: str) -> SimpleNamespace:
     """Return the inputs, params and outputs the former Snakemake rule passed in."""
     dom = site_path("results_dir") / basin_id / "preprocessing_inputs" / "domain"
-    out_dir.mkdir(parents=True, exist_ok=True)
     return SimpleNamespace(
         input=SimpleNamespace(
             spec_basins_meta=str(dom / "domain_bbox.json"),
@@ -34,7 +38,7 @@ def rule_io(basin_id: str, out_dir: Path) -> SimpleNamespace:
             land_polygons=str(dom / f"{basin_id}_land_polygons.gpkg"),
         ),
         output=SimpleNamespace(
-            plot_river_network=str(out_dir / f"{basin_id}_river_network.png")
+            plot_river_network=str(analysis_path(basin_id, __file__, "map.png"))
         ),
         params=SimpleNamespace(),
         wildcards=SimpleNamespace(basin_id=basin_id),
@@ -59,7 +63,7 @@ def main() -> None:
     add_basin_id_argument(parser)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    run(rule_io(str(args.basin_id), REPO_ROOT / "figs" / "river_network"))
+    run(rule_io(str(args.basin_id)))
 
 
 if __name__ == "__main__":

@@ -5,8 +5,8 @@ SFINCS-grid-aligned rasters fed to the model. Both are clipped to the
 model domain polygon: landuse_on_grid.tif has no nodata and fills its whole
 rectangle with valid classes, so unclipped panels would differ in extent.
 
-Output, in OUT_DIR = <results_dir>/<BASIN_ID>/runs/ (BASIN_ID = 3279946):
-  fig_domain_input_data.png  combined elevation | land-use, 1x2
+Output, in <results_dir>/<BASIN_ID>/figures/analysis/ (BASIN_ID = 3279946):
+  90_domain_figures_input_data.png  combined elevation | land-use, 1x2
 """
 
 import sys
@@ -15,7 +15,7 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 import shapely
-from _common import REPO_ROOT, script_parser, site_path  # noqa: E402
+from _common import REPO_ROOT, analysis_path, script_parser, site_path  # noqa: E402
 from matplotlib.colors import BoundaryNorm, ListedColormap, TwoSlopeNorm
 from matplotlib.patches import Patch
 
@@ -169,12 +169,11 @@ def _lc_legend_handles(present):
 
 
 def main() -> None:
-    """Run the domain figure rendering and write fig_domain_input_data.png."""
+    """Run the domain figure rendering and write the combined input-data map."""
     script_parser(__doc__).parse_args()
 
     # results_dir is a site setting; see config/site.example.yml.
     basin_root = site_path("results_dir") / BASIN_ID
-    out_dir = basin_root / "runs"
     domain_dir = basin_root / "preprocessing_inputs" / "domain"
     domain_poly = _read_domain_poly(domain_dir)
 
@@ -242,7 +241,7 @@ def main() -> None:
         framealpha=0.9,
     )
 
-    out_path = out_dir / "fig_domain_input_data.png"
+    out_path = analysis_path(BASIN_ID, __file__, "input_data.png")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Wrote {out_path}")

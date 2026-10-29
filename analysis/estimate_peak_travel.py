@@ -23,8 +23,9 @@ finished runs by check_event_timing.py.
 
 Reads build inputs only (node table, river network, skeleton gis/, the
 scenario's sfincs.inp/.dis/.src/.bzs/.bnd), no SFINCS output. Writes
-figs/peak_travel/peak_travel.csv (one row per basin and celerity),
-<basin>_<scenario>_path.csv (per node) and <basin>_<scenario>_peak_travel.png.
+<results_dir>/figures/analysis/estimate_peak_travel_summary.csv (one row per
+basin and celerity) and, per basin, <results_dir>/<basin>/figures/analysis/
+90_estimate_peak_travel_<scenario>_path.csv (per node) and _<scenario>_profile.png.
 
 Usage:
     python analysis/estimate_peak_travel.py                 # every basin with a node table and a built scenario
@@ -42,7 +43,7 @@ import numpy as np
 import pandas as pd
 import rasterio
 import xarray as xr
-from _common import REPO_ROOT, script_parser, site_path
+from _common import analysis_path, script_parser, site_path
 from _upstream_profile import forward_levels, mainstem_profile, scaled_discharge
 from check_event_timing import (
     G_MS2,
@@ -149,7 +150,7 @@ def _nearest(x: np.ndarray, y: np.ndarray, px: float, py: float) -> int:
 
 
 def estimate_basin(
-    results_dir, basin_id: str, scenario: str, manning_n: float, out_dir
+    results_dir, basin_id: str, scenario: str, manning_n: float
 ) -> pd.DataFrame | None:
     from src.river_network import build_downstream_adjacency, normalize_reach_id
     from src.surge import read_calm_sea_level_m
@@ -261,9 +262,11 @@ def estimate_basin(
         for name in CELERITIES
     ]
     leg.to_csv(
-        out_dir / f"{basin_id}_{scenario}_path.csv", index=False, float_format="%.4f"
+        analysis_path(basin_id, __file__, f"{scenario}_path.csv"),
+        index=False,
+        float_format="%.4f",
     )
-    _plot(leg, common, out_dir / f"{basin_id}_{scenario}_peak_travel.png")
+    _plot(leg, common, analysis_path(basin_id, __file__, f"{scenario}_profile.png"))
     return pd.DataFrame(rows)
 
 
@@ -322,23 +325,22 @@ def main() -> None:
 
     results_dir = site_path("results_dir")
     manning_n = float(_config()["river_processing"]["channel_manning_n"])
-    out_dir = REPO_ROOT / "figs" / "peak_travel"
-    out_dir.mkdir(parents=True, exist_ok=True)
     basin_ids = args.basin_ids or sorted(
         p.name for p in results_dir.iterdir() if p.name.isdigit()
     )
     tables = [
         t
         for b in basin_ids
-        if (t := estimate_basin(results_dir, b, args.scenario, manning_n, out_dir))
-        is not None
+        if (t := estimate_basin(results_dir, b, args.scenario, manning_n)) is not None
     ]
     if not tables:
         raise SystemExit(
             f"No basin with a node table and a built {args.scenario!r} scenario under {results_dir}"
         )
     df = pd.concat(tables, ignore_index=True)
-    df.to_csv(out_dir / "peak_travel.csv", index=False, float_format="%.2f")
+    df.to_csv(
+        analysis_path(None, __file__, "summary.csv"), index=False, float_format="%.2f"
+    )
     with pd.option_context("display.width", 250, "display.max_columns", None):
         print(df.round(2).to_string(index=False))
 

@@ -10,8 +10,10 @@ wet cells at flood stage (sum of dx / sqrt(g h)). The lag is immaterial when
 that travel time is below tau95. Cells peaking in the last 6 h that were dry at
 the event start are grouped into connected compartments; their hourly volume
 (level-based, zs - zb over the cell area) shows whether they are still filling
-when the run ends. Writes event_timing.csv, event_timing_compartments.csv and
-two maps per basin to figs/event_timing/. Never writes to results/.
+when the run ends. Writes check_event_timing_summary.csv and _compartments.csv
+to <results_dir>/figures/analysis/ and, per basin, two maps
+90_check_event_timing_<scenario>_time_of_max.png and _late_compartments.png to
+<results_dir>/<basin>/figures/analysis/.
 
 Usage:
     python analysis/check_event_timing.py                  # every basin with an event run
@@ -28,7 +30,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
-from _common import REPO_ROOT, script_parser, site_path
+from _common import analysis_path, script_parser, site_path
 from scipy import ndimage
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import dijkstra
@@ -179,7 +181,7 @@ def _compartment_table(
 
 
 def check_basin(
-    results_dir, basin_id: str, scenario: str, out_dir
+    results_dir, basin_id: str, scenario: str
 ) -> tuple[dict, pd.DataFrame] | None:
     run = results_dir / basin_id / "runs" / scenario / "sfincs"
     if not (run / "sfincs_map.nc").exists():
@@ -307,7 +309,9 @@ def check_basin(
         f"wave {t_wave_hr:.1f} h vs tau95 {tau95:.1f} h"
     )
     fig.savefig(
-        out_dir / f"{basin_id}_{scenario}_time_of_max.png", dpi=100, bbox_inches="tight"
+        analysis_path(basin_id, __file__, f"{scenario}_time_of_max.png"),
+        dpi=100,
+        bbox_inches="tight",
     )
     plt.close(fig)
 
@@ -328,7 +332,7 @@ def check_basin(
         f"inflow {rec['late_inflow_last6h_m3s']:.0f} m3/s over the last 6 h"
     )
     fig.savefig(
-        out_dir / f"{basin_id}_{scenario}_late_compartments.png",
+        analysis_path(basin_id, __file__, f"{scenario}_late_compartments.png"),
         dpi=100,
         bbox_inches="tight",
     )
@@ -348,24 +352,24 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     results_dir = site_path("results_dir")
-    out_dir = REPO_ROOT / "figs" / "event_timing"
-    out_dir.mkdir(parents=True, exist_ok=True)
     basin_ids = args.basin_ids or sorted(
         p.name for p in results_dir.iterdir() if p.name.isdigit()
     )
     results = [
-        r
-        for b in basin_ids
-        if (r := check_basin(results_dir, b, args.scenario, out_dir))
+        r for b in basin_ids if (r := check_basin(results_dir, b, args.scenario))
     ]
     if not results:
         raise SystemExit(
             f"No event runs found for scenario {args.scenario!r} under {results_dir}"
         )
     df = pd.DataFrame([rec for rec, _ in results])
-    df.to_csv(out_dir / "event_timing.csv", index=False, float_format="%.2f")
+    df.to_csv(
+        analysis_path(None, __file__, "summary.csv"), index=False, float_format="%.2f"
+    )
     pd.concat([comp for _, comp in results]).to_csv(
-        out_dir / "event_timing_compartments.csv", index=False, float_format="%.3f"
+        analysis_path(None, __file__, "compartments.csv"),
+        index=False,
+        float_format="%.3f",
     )
     with pd.option_context("display.width", 250, "display.max_columns", None):
         print(df.round(2).to_string(index=False))

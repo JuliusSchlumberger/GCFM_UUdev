@@ -11,11 +11,11 @@ along each main river arm (mouth -> upstream, largest bankfull discharge at
 confluences; arms carrying at least ``--min-arm-share`` of the sea outflow).
 The GVF levels are also solved for further sea levels and discharges.
 
-Writes ``<out_dir>/README.md`` (method, results, the choice of the check's
-parameters), ``summary.csv`` and ``summary.png``, and per basin
-``<basin>/arms.csv``, ``<basin>/arm_<mouth reach>.png``, ``<basin>/map.png`` and
-``<basin>/sfincs_nodes.csv`` (reused when the runs are gone); nothing under
-results_dir.
+Writes to ``<results_dir>/figures/analysis/``: benchmark_upstream_boundary_README.md
+(method, results, the choice of the check's parameters), _summary.csv and
+_summary.png; per basin to ``<results_dir>/<basin>/figures/analysis/``:
+90_benchmark_upstream_boundary_arms.csv, _arm_<mouth reach>_<top reach>.png,
+_map.png and _sfincs_nodes.csv (reused when the runs are gone).
 
 Usage:
     python analysis/benchmark_upstream_boundary.py 2433835 2209166 3279946 [--skip-run] [--days 4]
@@ -36,7 +36,7 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from _common import REPO_ROOT, script_parser, site_path
+from _common import REPO_ROOT, analysis_dir, analysis_path, script_parser, site_path
 from _upstream_profile import (
     efolding_length,
     first_above,
@@ -57,6 +57,7 @@ from src.sfincs_run import parse_sfincs_inp, run_sfincs_subprocess
 
 log = logging.getLogger(__name__)
 
+STEM = Path(__file__).stem
 CASES = ("calm", "swl_ext")
 Q_NAMES = ("0.5 Q_mean", "Q_mean", "Q_bf")
 OUTPUT_INTERVAL_S = 6 * 3600
@@ -755,9 +756,10 @@ def write_readme(
         table.append("| " + " | ".join(cells) + " |")
     basins = list(dict.fromkeys(df["basin_id"]))
     figs = "\n".join(
-        f"- `{b}/map.png`, "
+        f"- `{_basin_file(b, 'map.png')}`, "
         + ", ".join(
-            f"`{b}/{arm_name(r)}.png`" for _, r in df[df["basin_id"] == b].iterrows()
+            f"`{_basin_file(b, arm_name(r) + '.png')}`"
+            for _, r in df[df["basin_id"] == b].iterrows()
         )
         for b in basins
     )
@@ -884,19 +886,25 @@ arm from elsewhere.
 
 ## Files
 
-- `summary.csv`, `summary.png`: one row / point per arm.
+- `{STEM}_summary.csv`, `{STEM}_summary.png`: one row / point per arm.
 {figs}
-- `<basin>/arms.csv`: the arm rows; `<basin>/sfincs_nodes.csv`: SFINCS levels at every node.
+- `{_basin_file("<basin>", "arms.csv")}`: the arm rows;
+  `{_basin_file("<basin>", "sfincs_nodes.csv")}`: SFINCS levels at every node.
 """
     path.write_text(text, encoding="utf-8")
 
 
+def _basin_file(basin_id: str, quantity: str) -> str:
+    # Relative to the cross-basin README in <results_dir>/figures/analysis/.
+    return f"../../{basin_id}/figures/analysis/90_{STEM}_{quantity}"
+
+
 def benchmark_basin(basin_id: str, args, opts) -> tuple[list[dict], dict]:
-    out = args.out_dir / basin_id
-    out.mkdir(parents=True, exist_ok=True)
-    table, profiles, ctx = check_basin(basin_id, out, opts)
+    table, profiles, ctx = check_basin(basin_id, analysis_dir(basin_id), opts)
     dirs = run_cases(basin_id, args, table, profiles, ctx, opts)
-    zs = sfincs_nodes(ctx.net, dirs, out / "sfincs_nodes.csv")
+    zs = sfincs_nodes(
+        ctx.net, dirs, analysis_path(basin_id, __file__, "sfincs_nodes.csv")
+    )
 
     conds, swl_name = sea_conditions(ctx)
     names = list(conds)
@@ -941,7 +949,7 @@ def benchmark_basin(basin_id: str, args, opts) -> tuple[list[dict], dict]:
             names,
             cond_names,
             opts,
-            out / f"{arm_name(row)}.png",
+            analysis_path(basin_id, __file__, f"{arm_name(row)}.png"),
             f"Basin {basin_id}, arm from mouth reach {row['mouth_reach']} "
             f"(Q_mean {row['q_mean_mouth_m3s']:.0f} m³/s, A0 {row['a0_m']:.2f} m): influence end "
             f"GVF {row['x_inf_km']:.1f} km, SFINCS {row['x_obs_km']:.1f} km; 10 m contour "
@@ -958,11 +966,13 @@ def benchmark_basin(basin_id: str, args, opts) -> tuple[list[dict], dict]:
         ctx,
         delta,
         arms,
-        out / "map.png",
+        analysis_path(basin_id, __file__, "map.png"),
         f"Basin {basin_id}: rise of the river level, sea at {cond_names['swl_ext']} vs calm, Q_mean ({tag})",
     )
     rows = [r for r, _ in arms]
-    pd.DataFrame(rows).to_csv(out / "arms.csv", index=False)
+    pd.DataFrame(rows).to_csv(
+        analysis_path(basin_id, __file__, "arms.csv"), index=False
+    )
     return rows, cond_names | {"frac": ctx.frac}
 
 
@@ -994,14 +1004,8 @@ def main() -> None:
         help="default: <results_dir>/../scratch/upstream_benchmark (SFINCS needs paths relative "
         "to the run, so it must share the drive of results_dir)",
     )
-    parser.add_argument(
-        "--out-dir",
-        type=Path,
-        default=REPO_ROOT / "figs" / "upstream_boundary_benchmark",
-    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    args.out_dir.mkdir(parents=True, exist_ok=True)
     if args.run_dir is None:
         args.run_dir = (
             site_path("results_dir").parent / "scratch" / "upstream_benchmark"
@@ -1013,16 +1017,18 @@ def main() -> None:
         basin_rows, cond_names = benchmark_basin(basin_id, args, opts)
         rows += basin_rows
     df = pd.DataFrame(rows)
-    df.to_csv(args.out_dir / "summary.csv", index=False)
+    df.to_csv(analysis_path(None, __file__, "summary.csv"), index=False)
     tag = _git_hash()
     plot_summary(
         df,
         opts.margin_km,
-        args.out_dir / "summary.png",
+        analysis_path(None, __file__, "summary.png"),
         f"Upstream boundary check: steady GVF vs steady SFINCS, basins {', '.join(df['basin_id'].unique())} "
         f"({tag})",
     )
-    write_readme(df, opts, args, cond_names, args.out_dir / "README.md", tag)
+    write_readme(
+        df, opts, args, cond_names, analysis_path(None, __file__, "README.md"), tag
+    )
     pd.set_option("display.width", 250)
     show = [
         "basin_id",

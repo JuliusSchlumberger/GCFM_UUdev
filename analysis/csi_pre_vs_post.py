@@ -16,6 +16,9 @@ dry-in-both is counted on land cells only (see land_mask).
 
 A strategy is compared only if it has a max_flood_depth.tif under both
 <event>/adaptation/pre/<strategy>/ and <event>/adaptation/post/<strategy>/.
+
+Writes to <results_dir>/<basin>/figures/analysis/: 90_csi_pre_vs_post_scores.csv,
+_csi_heatmap_numbers.png and _csi_heatmap_no_numbers.png.
 """
 
 import matplotlib as mpl
@@ -23,7 +26,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio
-from _common import script_parser, site_path
+from _common import analysis_path, script_parser, site_path
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from rasterio.warp import Resampling, reproject
 
@@ -89,7 +92,8 @@ def main() -> None:
     script_parser(__doc__).parse_args()
 
     # results_dir is a site setting; see config/site.example.yml.
-    BASIN = site_path("results_dir") / "2433835"
+    BASIN_ID = "2433835"
+    BASIN = site_path("results_dir") / BASIN_ID
     RUNS = BASIN / "runs"
     # land domain, as the pipeline's flood metrics define it (compute_max_inundation):
     # cells with a valid bed level that are not open sea (sea mask == 1)
@@ -100,7 +104,7 @@ def main() -> None:
         / "domain"
         / "2433835_zsini_sea_cells_on_grid.tif"
     )
-    OUT_CSV = RUNS / "csi_pre_vs_post.csv"
+    OUT_CSV = analysis_path(BASIN_ID, __file__, "scores.csv")
 
     rows = []
     land = None
@@ -233,7 +237,11 @@ def main() -> None:
         "▼ risk underestimated by postprocessed",
         fontsize=8.5,
     )
-    fig.savefig(RUNS / "fig_csi_heatmap_numbers.png", dpi=300, bbox_inches="tight")
+    fig.savefig(
+        analysis_path(BASIN_ID, __file__, "csi_heatmap_numbers.png"),
+        dpi=300,
+        bbox_inches="tight",
+    )
 
     # Heat map without numbers
     df = pd.read_csv(OUT_CSV)
@@ -314,7 +322,11 @@ def main() -> None:
         "▼ risk underestimated by postprocessed",
         fontsize=8.5,
     )
-    fig.savefig(RUNS / "fig_csi_heatmap_no_numbers.png", dpi=300, bbox_inches="tight")
+    fig.savefig(
+        analysis_path(BASIN_ID, __file__, "csi_heatmap_no_numbers.png"),
+        dpi=300,
+        bbox_inches="tight",
+    )
 
 
 if __name__ == "__main__":

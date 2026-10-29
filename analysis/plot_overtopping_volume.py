@@ -11,6 +11,9 @@ SFINCS's submerged-weir switch (landward side above 2/3 of the seaward head) is
 ignored, so discharge is overestimated once the land behind a segment floods.
 Inland segments raised above every station level never overtop.
 
+Writes <results_dir>/<basin_id>/figures/analysis/
+90_plot_overtopping_volume_<scenario>_overtopping_volume.png.
+
 Usage:
     conda run -n <env> python analysis/plot_overtopping_volume.py [basin_id] [scenario]
     conda run -n <env> python analysis/plot_overtopping_volume.py 2433835 coast_250
@@ -34,6 +37,7 @@ import pandas as pd
 from _common import (  # noqa: E402
     REPO_ROOT,
     add_basin_id_argument,
+    analysis_path,
     first_existing,
     script_parser,
     site_path,
@@ -68,8 +72,6 @@ def main() -> None:
 
     # results_dir is a site setting; see config/site.example.yml.
     RESULTS_DIR = site_path("results_dir")
-    FIGS_DIR = REPO_ROOT / "figs" / "surge_vs_dike_crest"
-    FIGS_DIR.mkdir(parents=True, exist_ok=True)
 
     basin_dir = RESULTS_DIR / BASIN_ID
     sfincs_dir = basin_dir / "runs" / SCENARIO / "sfincs"
@@ -192,7 +194,7 @@ def main() -> None:
     fig.autofmt_xdate()
     fig.tight_layout()
 
-    out_path = FIGS_DIR / f"{BASIN_ID}_{SCENARIO}_overtopping_volume.png"
+    out_path = analysis_path(BASIN_ID, __file__, f"{SCENARIO}_overtopping_volume.png")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     log.info(f"Plot written: {out_path}")
