@@ -606,6 +606,20 @@ def interpolate_discharge_at_rp(
     )
 
 
+def cosine_ramp(times_hr: np.ndarray, start_hr: float, ramp_hr: float) -> np.ndarray:
+    """Return the 0..1 half-cosine weight 0.5 (1 - cos(pi s)), s = (t - start_hr) / ramp_hr.
+
+    Zero slope at both ends, so a discharge blended with it has no kink; the
+    steepest rise, at mid-ramp, is pi/2 times the linear ramp's. ramp_hr <= 0
+    is a step at start_hr.
+    """
+    times_hr = np.asarray(times_hr, dtype=float)
+    if ramp_hr <= 0:
+        return (times_hr >= start_hr).astype(float)
+    s = np.clip((times_hr - start_hr) / ramp_hr, 0.0, 1.0)
+    return 0.5 * (1.0 - np.cos(np.pi * s))
+
+
 def real_flood_event_matrix(
     river_ds: xr.Dataset,
     active: np.ndarray,
@@ -614,6 +628,7 @@ def real_flood_event_matrix(
     n_largest: int,
     min_ramp_hr: float,
     max_rise_per_hr: float,
+    max_rising_days: float,
 ) -> tuple[np.ndarray, dict]:
     """Return river discharge for one return period from real GloFAS flood events.
 
@@ -635,25 +650,33 @@ def real_flood_event_matrix(
 
     The peak day sits on the river peak hour (lead_days * 24 + period_hr / 2,
     the synthetic wave's centre; the surge peak in storm-tide mode); daily
-    means are placed 24 h apart and interpolated linearly. Before
-    attrs["event_start_hr"] the discharge holds the mean (where the spin-up
-    ends); it then blends linearly into the event over
+    means are placed 24 h apart and joined by a monotone cubic (PCHIP): the
+    slope is continuous, and the curve neither overshoots the daily values
+    nor moves the peak.
 
-        ramp = max(min_ramp_hr, gap / (max_rise_per_hr x peak))
+    The rising limb starts at the main inflow's lowest daily value within
+    max_rising_days before the peak, and no earlier than min_ramp_hr after
+    attrs["event_start_hr"], where the spin-up ends at the mean. Up to the
+    ramp the discharge holds the mean; it then blends into the event with
+    cosine_ramp over
 
-    with gap = main inflow's event discharge at the start minus its mean and
-    peak = its return level: a relative limit, so one value suits a 1,000 and
-    a 100,000 m3/s river. The ramp is not realistic (the fastest GloFAS rises
-    are ~1 % of the 100-yr peak per hour, needing a ramp longer than the
-    lead-up); it only avoids a step. All inflows share it; it is capped at the
-    time from the event start to the peak.
+        ramp = max(min_ramp_hr, pi/2 x gap / (max_rise_per_hr x peak))
+
+    ending at the rising-limb start. gap = |main inflow's event discharge
+    there minus its mean| and peak = its return level, so the blend's
+    steepest rise is max_rise_per_hr x peak per hour: a relative limit, so
+    one value suits a 1,000 and a 100,000 m3/s river. A ramp longer than the
+    room before the rising-limb start runs on into the rising limb; it is
+    capped at the time from the event start to the peak. All inflows share it.
 
     Returns:
         ((n_active, n_time) discharge in m3 s-1, info dict: mode, the event
         date(s) and scale factor(s), the main crossing's position in
-        `active` order and its return level, the ramp length used).
+        `active` order and its return level, the rising-limb start (h) and
+        its discharge as a share of the peak, the ramp length used).
     """
     import scipy.signal as ss
+    from scipy.interpolate import PchipInterpolator
 
     times = river_ds["time"].values.astype(float)
     q = river_ds["discharge_daily"].values[active].astype(float)  # (n_active, n_day)
@@ -698,27 +721,35 @@ def real_flood_event_matrix(
         np.stack([q[:, p + offsets] * s for p, s in zip(chosen, scales)]), axis=0
     )  # (n_active, n_offsets)
 
+    knots_hr = peak_hr + 24.0 * offsets
     event = np.stack(
-        [
-            np.interp(times, peak_hr + 24.0 * offsets, daily[i])
-            for i in range(q.shape[0])
-        ]
+        [PchipInterpolator(knots_hr, daily[i])(times) for i in range(q.shape[0])]
     )
-    start_q = float(np.interp(start_hr, times, event[main]))
-    gap = max(start_q - float(mean_discharge_m3s[main]), 0.0)
-    ramp_hr = max(float(min_ramp_hr), gap / (float(max_rise_per_hr) * target))
+
+    candidates = np.flatnonzero(
+        (offsets < 0)
+        & (offsets >= -float(max_rising_days))
+        & (knots_hr >= start_hr + float(min_ramp_hr))
+    )
+    rise_hr = (
+        float(knots_hr[candidates[np.argmin(daily[main, candidates])]])
+        if candidates.size
+        else start_hr
+    )
+    rise_q = float(np.interp(rise_hr, times, event[main]))
+    gap = abs(rise_q - float(mean_discharge_m3s[main]))
+    ramp_hr = max(
+        float(min_ramp_hr), 0.5 * np.pi * gap / (float(max_rise_per_hr) * target)
+    )
     lead_up = max(peak_hr - start_hr, 0.0)
     if ramp_hr > lead_up:
         log.warning(
             f"river event ramp of {ramp_hr:.1f} h (gap {gap:,.0f} m3/s) exceeds the {lead_up:.0f} h "
-            f"between the event start and the peak -- capped; raise max_rise_per_hr or the event window"
+            f"between the event start and the peak -- capped; raise max_rise_per_hr or max_rising_days"
         )
         ramp_hr = lead_up
-    w = (
-        np.clip((times - start_hr) / ramp_hr, 0.0, 1.0)
-        if ramp_hr > 0
-        else (times >= start_hr).astype(float)
-    )
+    ramp_start_hr = max(start_hr, rise_hr - ramp_hr)
+    w = cosine_ramp(times, ramp_start_hr, ramp_hr)
     matrix = (1.0 - w) * mean_discharge_m3s[:, None] + w * event
     info = {
         "mode": mode,
@@ -726,7 +757,8 @@ def real_flood_event_matrix(
         "scales": [float(s) for s in scales],
         "main": main,
         "target": target,
-        "start_fraction": start_q / target,
+        "rise_hr": rise_hr,
+        "rise_fraction": rise_q / target,
         "ramp_hr": ramp_hr,
     }
     return matrix, info
@@ -791,12 +823,13 @@ def build_design_discharge_matrix(
                 n_largest=int(event["n_largest"]),
                 min_ramp_hr=float(event["min_ramp_hr"]),
                 max_rise_per_hr=float(event["max_rise_per_hr"]),
+                max_rising_days=float(event["max_rising_days"]),
             )
             log.info(
                 f"River event RP {float(rp_yr):g}: real GloFAS flood(s) {info['dates']} "
                 f"({info['mode']}), main inflow scaled x{[round(s, 3) for s in info['scales']]} to "
-                f"{info['target']:,.0f} m3/s; at the event start it is at "
-                f"{100 * info['start_fraction']:.0f}% of the peak, ramped in from the mean over "
+                f"{info['target']:,.0f} m3/s; its rising limb starts at {info['rise_hr']:.0f} h at "
+                f"{100 * info['rise_fraction']:.0f}% of the peak, ramped in from the mean over "
                 f"{info['ramp_hr']:.1f} h"
             )
             return discharge_matrix

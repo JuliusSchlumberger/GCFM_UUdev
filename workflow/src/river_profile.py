@@ -39,20 +39,29 @@ def mainstem_path(
 
 
 def mainstem_profile(
-    nodes: pd.DataFrame, downstream: dict[str, list[str]], forcing_reach: str
+    nodes: pd.DataFrame,
+    downstream: dict[str, list[str]],
+    forcing_reach: str,
+    reach_q: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """Return the node table along a forcing reach's mainstem, upstream first.
 
     ``nodes`` is the river-bed node table (``reach_id`` as normalised strings).
     ``dist_from_mouth_m`` is the distance along the node polyline from the path's
     last node; nodes are 500 m apart, so it misses meanders shorter than that.
+    ``reach_q``: discharge per reach that picks the path at bifurcations; default
+    the node table's. Pass the network's own discharges where a short reach may
+    own no node (its junction nodes belong to the reaches around it): the table
+    then lacks it and the path takes the other arm, even one carrying nothing
+    (1248635: the Rhine into a zero-discharge canal arm, travel time infinite).
     """
     nodes = nodes.assign(reach_id=nodes["reach_id"].astype(str))
     if forcing_reach not in set(nodes["reach_id"]):
         raise ValueError(
             f"forcing reach {forcing_reach} has no nodes in the river-bed table"
         )
-    reach_q = nodes.groupby("reach_id")["q_m3s"].mean().to_dict()
+    if reach_q is None:
+        reach_q = nodes.groupby("reach_id")["q_m3s"].mean().to_dict()
     path = mainstem_path(downstream, forcing_reach, reach_q)
     order = {r: k for k, r in enumerate(path)}
     prof = nodes[nodes["reach_id"].isin(order)].copy()
@@ -125,14 +134,25 @@ def walled_travel_time(
     q_m3s: np.ndarray,
     sea_level_m: float,
     manning_n: float,
+    forcing_hr: float,
+    regime_rT: tuple[float, float] = (0.3, 3.0),
     min_depth_m: float = 0.1,
 ) -> pd.DataFrame:
     """Return per node the steady walled hydraulics and the peak travel time (h) from the first node.
 
     Walled: the whole discharge stays in the channel (no overtopping, no
     floodplain storage). ``t_kinematic_hr`` sums dx / (5/3 u), the in-bank
-    flood-wave speed of a wide Manning channel (Kleitz-Seddon), the estimate;
-    ``t_gravity_hr`` sums dx / (u + sqrt(g h)), the fast bound.
+    flood-wave speed of a wide Manning channel (Kleitz-Seddon);
+    ``t_gravity_hr`` sums dx / (u + sqrt(g h)), the fast bound. ``t_wave_hr``,
+    the estimate, takes per node the speed of its regime, set by the linearised
+    friction rate r = g n^2 u / h^(4/3) (1/s) against the time ``forcing_hr``
+    over which the forcing changes (the ramp): r T below ``regime_rT[0]``,
+    friction acts slower than the forcing changes and the change travels as a
+    gravity wave (wide, deep, slow reaches: 1248635 Meuse, u 0.015 m/s at 10 m,
+    r T 0.15); from ``regime_rT[0]`` on the kinematic speed, which is also the
+    slower one in the transition below ``regime_rT[1]`` (1248635 Waal, r T 12).
+    In inertial reaches the kinematic speed alone runs to weeks (1248635 Meuse:
+    516 h over 80 km).
     """
     eta = forward_levels(profile, q_m3s, sea_level_m, manning_n)
     z = profile["bed_m"].to_numpy(float)
@@ -140,6 +160,7 @@ def walled_travel_time(
     q = np.broadcast_to(np.asarray(q_m3s, float), z.shape)
     h = np.maximum(eta - z, min_depth_m)
     u = q / (w * h)
+    r_t = G_MS2 * manning_n**2 * np.abs(u) / h ** (4.0 / 3.0) * forcing_hr * 3600.0
     dx = -np.diff(profile["dist_from_mouth_m"].to_numpy(float))
     out = pd.DataFrame(
         {
@@ -147,12 +168,21 @@ def walled_travel_time(
             "level_m": eta,
             "depth_m": h,
             "velocity_ms": u,
+            "friction_rT": r_t,
+            "regime": np.select(
+                [r_t < regime_rT[0], r_t < regime_rT[1]],
+                ["inertial", "transition"],
+                "frictional",
+            ),
         }
     )
+    kinematic = 5.0 / 3.0 * u
+    gravity = u + np.sqrt(G_MS2 * h)
     with np.errstate(divide="ignore"):
         for name, c in (
-            ("kinematic", 5.0 / 3.0 * u),
-            ("gravity", u + np.sqrt(G_MS2 * h)),
+            ("kinematic", kinematic),
+            ("gravity", gravity),
+            ("wave", np.where(r_t < regime_rT[0], gravity, kinematic)),
         ):
             out[f"t_{name}_hr"] = (
                 np.concatenate([[0.0], np.cumsum(dx / (0.5 * (c[:-1] + c[1:])))])

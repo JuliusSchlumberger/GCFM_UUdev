@@ -351,8 +351,10 @@ and subgrid set-up, production weir geometry) then runs twice:
 | 1 | every edge at `weir_crest_m` (1000 m) | burned bed | storm tide at the FLOPROS coastal RP, held | crest per weir edge |
 | 2 | production crests | as round 1 | as round 1 | verification: reports overtopped edges, changes nothing; skipped with `verify_crests: false` |
 
-Both SFINCS rounds ramp their forcing linearly over `ramp_hr` (6 h) and hold it
-to the run end:
+Both SFINCS rounds ramp their forcing over `ramp_hr` (6 h) and hold it to the
+run end. River discharge ramps with the half-cosine weight `0.5 (1 − cos πs)`
+used for every river forcing (`src.river_forcing.cosine_ramp`); the sea ramps
+linearly:
 
 - rivers: each crossing from its reach's mean discharge (the flow that holds the
   initial river level, below) to the discharge at the FLOPROS riverine return
@@ -364,11 +366,19 @@ to the run end:
 The run lasts `ramp_hr + T_walled + calibration_margin_hr` (12 h), so the full
 discharge reaches the coast and every level settles before the run ends. `T_walled`
 is the slowest travel time from a crossing to its network end with the whole
-calibration discharge in the channel (no overtopping), summing `dx / (5/3·u)`, the
-in-bank flood-wave speed of a wide Manning channel, along the crossing's mainstem
-on round 0's bed (steady GVF level, sea held at the highest station level;
-`src.river_profile.walled_travel_time`). The gravity-wave time `dx / (u + √(gh))`
-is logged as the fast bound. In the earlier 24 h runs, round 1 settled within
+calibration discharge in the channel (no overtopping), along the crossing's mainstem
+(the larger-discharge arm at each bifurcation) on round 0's bed (steady GVF level, sea
+held at the highest station level; `src.river_profile.walled_travel_time`). Per node
+the wave speed follows the regime, from the linearised friction rate
+`r = g n² u / h^(4/3)` against the ramp `T = ramp_hr`: where `r·T` is below
+`wave_regime_rT[0]` (0.3) friction acts slower than the forcing changes, and the
+change travels as a gravity wave, `u + √(gh)` (wide, deep, slow reaches: 1248635's
+Meuse water bodies, 10 m deep at 0.015 m/s, `r·T` ≈ 0.15); elsewhere it takes the
+kinematic speed `5/3·u`, the in-bank flood-wave speed of a wide Manning channel,
+which is also the slower one in the transition up to `wave_regime_rT[1]` (3)
+(1248635 Waal, `r·T` ≈ 12). The kinematic speed alone gave 516 h on 1248635's
+80 km Meuse path, the regime speed 51 h. All-kinematic and all-gravity times are
+logged for comparison. In the earlier 24 h runs, round 1 settled within
 about 4 h of `ramp_hr + T_walled` on 2433835 (64 km path, `T_walled` 6 h), and on
 3279946 (288 km, `T_walled` 34 h) the upper 150 km still rose 0.2–0.8 m in the
 last 3 h. Runs longer than `calibration_max_days` fail. After each round,
@@ -524,9 +534,16 @@ log-RP interpolation. `event_hydrograph.source: glofas_event` uses the real
 GloFAS flood of the main inflow whose peak is nearest that level, scaled to it
 (above the record: the mean of the `n_largest` events, each scaled); other
 inflows carry their own discharge on the same dates times the same factor.
-`cosine` uses a synthetic wave of `period_hr` on the mean discharge. The event
-blends from the spin-up mean into the flood over
-`max(min_ramp_hr, gap / (max_rise_per_hr × peak))`. `compound.lag_hr` shifts discharge relative to surge
+`cosine` uses a synthetic wave of `period_hr` on the mean discharge. The daily
+means are joined by a monotone cubic (PCHIP), so the slope is continuous and the
+peak keeps its value and hour. The rising limb starts at the main inflow's lowest
+daily flow within `max_rising_days` before the peak; in storm-tide mode rule 07d
+moves both peaks later to make room for it. Up to there the discharge holds the
+spin-up mean and blends into the flood with a half-cosine weight over
+`max(min_ramp_hr, π/2 × gap / (max_rise_per_hr × peak))`, ending at the rising-limb
+start, so the blend's steepest rise is `max_rise_per_hr × peak` per hour.
+Large rivers' floods rise over weeks, so their rising-limb start can still be well
+above the mean. `compound.lag_hr` shifts discharge relative to surge
 (positive = later); in `coastal_only` the discharge points stay with zero flow.
 
 **Surge.** Rule 07a picks 6-10 COAST-RP stations (deduplicated within 1 km,

@@ -30,7 +30,12 @@ from shapely.geometry import Polygon
 from hydromt_sfincs import SfincsModel
 
 from src.grid import create_model_grid, load_grid_def
-from src.hydromt_sfincs_patch import patch_nearest_extrapolation, patch_subgrid_write
+from src.hydromt_sfincs_patch import (
+    copy_subgrid_table,
+    patch_nearest_extrapolation,
+    patch_subgrid_write,
+    raster_catalog_entry,
+)
 from src.landuse import LANDUSE_SEA_CODE
 from src.log import setup_logging
 from src.sfincs_run import create_active_mask, set_sea_and_outflow_boundaries, write_weir_file
@@ -77,6 +82,7 @@ river_burned_dem_sfincs_grid_path = Path(snakemake.input.river_burned_dem_sfincs
 elevation_conditioned_sfincs_grid_path = Path(snakemake.input.elevation_conditioned_sfincs_grid)
 river_elevation_max_path = Path(snakemake.input.river_elevation_max)
 coastal_protection_weir_path = Path(snakemake.input.coastal_protection_weir)
+calibration_root = Path(snakemake.input.calibration_subgrid[0]).parent
 
 inputs_dir        = Path(snakemake.params.inputs_dir)
 skeleton_root     = Path(snakemake.params.skeleton_root)
@@ -116,38 +122,14 @@ log.info(f"Delta-outline outflow points: {len(delta_outflow_gdf)}")
 local_catalog_path = skeleton_root / "data_catalog_local.yml"
 local_catalog = {
     "meta": {"root": str(inputs_dir)},
-    "local_elevation_conditioned": {
-        "data_type": "RasterDataset",
-        "uri": str(elevation_conditioned_path),
-        "driver": "rasterio",
-    },
-    "local_river_burned_subgrid": {
-        "data_type": "RasterDataset",
-        "uri": str(river_burned_subgrid_path),
-        "driver": "rasterio",
-    },
-    "local_river_burned_sfincs_grid": {
-        "data_type": "RasterDataset",
-        "uri": str(river_burned_dem_sfincs_grid_path),
-        "driver": "rasterio",
-    },
-    "local_elevation_conditioned_sfincs_grid": {
-        "data_type": "RasterDataset",
-        "uri": str(elevation_conditioned_sfincs_grid_path),
-        "driver": "rasterio",
-    },
+    "local_elevation_conditioned": raster_catalog_entry(elevation_conditioned_path),
+    "local_river_burned_subgrid": raster_catalog_entry(river_burned_subgrid_path),
+    "local_river_burned_sfincs_grid": raster_catalog_entry(river_burned_dem_sfincs_grid_path),
+    "local_elevation_conditioned_sfincs_grid": raster_catalog_entry(elevation_conditioned_sfincs_grid_path),
     # On the model grid; regular-grid "manning" field only, never subgrid.
-    "local_roughness": {
-        "data_type": "RasterDataset",
-        "uri": str(roughness_on_grid_path),
-        "driver": "rasterio",
-    },
+    "local_roughness": raster_catalog_entry(roughness_on_grid_path),
     # Native resolution: the subgrid table needs sub-cell roughness detail.
-    "local_roughness_native": {
-        "data_type": "RasterDataset",
-        "uri": str(roughness_path),
-        "driver": "rasterio",
-    },
+    "local_roughness_native": raster_catalog_entry(roughness_path),
     **({
         "local_delta_outflow_points": {
             "data_type": "GeoDataFrame",
@@ -362,22 +344,28 @@ log.info(
     f"rivwth [{rivers['rivwth'].min():.1f}–{rivers['rivwth'].max():.1f} m], "
     f"river_depth_m [{rivers['river_depth_m'].min():.2f}–{rivers['river_depth_m'].max():.2f} m]"
 )
-subgrid_component = sf.subgrid
-subgrid_component.create(
-    elevation_list=elevation_list_subgrid,
-    # The channel's channel_manning_n is already in roughness.tif (rule 09).
-    roughness_list=[{"manning": "local_roughness_native"}],
-    river_list=river_list,
-    nr_subgrid_pixels=nr_subgrid_pixels,
-    nr_levels=nr_levels,
-    write_dep_tif=True,
-    write_man_tif=True,
-    nrmax=nrmax,
-)
-log.info(
-    f"Subgrid table created: {nr_subgrid_pixels} px/cell → "
-    f"{resolution_m / nr_subgrid_pixels:.0f} m effective resolution"
-)
+# Rule 11 round 1 built this table from the same sources and settings; it is
+# copied after sf.write() once the mask files can be compared, and built only
+# if the masks differ.
+sf.config.set("sbgfile", "sfincs_subgrid.nc")
+
+
+def _create_subgrid() -> None:
+    sf.subgrid.create(
+        elevation_list=elevation_list_subgrid,
+        # The channel's channel_manning_n is already in roughness.tif (rule 09).
+        roughness_list=[{"manning": "local_roughness_native"}],
+        river_list=river_list,
+        nr_subgrid_pixels=nr_subgrid_pixels,
+        nr_levels=nr_levels,
+        write_dep_tif=True,
+        write_man_tif=True,
+        nrmax=nrmax,
+    )
+    log.info(
+        f"Subgrid table created: {nr_subgrid_pixels} px/cell → "
+        f"{resolution_m / nr_subgrid_pixels:.0f} m effective resolution"
+    )
 
 # ── 8. Observation points ──
 # N_OBS_PER_CROSSING evenly spaced points along the downstream path (up to
@@ -466,10 +454,10 @@ sf.write()
 write_weir_file(sf)  # crests at 1 cm, not hydromt_sfincs' 0.1 m
 log.info(f"Skeleton written to {skeleton_root}")
 
-subgrid_path = Path(snakemake.output.sfincs_subgrid)
-if not subgrid_path.exists():
-    subgrid_path.touch()
-    log.info("sfincs_subgrid.nc placeholder written (subgrid not built)")
+if not copy_subgrid_table(calibration_root, skeleton_root):
+    log.warning(f"Active mask differs from rule 11's ({calibration_root}): building the subgrid table")
+    _create_subgrid()
+    sf.subgrid.write()
 
 weir_path = Path(snakemake.output.sfincs_weir)
 if not weir_path.exists():

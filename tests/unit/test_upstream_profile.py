@@ -80,6 +80,26 @@ def test_profile_runs_upstream_first_with_distance_from_mouth():
     np.testing.assert_allclose(prof["dist_from_mouth_m"], prof["dist_to_sea_m"])
 
 
+def test_profile_follows_network_discharge_through_a_reach_without_nodes():
+    # "b" owns no node (its junction nodes belong to its neighbours); the node
+    # table alone would send the path down "side", which carries nothing.
+    nodes = _channel()
+    nodes = nodes.assign(reach_id=nodes["reach_id"].replace({"b": "c", "c": "side"}))
+    downstream = {"a": ["b", "side"], "b": ["c"], "c": [], "side": []}
+    nodes.loc[nodes["reach_id"] == "side", "q_m3s"] = 0.0
+    nodes = pd.concat(
+        [nodes, nodes[nodes["reach_id"] == "side"].assign(reach_id="c", q_m3s=Q_M3S)]
+    )
+    assert mainstem_profile(nodes, downstream, "a")["reach_id"].iloc[-1] == "side"
+    prof = mainstem_profile(
+        nodes,
+        downstream,
+        "a",
+        reach_q={"a": Q_M3S, "b": Q_M3S, "c": Q_M3S, "side": 0.0},
+    )
+    assert prof["reach_id"].iloc[-1] == "c"
+
+
 def test_profile_rejects_reach_without_nodes():
     with pytest.raises(ValueError, match="no nodes"):
         mainstem_profile(_channel(), DOWNSTREAM, "missing")

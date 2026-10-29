@@ -5,6 +5,7 @@ import os
 from src.io import load_catalogue, catalogue_entry,read_geometry, raw_input_path, site_setting, require_keys
 from src.io import general_path as _gen_path
 from src.river_forcing import derive_forcing_mode
+from src.hydromt_sfincs_patch import MASK_FILES, SUBGRID_TABLE_FILES
 from src.adaptation_strategies import (
     ADAPTATION_LINE_NAMES, expand_strategies, location_path, resolve_locations,
 )
@@ -91,6 +92,14 @@ RESULTS_DIR = config["results_dir"]
 def results_path(pattern):
     """Return pattern prefixed with the results directory."""
     return f"{RESULTS_DIR}/{pattern}"
+
+
+def calibration_subgrid_files():
+    """Return rule 11's round-1 subgrid table and mask files, reused by rule 12a."""
+    return [
+        results_path(f"{{basin_id}}/preprocessing_inputs/depth_crest_calibration/round1/{name}")
+        for name in SUBGRID_TABLE_FILES + MASK_FILES
+    ]
 
 
 # ── per-rule threads (config resources) ──

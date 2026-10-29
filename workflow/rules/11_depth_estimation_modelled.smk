@@ -56,6 +56,9 @@ rule modelled_depth_estimation:
         plot_calibration             = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_depth.png"),
         # Round 0's node table (bed, width, level, design discharge along the
         # network); read by the analysis checks (analysis/_upstream_profile.py).
+        # Round 1's subgrid table and mask; rule 12a copies the table when its
+        # mask is identical instead of building the same table again.
+        calibration_subgrid          = calibration_subgrid_files(),
         river_bed_nodes              = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_bed/{basin_id}_river_bed_nodes.csv"),
         # River network on land: colour = water depth at the design discharge
         # (dashed where the slope floor sets it), line width = channel width.
@@ -88,6 +91,7 @@ rule modelled_depth_estimation:
         water_surface                = config["river_processing"]["water_surface"],
         channel_manning_n            = config["river_processing"]["channel_manning_n"],
         calibration_margin_hr        = config["river_processing"]["river_depth_modelling"]["calibration_margin_hr"],
+        wave_regime_rT               = config["river_processing"]["river_depth_modelling"]["wave_regime_rT"],
         calibration_max_days         = config["river_processing"]["river_depth_modelling"]["calibration_max_days"],
         steady_check                 = config["river_processing"]["river_depth_modelling"]["steady_check"],
         verify_crests                = config["river_processing"]["river_depth_modelling"]["verify_crests"],

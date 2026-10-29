@@ -113,13 +113,17 @@ river_processing:
       bathymetry_handover_m: 5000   # river bed blends linearly into GEBCO bathymetry (wide sea-class nodes) over this distance
       q_min_m3s: 1.0                # at or below: depth from the width-depth fit of the other nodes
     # Rounds 1-2 run ramp_hr + T_walled + calibration_margin_hr: T_walled is the slowest
-    # walled (no overtopping) kinematic travel time, 5/3 u at the calibration discharge, from a
-    # forcing point to its network end (src.river_profile.walled_travel_time).
+    # walled (no overtopping) travel time at the calibration discharge from a forcing point to
+    # its network end (src.river_profile.walled_travel_time): per node the gravity speed
+    # u + sqrt(g h) where friction acts slower than the ramp, else the kinematic 5/3 u.
     calibration_margin_hr: 12       # SFINCS round 1 reached steady state up to 4 h after ramp + T_walled (2433835)
+    wave_regime_rT: [0.3, 3.0]      # r * ramp_hr with r = g n^2 u / h^(4/3): below the first, inertial (gravity speed; wide, deep,
+                                    # slow reaches, 1248635 Meuse ~0.15); from the first, kinematic (above the second frictional,
+                                    # in between a transition taking the slower, kinematic speed; 1248635 Waal/Lek ~12)
     calibration_max_days: 4         # longer runs fail: raise it or check the bed
     steady_check: {window_hr: 3, tol_m: 0.05}  # warn when centreline cells still rise more than tol_m over the run's last window_hr
     verify_crests: true             # run round 2 (production crests, reports overtopped edges); false: round 1 only
-    ramp_hr: 6.0                    # linear ramp, then held to the run end: every crossing from its mean discharge (the flow that holds zsini's river level, src.river_bed mean_level_m) to the calibration discharge, every sea station from calm_sea_level_m to its storm tide at the coastal protection RP. A step to the full (often many-times-bankfull) discharge sends a front that can oscillate for the whole run.
+    ramp_hr: 6.0                    # ramp (river: half-cosine; sea: linear), then held to the run end: every crossing from its mean discharge (the flow that holds zsini's river level, src.river_bed mean_level_m) to the calibration discharge, every sea station from calm_sea_level_m to its storm tide at the coastal protection RP. A step to the full (often many-times-bankfull) discharge sends a front that can oscillate for the whole run.
     weir_crest_m: 1000.0            # confinement weir crest (m) for round 1 -- effectively never overtopped
     # ── weir-building params (used by modelled_depth_estimation every round)
     min_component_cells: 30           # discard small isolated land islands or water patches below this cell count on either side -- neither gets a weir ring around it
@@ -177,12 +181,15 @@ boundary_forcings:
       separation_days: 14    # independent flood peaks are at least this far apart
       n_largest: 5           # a return level above every recorded peak uses the average of the n_largest
                              # events, each scaled to it
-      # The event run starts at the spin-up's mean discharge, while a real flood is already well
-      # above it at that point: the discharge blends from the mean into the event over a ramp of
-      #   max(min_ramp_hr, gap / (max_rise_per_hr x peak))   with gap = event start discharge - mean
+      max_rising_days: 7     # the rising limb starts at the main inflow's lowest daily flow within this many
+                             # days before the peak; in storm-tide mode the forcing window makes room for it
+                             # (both peaks move later, the surge holds the calm level until its window)
+      # The event run starts at the spin-up's mean discharge; where the rising-limb start is off the
+      # mean, the discharge blends from the mean into the event (half-cosine) over a ramp ending there of
+      #   max(min_ramp_hr, pi/2 x gap / (max_rise_per_hr x peak))   with gap = |rising-limb start discharge - mean|
       min_ramp_hr: 6.0    # shortest ramp (h)
-      max_rise_per_hr: 0.05  # the main inflow closes the gap by at most this share of its own peak per
-                             # hour (0.05 -> a gap of 60 % of the peak takes 12 h). Relative, so it suits
+      max_rise_per_hr: 0.02  # the blend's steepest rise, as a share of the main inflow's peak per hour
+                             # (0.02 -> a gap of 50 % of the peak takes 39 h). Relative, so it suits
                              # small and large rivers alike; real floods rise at ~0.01 of the 100-yr peak per hour
     glofas_buffer_deg: 1.0
     glofas_search_radius_km: 5.0    # radius around inside-domain reach centroid to search for GloFAS cells

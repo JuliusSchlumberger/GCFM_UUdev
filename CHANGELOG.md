@@ -3,6 +3,88 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-10-29: subgrid table built once per basin; chunked source rasters (- JS)
+
+- **Skeleton reuses rule 11's subgrid table:** rule 11 declares round 1's
+  `sfincs_subgrid.nc`, `subgrid/*.tif`, `sfincs.ind` and `sfincs.msk` as
+  outputs. Rule 12a copies the table when its own mask files are
+  byte-identical (`src.hydromt_sfincs_patch.copy_subgrid_table`), and builds
+  it only if they differ.
+  - The two builds used the same sources and settings.
+  - 3279946: rule 12a takes 4.5 min instead of 19.5 min. Every skeleton file
+    is byte-identical to the previous build, except the weir GeoPackage's
+    write timestamp.
+- **Chunked catalog rasters:** rules 11 and 12a open their catalog rasters in
+  2048 px dask chunks (`raster_catalog_entry`).
+  - Unchunked, each subgrid block's clip-and-load decompressed the whole file
+    (3279946: about 10 s of a block's merge; 1.5 s chunked).
+  - 2433835: the table and subgrid GeoTIFFs are equal to the unchunked build.
+
+# 2026-10-29: walled travel time benchmarked on the crest-calibration runs (- JS)
+
+- `analysis/benchmark_peak_travel.py` compares rule 11's walled travel time with
+  the settle time of the water level in calibration round 1.
+  - Settle time: searching back from the run end, the last time a node is more
+    than `steady_check.tol_m` from its final level, minus `ramp_hr`.
+  - It runs on the forcing point's mainstem, with rule 11's own inputs.
+  - Round 2 is bit-identical to round 1 on the basins checked, since no crest
+    is overtopped.
+  - The sea settles within `ramp_hr` + 1 h, so later changes are the river's.
+- Results on 7 basins, 8 forcing points:
+  - Only the last 1–5 km settle with the sea.
+  - Settle time peaks mid-path and falls towards both ends. That is backwater
+    adjustment of the whole reach, not a travelling front, so it does not
+    measure the peak travel time.
+  - Settle time exceeds the estimate in the middle reaches: 2433835 10.5 h vs
+    2–4 h, and 3279946 over 52 h vs 10–30 h. On 3279946, 296 and 429 path nodes
+    are still changing at the 59 h run end.
+  - 1248635 has no calibration run.
+
+# 2026-10-29: river event from its real rising limb; smooth river forcing (- JS)
+
+- **Smooth GloFAS event:** the event's daily means are joined by a monotone
+  cubic (PCHIP) instead of straight lines (`src.river_forcing.real_flood_event_matrix`).
+  - Straight lines gave a dQ/dt staircase with a step every 24 h and a sharp
+    corner at the peak.
+  - The peak keeps its value (the RP-table discharge the crests are
+    calibrated for) and its hour.
+- **Rising-limb start:** the event starts at the main inflow's lowest daily flow
+  within `event_hydrograph.max_rising_days` (7) before the peak, instead of at
+  the fixed event start (2.5 days before the peak).
+  - In storm-tide mode, rule 07d moves both peaks later to make room. The surge
+    holds the calm level until its window.
+  - Event runs go from 120 to 228 h on all basins except 2433835 (336 h,
+    unchanged).
+  - At RP100, the discharge where the event takes over from the mean fell from
+    0.64–0.81 to 0.34–0.58 of the peak on 1248635, 1475442, 3279946 and 620947.
+    Their floods rise over weeks, so the start stays above the mean.
+- **Cosine ramps for all river forcing:** every river discharge ramp uses one
+  half-cosine weight, `src.river_forcing.cosine_ramp`.
+  - This covers the event blend (rule 14) and rule 11's calibration ramp.
+  - The event blend length is `max(min_ramp_hr, π/2 · gap / (max_rise_per_hr · peak))`,
+    so `max_rise_per_hr` is the blend's steepest rise. It is lowered from 0.05
+    to 0.02 of the peak per hour; real GloFAS rises are about 0.01.
+  - The 6–13 h linear blocks that lifted 30–58 % of the peak are now 13–39 h
+    bell-shaped rises. The largest RP100 slope change drops 4–12×
+    (e.g. 3279946: 174 → 16 m³/s/h²).
+  - Sea-level ramps stay linear.
+
+# 2026-10-29: calibration run length from the wave regime; mainstem follows the network discharge (- JS)
+
+- Rule 11's walled travel time takes per node the speed of its wave regime:
+  the gravity speed u + sqrt(g h) where friction acts slower than the ramp
+  (r * ramp_hr below `wave_regime_rT[0]` = 0.3, r = g n^2 u / h^(4/3)), the
+  kinematic 5/3 u elsewhere, including the transition up to 3
+  (`src.river_profile.walled_travel_time`, `t_wave_hr`, `friction_rT`,
+  `regime`). The all-kinematic estimate ran to weeks in wide, deep, slow
+  reaches: 1248635 Meuse 516 h over 80 km (51 h now), so the rule failed
+  `calibration_max_days`; the Waal/Lek path stays at 33 h.
+
+- `mainstem_profile` picks the path at bifurcations by the network's own reach
+  discharge (rule 11 passes the calibration discharge). A short reach owns no
+  river-bed node, so with the node table alone 1248635's Rhine path went into a
+  zero-discharge canal arm (velocity 0, travel time infinite).
+
 # 2026-10-28: upstream boundary check from steady GVF levels (- JS)
 
 - `analysis/check_upstream_boundary.py` judges each forcing point by the rise

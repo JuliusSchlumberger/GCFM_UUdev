@@ -1,4 +1,4 @@
-"""Workarounds for the pinned hydromt_sfincs subgrid table: float32 zlib write, fast gap fill, reuse."""
+"""Workarounds for the pinned hydromt_sfincs subgrid table: float32 zlib write, fast gap fill, chunked sources, reuse."""
 
 from __future__ import annotations
 
@@ -18,6 +18,47 @@ PATCHED_VERSION = "2.0.0rc2"
 PATCHED_HYDROMT_VERSION = "1.3.1"
 # Lossless; SFINCS v2.3.0 reads it with identical results and about 40% less disk.
 SUBGRID_ZLIB_LEVEL = 4
+# Dask chunk edge (px) of catalog rasters. Unchunked, every subgrid block's
+# clip-and-load decompresses the whole file (3279946: ~10 s of a block's merge,
+# ~1.5 s chunked, identical values).
+RASTER_CHUNK_PX = 2048
+# Files of a subgrid table that a model with the same active mask can copy.
+SUBGRID_TABLE_FILES = (
+    "sfincs_subgrid.nc",
+    "subgrid/dep_subgrid.tif",
+    "subgrid/manning_subgrid.tif",
+)
+MASK_FILES = ("sfincs.ind", "sfincs.msk")
+
+
+def raster_catalog_entry(path: str | Path) -> dict:
+    """Return a data-catalog entry that opens the GeoTIFF at ``path`` in dask chunks."""
+    return {
+        "data_type": "RasterDataset",
+        "uri": str(path),
+        "driver": {
+            "name": "rasterio",
+            "options": {"chunks": {"x": RASTER_CHUNK_PX, "y": RASTER_CHUNK_PX}},
+        },
+    }
+
+
+def copy_subgrid_table(src_root: Path, dst_root: Path) -> bool:
+    """Copy ``src_root``'s subgrid table into ``dst_root`` if both have the same mask.
+
+    The table holds values for active cells only, so it is valid for another
+    model exactly when its sfincs.ind and sfincs.msk are byte-identical. Call
+    after ``dst_root``'s mask is written. Returns whether the table was copied.
+    """
+    for name in MASK_FILES:
+        if (src_root / name).read_bytes() != (dst_root / name).read_bytes():
+            log.info("%s differs from %s: subgrid table not reusable", name, src_root)
+            return False
+    for name in SUBGRID_TABLE_FILES:
+        (dst_root / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_root / name, dst_root / name)
+    log.info("Subgrid table copied from %s (same active mask)", src_root)
+    return True
 
 
 class _Float32ZerosNumpy:

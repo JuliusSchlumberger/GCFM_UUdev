@@ -8,12 +8,14 @@ model (regular grid, production subgrid setup) with the production weir
 geometry (src.protection_weir.build_coastal_protection_weir: coast and river
 banks in one water_like boundary). Initial river level: the steady level of the
 mean discharge on round 0's bed, as in rule 12a's zsini (spin-up, events).
-Forcing, ramped linearly over ramp_hr and then held to the run end: every
-crossing from its mean discharge to the discharge at the protection RP
-(bankfull as fallback), every sea station from calm_sea_level_m to its storm
-tide at the FLOPROS coastal RP. Run length: ramp_hr + T_walled +
-calibration_margin_hr, with T_walled the slowest walled kinematic travel time
-(5/3 u at the calibration discharge, src.river_profile.walled_travel_time)
+Forcing, ramped over ramp_hr and then held to the run end: every crossing
+from its mean discharge to the discharge at the protection RP (bankfull as
+fallback; half-cosine, src.river_forcing.cosine_ramp), every sea station
+linearly from calm_sea_level_m to its storm tide at the FLOPROS coastal RP. Run length: ramp_hr + T_walled +
+calibration_margin_hr, with T_walled the slowest walled travel time at the
+calibration discharge (src.river_profile.walled_travel_time): per node the
+gravity speed where friction acts slower than the ramp (r ramp_hr below
+wave_regime_rT[0], r = g n^2 u / h^(4/3)), else the kinematic 5/3 u,
 from a crossing to its network end on round 0's bed, so the full discharge
 reaches the coast and the levels settle before the run ends (checked per
 round: steady_check).
@@ -80,7 +82,12 @@ from src.protection_weir import (
 )
 from src.domain import load_domain
 from src.grid import create_model_grid, load_grid_def
-from src.hydromt_sfincs_patch import ReusableSubgrid, patch_nearest_extrapolation, patch_subgrid_write
+from src.hydromt_sfincs_patch import (
+    ReusableSubgrid,
+    patch_nearest_extrapolation,
+    patch_subgrid_write,
+    raster_catalog_entry,
+)
 from src.landuse import LANDUSE_SEA_CODE
 from src.log import setup_logging
 from src.plots import (
@@ -122,6 +129,7 @@ from src.sfincs_run import (
     set_sea_and_outflow_boundaries,
     write_weir_file,
 )
+from src.river_forcing import cosine_ramp
 from src.river_profile import mainstem_profile, walled_travel_time
 from src.surge import CREST_PRECISION_M, ceil_crest, read_calm_sea_level_m, storm_tide_at_rp_interpolated
 from src.water_surface import river_cells_at_surface
@@ -160,6 +168,7 @@ channel_manning_n  = float(snakemake.params.channel_manning_n)
 water_surface_cfg = dict(snakemake.params.water_surface)
 calibration_margin_hr = float(snakemake.params.calibration_margin_hr)
 calibration_max_days  = float(snakemake.params.calibration_max_days)
+wave_regime_rT        = tuple(float(v) for v in snakemake.params.wave_regime_rT)
 steady_check_cfg      = dict(snakemake.params.steady_check)
 verify_crests      = bool(snakemake.params.verify_crests)
 ramp_hr            = float(snakemake.params.ramp_hr)
@@ -251,27 +260,11 @@ river_burned_subgrid_path = Path(snakemake.output.river_burned_subgrid)
 local_catalog_path = calib_root / "data_catalog_local.yml"
 local_catalog = {
     "meta": {"root": str(elevation_path.parent)},
-    "local_elevation_conditioned": {
-        "data_type": "RasterDataset",
-        "uri": str(elevation_path),
-        "driver": "rasterio",
-    },
-    "local_elevation_conditioned_sfincs_grid": {
-        "data_type": "RasterDataset",
-        "uri": str(elevation_sfincs_grid_path),
-        "driver": "rasterio",
-    },
-    "local_roughness": {
-        "data_type": "RasterDataset",
-        "uri": str(roughness_on_grid_path),
-        "driver": "rasterio",
-    },
+    "local_elevation_conditioned": raster_catalog_entry(elevation_path),
+    "local_elevation_conditioned_sfincs_grid": raster_catalog_entry(elevation_sfincs_grid_path),
+    "local_roughness": raster_catalog_entry(roughness_on_grid_path),
     # Native resolution, subgrid table only.
-    "local_roughness_native": {
-        "data_type": "RasterDataset",
-        "uri": str(roughness_path),
-        "driver": "rasterio",
-    },
+    "local_roughness_native": raster_catalog_entry(roughness_path),
     **({
         "local_delta_outflow_points": {
             "data_type": "GeoDataFrame",
@@ -279,11 +272,7 @@ local_catalog = {
             "driver": "pyogrio",
         },
     } if delta_outflow_enabled else {}),
-    "local_river_burned_subgrid": {
-        "data_type": "RasterDataset",
-        "uri": str(river_burned_subgrid_path),
-        "driver": "rasterio",
-    },
+    "local_river_burned_subgrid": raster_catalog_entry(river_burned_subgrid_path),
 }
 with open(local_catalog_path, "w") as fh:
     yaml.dump(local_catalog, fh, sort_keys=False)
@@ -985,23 +974,25 @@ for _reach in sorted({normalize_reach_id(r) for r in inside_ids_valid} - {None})
     if _reach not in _node_reaches:
         log.warning(f"Crossing reach {_reach} has no river-bed nodes: no walled travel time")
         continue
-    _prof = mainstem_profile(_nodes, adjacency, _reach)
+    _prof = mainstem_profile(_nodes, adjacency, _reach, reach_q=_q_calib_by_reach)
     _walled.append(
         walled_travel_time(
             _prof, _prof["reach_id"].map(_q_calib_by_reach).to_numpy(float),
             float(coastal_design_peaks.max()), channel_manning_n,
+            forcing_hr=ramp_hr, regime_rT=wave_regime_rT,
         ).assign(crossing_reach_id=_reach, reach_id=_prof["reach_id"].to_numpy())
     )
 if not _walled:
     raise RuntimeError("No crossing reach has river-bed nodes -- cannot size the calibration run")
 walled = pd.concat(_walled, ignore_index=True)
 walled.to_csv(_bed_dir / f"{basin_id}_walled_travel.csv", index=False)
-_ends = walled.groupby("crossing_reach_id")[["t_kinematic_hr", "t_gravity_hr"]].last()
-t_walled_hr = float(_ends["t_kinematic_hr"].max())
+_ends = walled.groupby("crossing_reach_id")[["t_wave_hr", "t_kinematic_hr", "t_gravity_hr"]].last()
+t_walled_hr = float(_ends["t_wave_hr"].max())
 run_hr = float(np.ceil(ramp_hr + t_walled_hr + calibration_margin_hr))
 log.info(
-    f"Walled travel time to the network end per crossing reach (kinematic / gravity bound, h): "
-    f"{ {r: (round(k, 1), round(g, 1)) for r, (k, g) in _ends.iterrows()} }; run = {ramp_hr:g} h ramp + "
+    f"Walled travel time to the network end per crossing reach (regime / all-kinematic / all-gravity, h): "
+    f"{ {r: (round(t, 1), round(k, 1), round(g, 1)) for r, (t, k, g) in _ends.iterrows()} }; "
+    f"inertial nodes {int((walled['regime'] == 'inertial').sum())} of {len(walled)}; run = {ramp_hr:g} h ramp + "
     f"{t_walled_hr:.1f} h + {calibration_margin_hr:g} h margin = {run_hr:.0f} h"
 )
 if not np.isfinite(run_hr) or run_hr > calibration_max_days * 24.0:
@@ -1016,7 +1007,7 @@ trstout_s = int(run_hr * 3600)
 sf.config.update({"tstop": tstop, "dtmaxout": trstout_s, "trstout": trstout_s})
 
 calib_times = pd.date_range(tref, tstop, periods=int(run_hr) + 1)
-_ramp_frac = np.clip(np.linspace(0.0, run_hr, len(calib_times)) / max(ramp_hr, 1e-6), 0.0, 1.0)[:, None]
+_ramp_frac = cosine_ramp(np.linspace(0.0, run_hr, len(calib_times)), 0.0, ramp_hr)[:, None]
 _start_q = np.where(np.isfinite(crossing_q_start), crossing_q_start, 0.0)
 dis_values = _start_q[None, :] + (crossing_q[None, :] - _start_q[None, :]) * _ramp_frac
 dis_df = pd.DataFrame(dis_values, index=calib_times, columns=crossings_gdf["index"].to_numpy())
@@ -1027,7 +1018,7 @@ dis_df = pd.DataFrame(dis_values, index=calib_times, columns=crossings_gdf["inde
 crossings_filt = place_discharge_points(sf, crossings_gdf, dis_df, cell_gdf, inside_ids_valid, resolution_m)
 dis_df = dis_df[crossings_filt["index"].to_numpy()]
 log.info(
-    f"Discharge forcing: {len(crossings_filt)} source point(s), ramped from the mean discharge to the "
+    f"Discharge forcing: {len(crossings_filt)} source point(s), cosine-ramped from the mean discharge to the "
     f"calibration discharge over {ramp_hr:g} h, held for the remaining {run_hr - ramp_hr:.0f} h"
 )
 
@@ -1088,7 +1079,7 @@ weir_gdf, final_weir_diagnostics = build_coastal_protection_weir(
 )
 # SFINCS drops a weir face whose crest is not above the face's subgrid
 # minimum (uv_zmin); floor every crest there so all runs keep round 1's dike.
-# Round 2 and rule 12a build the same subgrid table, so its faces apply there.
+# Round 2 and rule 12a use the same subgrid table, so its faces apply there.
 if final_weir_diagnostics.get("applicable", True) and not weir_gdf.empty:
     _u_zmin, _v_zmin = read_face_zmin(round_root / "sfincs_subgrid.nc", sf.grid.data["mask"])
     weir_gdf, _floored_surface, _n_raised = floor_crests_above_face_zmin(

@@ -33,6 +33,8 @@ rule build_sfincs_skeleton:
         # zsini: sea cells on this model's grid (no reprojection); rule 11's
         # steady mean-discharge level on the bed for the channel cells.
         zsini_sea_cells   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
+        # Rule 11's round-1 subgrid table, copied when this model's mask is identical.
+        calibration_subgrid = calibration_subgrid_files(),
         river_bed_nodes   = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_bed/{basin_id}_river_bed_nodes.csv"),
         # Only calm_sea_level_m/coastal_protection_crest_m and bankfull_discharge_m3s/
         # has_glofas (observation points); no forcing timeseries.

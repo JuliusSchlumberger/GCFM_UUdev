@@ -26,6 +26,15 @@ Site paths: `config/site.yml` (gitignored; copy `config/site.example.yml`), keys
 - `environment.yml`, `environment.win-64.lock.yml`, `.pre-commit-config.yaml` (pinned versions); `config/site.yml` (machine paths)
 - Local, gitignored: `config/site.yml`, `CLAUDE.local.md`
 
+## Changelog
+
+Every change to code, config or results goes into `CHANGELOG.md` in the same session:
+- **Placement:** newest first, under a dated heading `# YYYY-MM-DD: <topic> (- <initials>)`.
+- **Author initials:** the person making the change. Take them from `CLAUDE.local.md` (`changelog initials`), or else from the initials of `git config user.name`. Ask if neither gives them.
+- **Content:** what changed and why, with numbers where results moved.
+- **Reverts and revisions:** when a change is reverted or revised later in the same session, edit its entry so it describes the final state. Don't add a correction entry on top.
+- **Scope:** `CHANGELOG.md` is the one place for history; code and docs stay history-free.
+
 ## Smallest end-to-end case
 
 Basin `2433835` (Ebro delta), scenario `default`; adaptation: strategy `advance_1`.

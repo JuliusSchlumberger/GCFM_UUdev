@@ -171,9 +171,10 @@ river_lead   = surge_lead
 river_period = snakemake.params.river_period_hr
 river_dt     = surge_dt
 
-# Storm-tide hydrograph mode: the event window (-window_hr..+window_hr around
-# the surge peak / tidal high water) starts right after the lead-in, and the
-# river wave's own lead is set so its peak lands on the surge peak.
+# Storm-tide hydrograph mode: the peaks sit after the lead-in plus the longer
+# of the storm-tide half-window and, for real GloFAS floods, the room for the
+# river's rising limb; the river wave's own lead is set so its peak lands on
+# the surge peak. Before its window the surge holds the calm level.
 hg_cfg = snakemake.params.surge_hydrograph
 if hg_cfg["enabled"]:
     hg_window_hr = float(snakemake.params.hydrograph_window_hr)
@@ -182,12 +183,19 @@ if hg_cfg["enabled"]:
             f"river period_hr/2 ({river_period / 2:g} h) exceeds the hydrograph window "
             f"({hg_window_hr:g} h) -- the river wave would not fit around the surge peak"
         )
-    hg_peak_hr = surge_lead * 24 + hg_window_hr
+    river_event_cfg = snakemake.params.river_event
+    rising_hr = (
+        24.0 * float(river_event_cfg["max_rising_days"])
+        if river_event_cfg["source"] == "glofas_event"
+        else 0.0
+    )
+    hg_peak_hr = surge_lead * 24 + max(hg_window_hr, rising_hr)
     river_lead = (hg_peak_hr - river_period / 2.0) / 24.0
     forcing_total_hr = hg_peak_hr + hg_window_hr
     log.info(
         f"Forcing total duration: {forcing_total_hr:.0f} h (lead-in {surge_lead * 24:.0f} h + "
-        f"storm-tide window +-{hg_window_hr:g} h); surge and river peaks at {hg_peak_hr:.0f} h"
+        f"{max(hg_window_hr, rising_hr):g} h before and {hg_window_hr:g} h after the peak); "
+        f"surge and river peaks at {hg_peak_hr:.0f} h"
     )
 else:
     forcing_total_hr = max(surge_lead * 24 + surge_period, river_lead * 24 + river_period)
