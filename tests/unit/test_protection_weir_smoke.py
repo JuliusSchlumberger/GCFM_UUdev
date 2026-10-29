@@ -9,6 +9,7 @@ from src.protection_weir import (
     GridArrays,
     build_coastal_protection_weir,
     discard_small_components,
+    floor_crests_above_face_zmin,
     merge_weir_preserve_unmatched,
     ocean_linked_wetland_mask,
 )
@@ -135,3 +136,29 @@ def test_merge_replaces_matched_baseline_and_keeps_river():
     assert merged.crs == CRS
     assert sorted(merged["elevation"].tolist()) == [2.0, 5.0, 5.0]
     assert any(g.equals(river) for g in merged.geometry)
+
+
+def test_crest_not_above_face_zmin_is_raised_so_sfincs_keeps_the_face():
+    # 1 row x 4 cells, north-up: water | bank | bank | water; u faces after cols 0 and 2
+    transform = Affine(DX, 0.0, 0.0, 0.0, -DX, DX)
+    u_zmin = np.array([[3.204, np.nan, 1.0, np.nan]])
+    v_zmin = np.full((1, 4), np.nan)
+    water = np.array([[True, False, False, True]])
+    weir = gpd.GeoDataFrame(
+        {"elevation": [3.0, 3.0], "par1": [0.6, 0.6]},
+        geometry=[
+            LineString([(DX, 0.0), (DX, DX)]),
+            LineString([(3 * DX, 0.0), (3 * DX, DX)]),
+        ],
+        crs=CRS,
+    )
+    out, crest_surface, n_raised = floor_crests_above_face_zmin(
+        weir, u_zmin, v_zmin, water, transform
+    )
+    assert n_raised == 1
+    assert out["elevation"].tolist() == [
+        3.22,
+        3.0,
+    ]  # ceil(3.204 + 0.01); the 1 m face keeps 3.0
+    assert crest_surface[0, 0] == 3.22 and crest_surface[0, 3] == 3.0
+    assert np.isnan(crest_surface[0, 1:3]).all()

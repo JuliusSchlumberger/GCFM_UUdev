@@ -38,6 +38,8 @@ def build_time_axis(
 # Every absolute coastal water level and every weir crest is kept to the
 # centimetre (2 decimals): levels rounded to nearest, crests rounded UP.
 LEVEL_DECIMALS = 2
+# Smallest crest step; an exceedance below it is rounding, not overtopping.
+CREST_PRECISION_M = 10.0**-LEVEL_DECIMALS
 
 
 def round_level(values) -> np.ndarray:
@@ -58,9 +60,8 @@ def ceil_crest(values) -> np.ndarray:
     value on the grid (2.75 stored as 2.7500000000000004) is not bumped 1 cm.
     NaN passes through; -0.0 is returned as 0.0.
     """
-    step = 10.0**-LEVEL_DECIMALS
-    steps = np.ceil(np.round(np.asarray(values, dtype=float) / step, 6))
-    return np.round(steps * step, LEVEL_DECIMALS) + 0.0
+    steps = np.ceil(np.round(np.asarray(values, dtype=float) / CREST_PRECISION_M, 6))
+    return np.round(steps * CREST_PRECISION_M, LEVEL_DECIMALS) + 0.0
 
 
 def sinusoidal_wave(
@@ -159,8 +160,8 @@ def storm_tide_event(
       event = tide + A x surge_shape_at_rp(rp_yr), A = peak_level - tide high
               water (>= 0), so the event peaks at peak_level exactly.
 
-    Shared by the production boundary (rule 13) and the crest calibration
-    (rule 10), so crests are calibrated against the wave production sends.
+    Shared by the production boundary (rule 14) and the crest calibration
+    (rule 11), so crests are calibrated against the wave production sends.
     peak_level: absolute level per station (same slr_m), or None for tide
     only; rp_yr is required with it. Outside the stored window the tide holds
     its edge value and the surge is 0.
@@ -244,7 +245,7 @@ def read_calm_sea_level_m(surge_ds: xr.Dataset) -> float:
     """Read surge_forcing.nc's calm_sea_level_m, rounded to 1 cm; 0.0 if the field is absent.
 
     calm_sea_level_m is the basin-mean local MSL in model coordinates (MDT-only),
-    the level rule 10's calibration and rule 13's skeleton zsini hold the sea at.
+    the level rule 11's calibration and rule 12a's skeleton zsini hold the sea at.
     """
     if "calm_sea_level_m" not in surge_ds:
         return 0.0
@@ -330,7 +331,7 @@ def build_design_surge_matrix(
     """Rebuild the (n_station, n_time) water-level boundary (m) at rp_yr.
 
     Surge counterpart of river_forcing.build_design_discharge_matrix; a new
-    surge RP reruns rule 13 only, never rule 07. None: flat calm sea. With
+    surge RP reruns rule 14 only, never rule 07d. None: flat calm sea. With
     hydrograph components in surge_forcing.nc, an RP gives average tide +
     surge peaking on tidal high water and "tide" (case-insensitive) the tide
     alone; without them an RP is a half-cosine from calm level to RP level
@@ -356,7 +357,7 @@ def build_design_surge_matrix(
     if isinstance(rp_yr, str) and rp_yr.strip().lower() == "tide":
         raise ValueError(
             "surge_rp_yr 'Tide' needs the storm-tide hydrographs (tide signal) in "
-            "surge_forcing.nc -- enable boundary_forcings.surge.hydrograph and rerun rule 07"
+            "surge_forcing.nc -- enable boundary_forcings.surge.hydrograph and rerun rule 07d"
         )
 
     baselines = calm_sea_levels(surge_ds, slr_m)
@@ -459,7 +460,7 @@ def apply_mdt_correction(
 
     Adds storm_tide_at_rp_raw_m (original, local-MSL per COAST-RP), mdt (m; NaN if no
     valid cell within +/-fallback_deg) and storm_tide_at_rp_m = storm_tide_at_rp_raw_m + mdt,
-    matching GEBCO's re-referencing (gebco += mdt) in 05a_get_elevation.py.
+    matching GEBCO's re-referencing (gebco += mdt) in 06_get_elevation.py.
     Sign: MDT is the mean sea surface height ABOVE the geoid (CF
     mean_dynamic_topography; e.g. +0.6 m Sargasso Sea, -1.5 m Southern
     Ocean), so H_GOCO06s = H_MSL + MDT.
@@ -560,11 +561,11 @@ def apply_slr_fingerprint(
 
 
 def preview_station_rp_yr(surge_rp_yr: int | str | None) -> int:
-    """Return the COAST-RP RP (yr) that fills rule 07's per-station preview columns.
+    """Return the COAST-RP RP (yr) that fills rule 07d's per-station preview columns.
 
     A numeric surge_rp_yr is returned unchanged. 'Tide' and None have no
     storm-tide RP, so the smallest tabulated RP keeps storm_tide_at_rp_m
-    defined; the production boundary (rule 13) never reads that column.
+    defined; the production boundary (rule 14) never reads that column.
     """
     if surge_rp_yr is None or isinstance(surge_rp_yr, str):
         return _COASTRP_RPS[0]
@@ -718,7 +719,7 @@ def select_surge_stations(
 ) -> gpd.GeoDataFrame:
     """Select a basin's COAST-RP surge stations by distance to the domain.
 
-    Run by rule select_surge_stations (07a); rule get_boundary_forcings (07)
+    Run by rule select_surge_stations (07a); rule get_boundary_forcings (07d)
     reloads its choice with load_selected_stations. rp_yr only sets
     the 'storm_tide_at_rp_m' column; it does not affect the selection.
     """
@@ -785,7 +786,7 @@ def build_surge_dataset(
     station_calm_sea_level_m (m, one per station): own local MSL = storm_tide_at_rp_m_i -
     storm_tide_at_rp_raw_m_i = +mdt_i, so the surge amplitude is exactly storm_tide_at_rp_raw_m;
     None uses calm_sea_level_m for all. calm_sea_level_m = mean(+MDT) over stations, the
-    SLR-independent level rule 10 and rule 13 use for zsini.tif.
+    SLR-independent level rule 11 and rule 12a use for zsini.tif.
     """
     if station_calm_sea_level_m is not None:
         surge_matrix = np.stack(
@@ -863,8 +864,8 @@ def build_surge_dataset(
                 "Mean vertical correction applied as lead-period baseline "
                 "(mean(+MDT) across selected stations = calm sea level in "
                 "model coordinates, MDT-only -- SLR deliberately excluded, "
-                "see apply_slr_fingerprint). Read by rule 10's calibration "
-                "and rule 13's skeleton to initialise sea cells (zsini.tif) "
+                "see apply_slr_fingerprint). Read by rule 11's calibration "
+                "and rule 12a's skeleton to initialise sea cells (zsini.tif) "
                 "at an slr_m-independent reference. Equals 0.0 when MDT "
                 "correction is off."
             ),
@@ -911,8 +912,8 @@ def build_surge_dataset(
         if col in stations.columns:
             ds[col] = (["station"], stations[col].values, attrs)
 
-    # Full raw COAST-RP table lets rule 13 rebuild the wave at any tabulated RP
-    # without rerunning rule 07 (as river_forcing.nc's discharge_rp_table).
+    # Full raw COAST-RP table lets rule 14 rebuild the wave at any tabulated RP
+    # without rerunning rule 07d (as river_forcing.nc's discharge_rp_table).
     rp_cols = [
         c
         for c in (f"rp_raw_{tabulated_rp_yr:04d}" for tabulated_rp_yr in _COASTRP_RPS)

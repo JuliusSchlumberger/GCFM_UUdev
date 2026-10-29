@@ -16,7 +16,7 @@ def bounds_to_wgs84(
 ) -> tuple[float, float, float, float]:
     """Return (lon_min, lat_min, lon_max, lat_max) in EPSG:4326 for an xmin/ymin/xmax/ymax dict.
 
-    Reprojects all four corners, so the result encloses the rotated source box.
+    Reprojects all four corners, so the result encloses the whole source box.
     """
     src = CRS.from_string(crs_str)
     xmin, ymin, xmax, ymax = (

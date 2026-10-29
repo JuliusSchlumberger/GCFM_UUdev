@@ -1,7 +1,7 @@
 """Plot flood depth maps per scenario and a depth | attribution comparison.
 
 Scenarios: the SCENARIOS list (coast_100, river_500, compound_100c_500r). Panels use the EPSG:4326 style
-of rule 16's plot_inundation_check (land polygons + river network), so depth and
+of rule 15's plot_inundation_check (land polygons + river network), so depth and
 attribution columns share identical panel geometry.
 
 Outputs (all in OUT_DIR = results/2433835/runs/):

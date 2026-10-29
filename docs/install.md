@@ -60,7 +60,7 @@ section of both files; no source clone is needed. The same section installs
 run time: `SfincsSubgridTable.write_netcdf` copies float32 subgrid arrays into
 float64 buffers, which runs out of memory on about 1e6 active cells; the patched
 writer also zlib-compresses the file. The scripts that write a SFINCS model
-(rules 10, 13 and 18a) call `patch_subgrid_write()` first. The fix applies only to `2.0.0rc2`; any
+(rules 11, 12a and 17b) call `patch_subgrid_write()` first. The fix applies only to `2.0.0rc2`; any
 other installed version logs a warning and runs unpatched.
 
 ## SFINCS executable
@@ -70,7 +70,7 @@ this repository and is licensed and obtained separately.
 
 | | |
 |---|---|
-| needed by | rules that run the solver: `modelled_depth_estimation` (10), `run_spinup` (14), `run_event` (16), `adapt_run_event_pre` (18a) |
+| needed by | rules that run the solver: `modelled_depth_estimation` (11), `run_spinup` (13), `run_event` (15), `adapt_run_event_pre` (17b) |
 | not needed by | every other rule, including `build_sfincs`, which only writes input files |
 | version | SFINCS v2.3.0 ("Faber" release), multithreaded build (`_mt`); the restart files follow the `sfincs.YYYYMMDD.HHMMSS.rst` naming |
 | source | Deltares SFINCS releases, https://github.com/Deltares/SFINCS/releases |
@@ -78,7 +78,7 @@ this repository and is licensed and obtained separately.
 | threads | each solver rule takes the whole `--cores` budget and sets `OMP_NUM_THREADS` for the SFINCS process |
 
 Point `sfincs_exe` in the site settings at the binary. Every run, dry runs
-included, needs the key set (rule 10 resolves the path while the DAG is built);
+included, needs the key set (rule 11 resolves the path while the DAG is built);
 for `-n` any path works.
 
 ## Site settings
@@ -152,8 +152,8 @@ The tests and the health check need no input data. Quick-look figure titles carr
 commit hash; outside a git clone (for example an unpacked ZIP) they show `nogit`
 and the tests still pass. The dry run needs the site
 settings and the delta polygons under `<raw_data_root>`; for basin `2433835`
-(Ebro) and scenario `default` it lists 22 jobs for `preprocess` on an empty
-`<results_dir>` (25 for `build`). Tests that need real data carry the
+(Ebro) and scenario `default` it lists 15 jobs for `preprocess` on an empty
+`<results_dir>` (22 for `build`). Tests that need real data carry the
 `needs_data` marker and are excluded by default.
 
 ## Pre-commit

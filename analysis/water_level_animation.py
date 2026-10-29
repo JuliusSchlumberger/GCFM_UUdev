@@ -84,7 +84,7 @@ def main():
         basin_root / "runs" / SCENARIO / "adaptation" / "pre" / STRATEGY / "sfincs"
     )
     spinup_root = basin_root / "spin_up"  # shared by every scenario/strategy
-    # Same sea mask as rule 16's compute_flood_progression (sea_mask input).
+    # Same sea mask as rule 15's compute_flood_progression (sea_mask input).
     sea_mask_path = (
         basin_root
         / "preprocessing_inputs"

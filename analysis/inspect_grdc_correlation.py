@@ -225,20 +225,24 @@ def main():
 
     for basin_id in basin_ids:
         results_dir = results_dir_root / str(basin_id)
-        river_forcing_path = results_dir / "inputs/forcing/river_forcing.nc"
+        river_forcing_path = (
+            results_dir / "preprocessing_inputs/forcing/river_forcing.nc"
+        )
         if not river_forcing_path.exists():
             print(f"basin {basin_id}: no river_forcing.nc yet, skipping")
             n_basins_skipped += 1
             continue
 
-        domain_dir = results_dir / "inputs/domain"
+        domain_dir = results_dir / "preprocessing_inputs/domain"
         _, domain_crs, domain_poly = load_domain(
             domain_dir / "domain_bbox.json", domain_dir / f"{basin_id}_domain.gpkg"
         )
         river_gdf = gpd.read_file(domain_dir / f"{basin_id}_river_network.gpkg")
 
         river_ds = xr.open_dataset(river_forcing_path, decode_times=False)
-        glofas_clip = xr.open_dataset(results_dir / "inputs/forcing/glofas_clip.nc")
+        glofas_clip = xr.open_dataset(
+            results_dir / "preprocessing_inputs/forcing/glofas_clip.nc"
+        )
 
         lat_dim = "latitude" if "latitude" in glofas_clip.dims else "lat"
         lon_dim = "longitude" if "longitude" in glofas_clip.dims else "lon"

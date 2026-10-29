@@ -1,6 +1,6 @@
 """Derive adaptation-measure lines (levees, mouth closure, pump) from the baseline weir.
 
-Entry point: rule build_adaptation_lines (13b), once per basin after the
+Entry point: rule build_adaptation_lines (12c), once per basin after the
 skeleton; config/adaptation_strategies.yml references its geojsons as
 `locations: auto/<name>`. The lines follow the skeleton's baseline weir, which
 runs along the grid's cell edges, and src.protection_weir.
@@ -470,7 +470,7 @@ def build_adaptation_lines(
     `weir_gdf` holds the model's 2-point cell-edge weir segments and `rivers`
     the clean SWORD network (width, reach_id, n_rch_dn, rch_id_up), both in
     the CRS of `landuse`/`valid`, which lie on the SFINCS grid (`transform`).
-    `min_component_cells`/`unprotected_ocean_wetlands` are rule 10's weir-builder
+    `min_component_cells`/`unprotected_ocean_wetlands` are rule 11's weir-builder
     settings; `closure` is config `adaptation.lines` (mouth_closures settings).
     """
     require_keys(closure, CLOSURE_KEYS, "adaptation.lines")

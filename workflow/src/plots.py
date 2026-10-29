@@ -2,8 +2,8 @@
 
 Every map's land background (``land_polygons_path``) is a vectorized WGS84
 land mask, land use != 200 (the pipeline's open-sea code; see src.landuse).
-From rule grid_align_landuse (09b) on it is traced on the SFINCS grid
-({basin}_land_mask_on_grid.gpkg); rules 04-09 and 11b use the native land-use
+From rule grid_align_landuse (09) on it is traced on the SFINCS grid
+({basin}_land_mask_on_grid.gpkg); rules 03-09 and the analysis scripts use the native land-use
 mask ({basin}_land_polygons.gpkg). No OSM data or web map tiles are used.
 """
 
@@ -119,8 +119,8 @@ _LC_COLORS: dict[int, str] = {
 def imshow_on_grid(ax, data: np.ndarray, transform, **kwargs):
     """Draw a raster in its own CRS at its true position for any affine transform.
 
-    The model grid is south-up and may be rotated, which imshow(extent=...)
-    cannot show; the raster's affine is handed to matplotlib instead, so
+    The model grid is south-up, which imshow(extent=...) does not handle;
+    the raster's affine is handed to matplotlib instead, so
     vector overlays in the same CRS line up. Sets axes limits to the footprint.
     """
     from matplotlib.transforms import Affine2D
@@ -621,7 +621,7 @@ def plot_domain_map(
 
     Crossing points: green active; inactive as red crosses (enters and visible
     on the grid but no GloFAS/EVA), purple (enters but narrower than the grid)
-    or orange (no downstream reach inside the domain). Without rule 07's filter
+    or orange (no downstream reach inside the domain). Without rule 07d's filter
     columns every inactive crossing is red.
     """
     lon_min, lat_min, lon_max, lat_max = bbox_poly.bounds
@@ -646,7 +646,7 @@ def plot_domain_map(
         ax=ax, color="darkorange", markersize=35, marker="^", zorder=4, alpha=0.8
     )
 
-    # Exclusion reasons come from filter columns written by rule 07; without
+    # Exclusion reasons come from filter columns written by rule 07d; without
     # them all inactive crossings share one category.
     n = len(crossings)
     active = has_glofas.astype(bool) if n > 0 else np.zeros(0, dtype=bool)
@@ -761,7 +761,7 @@ def plot_forcing_timeseries(
 
     The surge boundary is never reduced by the FLOPROS coastal protection
     level (a weir models it). When river_ds carries 'discharge_uncorrected' /
-    'protection_discharge' (rule 07 does not write them), the river panel shows
+    'protection_discharge' (rule 07d does not write them), the river panel shows
     the undefended hydrograph, the constant protection discharge and the
     effective hydrograph; otherwise one series per crossing.
     """
@@ -801,7 +801,7 @@ def plot_forcing_timeseries(
     # MDT-only (src.surge.apply_slr_fingerprint); SLR is added at scenario
     # build time as slr_fingerprint × slr_m, so only the dimensionless
     # fingerprint is shown. The FLOPROS coastal level only floors the weir
-    # crest (rule 13) and is never netted out of this series.
+    # crest (rule 12a) and is never netted out of this series.
     has_raw = "storm_tide_at_rp_raw_m" in surge_ds
     has_mdt = "mdt" in surge_ds
     if has_raw and has_mdt:
@@ -1005,7 +1005,7 @@ def plot_surge_corrections(
 
     surge_forcing.nc levels are MDT-only; SLR is applied per scenario as the
     dimensionless slr_fingerprint × slr_m, so only the fingerprint is
-    annotated. The FLOPROS coastal level (weir crest floor, rule 13) has no bar.
+    annotated. The FLOPROS coastal level (weir crest floor, rule 12a) has no bar.
 
     Left panel — three sub-bars per station, each anchored at 0 m (local MSL):
       1. storm_tide_at_rp_raw_m — steelblue
@@ -1320,7 +1320,6 @@ _STRUCTURE_STYLE = {
     2: ("lock", "tab:orange"),
     3: ("low-head", "tab:orange"),
     0: ("level step only", "0.4"),
-    -1: ("rising level, cut", "tab:purple"),
 }
 
 
@@ -1331,13 +1330,14 @@ def plot_water_surface_profiles(
     output_path: str,
     title: str,
 ) -> None:
-    """Plot the rule 09 water surface along each seed's widest downstream path.
+    """Plot the rule 10 water surface along each seed's widest downstream path.
 
     One panel per seed: FathomDEM pixels along the centreline, the water pixels
     the surface is built from (grey) and the skipped ones (islands, banks, sea;
-    orange), node medians (black crosses), the smoothed surface (blue), structure junctions
-    coloured by the SWORD obstruction type of either reach (the surface is
-    smoothed across them unless split_at_structures), and rising-level cuts.
+    orange), node medians (black crosses), the smoothed surface (blue) and
+    structure junctions coloured by the SWORD obstruction type of either reach
+    (the surface is smoothed across them). The title gives the SWOT check of
+    the path's reaches: surface slope / SWOT slope.
 
     Args:
         surface: src.water_surface.WaterSurface (with its centreline samples).
@@ -1415,14 +1415,9 @@ def plot_water_surface_profiles(
             )
             offset += net.reach_length[r]
             nxt = path[k + 1] if k + 1 < len(path) else None
-            if nxt is not None and (
-                (r, nxt) in surface.structures or (r, nxt) in net.structure_edges
-            ):
-                if (r, nxt) in surface.structures:
-                    t = max(obstr.get(r, 0), obstr.get(nxt, 0))
-                    t = t if t in _STRUCTURE_STYLE and t > 0 else 0
-                else:
-                    t = -1
+            if nxt is not None and (r, nxt) in surface.structures:
+                t = max(obstr.get(r, 0), obstr.get(nxt, 0))
+                t = t if t in _STRUCTURE_STYLE and t > 0 else 0
                 used_styles.add(t)
                 ax.axvline(
                     offset / 1000,
@@ -1454,8 +1449,15 @@ def plot_water_surface_profiles(
         pad = max(0.5, 0.1 * (hi - lo))
         ax.set_ylim(lo - pad, hi + pad)
         ax.set_xlim(0, max(offset, 1.0) / 1000)
+        swot = surface.swot[surface.swot["reach_id"].isin(path)]
+        swot_note = (
+            f"; surface/SWOT slope median {swot['ratio'].median():.2f} over {len(swot)} reach(es)"
+            if len(swot)
+            else "; no reliable SWOT slope"
+        )
         ax.set_title(
-            f"seed {seed}: {len(path)} reach(es) along the widest arm", fontsize=9
+            f"seed {seed}: {len(path)} reach(es) along the widest arm{swot_note}",
+            fontsize=9,
         )
         ax.set_ylabel("level (m, model datum)")
         ax.grid(alpha=0.3, lw=0.5)
@@ -1482,12 +1484,16 @@ def plot_river_depth_width(
     depth_label: str,
     title: str,
     lw_range: tuple[float, float] = (0.4, 6.0),
+    value_col: str = "depth",
+    value_range: tuple[float, float] | None = None,
+    cmap_name: str = "viridis_r",
 ) -> None:
-    """Plot the river network with colour = depth and line width = channel width.
+    """Plot the river network with colour = ``value_col`` and line width = channel width.
 
-    segments are in the model CRS with 'depth' (m), 'width' (m, as used in the
-    calculation) and optional 'fallback' (bool, depth not from the hydraulics;
-    drawn dashed). lw_range is the line width (points) of the narrowest and
+    segments are in the model CRS with ``value_col`` (m), 'width' (m, as used
+    in the calculation) and optional 'fallback' (bool, depth on the slope
+    floor; drawn dashed). value_range fixes the colour scale; None: 0 to the
+    98th percentile. lw_range is the line width (points) of the narrowest and
     widest channel, scaled with sqrt(width) in between.
     """
     crs = segments.crs
@@ -1518,7 +1524,7 @@ def plot_river_depth_width(
         )
     else:
         width = seg["width"].to_numpy(dtype=float)
-        depth = seg["depth"].to_numpy(dtype=float)
+        depth = seg[value_col].to_numpy(dtype=float)
         w_lo, w_hi = float(np.nanmin(width)), float(np.nanmax(width))
 
         def _lw(w):
@@ -1531,10 +1537,13 @@ def plot_river_depth_width(
             )
             return lw_range[0] + (lw_range[1] - lw_range[0]) * frac
 
-        finite = np.isfinite(depth)
-        vmax = float(np.nanpercentile(depth[finite], 98)) if finite.any() else 1.0
-        norm = mcolors.Normalize(vmin=0.0, vmax=max(vmax, 0.1))
-        cmap = plt.get_cmap("viridis_r").copy()
+        if value_range is None:
+            finite = np.isfinite(depth)
+            vmax = float(np.nanpercentile(depth[finite], 98)) if finite.any() else 1.0
+            norm = mcolors.Normalize(vmin=0.0, vmax=max(vmax, 0.1))
+        else:
+            norm = mcolors.Normalize(*value_range)
+        cmap = plt.get_cmap(cmap_name).copy()
         cmap.set_bad("#bbbbbb")
         fallback = (
             seg["fallback"].to_numpy(dtype=bool)
@@ -1561,7 +1570,8 @@ def plot_river_depth_width(
             ax.add_collection(lc)
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
-        fig.colorbar(sm, ax=ax, shrink=0.6, pad=0.02, extend="max", label=depth_label)
+        extend = "max" if value_range is None else "both"
+        fig.colorbar(sm, ax=ax, shrink=0.6, pad=0.02, extend=extend, label=depth_label)
 
         inner = [w for w in (100, 500, 2500) if 1.5 * w_lo < w < w_hi / 1.5]
         ticks = [round(w_lo), *inner, round(w_hi)]
@@ -1579,7 +1589,7 @@ def plot_river_depth_width(
                     color="#555555",
                     linewidth=1.5,
                     linestyle=(0, (2, 1.5)),
-                    label="depth from width fit",
+                    label="depth on the slope floor",
                 )
             )
         ax.legend(
@@ -1709,7 +1719,7 @@ def plot_coastal_protection_weir(
     basin_id: str = "",
     weir_gdf: gpd.GeoDataFrame | None = None,
 ) -> None:
-    """Plot ocean, river channel and the coastal protection weir of rule 13 in UTM.
+    """Plot ocean, river channel and the coastal protection weir of rule 12a in UTM.
 
     grid is a src.protection_weir.GridArrays; diagnostics and weir_gdf come
     from build_coastal_protection_weir. The weir hugs the coast/riverbank (no
@@ -1808,8 +1818,8 @@ def reproject_max_for_plot(
     Warping straight to the coarse grid avoids a multi-GiB full-resolution
     intermediate (subgrid output reaches ~1.5 m pixels) and keeps isolated
     peaks that stride-decimation would alias away. Georeferencing comes from
-    hydromt's ``.raster`` accessor because rioxarray crops or raises on a
-    rotated grid. Returns a north-up DataArray with 1-D pixel-centre x/y
+    hydromt's ``.raster`` accessor because rioxarray crops or raises on the
+    south-up model grid. Returns a north-up DataArray with 1-D pixel-centre x/y
     (y descending); other dims (e.g. time) are reprojected slice by slice.
     """
     import hydromt  # noqa: F401 -- registers the .raster accessor
@@ -1923,8 +1933,12 @@ def plot_crest_gap_map(
     output_path: str,
     basin_id: str = "",
     run_label: str = "",
+    min_overtop_m: float = 0.01,
 ) -> None:
     """Plot weir crest minus simulated period-max water level (negative = overtopped).
+
+    Only cells overtopped by more than min_overtop_m (the crest precision) are
+    marked, counted and zoomed on; smaller exceedances are rounding.
 
     Evaluated at every finite cell of crest_on_grid (rule
     modelled_depth_estimation puts each weir edge's crest on its water-side
@@ -1967,7 +1981,7 @@ def plot_crest_gap_map(
     gap_grid = np.full(out_shape, np.nan, dtype=np.float32)
     gap_grid[rows, cols] = crest_on_grid[rows, cols] - zs_at_raster_cells
 
-    overtopped_rows, overtopped_cols = np.where(gap_grid < 0)
+    overtopped_rows, overtopped_cols = np.where(gap_grid < -min_overtop_m)
     overtopped_x, overtopped_y = rasterio.transform.xy(
         grid_transform, overtopped_rows, overtopped_cols
     )
@@ -2000,7 +2014,7 @@ def plot_crest_gap_map(
                 edgecolors="lime",
                 linewidths=2.5,
                 zorder=5,
-                label=f"{len(overtopped_x)} overtopped cell(s)",
+                label=f"{len(overtopped_x)} cell(s) overtopped by > {min_overtop_m * 100:g} cm",
             )
 
     finite_gap = gap_grid[np.isfinite(gap_grid)]
@@ -2066,7 +2080,7 @@ def plot_crest_gap_map(
         pad_m = 0.05 * max(crest_xmax - crest_xmin, crest_ymax - crest_ymin, 1.0)
         ax2.set_xlim(crest_xmin - pad_m, crest_xmax + pad_m)
         ax2.set_ylim(crest_ymin - pad_m, crest_ymax + pad_m)
-        ax2.set_title("No overtopped cells this round")
+        ax2.set_title(f"No cell overtopped by > {min_overtop_m * 100:g} cm this round")
     ax2.set_aspect("equal")
 
     fig.tight_layout()
@@ -2686,7 +2700,7 @@ def plot_datum_correction_delta(
 ) -> None:
     """Plot a vertical datum correction delta (corrected − original) in UTM metres.
 
-    For the single-step corrections of 05a_get_elevation.py: the coastal DEM's
+    For the single-step corrections of 06_get_elevation.py: the coastal DEM's
     geoid offset (EGM2008 → GOCO06s) or GEBCO's +MDT (local MSL → GOCO06s).
     NaN pixels are transparent. symmetric=True uses ±vmax (default the 95th
     percentile of |delta|) on RdBu_r; symmetric=False uses the data min/max on
@@ -2784,7 +2798,7 @@ def plot_inundation_check(
     basin_id: str = "",
     run_label: str = "baseline spinup",
 ) -> None:
-    """Plot the fraction of land pixels above an inundation threshold (rules 15, 16).
+    """Plot the fraction of land pixels above an inundation threshold (rules 13b, 15).
 
     Left panel — map of max inundation depth drawn with ax.imshow and an
                  explicit extent from the DataArray's x/y coordinates, so it is

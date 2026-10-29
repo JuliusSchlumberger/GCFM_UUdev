@@ -1,7 +1,7 @@
 """Run the SFINCS binary, hand-write sfincs.inp files and place discharge points.
 
 Used by every rule that executes SFINCS. sfincs.inp files that borrow geometry
-from another model directory (13_build_sfincs.py, 14_run_spinup.py) are written
+from another model directory (14_build_sfincs.py, 13a_run_spinup.py) are written
 by hand because HydroMT's get_set_file_variable absolutizes any file reference
 outside the model root instead of keeping a relative ../ path.
 """
@@ -174,6 +174,29 @@ def read_weir_file(path: str | Path) -> gpd.GeoDataFrame:
         crests.append(float(pts[:, 2].max()))
         i += 2 + n_pts
     return gpd.GeoDataFrame({"elevation": crests}, geometry=geoms)
+
+
+def read_face_zmin(subgrid_path: str | Path, mask) -> tuple[np.ndarray, np.ndarray]:
+    """Return SFINCS's subgrid face minimum levels (uv_zmin) on the grid, NaN where no face.
+
+    u[r, c] is the face between cells (r, c) and (r, c + 1), v[r, c] the face
+    between (r, c) and (r + 1, c), in the array order of mask (the model's
+    mask DataArray); same mapping as hydromt-sfincs' subgrid reader.
+    """
+    import xarray as xr
+    from hydromt_sfincs import utils
+
+    _, index_mu1, index_nu1 = utils.find_uv_indices(mask)
+    shape = mask.shape
+    with xr.open_dataset(subgrid_path) as ds:
+        uv_zmin = ds["uv_zmin"].values.ravel()
+    faces = []
+    for index in (index_mu1, index_nu1):
+        out = np.full(shape, np.nan, dtype=np.float32)
+        active = np.flatnonzero(index > -1)
+        out[np.unravel_index(active, shape, order="F")] = uv_zmin[index[active]]
+        faces.append(out)
+    return faces[0], faces[1]
 
 
 def write_weir_file(sf) -> Path | None:

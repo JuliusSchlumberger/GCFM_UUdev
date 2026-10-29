@@ -69,7 +69,7 @@ Everything is written under `<results_dir>/{basin_id}/`:
    how to unset them: [docs/install.md](docs/install.md#site-settings).
 
 4. Check the job graph with a dry run on the smallest case (Ebro delta, basin
-   `2433835`, scenario `default`); it lists 23 jobs:
+   `2433835`, scenario `default`); it lists 15 jobs:
 
    ```bash
    snakemake -n preprocess --cores 1 --config target_basins="[2433835]" target_scenarios="['default']"
@@ -87,9 +87,9 @@ Everything is written under `<results_dir>/{basin_id}/`:
 | target | runs | needs |
 |---|---|---|
 | `preprocess` | rules 01-11: domain, terrain, land use, river network, forcing, river depth and crest calibration | input data under `<raw_data_root>` |
-| `build` | rules 13-17: SFINCS skeleton, spin-up, event runs, flood metrics | `preprocess` outputs, SFINCS |
+| `build` | rules 12-16: SFINCS skeleton, spin-up, event runs, flood metrics | `preprocess` outputs, SFINCS |
 | `all` | `preprocess` and `build` | |
-| `adapt` | rules 13b, 18a-19: adaptation lines, strategies and comparison | `build` outputs, per-basin adaptation geometries, `--config target_strategies=...` |
+| `adapt` | rules 12c, 17b-18: adaptation lines, strategies and comparison | `build` outputs, per-basin adaptation geometries, `--config target_strategies=...` |
 
 Selecting basins, scenarios and strategies, adaptation runs and rule graphs:
 [docs/running.md](docs/running.md).
@@ -98,12 +98,12 @@ Selecting basins, scenarios and strategies, adaptation runs and rule graphs:
 
 ```
 workflow/Snakefile    entry point: includes the rules, defines the targets
-workflow/rules/       one .smk file per numbered stage (00_common.smk: shared config parsing)
+workflow/rules/       one .smk file per stage, numbered in the order they run (00_common.smk: shared config parsing)
 workflow/scripts/     one script per rule, same number
 workflow/src/         shared library imported by the scripts
 config/               pipeline configuration (see below)
 tools/                one-off data preparation scripts (downloads, dataset fixes)
-analysis/             stand-alone figures and checks on finished results
+analysis/             stand-alone figures and checks on finished results, and diagnostics that are not rules
 tests/unit/           synthetic unit and smoke tests (pytest)
 tests/check_code_health.py   syntax and `src` import check over the repo
 plot_dag.py           rule-graph rendering
@@ -132,7 +132,7 @@ python tests/check_code_health.py      # syntax and src imports
 pre-commit run --all-files             # ruff, pyright, pydocstyle, lock-file sync
 ```
 
-`pytest -q` reports 325 passed in about 2 minutes. Tests that need real data
+`pytest -q` reports 322 passed in about 2 minutes. Tests that need real data
 carry the `needs_data` marker and are excluded by default. `pre-commit` needs a
 git clone and a one-time `pre-commit install`
 ([install.md](docs/install.md#pre-commit)).

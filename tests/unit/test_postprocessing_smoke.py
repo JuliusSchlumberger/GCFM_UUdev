@@ -120,14 +120,10 @@ def test_timeseries_area_bounded_by_domain_and_volume_non_negative(synthetic_run
     assert (df["flood_volume_m3"] >= 0).all()
 
 
-def _cells_and_subgrid(rotation_deg, zs_nodata):
+def _cells_and_subgrid(zs_nodata):
     """Coarse 3-frame zs and a finer, offset bed level reaching past the cell grid."""
     rng = np.random.default_rng(1)
-    cells = (
-        Affine.translation(X0, Y0)
-        * Affine.rotation(rotation_deg)
-        * Affine.scale(100.0, -100.0)
-    )
+    cells = Affine.translation(X0, Y0) * Affine.scale(100.0, -100.0)
     zs = full_from_transform(cells, (3, 6, 5), nodata=zs_nodata, crs=CRS, name="zs")
     zs_values = rng.uniform(-0.5, 2.0, zs.shape).astype("float32")
     zs_values[:, 0, 0] = zs_nodata
@@ -139,12 +135,9 @@ def _cells_and_subgrid(rotation_deg, zs_nodata):
     return zs, dep
 
 
-@pytest.mark.parametrize("rotation_deg", [0.0, 23.0])
 @pytest.mark.parametrize("zs_nodata", [np.nan, -9999.0])
-def test_downscale_depth_is_bit_identical_to_downscale_floodmap(
-    rotation_deg, zs_nodata
-):
-    zs, dep = _cells_and_subgrid(rotation_deg, zs_nodata)
+def test_downscale_depth_is_bit_identical_to_downscale_floodmap(zs_nodata):
+    zs, dep = _cells_and_subgrid(zs_nodata)
     cell_index = _nearest_cell_index(zs.isel(time=0), dep)
     assert (cell_index == -1).any() and (cell_index >= 0).any()
     for t in range(zs.sizes["time"]):
@@ -180,9 +173,8 @@ def test_land_bed_level_masks_sea_and_keeps_land_values(synthetic_run):
     )
 
 
-@pytest.mark.parametrize("rotation_deg", [0.0, 23.0])
-def test_land_bed_level_file_round_trip_is_exact(rotation_deg, tmp_path):
-    _, dep = _cells_and_subgrid(rotation_deg, np.nan)
+def test_land_bed_level_file_round_trip_is_exact(tmp_path):
+    _, dep = _cells_and_subgrid(np.nan)
     dep = dep.where(dep > 0.0)
     path = tmp_path / "land_bed_level.nc"
     write_land_bed_level(dep, path)

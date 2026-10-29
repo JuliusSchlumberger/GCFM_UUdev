@@ -112,7 +112,7 @@ def _max_river_water_level(
         if zsmax.sizes[tdim] > 1:
             zsmax = zsmax.isel({tdim: slice(1, None)})  # drop restart start-up shock
         zsmax = zsmax.max(tdim).values  # NaN = never wet
-        x, y = ds["x"].values, ds["y"].values  # cell centres (rotated grid OK)
+        x, y = ds["x"].values, ds["y"].values  # cell centres
     near = shapely.dwithin(
         shapely.points(x.ravel(), y.ravel()), line, (buffer_cells + 0.5) * dx_m
     )

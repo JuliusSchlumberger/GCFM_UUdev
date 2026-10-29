@@ -1,7 +1,7 @@
 """Read SWORD v17c reaches into the pipeline's river-network schema.
 
-Entry point: :func:`read_sword_reaches`, used by rule get_river_network (06)
-and rule test_bifurcation_calibration_options (11b).
+Entry point: :func:`read_sword_reaches`, used by rule get_river_network (02)
+and analysis/check_bifurcation_options.py.
 
 The published v17c ships one GeoPackage per region (layer ``reaches``). The
 pipeline expects topology as bracketed id strings (``rch_id_dn``,
@@ -29,6 +29,7 @@ from shapely.geometry import box
 log = logging.getLogger(__name__)
 
 SWORD_LAYER = "reaches"
+SWORD_NODE_LAYER = "nodes"
 # Widths read from the corrections table must match SWORD within this, or the
 # reach id is probably wrong (absorbs widths floored to whole metres).
 WIDTH_MATCH_TOLERANCE_M = 1.0
@@ -67,7 +68,7 @@ def read_sword_reaches(
 ) -> gpd.GeoDataFrame:
     """Read and clip the reaches of all regional files to a WGS84 box.
 
-    Reaches are clipped to the box (geometry cut at its edge), as rule 06
+    Reaches are clipped to the box (geometry cut at its edge), as rule 02
     always did; regions without reaches in the box contribute nothing.
     """
     parts = []
@@ -87,6 +88,32 @@ def read_sword_reaches(
     )
     reaches = gpd.clip(reaches, clip_box).reset_index(drop=True)
     return to_pipeline_schema(reaches)
+
+
+def read_sword_nodes(
+    paths: Sequence[str | Path],
+    wgs84_bounds: tuple[float, float, float, float],
+    reach_ids,
+) -> pd.DataFrame:
+    """Return the SWORD nodes (reach_id, x, y in WGS84, width) of the given reaches."""
+    ids = {int(float(r)) for r in reach_ids}
+    parts = []
+    for path in paths:
+        if not Path(path).exists():
+            raise FileNotFoundError(f"SWORD regional file not found: {path}")
+        nodes = pyogrio.read_dataframe(
+            path,
+            layer=SWORD_NODE_LAYER,
+            bbox=tuple(wgs84_bounds),
+            read_geometry=False,
+            columns=["reach_id", "x", "y", "width"],
+        )
+        parts.append(nodes[nodes["reach_id"].astype("int64").isin(ids)])
+    return (
+        pd.concat(parts, ignore_index=True)
+        if parts
+        else pd.DataFrame(columns=["reach_id", "x", "y", "width"])
+    )
 
 
 def read_width_corrections(path: str | Path) -> pd.DataFrame:

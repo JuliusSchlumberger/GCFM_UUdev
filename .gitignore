@@ -38,3 +38,6 @@ config/site.yml
 
 # Machine-specific agent notes
 CLAUDE.local.md
+
+# profiler dumps
+*.prof

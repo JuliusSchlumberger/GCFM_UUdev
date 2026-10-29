@@ -1,4 +1,4 @@
-"""Workarounds for the pinned hydromt_sfincs subgrid table: float32 zlib write, reuse."""
+"""Workarounds for the pinned hydromt_sfincs subgrid table: float32 zlib write, fast gap fill, reuse."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import xarray as xr
 log = logging.getLogger(__name__)
 
 PATCHED_VERSION = "2.0.0rc2"
+PATCHED_HYDROMT_VERSION = "1.3.1"
 # Lossless; SFINCS v2.3.0 reads it with identical results and about 40% less disk.
 SUBGRID_ZLIB_LEVEL = 4
 
@@ -102,6 +103,60 @@ def patch_subgrid_write() -> bool:
     log.info(
         "hydromt_sfincs %s: subgrid netCDF written float32, zlib-compressed", installed
     )
+    return True
+
+
+def patch_nearest_extrapolation() -> bool:
+    """Fill the subgrid builder's remaining gaps with a distance transform instead of griddata.
+
+    hydromt_sfincs builds every subgrid block with
+    ``interpolate_na(method="rio_idw", extrapolate=True)``; hydromt 1.3.1 then
+    fills every pixel left empty, mostly the inactive area outside the delta
+    polygon, by ``scipy.interpolate.griddata(method="nearest")`` over all valid
+    pixels of the block, about 17 s per block (2433835: 96 of 146 s). On a
+    regular raster the nearest valid pixel is
+    ``scipy.ndimage.distance_transform_edt(return_indices=True)``: the same
+    values (equidistant ties aside; 2433835 subgrid table identical to 1 mm)
+    in under a second. Applied only to the pinned hydromt; returns whether the
+    fix is active.
+    """
+    from hydromt.gis import raster as raster_module
+    from scipy import ndimage
+
+    accessor = raster_module.RasterDataArray
+    if getattr(accessor._interpolate_na, "_nearest_patch", False):
+        return True
+    installed = version("hydromt")
+    if installed != PATCHED_HYDROMT_VERSION:
+        log.warning(
+            "hydromt %s is not %s: fast nearest extrapolation not applied; check "
+            "whether RasterDataArray._interpolate_na still extrapolates with griddata",
+            installed,
+            PATCHED_HYDROMT_VERSION,
+        )
+        return False
+
+    upstream = accessor._interpolate_na
+
+    @functools.wraps(upstream)
+    def _interpolate_na(self, src_data, method="nearest", extrapolate=False, **kwargs):
+        if not (method == "rio_idw" and extrapolate):
+            return upstream(
+                self, src_data, method=method, extrapolate=extrapolate, **kwargs
+            )
+        out = upstream(self, src_data, method=method, extrapolate=False, **kwargs)
+        nodata_is_nan = self.nodata is None or np.isnan(self.nodata)
+        missing = np.isnan(out) if nodata_is_nan else out == self.nodata
+        if missing.any() and not missing.all():
+            nearest = ndimage.distance_transform_edt(
+                missing, return_distances=False, return_indices=True
+            )
+            out = out[tuple(nearest)]
+        return out
+
+    _interpolate_na._nearest_patch = True
+    accessor._interpolate_na = _interpolate_na
+    log.info("hydromt %s: subgrid gaps extrapolated by distance transform", installed)
     return True
 
 

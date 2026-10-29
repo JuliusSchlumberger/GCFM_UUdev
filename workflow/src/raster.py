@@ -209,7 +209,7 @@ def vectorize_land_from_landuse(
     """Vectorize landuse != 200 (not sea) within wgs84_bounds into land polygons.
 
     No reprojection: the result keeps the source CRS (EPSG:4326). Used by rules
-    get_land_polygons (03) and get_protection_levels (04). The window is
+    prepare_landuse (05) and get_protection_levels (03). The window is
     decimated by mode (no class invented) to at most max_pixels before tracing;
     the polygons are a figure background only, and a 10 m source (ESA
     WorldCover) gives ~26M pixels per delta. None disables decimation.

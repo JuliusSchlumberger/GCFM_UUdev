@@ -37,45 +37,42 @@ _LEVEL = Panel("series", "m", -2.0, 6.0)
 _DISCHARGE = Panel("series", "m3 s-1", 0.0, 10000.0)
 
 STAGES: dict[str, dict[str, Panel]] = {
-    "01_separate_deltas": {"delta_polygon": _OUTLINE},
-    "02_model_domain": {"domain": _OUTLINE},
-    "02b_prepare_landuse": {"landuse_source": _LANDUSE},
-    "03_land_polygons": {"land_polygons": _OUTLINE},
-    "05a_elevation": {"elevation_m": _ELEV},
-    "05b_landuse": {"landuse": _LANDUSE, "sea_mask": _MASK},
-    "05c_roughness": {"manning": _MANNING},
-    "06_river_network": {"river_network": _WIDTH},
-    "07_boundary_forcings": {
+    "01_domain": {"delta_polygon": _OUTLINE, "domain": _OUTLINE},
+    "02_river_network": {"river_network": _WIDTH},
+    "05_landuse_source": {"landuse_source": _LANDUSE, "land_polygons": _OUTLINE},
+    "06_elevation": {"elevation_m": _ELEV, "landuse": _LANDUSE},
+    "07c_storm_tide_hydrographs": {"storm_tide": _LEVEL},
+    "07d_boundary_forcings": {
         "river_discharge": _DISCHARGE,
         "surge_water_level": _LEVEL,
     },
-    "07c_storm_tide_hydrographs": {"storm_tide": _LEVEL},
     "08_clean_river_network": {
         "river_network_clean": _WIDTH,
         "outflow_points": _OUTLINE,
     },
-    "08b_channel_landuse": {"landuse_channels": _LANDUSE},
-    "09_condition_elevation": {"elevation_conditioned_m": _ELEV},
-    "09b_grid_align_landuse": {
+    "09_land_surface": {
+        "landuse_channels": _LANDUSE,
+        "manning": _MANNING,
         "landuse_on_grid": _LANDUSE,
         "roughness_on_grid": _MANNING,
     },
-    "10_depth_estimation": {
+    "10_river_surface": {"elevation_conditioned_m": _ELEV},
+    "11_depth_estimation": {
         "river_burned_dem_m": _ELEV,
         "river_depth_m": Panel("vector", "m", 0.0, 20.0, "plasma", column="depth_m"),
         "weir_crest_m": Panel("vector", "m", 0.0, 10.0, "magma", column="crest_m"),
     },
-    "13_build_sfincs_skeleton": {"zsini_m": _ELEV},
-    "13c_land_bed_level": {"land_bed_level_m": _ELEV},
-    "14_run_spinup": {"max_depth_m": _DEPTH},
-    "16_run_event": {
+    "12a_build_sfincs_skeleton": {"zsini_m": _ELEV},
+    "12b_land_bed_level": {"land_bed_level_m": _ELEV},
+    "13a_run_spinup": {"max_depth_m": _DEPTH},
+    "15_run_event": {
         "max_depth_m": _DEPTH,
         "flooded_area_km2": Panel("series", "km2", 0.0, 500.0),
     },
-    "18_adaptation": {"max_flood_depth_m": _DEPTH},
-    "18c_attribution_mask": {
+    "17a_attribution_mask": {
         "attribution_mask": Panel("raster", "class", 0.0, 3.0, "tab10")
     },
+    "17b_adaptation": {"max_flood_depth_m": _DEPTH},
 }
 
 

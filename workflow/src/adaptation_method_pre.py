@@ -1,13 +1,13 @@
 """Pre-processing adaptation measures: each mutates an open SfincsModel in place.
 
-One function per measure type in config/measures.yml. Called by 18a_adapt_pre.py,
+One function per measure type in config/measures.yml. Called by 17b_adapt_pre.py,
 once per measure in a strategy's config/adaptation_strategies.yml entry, via
 dispatch_rules(). Measures that rebuild the subgrid all start from the
-skeleton's dep_subgrid.tif, passed in by 18a_adapt_pre.py.
+skeleton's dep_subgrid.tif, passed in by 17b_adapt_pre.py.
 
 water_retention's baseline_excess_volume is computed once per basin x scenario by
 rule attribution_mask (src.postprocessing.compute_excess_volume) and read from its
-baseline_excess_volume.json (18a_adapt_pre.py).
+baseline_excess_volume.json (17b_adapt_pre.py).
 """
 
 import shutil
@@ -557,7 +557,7 @@ def apply_water_retention(
 
     target_volume = storage_fraction * baseline_excess_volume [m3] of the
     UNCONTROLLED baseline (classes=(1,3), river and compound: this measure stores
-    river water), auto-injected by 18a_adapt_pre.py. The nominal target is not
+    river water), auto-injected by 17b_adapt_pre.py. The nominal target is not
     guaranteed to be realized; rerun compute_excess_volume() on the resulting flood
     map and check the printed lowering/`max_lowering`. Roughness is unchanged:
     roughness_native_path ("manning" convention) is passed through.
@@ -585,7 +585,7 @@ def apply_water_retention(
         )
     if baseline_excess_volume == 0:
         # No river/compound flooding (e.g. coastal-only): nothing to size the pit
-        # against, and the ring alone would keep coastal water out. 18a_adapt_pre.py
+        # against, and the ring alone would keep coastal water out. 17b_adapt_pre.py
         # skips the measure earlier; this keeps a direct call safe, including the
         # restart copy callers expect at out_rst_path.
         print(
@@ -626,9 +626,7 @@ def apply_water_retention(
     ).astype(bool)
     zone_mask = xr.DataArray(zone_arr, dims=dep.dims, coords=dep.coords)
 
-    res = (
-        dep.raster.res
-    )  # (xres, yres) at SUBGRID resolution; rotation-aware, unlike rio.resolution()
+    res = dep.raster.res  # (xres, yres) at SUBGRID resolution
     pixel_area = abs(res[0] * res[1])
     zone_area = float(zone_mask.sum()) * pixel_area
     if zone_area == 0:
@@ -1027,7 +1025,7 @@ def apply_retreat(
     ("manning" convention), not via HydroMT lulc+reclass_table (the data catalog
     registers no such source).
     urban_code: 50 = built-up. target_code: 60 = bare/sparse vegetation; its
-    Manning's n comes from lu_roughness_lookup_path (the CSV 05c_get_roughness.py used).
+    Manning's n comes from lu_roughness_lookup_path (the CSV 09_land_surface.py used).
     Eligible: urban cells flooded above flood_threshold [m] in the BASELINE
     flood_map_path, optionally inside `locations`; retreat_fraction picks the
     deepest-flooded first (None: all). out_path: reclassed lulc raster under mod.root.
@@ -1158,7 +1156,7 @@ def dispatch_rules(
 ) -> SfincsModel:
     """Validate params and call the measure function for `measure_type`.
 
-    Entry point called by 18a_adapt_pre.py. Validates params against
+    Entry point called by 17b_adapt_pre.py. Validates params against
     measure_def (config/measures.yml), then looks up and calls the matching
     rule function with named params. `mod`'s root is already redirected to the
     adaptation run's output directory.

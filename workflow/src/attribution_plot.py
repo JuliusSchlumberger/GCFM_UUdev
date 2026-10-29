@@ -3,7 +3,7 @@
 Uses existing max_flood_depth.tif rasters of the river-only and coastal-only
 counterpart scenarios (RP-matched by 00_common.smk attribution_counterparts) and
 the spin-up (mean river discharge, calm sea). Called by rule attribution_mask
-(18c_attribution_mask.py).
+(17a_attribution_mask.py).
 """
 
 from pathlib import Path

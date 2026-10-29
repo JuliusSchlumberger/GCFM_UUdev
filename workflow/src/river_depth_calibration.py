@@ -1,8 +1,8 @@
 """Helpers for rule modelled_depth_estimation's SFINCS crest calibration.
 
-The river bed comes from GVF (src.gvf); a confined SFINCS run on that channel
+The river bed comes from src.river_bed; a confined SFINCS run on that channel
 at the steady protection-level RP discharge sets the weir crests, a second
-verifies them (see 10_depth_estimation_modelled.py).
+verifies them (see 11_depth_estimation_modelled.py).
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ def gather_calibration_round_profile(
 
     Reads round{i}/calibration_state.csv under calib_root for i in
     0..n_rounds (dem_m, river_depth_m, weir_crest_m, zs_m). zs_m is the period-max
-    water level, except in round 0: the GVF steady level. weir_crest_m is NaN
+    water level, except in round 0: the river-bed level. weir_crest_m is NaN
     in round 0. rivers_utm may be in any CRS. The state's along_m runs along
     each SWORD line as stored; for a line that runs upstream it is flipped, so
     the path runs downstream throughout.

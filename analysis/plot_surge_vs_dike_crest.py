@@ -103,7 +103,7 @@ def main() -> None:
     # surge_forcing.nc's storm_tide_at_rp_m/calm_sea_level_m are MDT-only (SLR is stored as a
     # dimensionless slr_fingerprint, see src.surge.apply_slr_fingerprint). The
     # "default" scenario's slr_m from scenarios.yml is applied as
-    # 13_build_sfincs.py does at build time.
+    # 14_build_sfincs.py does at build time.
     surge_ds = xr.open_dataset(surge_forcing_path, decode_times=False)
     rps_yr = surge_ds["rp_yr"].values.astype(float)
     n_stations = surge_ds.sizes["station"]

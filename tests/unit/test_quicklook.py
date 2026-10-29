@@ -73,51 +73,47 @@ def delta():
     flooded_km2 = np.clip(np.cumsum(np.maximum(surge - 1.0, 0)) * 2.0, 0, None)
 
     return {
-        "01_separate_deltas": {"delta_polygon": land_poly},
-        "02_model_domain": {"domain": domain},
-        "02b_prepare_landuse": {"landuse_source": da(landuse)},
-        "03_land_polygons": {"land_polygons": land_poly},
-        "05a_elevation": {"elevation_m": da(elevation)},
-        "05b_landuse": {"landuse": da(landuse), "sea_mask": da((~land).astype(float))},
-        "05c_roughness": {"manning": da(manning_n)},
-        "06_river_network": {"river_network": river},
-        "07_boundary_forcings": {
+        "01_domain": {"delta_polygon": land_poly, "domain": domain},
+        "02_river_network": {"river_network": river},
+        "05_landuse_source": {
+            "landuse_source": da(landuse),
+            "land_polygons": land_poly,
+        },
+        "06_elevation": {"elevation_m": da(elevation), "landuse": da(landuse)},
+        "07c_storm_tide_hydrographs": {"storm_tide": pd.Series(tide + surge, index=t)},
+        "07d_boundary_forcings": {
             "river_discharge": pd.Series(discharge, index=t),
             "surge_water_level": pd.DataFrame(
                 {"tide": tide, "tide + surge": tide + surge}, index=t
             ),
         },
-        "07c_storm_tide_hydrographs": {"storm_tide": pd.Series(tide + surge, index=t)},
         "08_clean_river_network": {
             "river_network_clean": river,
             "outflow_points": outflow,
         },
-        "08b_channel_landuse": {
-            "landuse_channels": da(np.where(river_row, 80, landuse))
-        },
-        "09_condition_elevation": {
-            "elevation_conditioned_m": da(elevation_conditioned)
-        },
-        "09b_grid_align_landuse": {
+        "09_land_surface": {
+            "landuse_channels": da(np.where(river_row, 80, landuse)),
+            "manning": da(manning_n),
             "landuse_on_grid": da(landuse),
             "roughness_on_grid": da(manning_n),
         },
-        "10_depth_estimation": {
+        "10_river_surface": {"elevation_conditioned_m": da(elevation_conditioned)},
+        "11_depth_estimation": {
             "river_burned_dem_m": da(elevation_burned),
             "river_depth_m": river,
             "weir_crest_m": weir,
         },
-        "13_build_sfincs_skeleton": {"zsini_m": da(np.where(land, np.nan, 0.0))},
-        "13c_land_bed_level": {
+        "12a_build_sfincs_skeleton": {"zsini_m": da(np.where(land, np.nan, 0.0))},
+        "12b_land_bed_level": {
             "land_bed_level_m": da(np.where(land, elevation, np.nan))
         },
-        "14_run_spinup": {"max_depth_m": da(max_depth * 0.2)},
-        "16_run_event": {
+        "13a_run_spinup": {"max_depth_m": da(max_depth * 0.2)},
+        "15_run_event": {
             "max_depth_m": da(max_depth),
             "flooded_area_km2": pd.Series(flooded_km2, index=t),
         },
-        "18_adaptation": {"max_flood_depth_m": da(max_depth_adapted)},
-        "18c_attribution_mask": {"attribution_mask": da(attribution)},
+        "17a_attribution_mask": {"attribution_mask": da(attribution)},
+        "17b_adaptation": {"max_flood_depth_m": da(max_depth_adapted)},
     }
 
 
@@ -138,8 +134,8 @@ def test_render_writes_one_panel_per_variable(delta, stage):
 def test_render_rejects_missing_variable(delta, tmp_path):
     with pytest.raises(KeyError, match="missing variables"):
         render(
-            "05b_landuse",
-            {"landuse": delta["05b_landuse"]["landuse"]},
+            "06_elevation",
+            {"elevation_m": delta["06_elevation"]["elevation_m"]},
             "synthetic",
             tmp_path,
             commit="x",
@@ -154,8 +150,8 @@ def test_render_rejects_unknown_stage(tmp_path):
 def test_raster_panel_requires_2d_data(tmp_path):
     with pytest.raises(ValueError, match="2D"):
         render(
-            "05a_elevation",
-            {"elevation_m": np.zeros(5)},
+            "06_elevation",
+            {"elevation_m": np.zeros(5), "landuse": np.zeros(5)},
             "synthetic",
             tmp_path,
             commit="x",

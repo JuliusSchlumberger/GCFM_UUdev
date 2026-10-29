@@ -190,10 +190,11 @@ def compute_grdc_correlation(
 ) -> dict | None:
     """Compute tail-focused GloFAS-vs-GRDC correlation on the overlap; None if too short.
 
-    Independent of bias_correction.enabled. correlation_raw uses only days
-    with GRDC >= its tail_percentile (0-100) of the overlap, since an all-days
-    Pearson r is dominated by low flows; correlation_full_raw is all days.
-    GRDC series must have -999 already mapped to NaN.
+    Called by bias_correct_discharge, so only when the correction is enabled.
+    correlation_raw uses only days with GRDC >= its tail_percentile (0-100) of
+    the overlap, since an all-days Pearson r is dominated by low flows;
+    correlation_full_raw is all days. GRDC series must have -999 already
+    mapped to NaN.
     """
     tag = f"[{label}] " if label else ""
     g_overlap, r_overlap = _overlap_series(
@@ -277,10 +278,12 @@ def bias_correct_discharge(
         source_full=glofas_values,
     )
 
-    g_full_series = _to_series(glofas_times, glofas_values)
-    overlap_index = pd.DatetimeIndex(diagnostics["glofas_overlap_times"])
-    corrected_overlap = (
-        pd.Series(corrected_full, index=g_full_series.index).loc[overlap_index].values
+    # The mapping is pointwise, so the overlap is corrected directly rather than
+    # re-indexed out of the full series (which may hold NaN or duplicate days).
+    corrected_overlap = empirical_quantile_map(
+        source_overlap=diagnostics["glofas_overlap"],
+        target_overlap=diagnostics["grdc_overlap"],
+        source_full=diagnostics["glofas_overlap"],
     )
     grdc_overlap = diagnostics["grdc_overlap"]
     tail_mask = diagnostics["tail_mask"]

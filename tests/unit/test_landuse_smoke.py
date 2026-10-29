@@ -229,3 +229,22 @@ def test_channel_landuse_turns_land_into_water_and_keeps_sea(tmp_path):
     assert np.all(after[:, 7:] == LANDUSE_SEA_CODE)  # sea stays sea
     np.testing.assert_array_equal(after[4:], lu[4:])  # outside untouched
     assert converted == {40: 1, 50: 4 * 7 - 1}
+
+
+def test_border_water_body_above_sea_max_elevation_is_not_sea():
+    from src.landuse import _derive_sea_mask
+
+    water = np.zeros((10, 10), dtype=bool)
+    water[0:3, :] = True  # coastal sea along the top edge
+    water[7:, 4:6] = True  # river reaching the bottom edge
+    lc100_sea = np.zeros_like(water)
+    lc100_sea[0, 0] = lc100_sea[9, 4] = True  # LC100 also calls the riverbed sea
+    elevation_m = np.where(np.arange(10)[:, None] >= 7, 35.0, 0.2) * np.ones((10, 10))
+    no = np.zeros_like(water)
+
+    sea_all, _ = _derive_sea_mask(water, no, lc100_sea, no)
+    sea, stats = _derive_sea_mask(water, no, lc100_sea, no, elevation_m, 5.0)
+
+    assert sea_all[8, 4] and not sea[8, 4]
+    assert sea[1, 5] and sea[0:3].all()
+    assert stats["bodies_above_sea_max_elevation"] == 1

@@ -89,7 +89,7 @@ datasets:
       Model accuracy reported as substantially improved vs. FABDEM (lower
       MAE/RMSE), validated against >2,400 LiDAR reference datasets. The
       only supported coastal topography source (workflow/scripts/
-      05a_get_elevation.py, workflow/src/raster.py find_fathomdem_tiles) —
+      06_get_elevation.py, workflow/src/raster.py find_fathomdem_tiles) —
       see the description's centimeters-unit caveat.
 
   - name: river_network
@@ -282,14 +282,14 @@ datasets:
   - name: land_use_esa_worldcover
     # Alternative land-use source to `land_use` (Copernicus LC100, 100 m),
     # selected with config landuse.source: esa_worldcover. Rule prepare_landuse
-    # (02b) clips whichever source is selected to the basin's domain bbox.
+    # (05) clips whichever source is selected to the basin's domain bbox.
     #
     # IMPORTANT: WorldCover has NO open-sea class. Sea, lagoons, rivers and
     # lakes are ALL class 80 ("permanent water bodies"), whereas this pipeline
     # identifies the sea everywhere as class 200 (sea_mask, both land masks,
     # the coastal-protection weir's ocean mask, zsini, the water-level
     # boundary). Rule prepare_landuse therefore DERIVES 200: WorldCover water
-    # reaching the domain border, with the basin's own river network (rule 06)
+    # reaching the domain border, with the basin's own river network (rule 02)
     # as a barrier so the sea stops at the river mouths, keeping only bodies
     # that hold an LC100 open-sea pixel -- so the `land_use` entry above is
     # still required when this source is selected, both as that guard and to
@@ -302,7 +302,7 @@ datasets:
       tiles exist over land only (no open-ocean tiles). Class codes 20-100
       coincide with Copernicus LC100's; class 10 (tree cover) replaces
       LC100's 111-126 forest classes and 95 (mangroves) has no LC100
-      equivalent -- both need a row in lu_to_roughness_lookup.
+      equivalent.
     source: "Zanaga, D., Van De Kerchove, R., Daems, D., De Keersmaecker, W., Brockmann, C., Kirches, G., Wevers, J., Cartus, O., Santoro, M., Fritz, S., Lesiv, M., Herold, M., Tsendbazar, N.E., Xu, P., Ramoino, F., Arino, O. (2022). ESA WorldCover 10 m 2021 v200. https://doi.org/10.5281/zenodo.7254221"
     provider: gdal
     file_format: VRT (GDAL virtual mosaic over per-tile GeoTIFFs)
@@ -352,7 +352,7 @@ datasets:
         100: moss_lichen
         0: no_data (NoData)
     notes: >
-      Rule prepare_landuse (02b) writes the per-basin product with 200 for
+      Rule prepare_landuse (05) writes the per-basin product with 200 for
       open sea and 255 for nodata, so every later rule reads the same
       pipeline codes regardless of which source was selected.
 
@@ -639,7 +639,7 @@ datasets:
     notes: >
       Used by src/river_forcing.py (load_grdc_stations, find_nearest_grdc_station,
       load_grdc_series) and src/extreme_values.py (bias_correct_discharge,
-      compute_grdc_correlation) in rule get_boundary_forcings (07). Search
+      compute_grdc_correlation) in rule get_boundary_forcings (07d). Search
       radius: boundary_forcings.river.bias_correction.grdc_search_radius_km. TODO:
       downloading a global GRDC extract (vs. the current 8-test-delta
       extract) would let the correlation diagnostic and bias correction run
@@ -677,7 +677,7 @@ datasets:
       Subtracting MDT from a GOCO06s-referenced DEM converts it to orthometric
       heights above local Mean Sea Level (MSL): H_MSL = H_GOCO06s − MDT.
       The pipeline works in GOCO06s, so MSL-referenced data (GEBCO, COAST-RP)
-      goes the other way: H_GOCO06s = H_MSL + MDT (rules 05a and 07).
+      goes the other way: H_GOCO06s = H_MSL + MDT (rules 06 and 07d).
       Download from AVISO+ (https://www.aviso.altimetry.fr) — requires free account.
       Note: MDT is defined over ocean only; near-coastal values are used for
       the coastal DiluviumDEM correction (all deltas lie within the 500 km

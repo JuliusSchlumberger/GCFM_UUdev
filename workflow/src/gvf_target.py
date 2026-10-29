@@ -1,32 +1,21 @@
-"""Target water-surface profile for the gradually-varied-flow (GVF) bed estimate.
+"""Node network along the river reaches: placement, structures, smoothing and slope.
 
-Builds the node network the GVF solver (src.gvf_solver) runs on, plus the
-target level, discharge, width, slope scale and node class at every node.
-The method follows Neal et al. (2021),
-*Estimating river channel bathymetry in large scale flood inundation models*,
-WRR 57, e2020WR028301.
-
-Node network:
+Rule 10 (src.water_surface) and rule 11 (src.river_bed) build the same network
+from the same reaches and spacing, so node ids are shared.
 
 - Nodes every ``node_spacing_m`` along each reach, both ends included.
   Reach geometries must run downstream; :func:`orient_downstream` checks this
   against the topology and reverses lines that run upstream.
-- Reach ends that meet at a junction share ONE node, so the target, the bed
-  and the simulated level each have a single value there. Ends on either side
-  of a structure (a weir, lock or dam) are kept as separate nodes, so the
-  level can drop across it.
-
-Target level: the smoothed FathomDEM water surface rule 09 writes
-(src.water_surface), interpolated by chainage onto the same node network
-(same oriented lines, node spacing and structure edges).
+- Reach ends that meet at a junction share ONE node, so the level and the bed
+  each have a single value there. Ends on either side of a structure edge
+  passed to :func:`build_node_network` are kept as separate nodes.
 
 Structures are only placed at reach junctions: the edge from reach u to its
 downstream reach d is a structure if the level drops by more than
 ``step_threshold_m``, if u or d is a SWORD obstruction reach (``obstr_type``
 1-4) and the level drops by at least ``structure_min_drop_m``, or if u is in
 the manual ``structures`` list. An edge where the level RISES downstream by
-more than ``step_threshold_m`` is inconsistent data; it can be cut like a
-structure, so the rise stays local.
+more than ``step_threshold_m`` is inconsistent data and is reported.
 """
 
 from __future__ import annotations
@@ -40,7 +29,6 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import LineString, Point
 from shapely.ops import linemerge
-from src.io import require_keys
 from src.river_network import kahn_order, normalize_reach_id
 
 log = logging.getLogger(__name__)
@@ -48,7 +36,6 @@ log = logging.getLogger(__name__)
 NODE_INVERT = "invert"
 NODE_FIXED_BED = "fixed_bed"
 NODE_WATER_BODY = "water_body"
-NODE_NO_FLOW = "no_flow"  # set per reach by src.gvf_solver (no discharge)
 
 # SWORD obstr_type: 1 dam, 2 lock, 3 low-permeability dam, 4 waterfall.
 SWORD_OBSTRUCTION_TYPES = (1, 2, 3, 4)
@@ -417,6 +404,7 @@ def smooth_on_network(
     edges: list[tuple[int, int, float]],
     window_m: float,
     spacing_m: float,
+    fixed: np.ndarray | None = None,
 ) -> np.ndarray:
     """Smooth node values along the network, like a running mean of ``window_m``.
 
@@ -426,18 +414,20 @@ def smooth_on_network(
     node network's, so nothing is smoothed across a structure. A node with a
     single neighbour (network end, either side of a structure) is mirrored
     (ghost value 2 v_i - v_j), so it keeps its value and a linear trend runs
-    through to the ends instead of flattening there.
+    through to the ends instead of flattening there. ``fixed`` nodes keep
+    their input value.
     """
     if window_m <= 0 or len(values) == 0:
         return values.copy()
     n_pass = max(1, int(round(window_m**2 / (6.0 * spacing_m**2))))
     nb = _neighbours(len(values), edges)
     v = values.astype(float).copy()
+    keep = np.zeros(len(v), dtype=bool) if fixed is None else np.asarray(fixed, bool)
     for _ in range(n_pass):
         mean_nb = np.array(
             [np.mean(v[j]) if len(j) > 1 else v[i] for i, j in enumerate(nb)]
         )
-        v = 0.5 * v + 0.5 * mean_nb
+        v = np.where(keep, values, 0.5 * v + 0.5 * mean_nb)
     return v
 
 
@@ -465,7 +455,11 @@ def _edge_colouring(a: np.ndarray, b: np.ndarray, n_nodes: int) -> list[np.ndarr
 
 
 def enforce_non_increasing(
-    net: GvfNetwork, values: np.ndarray, tol_m: float = 1e-3, max_sweeps: int = 20000
+    net: GvfNetwork,
+    values: np.ndarray,
+    tol_m: float = 1e-3,
+    max_sweeps: int = 20000,
+    fixed: np.ndarray | None = None,
 ) -> np.ndarray:
     """Make node values non-increasing downstream with one value per node.
 
@@ -474,7 +468,8 @@ def enforce_non_increasing(
     with ``v[a] >= v[b]`` on every node edge a -> b. Solved exactly by
     Hildreth's dual coordinate ascent, one constraint per edge, so loops
     (bifurcate-then-rejoin) and junctions are handled together rather than
-    reach by reach. A last pass lifts any node still below its downstream
+    reach by reach. ``fixed`` nodes have infinite weight and keep their
+    value. A last pass lifts any node still below its downstream
     neighbour (only the solver tolerance remains there).
     """
     v = values.astype(float).copy()
@@ -488,7 +483,9 @@ def enforce_non_increasing(
     np.add.at(w, a, length / 2)
     np.add.at(w, b, length / 2)
     inv_w = 1.0 / np.maximum(w, 1.0)
-    denom = inv_w[a] + inv_w[b]
+    if fixed is not None:
+        inv_w[np.asarray(fixed, bool)] = 0.0
+    denom = np.maximum(inv_w[a] + inv_w[b], 1e-12)
     lam = np.zeros(len(edges))
     batches = _edge_colouring(a, b, net.n_nodes)
     for _ in range(max_sweeps):
@@ -512,7 +509,7 @@ def enforce_non_increasing(
         succ[ia].append(ib)
     before = v.copy()
     for i in reversed(node_topological_order(net)):
-        if succ[i]:
+        if succ[i] and not (fixed is not None and fixed[i]):
             v[i] = max(v[i], max(v[j] for j in succ[i]))
     lift = float(np.nanmax(v - before))
     if lift > 0.05:
@@ -531,6 +528,54 @@ def node_slope(net: GvfNetwork, values: np.ndarray) -> np.ndarray:
             fall[i] += values[a] - values[b]
             dist[i] += d
     return np.where(dist > 0, fall / np.maximum(dist, 1e-9), 0.0)
+
+
+def main_path_slope(
+    net: GvfNetwork, values: np.ndarray, reach_q: dict[str, float]
+) -> np.ndarray:
+    """Return the downstream fall of ``values`` per metre at each node along its largest-Q path.
+
+    Inside a reach this is the central difference. At a junction the edges
+    taken are those of the up- and downstream reaches with the largest
+    discharge, so a small arm does not set the slope of the main channel.
+    """
+    best_dn: dict[int, tuple[float, int, float]] = {}
+    best_up: dict[int, tuple[float, int, float]] = {}
+    for r in net.reach_ids:
+        q = float(reach_q.get(r, 0.0))
+        ids, ch = net.reach_nodes[r], net.reach_chainage[r]
+        for k in range(len(ids) - 1):
+            a, b, d = int(ids[k]), int(ids[k + 1]), float(ch[k + 1] - ch[k])
+            if d <= 0:
+                continue
+            if a not in best_dn or q > best_dn[a][0]:
+                best_dn[a] = (q, b, d)
+            if b not in best_up or q > best_up[b][0]:
+                best_up[b] = (q, a, d)
+    fall = np.zeros(net.n_nodes)
+    dist = np.zeros(net.n_nodes)
+    for i, (_, b, d) in best_dn.items():
+        fall[i] += values[i] - values[b]
+        dist[i] += d
+    for i, (_, a, d) in best_up.items():
+        fall[i] += values[a] - values[i]
+        dist[i] += d
+    return np.where(dist > 0, fall / np.maximum(dist, 1e-9), 0.0)
+
+
+def main_reaches(net: GvfNetwork, reach_q: dict[str, float]) -> set[str]:
+    """Return the reaches on the largest-Q path from every network head to its end."""
+    up = net.upstream()
+    main: set[str] = set()
+    for head in (r for r in net.reach_ids if not up[r]):
+        r = head
+        while r not in main:
+            main.add(r)
+            dns = net.downstream[r]
+            if not dns:
+                break
+            r = max(dns, key=lambda d: float(reach_q.get(d, 0.0)))
+    return main
 
 
 def classify_nodes(
@@ -559,134 +604,3 @@ def classify_nodes(
     cls[sea & has_dem] = NODE_FIXED_BED
     cls[wide & (sea | at_floor) & has_dem] = NODE_WATER_BODY
     return cls
-
-
-@dataclass
-class GvfTargets:
-    """Node network plus per-node and per-reach inputs for src.gvf_solver."""
-
-    net: GvfNetwork
-    eta_target: np.ndarray
-    eta_raw: np.ndarray
-    s_scale: np.ndarray
-    node_class: np.ndarray
-    dem: np.ndarray
-    reach_q: dict[str, float]
-    reach_width: dict[str, float]
-
-
-def build_gvf_targets(
-    rivers: gpd.GeoDataFrame,
-    reach_q: dict[str, float],
-    surface_nodes: pd.DataFrame,
-    structure_edges: set[tuple[str, str]],
-    sample_sea_fraction,
-    sample_dem,
-    gebco_floor_m: float,
-    surface_cfg: dict,
-    gvf_cfg: dict,
-) -> GvfTargets:
-    """Build the GVF node network and its target from rule 09's water surface.
-
-    Args:
-        rivers: Cleaned network in the surface's metric CRS, with 'reach_id',
-            'rch_id_dn', 'width'.
-        reach_q: {reach_id: discharge (m3/s)} paired with the surface.
-        surface_nodes: src.water_surface.read_water_surface table ('reach_id',
-            'chainage_m', 'level_m', 'level_raw_m').
-        structure_edges: The structure edges rule 09 used.
-        sample_sea_fraction: Callable (x, y, width) -> sea-class fraction of
-            the cross-section at each node.
-        sample_dem: Callable (x, y) -> conditioned DEM at each node, NaN outside it.
-        gebco_floor_m: Lowest level of the clamped GEBCO bathymetry
-            (``calm_sea_level_m - terrain.gebco_max_depth_m``).
-        surface_cfg: ``river_processing.water_surface`` (node spacing, smoothing).
-        gvf_cfg: ``river_processing.river_depth_modelling.gvf``.
-    """
-    from src.river_network import build_downstream_adjacency
-
-    require_keys(
-        surface_cfg, ("node_spacing_m", "smoothing_m"), "river_processing.water_surface"
-    )
-    where = "river_processing.river_depth_modelling.gvf"
-    require_keys(gvf_cfg, ("slope_floor", "water_body"), where)
-    wb = gvf_cfg["water_body"]
-    require_keys(wb, ("min_width_m", "sea_class_fraction"), f"{where}.water_body")
-
-    downstream = build_downstream_adjacency(rivers)
-    rivers, _ = orient_downstream(rivers, downstream)
-    spacing = float(surface_cfg["node_spacing_m"])
-    net = build_node_network(rivers, downstream, spacing, structure_edges)
-    edges = net.node_edges()
-
-    eta = np.full(net.n_nodes, np.nan)
-    eta_raw = np.full(net.n_nodes, np.nan)
-    acc = np.zeros(net.n_nodes)
-    acc_raw = np.zeros(net.n_nodes)
-    cnt = np.zeros(net.n_nodes)
-    by_reach = {
-        r: g.sort_values("chainage_m") for r, g in surface_nodes.groupby("reach_id")
-    }
-    for r in net.reach_ids:
-        g = by_reach.get(r)
-        if g is None or g.empty:
-            continue
-        ids, ch = net.reach_nodes[r], net.reach_chainage[r]
-        np.add.at(acc, ids, np.interp(ch, g["chainage_m"], g["level_m"]))
-        np.add.at(acc_raw, ids, np.interp(ch, g["chainage_m"], g["level_raw_m"]))
-        np.add.at(cnt, ids, 1.0)
-    have = cnt > 0
-    eta[have] = acc[have] / cnt[have]
-    eta_raw[have] = acc_raw[have] / cnt[have]
-    missing = int((~have).sum())
-    if missing:
-        log.warning(
-            f"GVF target: {missing} node(s) on reaches without a water surface -- filled from neighbours"
-        )
-        eta = _fill_from_neighbours(eta, edges)
-        eta_raw = _fill_from_neighbours(eta_raw, edges)
-
-    slope = smooth_on_network(
-        node_slope(net, eta), edges, float(surface_cfg["smoothing_m"]), spacing
-    )
-    s_scale = np.maximum(slope, float(gvf_cfg["slope_floor"]))
-
-    reach_id_norm = [normalize_reach_id(r) for r in rivers["reach_id"]]
-    reach_width = dict(
-        zip(
-            reach_id_norm, pd.to_numeric(rivers["width"], errors="coerce").astype(float)
-        )
-    )
-    node_width = np.zeros(net.n_nodes)
-    node_cnt = np.zeros(net.n_nodes)
-    for r in net.reach_ids:
-        np.add.at(node_width, net.reach_nodes[r], reach_width[r])
-        np.add.at(node_cnt, net.reach_nodes[r], 1.0)
-    node_width /= np.maximum(node_cnt, 1)
-
-    dem = np.asarray(sample_dem(net.node_x, net.node_y), dtype=float)
-    sea_fraction = np.asarray(
-        sample_sea_fraction(net.node_x, net.node_y, node_width), dtype=float
-    )
-    node_class = classify_nodes(
-        node_width,
-        sea_fraction,
-        dem,
-        gebco_floor_m,
-        min_width_m=float(wb["min_width_m"]),
-        sea_class_fraction=float(wb["sea_class_fraction"]),
-    )
-    log.info(
-        f"GVF target: {net.n_nodes} nodes on {len(net.reach_ids)} reaches; "
-        f"classes {pd.Series(node_class).value_counts().to_dict()}"
-    )
-    return GvfTargets(
-        net=net,
-        eta_target=eta,
-        eta_raw=eta_raw,
-        s_scale=s_scale,
-        node_class=node_class,
-        dem=dem,
-        reach_q={r: float(reach_q.get(r, 0.0)) for r in net.reach_ids},
-        reach_width={r: float(reach_width[r]) for r in net.reach_ids},
-    )

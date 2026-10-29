@@ -1,4 +1,4 @@
-"""Tests for src.water_surface: smoothed FathomDEM water surface and channel conditioning."""
+"""Tests for src.water_surface: FathomDEM water surface, its slope, and channel conditioning."""
 
 import geopandas as gpd
 import numpy as np
@@ -6,11 +6,11 @@ import pytest
 import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import LineString
-from src.gvf_target import build_gvf_targets
 from src.water_surface import (
     build_water_surface,
     condition_channels_to_surface,
     read_water_surface,
+    river_cells_at_surface,
     sample_centrelines,
     surface_table,
     write_water_surface,
@@ -67,6 +67,22 @@ def test_median_removes_isolated_peaks_and_dips(water_surface_cfg):
     assert np.all(np.diff(lvl) <= 1e-9)
 
 
+def test_long_slope_smoothing_keeps_the_level_and_lifts_tread_slopes(water_surface_cfg):
+    rivers = _rivers({"1": {"xy": [(0, 0), (40000, 0)]}})
+    # staircase: 10 km flat treads dropping 1 m at each riser
+    sample = _sampler(lambda r, a: 4.0 - np.floor(a / 10000.0))
+    short, _ = build_water_surface(rivers, sample, water_surface_cfg)
+    long_, _ = build_water_surface(
+        rivers, sample, dict(water_surface_cfg, slope_smoothing_m=20000)
+    )
+    np.testing.assert_array_equal(short.level_m, long_.level_m)
+    tread = short.net.reach_nodes["1"][
+        2:8
+    ]  # within the first tread, away from its riser
+    assert np.max(short.slope[tread]) < 1e-5
+    assert np.min(long_.slope[tread]) > 2e-5
+
+
 def test_stepped_flat_surface_becomes_monotone_with_one_junction_value(
     water_surface_cfg,
 ):
@@ -112,25 +128,6 @@ def test_structure_is_smoothed_across_by_default(water_surface_cfg):
     drops = [surface.level_m[a] - surface.level_m[b] for a, b, _ in net.node_edges()]
     assert max(drops) < 1.5  # the 3 m drop is spread over the smoothing length
     assert min(drops) >= -1e-9
-
-
-def test_structure_keeps_its_drop_when_split(water_surface_cfg):
-    rivers = _rivers(
-        {
-            "1": {"xy": [(0, 0), (10000, 0)], "dn": ["2"]},
-            "2": {"xy": [(10000, 0), (20000, 0)]},
-        }
-    )
-    surface, _ = build_water_surface(
-        rivers,
-        _sampler(lambda r, a: np.full(a.size, 6.0 if r == "1" else 3.0)),
-        dict(water_surface_cfg, split_at_structures=True),
-    )
-    net = surface.net
-    assert net.structure_edges == {("1", "2")}
-    assert net.reach_nodes["1"][-1] != net.reach_nodes["2"][0]
-    assert surface.level_m[net.reach_nodes["1"][-1]] == pytest.approx(6.0, abs=1e-6)
-    assert surface.level_m[net.reach_nodes["2"][0]] == pytest.approx(3.0, abs=1e-6)
 
 
 def _rasters(tmp_path):
@@ -216,40 +213,6 @@ def test_island_under_the_centreline_is_skipped(tmp_path, water_surface_cfg):
     assert np.max(np.abs(with_island - plain)) < 0.25
 
 
-def test_surface_round_trip_and_gvf_target_matches_surface(
-    tmp_path, water_surface_cfg, gvf_cfg
-):
-    rivers = _rivers(
-        {
-            "1": {"xy": [(0, 0), (10000, 0)], "dn": ["2"]},
-            "2": {"xy": [(10000, 0), (20000, 0)]},
-        }
-    )
-    surface, _ = build_water_surface(
-        rivers,
-        _sampler(lambda r, a: (6.0 if r == "1" else 3.0) - 1e-4 * a),
-        water_surface_cfg,
-    )
-    path = tmp_path / "surface.gpkg"
-    write_water_surface(surface, path, CRS)
-    nodes, structures = read_water_surface(path)
-    assert structures == surface.net.structure_edges
-    assert np.allclose(nodes["level_m"], surface_table(surface, CRS)["level_m"])
-    targets = build_gvf_targets(
-        rivers,
-        {"1": 100.0, "2": 100.0},
-        nodes,
-        structures,
-        lambda x, y, w: np.zeros(len(x)),
-        lambda x, y: np.full(len(x), np.nan),
-        gebco_floor_m=-10.0,
-        surface_cfg=water_surface_cfg,
-        gvf_cfg=gvf_cfg,
-    )
-    assert targets.net.n_nodes == surface.net.n_nodes
-    assert np.allclose(targets.eta_target, surface.level_m)
-
-
 def test_fast_chainage_within_half_a_step_of_the_projection():
     from src.river_network import line_window_cells
 
@@ -260,23 +223,6 @@ def test_fast_chainage_within_half_a_step_of_the_projection():
     assert np.array_equal(exact[0], fast[0]) and np.array_equal(exact[1], fast[1])
     straight = (exact[2] > 100) & (exact[2] < 2900)  # away from the bend
     assert np.max(np.abs(exact[2][straight] - fast[2][straight])) <= 15.0 + 1e-6
-
-
-def test_all_sea_reach_behind_a_structure_gets_the_sea_level(water_surface_cfg):
-    rivers = _rivers(
-        {
-            "1": {"xy": [(0, 0), (10000, 0)], "dn": ["2"]},
-            "2": {"xy": [(10000, 0), (15000, 0)]},
-        }
-    )
-
-    def sample(lines):
-        a1 = np.arange(0.0, lines["1"].length, 30.0)
-        return {"1": (a1, 3.0 - 1e-4 * a1), "2": (np.array([]), np.array([]))}
-
-    cfg = dict(water_surface_cfg, structures=["1"], split_at_structures=True)
-    surface, _ = build_water_surface(rivers, sample, cfg, sea_level_m=0.1)
-    assert np.allclose(surface.level_m[surface.net.reach_nodes["2"]], 0.1)
 
 
 def test_water_surface_profile_figure_renders(tmp_path, water_surface_cfg):
@@ -294,7 +240,7 @@ def test_water_surface_profile_figure_renders(tmp_path, water_surface_cfg):
         _sampler(lambda r, a: (6.0 if r == "1" else 3.0) - 1e-4 * a),
         water_surface_cfg,
     )
-    out = tmp_path / "09_water_surface.png"
+    out = tmp_path / "10_river_surface.png"
     plot_water_surface_profiles(surface, rivers_o, ["1"], str(out), "test")
     assert out.stat().st_size > 0
 
@@ -315,3 +261,112 @@ def test_short_high_reach_is_outvoted_by_the_river_around_it(water_surface_cfg):
     )
     assert surface.rising_edges == []
     assert np.max(surface.level_m) < 0.5
+
+
+def test_dry_channel_cells_take_nearest_surface_level_and_sea_keeps_its_own():
+    from affine import Affine
+
+    nodes = gpd.GeoDataFrame(
+        {"level_m": [3.0, 1.0]},
+        geometry=gpd.points_from_xy([50.0, 350.0], [-50.0, -50.0]),
+        crs=CRS,
+    )
+    ini = np.full((2, 4), np.nan, dtype=np.float32)
+    ini[0, 3] = 0.2  # sea
+    channel = np.zeros((2, 4), dtype=bool)
+    channel[0, :] = True
+    for transform in (
+        from_origin(0.0, 0.0, 100.0, 100.0),
+        Affine.translation(0.0, 0.0) * Affine.scale(100.0, -100.0),
+    ):
+        out, n = river_cells_at_surface(ini, nodes, channel, transform)
+        assert n == 3
+        assert out[0, 0] == pytest.approx(3.0) and out[0, 2] == pytest.approx(1.0)
+        assert out[0, 3] == pytest.approx(0.2)
+        assert np.isnan(out[1]).all()
+        assert np.isnan(ini[0, 0])  # input untouched
+
+
+def test_surface_round_trip_and_rule_11_rebuilds_the_same_network(
+    tmp_path, water_surface_cfg
+):
+    from src.gvf_target import build_node_network, orient_downstream
+    from src.river_bed import surface_on_network
+    from src.river_network import build_downstream_adjacency
+
+    rivers = _rivers(
+        {
+            "1": {"xy": [(0, 0), (10000, 0)], "dn": ["2", "3"]},
+            "2": {"xy": [(10000, 0), (20000, 0)]},
+            "3": {"xy": [(10000, 0), (20000, 3000)]},
+        }
+    )
+    surface, _ = build_water_surface(
+        rivers,
+        _sampler(lambda r, a: (6.0 if r == "1" else 3.0) - 1e-4 * a),
+        water_surface_cfg,
+        sea_level_m=1.6,
+    )
+    path = tmp_path / "surface.gpkg"
+    write_water_surface(surface, path, CRS)
+    nodes, structures = read_water_surface(path)
+    assert structures == surface.structures
+    assert np.allclose(nodes["level_m"], surface_table(surface, CRS)["level_m"])
+    dn = build_downstream_adjacency(rivers)
+    net = build_node_network(
+        orient_downstream(rivers, dn)[0], dn, water_surface_cfg["node_spacing_m"]
+    )
+    t = surface_on_network(net, nodes)
+    assert np.allclose(t["level_m"], surface.level_m) and np.allclose(
+        t["slope"], surface.slope
+    )
+
+
+def test_mouth_is_pinned_at_the_sea_and_nothing_lies_below_it(water_surface_cfg):
+    sea = 0.3
+    rivers = _rivers({"1": {"xy": [(0, 0), (20000, 0)]}})
+    # FathomDEM-like: the lower 8 km flattened to the geoid, below the sea.
+    surface, _ = build_water_surface(
+        rivers,
+        _sampler(lambda r, a: np.maximum(2.0 - 1.6e-4 * a, -0.2)),
+        water_surface_cfg,
+        sea_level_m=sea,
+    )
+    ch, lvl = _reach_profile(surface, "1")
+    assert surface.level_m[surface.mouths].tolist() == [sea]
+    assert lvl[-1] == sea and lvl.min() >= sea - 1e-12
+    assert np.all(np.diff(lvl) <= 1e-9)
+    assert np.all(surface.slope >= 0)
+
+
+def test_all_sea_reach_takes_the_sea_level_at_its_mouth(water_surface_cfg):
+    rivers = _rivers(
+        {
+            "1": {"xy": [(0, 0), (10000, 0)], "dn": ["2"]},
+            "2": {"xy": [(10000, 0), (15000, 0)]},
+        }
+    )
+
+    def sample(lines):
+        a1 = np.arange(0.0, lines["1"].length, 30.0)
+        return {"1": (a1, 3.0 - 1e-4 * a1), "2": (np.array([]), np.array([]))}
+
+    def sea_beyond_10km(x, y, w):  # reach 2 is open sea on GEBCO bathymetry
+        return np.full(len(x), -5.0), (np.asarray(x) > 10000.0).astype(float)
+
+    surface, _ = build_water_surface(
+        rivers, sample, water_surface_cfg, sea_level_m=0.1, sample_nodes=sea_beyond_10km
+    )
+    assert surface.level_m[surface.net.reach_nodes["2"][-1]] == 0.1
+    assert surface.level_m.min() >= 0.1 - 1e-12
+
+
+def test_no_sea_mouth_fails_loudly(water_surface_cfg):
+    rivers = _rivers({"1": {"xy": [(0, 0), (10000, 0)]}})
+    with pytest.raises(ValueError, match="no sea mouth"):
+        build_water_surface(
+            rivers,
+            _sampler(lambda r, a: 50.0 - 1e-4 * a),
+            water_surface_cfg,
+            sea_level_m=0.0,
+        )

@@ -81,8 +81,6 @@ def main() -> None:
 
     # round 2 grid + zsmax
     inp = parse_sfincs_inp(round2 / "sfincs.inp")
-    if float(inp.get("rotation", 0.0)) != 0.0:
-        raise NotImplementedError("rotated grids are not supported by this check")
     dx, dy = float(inp["dx"]), float(inp["dy"])
     nmax, mmax = int(inp["nmax"]), int(inp["mmax"])
     transform = Affine(dx, 0.0, float(inp["x0"]), 0.0, dy, float(inp["y0"]))

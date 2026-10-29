@@ -250,7 +250,7 @@ def main():
     surge_ds = xr.open_dataset(FORCING_DIR / "surge_forcing.nc", decode_times=False)
 
     # Dominant river crossing (largest highest-RP discharge), as in
-    # 07_get_boundary_forcings.py's diagnostic plot.
+    # 07d_get_boundary_forcings.py's diagnostic plot.
     active = river_ds["has_glofas"].values.astype(bool)
     rp_table = river_ds["discharge_rp_table"].values[active]
     i_main = np.nanargmax(rp_table[:, -1])

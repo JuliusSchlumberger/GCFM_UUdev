@@ -1,7 +1,7 @@
 # Rules: storm-tide hydrograph components per basin, from the hourly GTSM
 # reanalysis -- the average tide and one normalised surge shape per COAST-RP
 # return period, at the basin's own surge stations. Consumed by rule
-# get_boundary_forcings (07) when boundary_forcings.surge.hydrograph.enabled.
+# get_boundary_forcings (07d) when boundary_forcings.surge.hydrograph.enabled.
 #
 #   select_surge_stations   domain + COAST-RP                  -> surge_stations.json
 #   extract_gtsm_series     surge_stations.json + GTSM subset  -> gtsm_hourly.nc

@@ -7,39 +7,32 @@ configfile: "./config/config.yml"
 
 include: "rules/00_common.smk"
 
-# Rules, in DAG order. 09 (river conditioning) needs only rule 08's network
-# topology/width, so it runs before 10 (depth estimation), which burns the
-# channel itself (not hydromt's gdf_zb/burn_river_rect).
-include: "rules/01_separate_deltas.smk"
-include: "rules/02_modeldomain.smk"
-# 06 before 02b/03: the clipped network stops prepare_landuse's sea fill at
-# river mouths; plot_river_network needs rule 03's land mask.
-include: "rules/06_river_network.smk"
-include: "rules/02b_prepare_landuse.smk"
-include: "rules/03_land_polygons.smk"
-include: "rules/04_protection_levels.smk"
-include: "rules/05_static_terrain_data.smk"
+# Rules, numbered in the order they run; 07a-c (storm tide) feed 07d (boundary
+# forcings), 12b/12c and 13b branch off 12 and 13.
+include: "rules/01_domain.smk"
+include: "rules/02_river_network.smk"
+include: "rules/03_protection_levels.smk"
+include: "rules/04_sfincs_grid.smk"
+include: "rules/05_landuse_source.smk"
+include: "rules/06_elevation.smk"
 include: "rules/07a_storm_tide_hydrographs.smk"
-include: "rules/07_boundary_forcings.smk"
+include: "rules/07d_boundary_forcings.smk"
 include: "rules/08_clean_river_network.smk"
-include: "rules/08b_channel_landuse.smk"
-include: "rules/08c_build_sfincs_grid.smk"
-include: "rules/09_condition_elevation.smk"
-include: "rules/09b_grid_align_landuse.smk"
-include: "rules/10_depth_estimation_modelled.smk"
-include: "rules/11_testing.smk"
-include: "rules/13_build_sfincs_skeleton.smk"
-include: "rules/13b_build_adaptation_lines.smk"
-include: "rules/13c_land_bed_level.smk"
-include: "rules/13_build_sfincs.smk"
-include: "rules/14_run_spinup.smk"
-include: "rules/15_sanity_checks.smk"
-include: "rules/16_run_event.smk"
-include: "rules/17_flood_metrics.smk"
-include: "rules/18a_adapt_pre.smk"
-include: "rules/18b_adapt_post.smk"
-include: "rules/18c_attribution_mask.smk"
-include: "rules/19_adapt_compare.smk"
+include: "rules/09_land_surface.smk"
+include: "rules/10_river_surface.smk"
+include: "rules/11_depth_estimation_modelled.smk"
+include: "rules/12a_build_sfincs_skeleton.smk"
+include: "rules/12b_land_bed_level.smk"
+include: "rules/12c_build_adaptation_lines.smk"
+include: "rules/13a_run_spinup.smk"
+include: "rules/13b_sanity_checks.smk"
+include: "rules/14_build_sfincs.smk"
+include: "rules/15_run_event.smk"
+include: "rules/16_flood_metrics.smk"
+include: "rules/17a_attribution_mask.smk"
+include: "rules/17b_adapt_pre.smk"
+include: "rules/17c_adapt_post.smk"
+include: "rules/18_adapt_compare.smk"
 
 # ── Output lists for the named targets ──
 
@@ -50,17 +43,14 @@ _PREPROCESS_OUTPUTS = [
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/04_protection_levels.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/03_protection_levels.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/05a_elevation.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/06_elevation.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sea_mask.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/05b_landuse.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/05b_sea_mask.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/06_landuse.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/05c_roughness.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/09_roughness.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/06_river_network.png"), basin_id=BASINS),
     *(expand(results_path("{basin_id}/preprocessing_inputs/forcing/storm_tide_hydrographs.nc"), basin_id=BASINS)
       + expand(results_path("{basin_id}/preprocessing_inputs/visuals/07c_storm_tide_hydrographs.png"), basin_id=BASINS)
       if config["boundary_forcings"]["surge"]["hydrograph"]["enabled"] else []),
@@ -78,18 +68,16 @@ _PREPROCESS_OUTPUTS = [
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sfincs_grid.json"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/09_water_surface.png"), basin_id=BASINS),
-    # Rule modelled_depth_estimation (10)
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_river_surface.png"), basin_id=BASINS),
+    # Rule modelled_depth_estimation (11)
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_subgrid.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/river_depth.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/water_level_timeseries.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/max_inundation.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/flood_animation.mp4"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/11_upstream_boundary_check.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/11b_bifurcation_calibration_options"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_depth.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/water_level_timeseries.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/max_inundation.png"), basin_id=BASINS),
+    expand(results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/flood_animation.mp4"), basin_id=BASINS),
 ]
 
 # Basin-level, scenario-independent: skeleton, spin-up (run_spinup, mean river

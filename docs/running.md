@@ -14,10 +14,10 @@ Without a target Snakemake runs `all`.
 
 | target | rules | runs | needs |
 |---|---|---|---|
-| `preprocess` | 01-11 | domain, land use, terrain, protection levels, river network, forcing, model grid, river depth and crest calibration, diagnostic checks | input data under `<raw_data_root>`, SFINCS (rule 10 runs it) |
-| `build` | 13-17 | SFINCS skeleton, spin-up, per-scenario forcing, event runs, flood metrics | `preprocess` outputs, SFINCS |
-| `all` | 01-17 | `preprocess` and `build` | as above |
-| `adapt` | 13b, 18a-19 | adaptation lines, adaptation strategies and their comparison | `build` outputs, adaptation geometries, `target_strategies` |
+| `preprocess` | 01-11 | domain, river network, protection levels, model grid, land use, terrain, forcing, land surface, water surface, river depth and crest calibration | input data under `<raw_data_root>`, SFINCS (rule 11 runs it) |
+| `build` | 12-16 | SFINCS skeleton, spin-up, per-scenario forcing, event runs, flood metrics | `preprocess` outputs, SFINCS |
+| `all` | 01-16 | `preprocess` and `build` | as above |
+| `adapt` | 12c, 17a-18 | adaptation lines, adaptation strategies and their comparison | `build` outputs, adaptation geometries, `target_strategies` |
 
 ```bash
 snakemake preprocess --cores 4 --config target_basins="[2433835]" target_scenarios="['default']"
@@ -25,8 +25,8 @@ snakemake build      --cores 4 --config target_basins="[2433835]" target_scenari
 ```
 
 Preview any run with `-n` (dry run). For basin `2433835` and scenario
-`default`, on an empty `<results_dir>`, `preprocess` has 23 jobs, `build` 27 and
-`all` 30. Threads per rule are set under `resources.threads` in
+`default`, on an empty `<results_dir>`, `preprocess` has 15 jobs, `build` 22 and
+`all` 22. Threads per rule are set under `resources.threads` in
 `config/config.yml`: the SFINCS rules take the whole `--cores` budget as solver
 threads, so a SFINCS run occupies the machine while it runs.
 
@@ -68,15 +68,16 @@ wildcard. A `default` entry is required.
 The forcing mode follows from the two return periods: both set (including `Tide`
 or `Mean`) is `compound`, one set is `coastal_only` or `river_only`, both null is
 an error. Return periods and `slr_m` are applied when the
-scenario is built (rule 13), so adding or changing a scenario reruns only that
+scenario is built (rule 14), so adding or changing a scenario reruns only that
 scenario's build, event run and metrics, never preprocessing or the spin-up.
 
 ## Spin-up
 
-`sfincs.spinup.enabled` (default `true`) runs one basin-level spin-up (rule 14)
+`sfincs.spinup.enabled` (default `true`) runs one basin-level spin-up (rule 13a)
 of `spinup_days` at constant mean discharge and calm sea; every scenario's event
-run starts from its restart file at `tref + spinup_days`. With
-`enabled: false`, rules 14 and 15 are skipped and each event run starts at
+run starts from its restart file at `tref + spinup_days`, which must equal
+`boundary_forcings.lead_days`. With
+`enabled: false`, rules 13a and 13b are skipped and each event run starts at
 `tref` from the skeleton's initial water level (sea cells at the calm-sea level,
 land dry). The `adapt` target requires `enabled: true`: its rules read the
 spin-up restart and the spin-up map.
@@ -95,13 +96,13 @@ spin-up restart and the spin-up map.
   missing file stops the workflow at DAG construction;
   `accommodate` and `retreat` need none;
 - nothing extra for `locations: auto/<name>` (`grey_protect_open`,
-  `protect_closed`): rule `build_adaptation_lines` (13b) derives these lines from
+  `protect_closed`): rule `build_adaptation_lines` (12c) derives these lines from
   the basin's skeleton into `<results_dir>/{basin_id}/adaptation_lines/`, and
   reruns with the skeleton. Review `adaptation_lines.png` there. The rule fails if
   a mouth closure does not seal its river; `--keep-incomplete` keeps the figure
   for inspection;
 - an `event` key on each scenario;
-- for the attribution mask (rule 18c, used by `post` and by water-retention
+- for the attribution mask (rule 17a, used by `post` and by water-retention
   measures): a river-only sibling scenario with the same `river_rp_yr` and
   `surge_rp_yr: null`, and a coastal-only sibling with the same `surge_rp_yr`
   and `river_rp_yr: null`.
@@ -113,15 +114,15 @@ snakemake adapt --cores 4 --config target_basins="[2433835]" target_scenarios="[
 `advance_1`, the smallest adaptation case, reads
 `<adaptation_data_root>/2433835/offshore_island.geojson`, and `compound_100`
 has the siblings `river_only_100` and `coast_only_100`. On an empty `<results_dir>`
-the dry run (`-n`) of this command lists 39 jobs, including `preprocess` and the
+the dry run (`-n`) of this command lists 34 jobs, including `preprocess` and the
 `build` of all three scenarios.
 
 | method | rule | what it does |
 |---|---|---|
-| `pre` | 18a | edits a copy of the skeleton (weirs, drainage structures, subgrid) and reruns SFINCS for the scenario |
-| `post` | 18b | applies the measures to the baseline `max_flood_depth.tif` without SFINCS (cheap, approximate) |
+| `pre` | 17b | edits a copy of the skeleton (weirs, drainage structures, subgrid) and reruns SFINCS for the scenario |
+| `post` | 17c | applies the measures to the baseline `max_flood_depth.tif` without SFINCS (cheap, approximate) |
 
-With both methods, rule 19 writes `runs/metrics_comparison.csv` from every
+With both methods, rule 18 writes `runs/metrics_comparison.csv` from every
 `flood_metrics.csv` under the basin's `runs/`. Methods and strategies:
 [methods.md](methods.md#adaptation).
 

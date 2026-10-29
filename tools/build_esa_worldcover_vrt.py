@@ -4,7 +4,7 @@ The `land_use_esa_worldcover` catalogue entry points at
 <raw_data_root>/ESA_Worldcover/esa_worldcover_2021_v200.vrt. The VRT stores
 machine-local tile paths, so it is built locally; rerun after downloading more
 tiles. Only finished `*_Map.tif` tiles are used; partial downloads
-(e.g. `..._Map.tif.a1B2c3`) are ignored. Rule prepare_landuse (02b) reads it
+(e.g. `..._Map.tif.a1B2c3`) are ignored. Rule prepare_landuse (05) reads it
 when landuse.source == esa_worldcover.
 
 Usage:

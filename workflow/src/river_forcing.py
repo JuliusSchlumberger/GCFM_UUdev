@@ -80,9 +80,14 @@ def resolve_inside_domain_reaches(
     boundary. Returns a copy of `crossings` with geometry at the entry point,
     'inside_reach_id' of that reach and its 'width'/'max_width'; on failure the
     crossing point is kept and inside_reach_id is None. All inputs EPSG:4326.
+    Reach lines are oriented downstream first (SWORD lines often run upstream),
+    so the entry is the upstream end of the part inside the domain.
     """
     import pandas as pd
+    from src.gvf_target import orient_downstream
+    from src.river_network import build_downstream_adjacency
 
+    river_gdf, _ = orient_downstream(river_gdf, build_downstream_adjacency(river_gdf))
     reach_lookup: dict[str, pd.Series] = {}
     for _, row in river_gdf.iterrows():
         reach_id = normalize_reach_id(row.get("reach_id"))
@@ -387,7 +392,7 @@ def build_river_dataset(
 ) -> xr.Dataset:
     """Assemble river_forcing.nc: bankfull (AMAX/GEV), POT/GPD RP table, EVA diagnostics.
 
-    The SFINCS discharge series is built later (rule 13,
+    The SFINCS discharge series is built later (rule 14,
     build_design_discharge_matrix) from mean_discharge_m3s + a design RP
     looked up in discharge_rp_table, so changing the RP needs no EVA rerun.
 
@@ -396,7 +401,7 @@ def build_river_dataset(
             POT/GPD fit (src.extreme_values.gpd_return_value_table); NaN row
             where GPD did not converge.
         rps_yr: Years, discharge_rp_table's second axis.
-        times, lead_days, period_hr: Stored for rule 13 to rebuild the
+        times, lead_days, period_hr: Stored for rule 14 to rebuild the
             sinusoidal wave.
         bias_corrected: int8, 1 if the GloFAS cell was GRDC bias-corrected before EVA.
         grdc_station_id: int64, matched GRDC 'id', -1 if none.
@@ -548,7 +553,10 @@ def build_river_dataset(
             "grdc_correlation": (
                 ["crossing"],
                 grdc_correlation,
-                {"long_name": "Pearson r, raw GloFAS vs GRDC over the overlap period"},
+                {
+                    "long_name": "Pearson r, raw GloFAS vs GRDC, on overlap days with "
+                    "GRDC at or above bias_correction.tail_percentile"
+                },
             ),
             "grdc_overlap_days": (
                 ["crossing"],
@@ -573,7 +581,7 @@ def build_river_dataset(
             ),
         },
         attrs={
-            # For rule 13 to rebuild the same sinusoidal wave.
+            # For rule 14 to rebuild the same sinusoidal wave.
             "lead_days": lead_days,
             "period_hr": period_hr,
         },
@@ -610,7 +618,7 @@ def real_flood_event_matrix(
     """Return river discharge for one return period from real GloFAS flood events.
 
     Uses river_forcing.nc's discharge_daily (the series the RPs were fitted on,
-    bias-corrected where rule 07 corrected it).
+    bias-corrected where rule 07d corrected it).
 
     The event is defined by the basin's MAIN inflow -- the active crossing
     with the largest bankfull discharge:
@@ -732,8 +740,8 @@ def build_design_discharge_matrix(
 ) -> np.ndarray:
     """Return the (n_active, n_time) SFINCS discharge (m3 s-1) for a design RP.
 
-    Built at rule 13 from river_forcing.nc's mean_discharge_m3s + discharge_rp_table,
-    so changing the RP needs no EVA rerun (rule 07). Per active crossing:
+    Built at rule 14 from river_forcing.nc's mean_discharge_m3s + discharge_rp_table,
+    so changing the RP needs no EVA rerun (rule 07d). Per active crossing:
       1. Q_f at rp_yr, log-RP interpolated (interpolate_discharge_at_rp).
       2. sinusoidal_wave(mean_discharge_m3s, Q_f, time, lead_days, period_hr). Riverine
          protection is NOT subtracted: the calibrated weirs represent it.
@@ -841,7 +849,7 @@ def snap_crossings_to_reaches(
 ) -> dict[str, float]:
     """Return {reach_id: bankfull_discharge_m3s} per seed reach from crossings' inside_reach_id.
 
-    inside_reach_id is resolved in rule 07 and is empty for crossings that
+    inside_reach_id is resolved in rule 07d and is empty for crossings that
     failed enters_domain or EVA convergence. Several crossings on one reach
     keep the largest bankfull_discharge_m3s.
     """
@@ -857,7 +865,7 @@ def snap_crossings_to_reaches(
     if "inside_reach_id" not in crossings.columns:
         log.warning(
             "snap_crossings_to_reaches: no 'inside_reach_id' column — "
-            "re-run rule 07 to regenerate river_forcing.nc"
+            "re-run rule 07d to regenerate river_forcing.nc"
         )
         return {}
 

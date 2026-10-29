@@ -19,7 +19,7 @@ folder" split — plan branches around that:
   first (message the other person / open a draft PR early) so we don't both
   end up writing "rule 20". Insert it in true topological order, not just
   appended at the end — see the rule docstrings for how existing rules
-  reason about DAG position (e.g. why rule 10 can't run earlier than it
+  reason about DAG position (e.g. why rule 11 can't run earlier than it
   does despite operating on elevation).
 - **Improving an existing rule/script/src function**: normal feature branch,
   scoped to the files that rule actually touches.
@@ -207,7 +207,7 @@ configures how the built model consumes it. Before adding a new key:
   files, so the commands above install it; no source clone is needed.
   `workflow/src/hydromt_sfincs_patch.py` holds a runtime fix for that release
   (float32 subgrid write buffers), called by the scripts that write a SFINCS
-  model (rules 10, 13, 18a).
+  model (rules 11, 13a, 17b).
 - If your work needs a new package, add it with a major.minor pin to
   `environment.yml`, install it into `<env>`, then `git add
   environment.win-64.lock.yml` (even without editing it) and commit. The

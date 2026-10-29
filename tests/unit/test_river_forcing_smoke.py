@@ -153,6 +153,26 @@ def test_boundary_crossing_resolves_to_first_reach_entering_domain():
     assert resolved["width"].tolist() == [50.0, 30.0]
 
 
+def test_entry_point_is_the_upstream_end_inside_the_domain_for_an_upstream_running_line():
+    domain = box(0.0, 0.0, 1.0, 1.0)
+    rivers = gpd.GeoDataFrame(
+        {"reach_id": [1, 2], "rch_id_dn": ["[2]", "[]"], "width": [50.0, 80.0]},
+        geometry=[
+            LineString(
+                [(0.5, 0.5), (-1.0, 0.5)]
+            ),  # SWORD-style: drawn from its downstream end
+            LineString([(0.8, 0.5), (0.5, 0.5)]),
+        ],
+        crs="EPSG:4326",
+    )
+    crossings = gpd.GeoDataFrame(
+        {"reach_id": [1], "width": [50.0]}, geometry=[Point(0.0, 0.5)], crs="EPSG:4326"
+    )
+    resolved = resolve_inside_domain_reaches(crossings, rivers, domain)
+    assert resolved["inside_reach_id"].tolist() == ["1"]
+    assert resolved.geometry.iloc[0].distance(Point(0.0, 0.5)) < 1e-12
+
+
 def test_reach_touching_boundary_walks_to_downstream_reach():
     domain = box(0.0, 0.0, 1.0, 1.0)
     rivers = gpd.GeoDataFrame(

@@ -1,7 +1,7 @@
 """Plot elevation and land-use maps of the study basin for the paper.
 
 Same WGS84 style (land polygons + river network) as flood_maps.py. Uses the
-SFINCS-grid-aligned rasters fed to the model. Both are clipped to the rotated
+SFINCS-grid-aligned rasters fed to the model. Both are clipped to the
 model domain polygon: landuse_on_grid.tif has no nodata and fills its whole
 rectangle with valid classes, so unclipped panels would differ in extent.
 

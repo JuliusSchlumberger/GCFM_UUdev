@@ -2,7 +2,7 @@
 
 Returns the dominant (largest-area) geounit's riverine and coastal design
 return periods. Rule 07 turns the coastal one into the coastal protection
-crest; rule 10 calibrates the riverbank weirs at the riverine one's
+crest; rule 11 calibrates the riverbank weirs at the riverine one's
 discharge. Nothing is subtracted from the forcing.
 """
 

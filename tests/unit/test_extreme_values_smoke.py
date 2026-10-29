@@ -97,6 +97,26 @@ def test_bias_correction_moves_glofas_towards_gauge():
     assert abs(np.median(out) - np.median(gauge)) < abs(np.median(q) - np.median(gauge))
 
 
+def test_bias_correction_handles_gaps_duplicates_and_unsorted_days():
+    times, q = _daily_discharge(4)
+    gauge = 1.25 * q
+    q_gappy = q.copy()
+    q_gappy[10:40] = np.nan
+    order = np.r_[np.arange(times.size)[::-1], [5]]  # reversed, one day twice
+    out, diag = bias_correct_discharge(
+        np.asarray(times)[order],
+        q_gappy[order],
+        times,
+        gauge,
+        {**_BIAS_CFG, "min_overlap_days": 365},
+    )
+    assert diag is not None
+    assert out.shape == order.shape
+    assert np.isnan(out[np.isnan(q_gappy[order])]).all()
+    assert diag["corrected_overlap"].shape == diag["grdc_overlap"].shape
+    assert diag["correlation_full_corrected"] > 0.99
+
+
 def test_decorrelation_days_within_bounds():
     times, q = _daily_discharge(3)
     lag = estimate_decorrelation_days(pd.Series(q, index=times), 1.0 / np.e, 30)

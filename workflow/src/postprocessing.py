@@ -50,15 +50,6 @@ def load_sfincs_output(run_dir: str | Path) -> SfincsModel:
     return mod
 
 
-# In-memory cost of one pixel of a ROTATED raster relative to an axis-aligned
-# one: on top of the float32 value, xarray/hydromt carry 2-D float64 x and y
-# coordinates for it (an axis-aligned raster only needs two 1-D vectors), and
-# every reprojection onto it builds them again. Measured on basin 1416812:
-# compute_max_inundation peaks at ~100 bytes per subgrid pixel on a rotated
-# grid (8.2 GB for 79 M pixels) -- 5 keeps that peak around 4 GB.
-_ROTATED_MEMORY_FACTOR = 5.0
-
-
 def get_bed_level(
     data_catalog: DataCatalog,
     sfincs_root: str | Path,
@@ -68,9 +59,7 @@ def get_bed_level(
 
     ``max_bytes`` bounds memory: a larger raster is read block-averaged by the
     smallest integer factor that fits (GDAL decimated read; the full-resolution
-    array is never held). On a rotated grid, opening the full raster allocates
-    16 bytes of 2-D coordinates per pixel (5 GB for the 317 M subgrid pixels of
-    basin 1416812). ``None`` returns the full-resolution raster.
+    array is never held). ``None`` returns the full-resolution raster.
     Raises FileNotFoundError when missing; the run's ``zb`` (the LOWEST subgrid
     pixel of each cell) is not a substitute.
     """
@@ -91,9 +80,7 @@ def get_bed_level(
         return data_catalog.get_rasterdataset(str(dep_subgrid_path))
 
     with rasterio.open(dep_subgrid_path) as src:
-        rotated = src.transform.b != 0 or src.transform.d != 0
         cost = src.width * src.height * np.dtype(src.dtypes[0]).itemsize
-        cost *= _ROTATED_MEMORY_FACTOR if rotated else 1.0
         factor = int(np.ceil((cost / max_bytes) ** 0.5)) if cost > max_bytes else 1
         if factor == 1:
             return data_catalog.get_rasterdataset(str(dep_subgrid_path))
@@ -144,10 +131,8 @@ def _coarsen_for_memory(da_ref: xr.DataArray, max_bytes: float = 5e8) -> xr.Data
     # coarsen().mean() does not reliably keep the "spatial_ref" CRS coordinate.
     # inplace=True avoids write_crs's full-array deep copy.
     da_coarse.rio.write_crs(da_ref.rio.crs, inplace=True)
-    # Same for the transform: on a ROTATED raster rioxarray keeps the stored
-    # (fine-pixel) GeoTransform instead of deriving one from the coordinates,
-    # so the coarsened array would otherwise be georeferenced at the wrong
-    # scale. boundary="trim" keeps the origin, so the pixel just grows.
+    # rioxarray may keep the stored fine-pixel GeoTransform; boundary="trim"
+    # keeps the origin, so the pixel just grows.
     da_coarse.rio.write_transform(
         da_ref.raster.transform * Affine.scale(factor), inplace=True
     )
@@ -174,7 +159,7 @@ def land_bed_level(
     da_dep = _coarsen_for_memory(da_dep, max_bytes=max_bytes)
     da_sea = catalog.get_rasterdataset(str(sea_mask_path))
     # Eager: a dask-backed mask would make da_dep lazy, breaking the .item()
-    # calls in 15_sanity_checks.py.
+    # calls in 13b_sanity_checks.py.
     da_sea_grid = da_sea.raster.reproject_like(da_dep, method="nearest").compute()
     return da_dep.where(da_sea_grid != 1.0).compute()
 
@@ -182,15 +167,11 @@ def land_bed_level(
 def write_land_bed_level(da_land_dep: xr.DataArray, path: str | Path) -> None:
     """Write ``land_bed_level`` output to netCDF, zlib-compressed.
 
-    netCDF keeps the x/y coordinates exactly; a GeoTIFF stores only the affine
-    transform, and on a rotated grid the coordinates rebuilt from it differ in
-    the last bits, which shifts pixel areas.
+    netCDF keeps the x/y coordinates exactly as computed.
     """
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     da = da_land_dep.rename("land_bed_level")
     da.encoding = {}
-    # The 2-D coordinates of a rotated grid are most of the file; shuffle lets
-    # zlib shrink them about tenfold.
     zlib = {"zlib": True, "complevel": 4, "shuffle": True}
     encoding = {da.name: zlib, **{c: zlib for c in da.coords if da[c].ndim > 0}}
     da.to_netcdf(path, encoding=encoding)
@@ -232,13 +213,13 @@ def inundation_stats(da_hmax: xr.DataArray, da_dep: xr.DataArray) -> dict:
     """Count flooded and land pixels of compute_max_inundation's output.
 
     Returns n_land, n_flooded, frac (0.0 without land) and the areas
-    flooded_km2 and land_km2 (rotation-aware pixel area).
+    flooded_km2 and land_km2.
     """
     n_land = int(da_dep.notnull().sum().item())
     n_flooded = int(da_hmax.notnull().sum().item())
     frac = n_flooded / n_land if n_land > 0 else 0.0
 
-    res = abs(da_dep.raster.res[0] * da_dep.raster.res[1])  # rotation-aware
+    res = abs(da_dep.raster.res[0] * da_dep.raster.res[1])
     return {
         "n_land": n_land,
         "n_flooded": n_flooded,
@@ -344,7 +325,7 @@ def compute_flood_timeseries_stats(
     da_zs_native = mod.output.data["zs"]
     da_dep = da_land_dep
 
-    res_x, res_y = da_dep.raster.res  # rotation-aware, unlike rio.resolution()
+    res_x, res_y = da_dep.raster.res
     pixel_area_m2 = abs(res_x * res_y)
 
     n_frames = da_zs_native.sizes["time"]

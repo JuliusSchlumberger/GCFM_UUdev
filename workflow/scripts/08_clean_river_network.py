@@ -73,7 +73,7 @@ log.info(f"Retained {len(rivers_clean)}/{len(rivers)} reaches")
 # routes out of the delta through the crossing (basin 1248635: Drecht): its
 # crossing is an outflow, not an inflow. It loses its seed status and inflow
 # here, which also lets identify_delta_outflow_points below register the
-# crossing as a free-outflow boundary; rules 10/13/14 skip its discharge via
+# crossing as a free-outflow boundary; rules 11, 13a and 14 skip its discharge via
 # 'seed_flows_out' (src.river_network.outflow_crossing_mask).
 _outward = outward_seed_reaches(
     rivers_clean, seed_q.keys(), build_downstream_adjacency(rivers_clean)
@@ -87,8 +87,8 @@ if _outward:
         f"(no inflow, free-outflow boundary): {sorted(_outward)}"
     )
 
-# Trim seed reaches to the delta polygon rule 07 uses for the discharge entry
-# point: rule 06's bbox clip (envelope + domain.delta_buffer_m) leaves them
+# Trim seed reaches to the delta polygon rule 07d uses for the discharge entry
+# point: rule 02's bbox clip (envelope + domain.delta_buffer_m) leaves them
 # extending outside, so a point at their midpoint can fall at or beyond the
 # domain edge. Only the reach geometry changes; the entry point in
 # river_forcing.nc is unaffected.
@@ -137,7 +137,7 @@ rivers_clean = enforce_mouth_width_monotonic(rivers_clean)
 
 # Discharge propagation: split proportional to width at bifurcations, summed
 # at confluences. Canals (SWORD lakeflag 2 / locks) get no share at a
-# bifurcation; stored as 'zero_discharge_share' so rule 10 excludes the same arms.
+# bifurcation; stored as 'zero_discharge_share' so rule 11 excludes the same arms.
 adjacency = build_downstream_adjacency(rivers_clean)
 _canal_cfg = dict(snakemake.params.canal_routing)
 require_keys(_canal_cfg, ("auto", "force_exclude", "force_include"), "river_processing.canal_routing")

@@ -253,10 +253,10 @@ def apply_water_retention(
     storage_fraction=1 drains every target cell.
 
     `baseline_excess_volume` [m3] is a fixed reference from rule attribution_mask
-    (compute_excess_volume, classes=(1, 3)), auto-injected by 18b_adapt_post.py and
+    (compute_excess_volume, classes=(1, 3)), auto-injected by 17c_adapt_post.py and
     shared with src.adaptation_method_pre.apply_water_retention, so storage_fraction
     means the same in both methods. In a chained post-processing pipeline (see
-    18b_adapt_post.py) `flood_map_path` may already reflect earlier measures; depths are
+    17c_adapt_post.py) `flood_map_path` may already reflect earlier measures; depths are
     reduced from it as given, but the volume sizing stays pinned to the baseline.
     The realized removed volume is reported next to the nominal target.
     scenario_root: the scenario's sfincs/ root; attribution_mask.tif is in its parent.
@@ -308,7 +308,7 @@ def apply_water_retention(
     remaining = np.maximum(depths - reduction_depth, 0.0)
 
     # Fully drained cells must become NODATA, not 0.0: downstream metrics
-    # (18b_adapt_post.py's inundation-ratio plot, compute_risk_metrics'
+    # (17c_adapt_post.py's inundation-ratio plot, compute_risk_metrics'
     # flooded_area_km2) count "flooded" via da_hmax.notnull(), so a literal 0.0
     # would still count as flooded.
     flood_new = flood.copy()
@@ -711,7 +711,7 @@ def apply_retreat(
     The flood map is copied unchanged. The deepest-flooded `retreat_fraction` of
     urban AND flooded cells move from `urban_code` to `target_code` (landuse only,
     no subgrid rebuild), and the new raster is returned as `landuse_path`. No risk_metrics.csv is written:
-    18b_adapt_post.py computes every metric once, at the end of the measure chain,
+    17c_adapt_post.py computes every metric once, at the end of the measure chain,
     from the final flood and landuse rasters.
     """
     if landuse_path is None:
@@ -782,7 +782,7 @@ def dispatch_rules(
 ) -> dict:
     """Validate params and call the post-processing function for `measure_type`.
 
-    Entry point called by 18b_adapt_post.py for the post-processing method.
+    Entry point called by 17c_adapt_post.py for the post-processing method.
     landuse_path: read only by apply_retreat.
     strategy_measures: the strategy's full measures dict
     (config/adaptation_strategies.yml), passed through unvalidated, so

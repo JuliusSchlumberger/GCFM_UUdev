@@ -119,21 +119,6 @@ def grid_resolution_m(basin_id):
     """Return a basin's main-grid dx (m): its override, else the default."""
     return float(_GRID_RES_OVERRIDES.get(int(basin_id), _GRID_CFG["resolution_m"]))
 
-# Grid orientation: axis-aligned, or the minimum rotated rectangle around the
-# delta polygon (sfincs.grid.rotated), optionally per basin (rotated_overrides).
-_GRID_ROTATED_OVERRIDES = {
-    int(_b): _r for _b, _r in (_GRID_CFG.get("rotated_overrides") or {}).items()
-}
-for _label, _r in [("rotated", _GRID_CFG["rotated"])] + [
-    (f"rotated_overrides[{_b}]", _r) for _b, _r in _GRID_ROTATED_OVERRIDES.items()
-]:
-    if not isinstance(_r, bool):
-        raise ValueError(f"sfincs.grid.{_label} must be true or false, got {_r!r}")
-
-def grid_rotated(basin_id):
-    """Return whether a basin's grid is rotated: its override, else the default."""
-    return bool(_GRID_ROTATED_OVERRIDES.get(int(basin_id), _GRID_CFG["rotated"]))
-
 
 # ── storm-tide event window ──
 # Half-length (h) of the storm-tide event around its peak, for the surge shapes
@@ -253,12 +238,26 @@ if _unknown:
 
 # Basin-level restart filename: run_spinup (14) always runs at mean river
 # discharge + calm sea for spinup_days, so the file is shared by every scenario.
-# Defined here because rules 13, 14 and 16 all need it.
+# Defined here because rules 13a, 14 and 15 all need it.
 from datetime import datetime as _datetime, timedelta as _timedelta
 
 _tref       = _datetime.strptime(config["sfincs"]["simulation"]["tref"], "%Y-%m-%d %H:%M:%S")
 _spinup_end = _tref + _timedelta(days=config["sfincs"]["spinup"]["spinup_days"])
 RST_FNAME   = f"sfincs.{_spinup_end.strftime('%Y%m%d.%H%M%S')}.rst"
+
+# The event run starts from the restart at spinup_days on the forcing's own time
+# axis, so the forcing's calm lead-in must last exactly as long: a shorter
+# lead-in cuts off the start of the event window and starts the run from a calm
+# state on a rising boundary.
+if (
+    config["sfincs"]["spinup"]["enabled"]
+    and float(config["boundary_forcings"]["lead_days"]) != float(config["sfincs"]["spinup"]["spinup_days"])
+):
+    raise ValueError(
+        f"boundary_forcings.lead_days ({config['boundary_forcings']['lead_days']}) must equal "
+        f"sfincs.spinup.spinup_days ({config['sfincs']['spinup']['spinup_days']}): the event run "
+        f"starts at the spin-up restart, at the end of the forcing's lead-in"
+    )
 
 
 

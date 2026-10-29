@@ -3,7 +3,7 @@
 The weir is the protection standard itself: defences run continuously along
 the whole coast and river network, hugging it with no inland offset, so
 nothing floods below the crest until overtopped. Built only by rule
-modelled_depth_estimation (10); rule 13 imports the final gpkg as-is.
+modelled_depth_estimation (10); rule 12a imports the final gpkg as-is.
 Confinement rounds use a very high crest (e.g. 1000 m) and an all-NaN
 water_side_crest_on_grid, confining coast and river alike (the confined
 river can exceed a low coastal crest near the mouth); the production weir
@@ -35,7 +35,7 @@ from shapely.ops import linemerge, unary_union
 from shapely.strtree import STRtree
 from src.grid import cell_size_m
 from src.landuse import LANDUSE_SEA_CODE, OCEAN_WETLAND_CLASSES
-from src.surge import ceil_crest
+from src.surge import CREST_PRECISION_M, ceil_crest
 
 log = logging.getLogger(__name__)
 
@@ -282,6 +282,68 @@ def build_weir_geodataframe(
     )
 
 
+def floor_crests_above_face_zmin(
+    weir_gdf: gpd.GeoDataFrame,
+    u_zmin: np.ndarray,
+    v_zmin: np.ndarray,
+    water_like: np.ndarray,
+    transform,
+) -> tuple[gpd.GeoDataFrame, np.ndarray, int]:
+    """Raise each edge crest above its face's subgrid minimum level by the crest precision.
+
+    SFINCS keeps a weir face only if its crest exceeds the face's uv_zmin
+    (sfincs_structures.f90: ``height > subgrid_uv_zmin``); otherwise the face
+    opens as plain subgrid flow from that level, and a run with those crests
+    no longer has the dike it was calibrated with (2433835: 372 of 3,266
+    faces dropped, round 2 off by up to 0.19 m). uv_zmin is the bank side's
+    lowest level across the face, which holds the water to that level anyway,
+    so raising a crest to it changes no protection.
+    u_zmin, v_zmin: from src.sfincs_run.read_face_zmin, in the array order of
+    transform. Returns (weir_gdf, per water-side cell the lowest of its edges'
+    crests (NaN elsewhere), number of raised edges).
+    """
+    out = weir_gdf.copy()
+    crest = out["elevation"].to_numpy(dtype=float)
+    inv = ~transform
+    half = 0.5 * abs(transform.a), 0.5 * abs(transform.e)
+    nrow, ncol = u_zmin.shape
+    water_cell = np.full((len(out), 2), -1, dtype=np.int64)
+    face_zmin = np.full(len(out), np.nan)
+    for k, seg in enumerate(out.geometry):
+        (x0, y0), (x1, y1) = seg.coords[0], seg.coords[-1]
+        mx, my = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+        horizontal = abs(y1 - y0) < abs(x1 - x0)
+        sides = (
+            ((mx, my - half[1]), (mx, my + half[1]))
+            if horizontal
+            else ((mx - half[0], my), (mx + half[0], my))
+        )
+        cells = []
+        for sx, sy in sides:
+            c, r = inv * (sx, sy)
+            cells.append((int(np.floor(r)), int(np.floor(c))))
+        inside = [(r, c) for r, c in cells if 0 <= r < nrow and 0 <= c < ncol]
+        for r, c in inside:
+            if water_like[r, c]:
+                water_cell[k] = (r, c)
+        if len(inside) == 2:
+            (r0, c0), (r1, c1) = cells
+            face_zmin[k] = (
+                v_zmin[min(r0, r1), c0] if horizontal else u_zmin[r0, min(c0, c1)]
+            )
+    floor = ceil_crest(face_zmin + CREST_PRECISION_M)
+    raise_mask = np.isfinite(floor) & (crest < floor)
+    crest = np.where(raise_mask, floor, crest)
+    out["elevation"] = crest
+    crest_surface = np.full(u_zmin.shape, np.nan)
+    has_cell = water_cell[:, 0] >= 0
+    for (r, c), z in zip(water_cell[has_cell], crest[has_cell]):
+        crest_surface[r, c] = (
+            z if not np.isfinite(crest_surface[r, c]) else min(crest_surface[r, c], z)
+        )
+    return out, crest_surface, int(raise_mask.sum())
+
+
 def _flatten_elevation_from_z(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     # hydromt_sfincs SfincsWeirs.read() (utils.linestring2gdf) stores elevation
     # in the geometry's Z when its length matches the vertex count, leaving no
@@ -471,11 +533,11 @@ def build_coastal_protection_weir(
     water_like, so the dike runs along their landward edge; the cells stay
     land otherwise (not sea in zsini_sea_cells, counted in flood metrics).
     channel_mask_gap_free: True when river_channel_mask comes from the same
-    burned DEM fed to hydromt_sfincs (rule 10, 10_depth_estimation_modelled.py);
+    burned DEM fed to hydromt_sfincs (rule 11, 11_depth_estimation_modelled.py);
     skips the 1-cell close_gaps() dilation, which would
     leave an un-excavated ring around the channel.
     water_side_crest_on_grid: per-cell crest looked up on the water side of
-    each edge (rule 10 passes the confined round's period-max water level).
+    each edge (rule 11 passes the confined round's period-max water level).
     If given, the river channel joins water_like and each crest is
     max(water side, crest_elevation_m); NaN (never wetted) falls back to
     crest_elevation_m, so an all-NaN array gives a uniform weir including the
@@ -552,7 +614,7 @@ def build_coastal_protection_weir(
     #      cells on the same grid, without reprojection.
     #  (b) an ocean component surviving into water_like but not the main open
     #      ocean (the single largest water_like component, as for zsini in
-    #      13_build_sfincs_skeleton.py), walled off by its own ring.
+    #      12a_build_sfincs_skeleton.py), walled off by its own ring.
     # Returned so callers clear these cells from sea to land in sea_mask.tif,
     # used by zsini and by downstream flood-diagnostic masking.
     water_like_labels, n_water_like_components = grid.connected_components(water_like)

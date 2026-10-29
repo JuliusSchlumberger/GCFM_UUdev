@@ -159,3 +159,36 @@ def test_table_replaced_outside_the_builder_is_rebuilt(tmp_path):
     builder.create([source], **_KWARGS)
     sf.subgrid.data = object()
     assert builder.create([source], **_KWARGS)
+
+
+def test_nearest_extrapolation_patch_matches_griddata_nearest():
+    from hydromt.gis import raster as raster_module
+
+    rng = np.random.default_rng(0)
+    data = rng.random((60, 80)) * 10.0
+    data[20:45, 30:70] = np.nan  # gap beyond rio_idw's search distance
+    data[:, :5] = np.nan
+    da = xr.DataArray(
+        data,
+        dims=("y", "x"),
+        coords={"y": np.arange(60)[::-1] * 10.0 + 5.0, "x": np.arange(80) * 10.0 + 5.0},
+    )
+    da.raster.set_nodata(np.nan)
+    upstream = raster_module.RasterDataArray._interpolate_na
+    expected = upstream(
+        da.raster,
+        data.copy(),
+        method="rio_idw",
+        extrapolate=True,
+        max_search_distance=2,
+    )
+    try:
+        assert hydromt_sfincs_patch.patch_nearest_extrapolation()
+        got = da.raster._interpolate_na(
+            data.copy(), method="rio_idw", extrapolate=True, max_search_distance=2
+        )
+    finally:
+        raster_module.RasterDataArray._interpolate_na = upstream
+    assert np.isfinite(got).all()
+    # identical except where two valid pixels are exactly equidistant
+    assert np.mean(np.isclose(got, expected)) > 0.98

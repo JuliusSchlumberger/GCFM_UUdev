@@ -634,7 +634,7 @@ def enforce_mouth_width_monotonic(
 
     A narrower mouth is treated as a SWORD artifact (e.g. obscured by tidal
     flats). Mouths have no in-network downstream neighbour (as in
-    11_test_upstream_boundary.py). 'max_width' is raised too if it would
+    analysis/check_upstream_boundary.py). 'max_width' is raised too if it would
     fall below the new width.
     """
     downstream_adj = build_downstream_adjacency(rivers)

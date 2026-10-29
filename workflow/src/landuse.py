@@ -11,7 +11,7 @@ ocean mask, zsini, the water-level boundary). Sources (config landuse.source):
   esa_worldcover    WorldCover 2021 v200, 10 m, catalogue
                     'land_use_esa_worldcover'; no sea class (sea, lagoons,
                     rivers, lakes are all 80), so 200 is derived:
-    1. barrier = the basin's clipped river network (rule 06) buffered to the
+    1. barrier = the basin's clipped river network (rule 02) buffered to the
        reaches' SWORD width, minus LC100 open sea (SWORD lines run past the
        shoreline at the mouths).
     2. sea = connected components of WorldCover water (80) minus the barrier
@@ -128,9 +128,8 @@ def _square_tiles(
     src_res_m: float,
     max_source_pixels: int = MAX_BLOCK_PIXELS,
 ):
-    # Square tiles, not row strips: on a rotated destination grid the
-    # axis-aligned source box around a full-width strip is nearly the whole
-    # domain; around a square it is at most 2x the square's area (the factor 2).
+    # The source box read for a tile is at most 2x the tile's area (the factor 2),
+    # leaving room for reprojection between the source and destination CRS.
     ratio = max(dst_res_m, 1e-9) / max(src_res_m, 1e-9)  # source px per destination px
     side = max(1, int(math.sqrt(max_source_pixels / 2.0) / max(ratio, 1.0)))
     for row0 in range(0, height, side):
@@ -213,12 +212,36 @@ def _river_barrier_mask(
     return barrier
 
 
+def _fathomdem_on_grid(tile_paths: list[str], transform, shape) -> np.ndarray:
+    # EGM2008 metres (tiles store int32 centimetres); NaN where no tile covers.
+    out = np.full(shape, np.nan, dtype=np.float32)
+    for path in tile_paths:
+        tile = np.full(shape, np.nan, dtype=np.float32)
+        with rasterio.open(path) as src:
+            reproject(
+                source=rasterio.band(src, 1),
+                destination=tile,
+                dst_transform=transform,
+                dst_crs=src.crs,
+                dst_nodata=np.nan,
+                resampling=Resampling.average,
+            )
+        out = np.where(np.isnan(out), tile / 100.0, out)
+    return out
+
+
 def _derive_sea_mask(
     water: np.ndarray,
     nodata_mask: np.ndarray,
     lc100_sea: np.ndarray,
     barrier: np.ndarray,
+    elevation_m: np.ndarray | None = None,
+    sea_max_elevation_m: float = np.inf,
 ) -> tuple[np.ndarray, dict]:
+    # elevation_m: a water body whose median land-DEM level is above
+    # sea_max_elevation_m is not sea. LC100 calls some wide inland riverbeds
+    # open sea; where such a river reaches the domain border it passes the
+    # border and LC100 tests (basin 1475442: a 6.5 km2 patch at 37 m).
     from scipy import ndimage
 
     labels, n_components = ndimage.label(water & ~barrier)
@@ -228,6 +251,26 @@ def _derive_sea_mask(
     at_border = set(np.unique(labels[border]).tolist()) - {0}
     with_lc100_sea = set(np.unique(labels[lc100_sea]).tolist()) - {0}
     sea_labels = sorted(at_border & with_lc100_sea)
+    dropped_high: dict[int, float] = {}
+    if elevation_m is not None and sea_labels:
+        candidate = np.isin(labels, sea_labels) & np.isfinite(elevation_m)
+        medians = pd.Series(elevation_m[candidate]).groupby(labels[candidate]).median()
+        dropped_high = {
+            int(k): float(v) for k, v in medians.items() if v > sea_max_elevation_m
+        }
+        if dropped_high:
+            sizes = ndimage.sum(
+                np.ones_like(labels, dtype=bool), labels, list(dropped_high)
+            )
+            log.warning(
+                f"_derive_sea_mask: {len(dropped_high)} border water bodies with LC100 open sea "
+                f"lie above {sea_max_elevation_m:g} m (FathomDEM median) and stay inland water: "
+                + ", ".join(
+                    f"{int(n):,} px at {z:.1f} m"
+                    for n, z in zip(sizes, dropped_high.values())
+                )
+            )
+            sea_labels = [k for k in sea_labels if k not in dropped_high]
     if not sea_labels:
         log.warning(
             f"_derive_sea_mask: none of the {n_components:,} water bodies both reaches "
@@ -247,6 +290,7 @@ def _derive_sea_mask(
         "water_bodies": int(n_components),
         "bodies_at_border": len(at_border),
         "bodies_kept_as_sea": len(sea_labels),
+        "bodies_above_sea_max_elevation": len(dropped_high),
     }
     return sea, stats
 
@@ -259,6 +303,8 @@ def _write_worldcover_source(
     river_network_path,
     river_barrier_width_factor,
     river_barrier_min_width_m,
+    fathomdem_tiles,
+    sea_max_elevation_m,
 ) -> tuple[dict, dict]:
     with rasterio.open(worldcover_path) as wc_src:
         window = _integer_window(wc_src, wgs84_bounds)
@@ -316,12 +362,20 @@ def _write_worldcover_source(
             if river_network_path is not None
             else np.zeros((ch, cw), dtype=bool)
         )
+        elevation_coarse = (
+            _fathomdem_on_grid(fathomdem_tiles, transform_coarse, (ch, cw))
+            if fathomdem_tiles
+            else None
+        )
         sea_coarse, stats = _derive_sea_mask(
             wc_coarse == WORLDCOVER_WATER,
             wc_coarse == wc_nodata,
             lc_sea_coarse,
             barrier_coarse,
+            elevation_coarse,
+            sea_max_elevation_m,
         )
+        del elevation_coarse
         del wc_coarse, barrier_coarse
         stats.update(
             working_factor=factor,
@@ -392,6 +446,8 @@ def write_landuse_source(
     river_network_path: str | Path | None = None,
     river_barrier_width_factor: float = 1.0,
     river_barrier_min_width_m: float = 30.0,
+    fathomdem_tiles: list[str] | None = None,
+    sea_max_elevation_m: float = np.inf,
 ) -> tuple[dict, dict]:
     """Write the per-basin land-use raster in pipeline codes; return (meta, stats).
 
@@ -401,6 +457,8 @@ def write_landuse_source(
     get_river_network): barrier stopping the sea fill at the river mouths;
     without it the sea runs up every channel. Barrier buffer radius per reach
     = max(width/2 * river_barrier_width_factor, river_barrier_min_width_m).
+    fathomdem_tiles (esa_worldcover only): a water body whose median FathomDEM
+    elevation (EGM2008) exceeds sea_max_elevation_m is never sea.
     """
     if source not in SOURCES:
         raise ValueError(f"landuse.source must be one of {SOURCES}, got {source!r}")
@@ -421,6 +479,8 @@ def write_landuse_source(
             river_network_path,
             river_barrier_width_factor,
             river_barrier_min_width_m,
+            fathomdem_tiles,
+            sea_max_elevation_m,
         )
 
     # LC100 is already in pipeline codes; at 100 m even the largest delta bbox
@@ -458,7 +518,7 @@ def _source_block_window(
     src, dst_transform, dst_crs, nrows: int, ncols: int, margin_px: int = 2
 ):
     # Corner-based, not rasterio's array_bounds: that one returns south > north
-    # for an unrotated SOUTH-UP block (the unrotated model grid).
+    # for a SOUTH-UP block (the model grid).
     xs, ys = zip(
         *(dst_transform * c for c in [(0, 0), (ncols, 0), (ncols, nrows), (0, nrows)])
     )
@@ -674,7 +734,6 @@ def write_roughness_raster(
     Returns (codes missing from the lookup, NaN in the output; grid info).
     """
     lu_to_n = read_roughness_lookup(lookup_path)
-    # hypot, not abs(a): the reference grid may be rotated (the model grid is).
     ref_res_m = math.hypot(ref_meta["transform"].a, ref_meta["transform"].d)
 
     with rasterio.open(landuse_source_path) as src:
@@ -715,7 +774,6 @@ def write_roughness_raster(
         unmapped: set[int] = set()
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         with rasterio.open(out_path, "w", **meta) as dst:
-            # Square tiles: the target may be the rotated model grid (see _square_tiles).
             for row0, col0, nrows, ncols in _square_tiles(
                 height, width, target_res_m, src_res_m
             ):

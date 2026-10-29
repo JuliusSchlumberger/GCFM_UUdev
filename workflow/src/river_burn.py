@@ -345,8 +345,8 @@ def constrain_to_coarse_channel_mask(
 def channel_polygons(rivers: gpd.GeoDataFrame, width_column: str = "width") -> list:
     """Return each reach's channel: its centreline buffered by width / 2, in the rivers' CRS.
 
-    The one definition of the channel: rule 10 burns the bed into it, and the
-    channel land use and Manning n (rules 05c, 08b, 09b) are set inside it.
+    The one definition of the channel: rule 11 burns the bed into it, and the
+    channel land use and Manning n (rules 09, 09, 09) are set inside it.
     Reaches without a positive width are skipped. Raises ValueError for a
     geographic CRS, where width / 2 would be read as degrees.
     """
@@ -401,7 +401,7 @@ def build_centerline_cells_regular(
     """Return every grid cell each reach's raw centreline touches (all_touched=True).
 
     Cells for the per-cell depth/crest calibration in
-    10_depth_estimation_modelled.py. A junction cell gets one row per reach
+    11_depth_estimation_modelled.py. A junction cell gets one row per reach
     (keyed reach_id, row, col). Columns 'reach_id', 'row', 'col', 'along_m'
     (from the reach's start), 'x', 'y', geometry (cell centre, CRS of
     `rivers`), sorted by (reach_id, along_m); degenerate reaches are skipped.
