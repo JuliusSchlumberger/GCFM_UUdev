@@ -28,11 +28,11 @@ from src.river_network import (
 log = setup_logging(snakemake.log[0])
 
 profiler = ScriptProfiler(snakemake)
-load_forcing_crossings       = profiler.wrap(load_forcing_crossings)
-snap_crossings_to_reaches    = profiler.wrap(snap_crossings_to_reaches)
+load_forcing_crossings = profiler.wrap(load_forcing_crossings)
+snap_crossings_to_reaches = profiler.wrap(snap_crossings_to_reaches)
 collect_downstream_main_paths = profiler.wrap(collect_downstream_main_paths)
-build_downstream_adjacency   = profiler.wrap(build_downstream_adjacency)
-accumulate_discharge         = profiler.wrap(accumulate_discharge)
+build_downstream_adjacency = profiler.wrap(build_downstream_adjacency)
+accumulate_discharge = profiler.wrap(accumulate_discharge)
 
 # Domain
 
@@ -60,13 +60,17 @@ log.info(f"Active GloFAS crossings: {len(crossings)}")
 
 seed_q = snap_crossings_to_reaches(crossings)
 reachable = collect_downstream_main_paths(rivers, set(seed_q.keys()))
-log.info(f"Main-path traversal: {len(reachable)} reachable reaches out of {len(rivers)}")
+log.info(
+    f"Main-path traversal: {len(reachable)} reachable reaches out of {len(rivers)}"
+)
 
 # Filter
 
 rivers_clean = rivers[rivers["reach_id"].map(normalize_reach_id).isin(reachable)].copy()
 rivers_clean["linked_to_source"] = True
-rivers_clean["is_seed"] = rivers_clean["reach_id"].map(normalize_reach_id).isin(set(seed_q.keys()))
+rivers_clean["is_seed"] = (
+    rivers_clean["reach_id"].map(normalize_reach_id).isin(set(seed_q.keys()))
+)
 log.info(f"Retained {len(rivers_clean)}/{len(rivers)} reaches")
 
 # A seed reach fed from upstream reaches INSIDE the network is a branch SWORD
@@ -78,7 +82,9 @@ log.info(f"Retained {len(rivers_clean)}/{len(rivers)} reaches")
 _outward = outward_seed_reaches(
     rivers_clean, seed_q.keys(), build_downstream_adjacency(rivers_clean)
 )
-rivers_clean["seed_flows_out"] = rivers_clean["reach_id"].map(normalize_reach_id).isin(_outward)
+rivers_clean["seed_flows_out"] = (
+    rivers_clean["reach_id"].map(normalize_reach_id).isin(_outward)
+)
 if _outward:
     rivers_clean.loc[rivers_clean["seed_flows_out"], "is_seed"] = False
     seed_q = {k: v for k, v in seed_q.items() if normalize_reach_id(k) not in _outward}
@@ -94,29 +100,39 @@ if _outward:
 # river_forcing.nc is unaffected.
 seed_mask = rivers_clean["is_seed"]
 if seed_mask.any():
-    domain_poly_native = gpd.GeoSeries([domain_poly], crs="EPSG:4326").to_crs(rivers_clean.crs).iloc[0]
+    domain_poly_native = (
+        gpd.GeoSeries([domain_poly], crs="EPSG:4326").to_crs(rivers_clean.crs).iloc[0]
+    )
     n_trimmed = 0
     for idx in rivers_clean.index[seed_mask]:
         geom = rivers_clean.at[idx, "geometry"]
         clipped = geom.intersection(domain_poly_native)
         if clipped.is_empty:
-            log.warning(f"Seed reach {rivers_clean.at[idx, 'reach_id']}: intersection with domain polygon is empty, keeping original geometry")
+            log.warning(
+                f"Seed reach {rivers_clean.at[idx, 'reach_id']}: intersection with domain polygon is empty, keeping original geometry"
+            )
             continue
         clipped_line = _as_linestring(clipped)
         if clipped_line is None or clipped_line.length == 0:
-            log.warning(f"Seed reach {rivers_clean.at[idx, 'reach_id']}: clipped geometry has no length, keeping original geometry")
+            log.warning(
+                f"Seed reach {rivers_clean.at[idx, 'reach_id']}: clipped geometry has no length, keeping original geometry"
+            )
             continue
         if clipped_line.length < geom.length:
             n_trimmed += 1
             rivers_clean.at[idx, "geometry"] = clipped_line
-    log.info(f"Seed reach(es) trimmed to domain polygon: {n_trimmed}/{int(seed_mask.sum())}")
+    log.info(
+        f"Seed reach(es) trimmed to domain polygon: {n_trimmed}/{int(seed_mask.sum())}"
+    )
 
 # Delta-outline outflow points: a reach crossing the delta outline that is
 # neither seed nor mouth is where flow leaves the network; it is flagged
 # 'is_delta_outflow' and its crossing becomes an SFINCS outflow boundary
 # (mask=3) in build_sfincs.
 delta_polygon = gpd.read_file(snakemake.input.delta_polygon)
-rivers_clean, outflow_points = identify_delta_outflow_points(rivers_clean, delta_polygon)
+rivers_clean, outflow_points = identify_delta_outflow_points(
+    rivers_clean, delta_polygon
+)
 log.info(f"Delta-outline outflow points identified: {len(outflow_points)}")
 
 # Width attributes. Missing SWORD width/max_width (-9999) must go before
@@ -140,20 +156,28 @@ rivers_clean = enforce_mouth_width_monotonic(rivers_clean)
 # bifurcation; stored as 'zero_discharge_share' so rule 11 excludes the same arms.
 adjacency = build_downstream_adjacency(rivers_clean)
 _canal_cfg = dict(snakemake.params.canal_routing)
-require_keys(_canal_cfg, ("auto", "force_exclude", "force_include"), "river_processing.canal_routing")
+require_keys(
+    _canal_cfg,
+    ("auto", "force_exclude", "force_include"),
+    "river_processing.canal_routing",
+)
 _excluded = canal_excluded_arms(
-    rivers_clean, adjacency,
+    rivers_clean,
+    adjacency,
     force_exclude=_canal_cfg["force_exclude"] or [],
     force_include=_canal_cfg["force_include"] or [],
     auto=bool(_canal_cfg["auto"]),
 )
-rivers_clean["zero_discharge_share"] = rivers_clean["reach_id"].map(normalize_reach_id).isin(_excluded)
+rivers_clean["zero_discharge_share"] = (
+    rivers_clean["reach_id"].map(normalize_reach_id).isin(_excluded)
+)
 q_acc = accumulate_discharge(rivers_clean, seed_q, adjacency, excluded_arms=_excluded)
 rivers_clean["bankfull_discharge_acc_m3s"] = q_acc
 log.info(
     f"Discharge propagation: {(q_acc > 0).sum()} reaches with Q > 0, "
-    f"max Q = {q_acc.max():.2f} m³ s⁻¹" if len(q_acc) > 0 else
-    "Discharge propagation: 0 reaches (empty network)"
+    f"max Q = {q_acc.max():.2f} m³ s⁻¹"
+    if len(q_acc) > 0
+    else "Discharge propagation: 0 reaches (empty network)"
 )
 
 # Write
@@ -164,7 +188,9 @@ log.info(f"Written: {snakemake.output.clean_river_network}")
 
 Path(snakemake.output.delta_outflow_points).parent.mkdir(parents=True, exist_ok=True)
 outflow_points.to_file(snakemake.output.delta_outflow_points, driver="GPKG")
-log.info(f"Written: {snakemake.output.delta_outflow_points} ({len(outflow_points)} point(s))")
+log.info(
+    f"Written: {snakemake.output.delta_outflow_points} ({len(outflow_points)} point(s))"
+)
 
 # Summary plots
 
@@ -173,25 +199,26 @@ rivers_wgs = (
     if rivers_clean.crs is not None and rivers_clean.crs.to_epsg() != 4326
     else rivers_clean
 )
-rivers_orig_wgs = (
-    rivers.to_crs("EPSG:4326")
-    if rivers.crs is not None and rivers.crs.to_epsg() != 4326
-    else rivers
-)
+if hasattr(snakemake.output, "plot_clean_network"):
+    rivers_orig_wgs = (
+        rivers.to_crs("EPSG:4326")
+        if rivers.crs is not None and rivers.crs.to_epsg() != 4326
+        else rivers
+    )
 
-plot_cleaned_network(
-    rivers_orig=rivers_orig_wgs,
-    rivers_clean=rivers_wgs,
-    bbox_poly=domain_poly,
-    land_polygons_path=snakemake.input.land_polygons,
-    output_path=snakemake.output.plot_clean_network,
-)
-plot_clean_network_discharge(
-    rivers_wgs=rivers_wgs,
-    bbox_poly=domain_poly,
-    land_polygons_path=snakemake.input.land_polygons,
-    output_path=snakemake.output.plot_discharge_network,
-)
+    plot_cleaned_network(
+        rivers_orig=rivers_orig_wgs,
+        rivers_clean=rivers_wgs,
+        bbox_poly=domain_poly,
+        land_polygons_path=snakemake.input.land_polygons,
+        output_path=snakemake.output.plot_clean_network,
+    )
+    plot_clean_network_discharge(
+        rivers_wgs=rivers_wgs,
+        bbox_poly=domain_poly,
+        land_polygons_path=snakemake.input.land_polygons,
+        output_path=snakemake.output.plot_discharge_network,
+    )
 
 profiler.stop()
 log.info("Done")

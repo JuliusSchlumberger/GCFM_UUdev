@@ -13,6 +13,8 @@ adaptation:
 profiling:
   enabled: false   # set to true to write line-level timing reports next to each log file
 
+analysis: false    # true: also write the diagnostic figures to <results_dir>/{basin_id}/figures/analysis/; false: only the core figures in figures/
+
 # Command-line only (snakemake --config key=value), never set here:
 #   target_basins: [2433835]           # default: every basin in delta_polygons
 #   target_scenarios: ['default']      # default: ['default']
@@ -122,8 +124,8 @@ river_processing:
                                     # in between a transition taking the slower, kinematic speed; 1248635 Waal/Lek ~12)
     calibration_max_days: 4         # longer runs fail: raise it or check the bed
     steady_check: {window_hr: 3, tol_m: 0.05}  # warn when centreline cells still rise more than tol_m over the run's last window_hr
-    verify_crests: true             # run round 2 (production crests, reports overtopped edges); false: round 1 only
-    ramp_hr: 6.0                    # ramp (river: half-cosine; sea: linear), then held to the run end: every crossing from its mean discharge (the flow that holds zsini's river level, src.river_bed mean_level_m) to the calibration discharge, every sea station from calm_sea_level_m to its storm tide at the coastal protection RP. A step to the full (often many-times-bankfull) discharge sends a front that can oscillate for the whole run.
+    verify_crests: false            # run round 2 (production crests, reports overtopped edges); false: round 1 only
+    ramp_hr: 6.0                    # half-cosine river ramp, then held to the run end: every crossing from its mean discharge (the flow that holds zsini's river level, src.river_bed mean_level_m) to the calibration discharge. The sea is held at each station's storm tide at the coastal protection RP from the start (zsini of sea and channel cells no lower than it), so only the rivers change. A step to the full (often many-times-bankfull) discharge sends a front that can oscillate for the whole run.
     weir_crest_m: 1000.0            # confinement weir crest (m) for round 1 -- effectively never overtopped
     # ── weir-building params (used by modelled_depth_estimation every round)
     min_component_cells: 30           # discard small isolated land islands or water patches below this cell count on either side -- neither gets a weir ring around it

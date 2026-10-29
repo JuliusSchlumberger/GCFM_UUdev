@@ -13,15 +13,15 @@ Everything is written under `<results_dir>/{basin_id}/`:
 |---|---|
 | `preprocessing_inputs/domain/` | delta polygon, model domain, elevation, land use, roughness, river network (raw, cleaned, depth-calibrated), coastal protection weir, SFINCS grid definition |
 | `preprocessing_inputs/forcing/` | storm-tide hydrographs, surge and river forcing (`surge_forcing.nc`, `river_forcing.nc`) |
-| `preprocessing_inputs/visuals/` | one diagnostic figure per preprocessing rule |
 | `sfincs_skeleton/` | per-basin SFINCS model (`sfincs.inp`, `sfincs.weir`, `sfincs_subgrid.nc`) and `land_bed_level.nc`, the bed level every flood depth is computed on (open sea masked) |
-| `spin_up/` | spin-up run, restart file and validation figures (when `sfincs.spinup.enabled`) |
+| `spin_up/` | spin-up run and restart file (when `sfincs.spinup.enabled`) |
 | `runs/{scenario}/sfincs/` | event run (`sfincs_map.nc`) |
-| `runs/{scenario}/visuals/` | maximum flood depth (`max_flood_depth.tif`), flood time series, animation |
+| `runs/{scenario}/visuals/` | maximum flood depth (`max_flood_depth.tif`) and flood time series |
 | `runs/{scenario}/metrics/flood_metrics.csv` | flood-risk metrics (flooded shares of the land and urban area, depths) |
-| `adaptation_lines/` | levee, mouth-closure and pump lines derived from the skeleton for `auto/` strategy locations, with a review figure |
+| `adaptation_lines/` | levee, mouth-closure and pump lines derived from the skeleton for `auto/` strategy locations |
 | `runs/{scenario}/adaptation/{pre,post}/{strategy}/` | adapted runs and their flood metrics |
 | `runs/metrics_comparison.csv` | all strategies and scenarios side by side |
+| `figures/` | every figure of the basin: model build, boundary forcing and max flood depth per run, flood animation per scenario, crest profile, adaptation; diagnostics in `figures/analysis/` with `analysis: true` ([running.md](docs/running.md#figures)) |
 
 ## Quick start
 

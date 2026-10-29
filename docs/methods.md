@@ -154,7 +154,7 @@ layer `structures`: the detected structures), the conditioned DEM at native
 resolution and on the model grid, and `river_elevation_max.json` (highest
 surface level), which caps the active cells at
 `river_elevation_max_m + sfincs.grid.active_mask.elevation_buffer_m`. The
-figure `visuals/10_river_surface.png` shows, per seed along its widest arm, the
+figure `figures/analysis/10_river_surface.png` shows, per seed along its widest arm, the
 FathomDEM water pixels, node medians, the surface, structure junctions by SWORD
 obstruction type, and the SWOT check of the path.
 
@@ -349,19 +349,21 @@ and subgrid set-up, production weir geometry) then runs twice:
 |---|---|---|---|---|
 | 0 | -- | estimated bed | -- | river bed (no SFINCS run) |
 | 1 | every edge at `weir_crest_m` (1000 m) | burned bed | storm tide at the FLOPROS coastal RP, held | crest per weir edge |
-| 2 | production crests | as round 1 | as round 1 | verification: reports overtopped edges, changes nothing; skipped with `verify_crests: false` |
+| 2 | production crests | as round 1 | as round 1 | verification: reports overtopped edges, changes nothing; runs only with `verify_crests: true` |
 
-Both SFINCS rounds ramp their forcing over `ramp_hr` (6 h) and hold it to the
-run end. River discharge ramps with the half-cosine weight `0.5 (1 − cos πs)`
-used for every river forcing (`src.river_forcing.cosine_ramp`); the sea ramps
-linearly:
+Both SFINCS rounds hold the sea and ramp only the rivers:
 
+- sea: every station at its storm tide at the FLOPROS coastal return period from
+  the start; sea and river channel cells start no lower than the highest
+  station's storm tide, so no rising sea runs up the channels and the level at
+  the mouth responds to the river alone (`analysis/benchmark_peak_travel.py`
+  times it);
 - rivers: each crossing from its reach's mean discharge (the flow that holds the
   initial river level, below) to the discharge at the FLOPROS riverine return
-  period (`river_protection_rp_yr`, log-RP
-  interpolated from the discharge table; bankfull when absent);
-- sea: every station from `calm_sea_level_m` to its storm tide at the FLOPROS
-  coastal return period.
+  period (`river_protection_rp_yr`, log-RP interpolated from the discharge
+  table; bankfull when absent), over `ramp_hr` (6 h) with the half-cosine weight
+  `0.5 (1 − cos πs)` used for every river forcing (`src.river_forcing.cosine_ramp`),
+  then held to the run end.
 
 The run lasts `ramp_hr + T_walled + calibration_margin_hr` (12 h), so the full
 discharge reaches the coast and every level settles before the run ends. `T_walled`
@@ -436,7 +438,7 @@ computed with.
   the smoothed FathomDEM level (FathomDEM's flat, sea-level lower rivers; the
   floor), negative where below. Logged for all river nodes and the largest-Q
   paths (p5/median/p95, share within 0.5 and 1 m) and mapped in
-  `visuals/11_calibration/river_network_forward_check.png` (fixed −3 to 3 m).
+  `figures/analysis/11_calib_river_forward_check.png` (fixed −3 to 3 m).
 - The bed at each model centreline cell (`src.river_bed.values_at_points`) is
   the absolute bed elevation (GOCO06s) used as burn anchor. Per-node results,
   with the forward level, are written to
@@ -607,7 +609,8 @@ on rule 11's bed on the river channel cells (`mean_level_m` of the river-bed nod
 table, network ends at rule 10's surface), and dry on land; sea cells outside the
 largest connected sea body that lie below that level start dry at bed level
 (`src.raster.dry_isolated_sea_cells`). Rule 11's calibration rounds start from
-the same river level. Rule 10's surface itself is the bankfull stage when
+the same river level, raised with the sea to at least the coastal protection
+storm tide. Rule 10's surface itself is the bankfull stage when
 `bed.design_discharge` is `bankfull`, 1-5 m above the mean-flow level on the
 2433835, 2209166 and 3279946 rivers, which the spin-up then had to drain.
 

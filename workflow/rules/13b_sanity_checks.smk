@@ -12,8 +12,8 @@ rule sanity_checks:
         clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
         domain_gpkg         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
     output:
-        plot_inundation_ratio      = results_path("{basin_id}/spin_up/01_inundation_ratio.png"),
-        animation_flood_progress   = results_path("{basin_id}/spin_up/02_flood_animation.mp4"),
+        plot_inundation_ratio      = analysis_figure_path("13_spinup_inundation_ratio.png"),
+        animation_flood_progress   = analysis_figure_path("13_spinup_flood_progression.mp4"),
     params:
         spin_up_root               = lambda wildcards: results_path(f"{wildcards.basin_id}/spin_up"),
         min_inundation_depth_m     = config["sfincs"]["sanity_checks"]["min_inundation_depth_m"],

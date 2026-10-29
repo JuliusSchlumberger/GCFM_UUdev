@@ -94,6 +94,54 @@ def results_path(pattern):
     return f"{RESULTS_DIR}/{pattern}"
 
 
+# ── figures ──
+# Core figures in {basin_id}/figures/, diagnostics (config analysis: true only)
+# in {basin_id}/figures/analysis/. Names: NN_stage_quantity[__run_label].
+if not isinstance(config["analysis"], bool):
+    raise ValueError(
+        f"config analysis must be true or false, got {config['analysis']!r} "
+        f"(on the command line: --config analysis=True)"
+    )
+ANALYSIS = config["analysis"]
+
+def figure_path(name):
+    """Return the path of a core figure of {basin_id}."""
+    return results_path(f"{{basin_id}}/figures/{name}")
+
+def analysis_figure_path(name):
+    """Return the path of an analysis figure of {basin_id}."""
+    return results_path(f"{{basin_id}}/figures/analysis/{name}")
+
+def analysis_outputs(**outputs):
+    """Return the named analysis outputs when config analysis is on, else none."""
+    return outputs if ANALYSIS else {}
+
+def run_label(scenario=None, method=None, strategy=None):
+    """Return the label naming a run in figure names and titles.
+
+    calib_r1 / spinup are passed as scenario; adaptation runs are
+    {scenario}__{method}_{strategy}, so they sort next to their scenario.
+    """
+    if strategy is None:
+        return str(scenario)
+    return f"{scenario}__{method}_{strategy}"
+
+
+CALIB_ROUNDS = [1, 2] if config["river_processing"]["river_depth_modelling"]["verify_crests"] else [1]
+
+def calibration_round_figures():
+    """Return rule 11's figures of each SFINCS round (calib_r1, calib_r2 with verify_crests)."""
+    figures = {}
+    for r in CALIB_ROUNDS:
+        figures[f"plot_forcing_r{r}"] = figure_path(f"20_forcing_timeseries__calib_r{r}.png")
+        figures[f"plot_max_depth_r{r}"] = figure_path(f"40_run_max_flood_depth__calib_r{r}.png")
+        figures.update(analysis_outputs(**{
+            f"plot_water_level_r{r}": analysis_figure_path(f"11_calib_water_level__calib_r{r}.png"),
+            f"animation_r{r}": analysis_figure_path(f"11_calib_flood_progression__calib_r{r}.mp4"),
+        }))
+    return figures
+
+
 def calibration_subgrid_files():
     """Return rule 11's round-1 subgrid table and mask files, reused by rule 12a."""
     return [
@@ -367,6 +415,7 @@ wildcard_constraints:
 def build_sfincs_params():
     """Return the params shared by rules build_sfincs and adapt_build_forcing_pre."""
     return dict(
+        basin_id           = lambda wildcards: wildcards.basin_id,
         resolution_m       = lambda wildcards: grid_resolution_m(wildcards.basin_id),
         tref               = config["sfincs"]["simulation"]["tref"],
         dtmapout           = config["sfincs"]["simulation"]["dtmapout"],
@@ -398,9 +447,20 @@ def build_sfincs_params():
     )
 
 
+def map_figure_inputs():
+    """Return the inputs every flood map figure draws on: domain, land mask, rivers."""
+    return dict(
+        spec_basins_meta    = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
+        domain_gpkg         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
+        land_mask_on_grid   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
+        clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
+    )
+
+
 def run_event_params():
     """Return the params shared by rules run_event and adapt_run_event_pre."""
     return dict(
+        basin_id                   = lambda wildcards: wildcards.basin_id,
         sfincs_exe                 = sfincs_exe_path,
         timeout_s                  = config["sfincs"]["simulation"]["timeout_s"],
         min_inundation_depth_m     = config["sfincs"]["sanity_checks"]["min_inundation_depth_m"],

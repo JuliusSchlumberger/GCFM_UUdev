@@ -55,9 +55,11 @@ rule adapt_build_forcing_pre:
         rstart          = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/" + RST_FNAME),
     output:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs.inp"),
+        plot_forcing = figure_path("20_forcing_timeseries__{scenario}__pre_{strategy}.png"),
     params:
         # Same as rule build_sfincs's params except the roots below.
         **build_sfincs_params(),
+        run_label          = lambda wildcards: run_label(wildcards.scenario, "pre", wildcards.strategy),
         skeleton_root = lambda wildcards: results_path(
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
         sfincs_root   = lambda wildcards: results_path(
@@ -83,13 +85,14 @@ rule adapt_run_event_pre:
         clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
     output:
         sfincs_map_nc            = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),
-        plot_inundation_ratio    = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/01_inundation_ratio.png"),
-        animation_flood_progress = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/02_flood_animation.mp4"),
+        plot_inundation_ratio    = figure_path("62_adapt_inundation_ratio__{scenario}__pre_{strategy}.png"),
+        animation_flood_progress = figure_path("63_adapt_flood_progression__{scenario}__pre_{strategy}.mp4"),
         flood_timeseries_csv     = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_timeseries.csv"),
     params:
         sfincs_root   = lambda wildcards: results_path(
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs"),
         **run_event_params(),
+        run_label     = lambda wildcards: run_label(wildcards.scenario, "pre", wildcards.strategy),
     threads: rule_threads("adapt_run_event_pre")
     log: "logs/{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/15_run_event.log"
     script: "../scripts/15_run_event.py"
@@ -100,14 +103,17 @@ rule adapt_flood_metrics_pre:
         sfincs_map_nc = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),
         landuse       = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/retreat_landuse.tif"),
         land_bed_level = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/land_bed_level.nc"),
+        **map_figure_inputs(),
         delta_polygon = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
     output:
         flood_map_tif = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/max_flood_depth.tif"),
         metrics_csv   = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_metrics.csv"),
+        plot_max_depth = figure_path("40_run_max_flood_depth__{scenario}__pre_{strategy}.png"),
     params:
         sfincs_root   = lambda wildcards: results_path(
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs"),
         hmin = config["metrics"]["hmin"], urban_code = config["metrics"]["urban_landuse_code"],
+        run_label     = lambda wildcards: run_label(wildcards.scenario, "pre", wildcards.strategy),
         # Lets 16_flood_metrics.py exclude a water_retention zone from the metrics.
         strategy_def    = basin_strategy_def,
         adaptation_root = lambda wildcards: adaptation_data_root(),

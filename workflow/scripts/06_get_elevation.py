@@ -42,7 +42,6 @@ from shapely.geometry import box as _box
 from src.domain import load_domain
 from src.landuse import LANDUSE_SEA_CODE, warp_landuse_to_grid
 from src.log import setup_logging
-from src.plots import plot_elevation_merged, plot_landuse
 from src.profiling import ScriptProfiler
 from src.raster import (
     FLOAT_NODATA,
@@ -62,29 +61,26 @@ log = setup_logging(snakemake.log[0])
 
 profiler = ScriptProfiler(snakemake)
 find_fathomdem_tiles = profiler.wrap(find_fathomdem_tiles)
-merge_tiled_raster    = profiler.wrap(merge_tiled_raster)
+merge_tiled_raster = profiler.wrap(merge_tiled_raster)
 
 # params
-domain_meta_path   = Path(snakemake.input.spec_basins_meta)
-topo_tiles_dir     = snakemake.input.global_topography_tiles
-bathymetry_path    = Path(snakemake.input.global_bathymetry)
+domain_meta_path = Path(snakemake.input.spec_basins_meta)
+topo_tiles_dir = snakemake.input.global_topography_tiles
+bathymetry_path = Path(snakemake.input.global_bathymetry)
 landuse_source_path = Path(snakemake.input.landuse_source)
 land_polygons_path = Path(snakemake.input.land_polygons)
-goco_path           = Path(snakemake.input.goco06s_gfc)
-egm_path             = Path(snakemake.input.egm2008_gfc)
-mdt_path             = snakemake.input.mdt
+goco_path = Path(snakemake.input.goco06s_gfc)
+egm_path = Path(snakemake.input.egm2008_gfc)
+mdt_path = snakemake.input.mdt
 
-out_elev_path  = Path(snakemake.output.elevation_merged)
-out_plot_path  = snakemake.output.plot_elevation
-# Extra diagnostic plots go next to plot_elevation, not elevation_merged.tif
-# (visuals/ vs domain/).
-plots_dir = Path(out_plot_path).parent
+out_elev_path = Path(snakemake.output.elevation_merged)
+ANALYSIS = hasattr(snakemake.output, "plot_geoid_offset")
 
-mdt_variable         = "mdt"  # sole variable in data_catalogue's mdt_cnes_cls22 source
-mdt_load_margin_deg  = float(snakemake.params.mdt_load_margin_deg)
-gebco_max_depth_m    = float(snakemake.params.gebco_max_depth_m)
-gebco_min_depth_m    = float(snakemake.params.gebco_min_depth_m)
-coast_blend_m        = float(snakemake.params.coast_blend_m)
+mdt_variable = "mdt"  # sole variable in data_catalogue's mdt_cnes_cls22 source
+mdt_load_margin_deg = float(snakemake.params.mdt_load_margin_deg)
+gebco_max_depth_m = float(snakemake.params.gebco_max_depth_m)
+gebco_min_depth_m = float(snakemake.params.gebco_min_depth_m)
+coast_blend_m = float(snakemake.params.coast_blend_m)
 if not 0 <= gebco_min_depth_m < gebco_max_depth_m:
     raise ValueError(
         f"terrain.gebco_min_depth_m ({gebco_min_depth_m}) must be >= 0 and below "
@@ -138,14 +134,22 @@ log.info(
 domain_poly_utm = gpd.GeoSeries([domain_poly], crs="EPSG:4326").to_crs(utm_crs).iloc[0]
 outside_domain = rio_geom_mask(
     [domain_poly_utm.__geo_interface__],
-    out_shape=(h_utm, w_utm), transform=transform_utm, all_touched=True,
+    out_shape=(h_utm, w_utm),
+    transform=transform_utm,
+    all_touched=True,
 )
 
 dem_meta = dict(
-    driver="GTiff", dtype="float32",
-    width=w_utm, height=h_utm, count=1,
-    crs=utm_crs, transform=transform_utm,
-    nodata=FLOAT_NODATA, compress="deflate", tiled=True,
+    driver="GTiff",
+    dtype="float32",
+    width=w_utm,
+    height=h_utm,
+    count=1,
+    crs=utm_crs,
+    transform=transform_utm,
+    nodata=FLOAT_NODATA,
+    compress="deflate",
+    tiled=True,
 )
 
 with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tf:
@@ -160,8 +164,11 @@ try:
         # UTM and would show as NaN strips.
         _nd = float(topo_nodata) if topo_nodata is not None else FLOAT_NODATA
         _masked, _masked_transform = rio_mask(
-            src, [domain_poly.__geo_interface__],
-            crop=False, nodata=_nd, all_touched=True,
+            src,
+            [domain_poly.__geo_interface__],
+            crop=False,
+            nodata=_nd,
+            all_touched=True,
         )
         topo_arr = _masked[0].astype(np.float32)
         topo_arr[topo_arr == np.float32(_nd)] = np.nan
@@ -173,8 +180,12 @@ try:
     # Coverage-weighted: a pixel is NaN only when its whole receptive field is,
     # so plain bilinear does not erode data at tile gaps / the polygon edge.
     topo_utm = reproject_nan_aware(
-        topo_arr, _masked_transform, topo_src_crs,
-        (h_utm, w_utm), transform_utm, utm_crs,
+        topo_arr,
+        _masked_transform,
+        topo_src_crs,
+        (h_utm, w_utm),
+        transform_utm,
+        utm_crs,
         resampling=Resampling.bilinear,
     )
 finally:
@@ -190,7 +201,9 @@ log.info(
 # nearest would keep one arbitrary source pixel per cell; with 100 m LC100 it
 # is upsampling, where both agree. Streamed in row blocks (a 10 m source window
 # reaches 2.0 Gpx on the largest delta).
-histogram = warp_landuse_to_grid(landuse_source_path, dem_meta, snakemake.output.spec_landuse)
+histogram = warp_landuse_to_grid(
+    landuse_source_path, dem_meta, snakemake.output.spec_landuse
+)
 _total = sum(histogram.values())
 log.info(
     "landuse.tif class histogram (% of grid): "
@@ -208,14 +221,20 @@ log.info(
 )
 
 # 2. Vertical datum correction — EGM2008 → GOCO06s (mandatory)
-topo_egm2008 = topo_utm.copy()   # snapshot before correction for the delta plot
+topo_egm2008 = topo_utm.copy()  # snapshot before correction for the delta plot
 valid_topo = ~np.isnan(topo_utm)
 
-log.info(f"Computing EGM2008→GOCO06s geoid offset from {goco_path.name} / {egm_path.name} …")
+log.info(
+    f"Computing EGM2008→GOCO06s geoid offset from {goco_path.name} / {egm_path.name} …"
+)
 offset_arr, offset_transform, offset_crs = compute_geoid_offset_arr(goco_path, egm_path)
 offset_on_dem = reproject_nan_aware(
-    offset_arr.astype(np.float32), offset_transform, offset_crs,
-    (h_utm, w_utm), transform_utm, utm_crs,
+    offset_arr.astype(np.float32),
+    offset_transform,
+    offset_crs,
+    (h_utm, w_utm),
+    transform_utm,
+    utm_crs,
 )
 log.info(
     f"Geoid offset over domain: "
@@ -224,19 +243,22 @@ log.info(
 topo_utm[valid_topo] += offset_on_dem[valid_topo]
 del offset_on_dem
 
-from src.plots import plot_geoid_offset
-_out_geoid = str(plots_dir / "06_elevation_geoid_offset.png")
-plot_geoid_offset(
-    offset_arr       = offset_arr,
-    offset_transform = offset_transform,
-    wgs84_bounds     = wgs84_bounds,
-    land_polygons_path    = str(land_polygons_path),
-    output_path      = _out_geoid,
-)
-log.info(f"Plot written: {_out_geoid}")
+if ANALYSIS:
+    from src.plots import plot_geoid_offset
+
+    plot_geoid_offset(
+        offset_arr=offset_arr,
+        offset_transform=offset_transform,
+        wgs84_bounds=wgs84_bounds,
+        land_polygons_path=str(land_polygons_path),
+        output_path=snakemake.output.plot_geoid_offset,
+    )
+    log.info(f"Plot written: {snakemake.output.plot_geoid_offset}")
 del offset_arr
 
-delta_correction = np.where(valid_topo, topo_utm - topo_egm2008, np.nan).astype(np.float32)
+delta_correction = np.where(valid_topo, topo_utm - topo_egm2008, np.nan).astype(
+    np.float32
+)
 del topo_egm2008
 log.info(
     f"DEM datum correction complete (EGM2008 → GOCO06s) — Δ: "
@@ -249,9 +271,12 @@ log.info(
 log.info(f"Loading GEBCO from {bathymetry_path}…")
 
 if bathymetry_path.is_dir():
-    bbox_geom  = _box(*wgs84_bounds)
-    candidates = [str(fp) for fp in sorted(bathymetry_path.glob("*.tif"))
-                  if _tile_intersects(fp, bbox_geom)]
+    bbox_geom = _box(*wgs84_bounds)
+    candidates = [
+        str(fp)
+        for fp in sorted(bathymetry_path.glob("*.tif"))
+        if _tile_intersects(fp, bbox_geom)
+    ]
     if not candidates:
         raise FileNotFoundError(
             f"No GEBCO tiles found overlapping domain in {bathymetry_path}"
@@ -259,32 +284,45 @@ if bathymetry_path.is_dir():
     log.info(f"  {len(candidates)} GEBCO tile(s) overlap domain")
     gebco_data, gebco_transform, _gebco_meta = merge_tiles(candidates, wgs84_bounds)
     gebco_nodata = _gebco_meta["nodata"]
-    gebco_crs    = _gebco_meta["crs"]
+    gebco_crs = _gebco_meta["crs"]
     gebco_arr = gebco_data[0].astype(np.float32)
     if gebco_nodata is not None:
         gebco_arr[gebco_arr == np.float32(gebco_nodata)] = np.nan
     _outside = rio_geom_mask(
         [domain_poly.__geo_interface__],
-        out_shape=gebco_arr.shape, transform=gebco_transform, all_touched=True,
+        out_shape=gebco_arr.shape,
+        transform=gebco_transform,
+        all_touched=True,
     )
     gebco_arr[_outside] = np.nan
     gebco_utm = reproject_nan_aware(
-        gebco_arr, gebco_transform, gebco_crs,
-        (h_utm, w_utm), transform_utm, utm_crs,
+        gebco_arr,
+        gebco_transform,
+        gebco_crs,
+        (h_utm, w_utm),
+        transform_utm,
+        utm_crs,
         resampling=Resampling.bilinear,
     )
 else:
     with rasterio.open(bathymetry_path) as src:
         _nd_g = float(src.nodata) if src.nodata is not None else FLOAT_NODATA
         _g_masked, _g_transform = rio_mask(
-            src, [domain_poly.__geo_interface__],
-            crop=False, nodata=_nd_g, all_touched=True,
+            src,
+            [domain_poly.__geo_interface__],
+            crop=False,
+            nodata=_nd_g,
+            all_touched=True,
         )
         gebco_arr = _g_masked[0].astype(np.float32)
         gebco_arr[gebco_arr == np.float32(_nd_g)] = np.nan
         gebco_utm = reproject_nan_aware(
-            gebco_arr, _g_transform, src.crs,
-            (h_utm, w_utm), transform_utm, utm_crs,
+            gebco_arr,
+            _g_transform,
+            src.crs,
+            (h_utm, w_utm),
+            transform_utm,
+            utm_crs,
             resampling=Resampling.bilinear,
         )
 
@@ -293,14 +331,16 @@ log.info(f"GEBCO valid: {(~np.isnan(gebco_utm)).sum():,} px")
 # 3. GEBCO datum correction (add MDT: MSL → GOCO06s)
 # H_GOCO06s = H_MSL + MDT (HYBRID-CNES-CLS22), as rule 07d does for COAST-RP.
 # Applied to every valid GEBCO pixel: the merge may fall back to GEBCO on land.
-gebco_before_mdt = gebco_utm.copy()   # snapshot before correction for the delta plot
+gebco_before_mdt = gebco_utm.copy()  # snapshot before correction for the delta plot
 valid_gebco = ~np.isnan(gebco_utm)
 
 log.info(f"Loading MDT (variable='{mdt_variable}') from {mdt_path} …")
-mdt_clip = load_mdt(mdt_path, mdt_variable, bbox=wgs84_bounds, margin_deg=mdt_load_margin_deg)
+mdt_clip = load_mdt(
+    mdt_path, mdt_variable, bbox=wgs84_bounds, margin_deg=mdt_load_margin_deg
+)
 lat_dim, lon_dim = latlon_dims(mdt_clip)
 # load_mdt returns ascending latitude; flip to north-up.
-mdt_np   = mdt_clip.transpose(lat_dim, lon_dim).values[::-1].astype(np.float32)
+mdt_np = mdt_clip.transpose(lat_dim, lon_dim).values[::-1].astype(np.float32)
 mdt_lats = mdt_clip[lat_dim].values[::-1]
 mdt_lons = mdt_clip[lon_dim].values
 
@@ -309,19 +349,21 @@ dlon = float(np.abs(mdt_lons[0] - mdt_lons[1]))
 mdt_transform_wgs = _rast_from_origin(
     float(mdt_lons[0]) - dlon / 2,
     float(mdt_lats[0]) + dlat / 2,
-    dlon, dlat,
+    dlon,
+    dlat,
 )
 
-from src.plots import plot_mdt_ocean
-_out_mdt = str(plots_dir / "06_elevation_mdt_ocean.png")
-plot_mdt_ocean(
-    mdt_np        = mdt_np,
-    mdt_transform = mdt_transform_wgs,
-    wgs84_bounds  = wgs84_bounds,
-    land_polygons_path = str(land_polygons_path),
-    output_path   = _out_mdt,
-)
-log.info(f"Plot written: {_out_mdt}")
+if ANALYSIS:
+    from src.plots import plot_mdt_ocean
+
+    plot_mdt_ocean(
+        mdt_np=mdt_np,
+        mdt_transform=mdt_transform_wgs,
+        wgs84_bounds=wgs84_bounds,
+        land_polygons_path=str(land_polygons_path),
+        output_path=snakemake.output.plot_mdt_ocean,
+    )
+    log.info(f"Plot written: {snakemake.output.plot_mdt_ocean}")
 
 # Extrapolate MDT over land (IDW + light smoothing) before resampling.
 # Without this, adding the MDT only affects pixels that happen to overlap
@@ -332,21 +374,27 @@ log.info(
     f"MDT clip: {n_ocean}/{mdt_np.size} ocean pixels valid; "
     f"extrapolating over land (IDW, search radius = {max(mdt_np.shape) * 2} px) …"
 )
-mdt_filled     = mdt_np.copy()
-mdt_valid_mask = (~np.isnan(mdt_np)).astype(np.uint8)   # 1=ocean, 0=land
+mdt_filled = mdt_np.copy()
+mdt_valid_mask = (~np.isnan(mdt_np)).astype(np.uint8)  # 1=ocean, 0=land
 if n_ocean > 0:
     fillnodata(
         mdt_filled,
         mask=mdt_valid_mask,
         max_search_distance=float(max(mdt_np.shape) * 2),
-        smoothing_iterations=1,   # mild Laplacian smoothing ≈ ArcGIS smooth factor 0.5
+        smoothing_iterations=1,  # mild Laplacian smoothing ≈ ArcGIS smooth factor 0.5
     )
 else:
-    log.warning("MDT has no valid ocean pixels in the extended domain — skipping the MDT correction")
+    log.warning(
+        "MDT has no valid ocean pixels in the extended domain — skipping the MDT correction"
+    )
 
 mdt_on_gebco = reproject_nan_aware(
-    mdt_filled, mdt_transform_wgs, "EPSG:4326",
-    (h_utm, w_utm), transform_utm, utm_crs,
+    mdt_filled,
+    mdt_transform_wgs,
+    "EPSG:4326",
+    (h_utm, w_utm),
+    transform_utm,
+    utm_crs,
 )
 log.info(
     f"MDT over GEBCO domain: "
@@ -399,7 +447,11 @@ _topo_valid = ~np.isnan(topo_utm)
 merged = np.where(_topo_valid, topo_utm, gebco_utm)
 _open_water = open_water_mask(~_topo_valid, work_res_m, coast_blend_m)
 merged, _n_blended = blend_coast(
-    merged, _topo_valid, gebco_utm, pixel_size_m=work_res_m, blend_m=coast_blend_m,
+    merged,
+    _topo_valid,
+    gebco_utm,
+    pixel_size_m=work_res_m,
+    blend_m=coast_blend_m,
     where=_open_water,
 )
 log.info(
@@ -420,8 +472,7 @@ if _remaining.any():
         f"(incl. outside-domain area), max_search_distance="
         f"{_GAP_FILL_MAX_SEARCH_PX:g} px"
     )
-    fillnodata(merged, mask=~_remaining,
-               max_search_distance=_GAP_FILL_MAX_SEARCH_PX)
+    fillnodata(merged, mask=~_remaining, max_search_distance=_GAP_FILL_MAX_SEARCH_PX)
 # fillnodata's mask only distinguishes "has data" from "no data" -- with no
 # notion of "outside domain_poly", so even the 100 px max_search_distance
 # would otherwise extrapolate valid elevation all the way out to the
@@ -443,49 +494,32 @@ with rasterio.open(out_elev_path, "w", **dem_meta) as dst:
 log.info(f"Written: {out_elev_path}")
 
 # 6. Diagnostic plots
-plot_elevation_merged(
-    merged_path=str(out_elev_path),
-    bbox_poly=_box(*wgs84_bounds),
-    land_polygons_path=str(land_polygons_path),
-    output_path=str(out_plot_path),
-    title_str="Merged elevation (FathomDEM where available, GEBCO elsewhere/ocean, blended at the coast)",
-)
-log.info(f"Plot written: {out_plot_path}")
+if ANALYSIS:
+    from src.plots import plot_datum_correction_delta
 
-# Background: the land mask from the land-use source (the SFINCS grid does not exist yet).
-plot_landuse(
-    snakemake.output.spec_landuse, domain_poly,
-    str(land_polygons_path), snakemake.output.plot_landuse,
-)
-log.info(f"Plot written: {snakemake.output.plot_landuse}")
+    plot_datum_correction_delta(
+        delta=delta_correction,
+        wgs84_bounds=wgs84_bounds,
+        land_polygons_path=str(land_polygons_path),
+        output_path=snakemake.output.plot_datum_fathomdem,
+        title="Vertical datum correction — FathomDEM\n(EGM2008 → GOCO06s geoid)",
+        colorbar_label="Δ elevation (m)  [GOCO06s − EGM2008]",
+        note=(
+            "Note: FathomDEM and the underlying land-use map (grey background) are not fully aligned.\n"
+            "In areas without FathomDEM coverage, GEBCO data are used (see 06_datum_gebco_correction.png)."
+        ),
+    )
+    log.info(f"Plot written: {snakemake.output.plot_datum_fathomdem}")
 
-from src.plots import plot_datum_correction_delta
-
-out_plot_datum_path = str(plots_dir / "06_elevation_datum_correction.png")
-plot_datum_correction_delta(
-    delta          = delta_correction,
-    wgs84_bounds   = wgs84_bounds,
-    land_polygons_path  = str(land_polygons_path),
-    output_path    = out_plot_datum_path,
-    title          = "Vertical datum correction — FathomDEM\n(EGM2008 → GOCO06s geoid)",
-    colorbar_label = "Δ elevation (m)  [GOCO06s − EGM2008]",
-    note           = (
-        "Note: FathomDEM and the underlying land-use map (grey background) are not fully aligned.\n"
-        "In areas without FathomDEM coverage, GEBCO data are used (see 06_elevation_gebco_correction.png)."
-    ),
-)
-log.info(f"Plot written: {out_plot_datum_path}")
-
-out_plot_gebco_datum_path = str(plots_dir / "06_elevation_gebco_correction.png")
-plot_datum_correction_delta(
-    delta          = gebco_delta_correction,
-    wgs84_bounds   = wgs84_bounds,
-    land_polygons_path  = str(land_polygons_path),
-    output_path    = out_plot_gebco_datum_path,
-    title          = "Vertical datum correction — GEBCO\n(local MSL → GOCO06s: + MDT_CNES-CLS22)",
-    colorbar_label = "Δ elevation (m)  [GOCO06s − raw GEBCO]",
-)
-log.info(f"Plot written: {out_plot_gebco_datum_path}")
+    plot_datum_correction_delta(
+        delta=gebco_delta_correction,
+        wgs84_bounds=wgs84_bounds,
+        land_polygons_path=str(land_polygons_path),
+        output_path=snakemake.output.plot_datum_gebco,
+        title="Vertical datum correction — GEBCO\n(local MSL → GOCO06s: + MDT_CNES-CLS22)",
+        colorbar_label="Δ elevation (m)  [GOCO06s − raw GEBCO]",
+    )
+    log.info(f"Plot written: {snakemake.output.plot_datum_gebco}")
 
 profiler.stop()
 log.info("Done")

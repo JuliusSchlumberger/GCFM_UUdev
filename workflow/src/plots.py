@@ -18,7 +18,6 @@ from typing import Any
 
 import geopandas as gpd
 import matplotlib
-import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
@@ -309,188 +308,6 @@ def _save(fig, output_path: str) -> None:
     log.info(f"Written: {output_path}")
 
 
-def plot_landuse(
-    landuse_path: str,
-    bbox_poly: Polygon,
-    land_polygons_path: str,
-    output_path: str,
-) -> None:
-    """Plot the categorical land-use map with class colours and legend.
-
-    The title names the source from the raster's landuse_source tag (written
-    by rule prepare_landuse, 02b); LC100 and ESA WorldCover share codes 20-100
-    but not 10/95/111-126.
-    """
-    data, extent = read_raster_reprojected_for_plot(
-        landuse_path, dst_bounds=bbox_poly.bounds
-    )
-    with rasterio.open(landuse_path) as _src:
-        _source = _src.tags().get("landuse_source", "")
-    _source_label = {
-        "copernicus_lc100": "Copernicus LC100, 2019",
-        "esa_worldcover": "ESA WorldCover 2021 v200, 10 m",
-    }.get(_source, _source)
-    present = sorted({int(v) for v in np.unique(data[~np.isnan(data)])})
-
-    colors = [_LC_COLORS.get(c, "#808080") for c in present]
-    code_to_idx = {c: i for i, c in enumerate(present)}
-    data_idx = np.full(data.shape, np.nan)
-    for c, i in code_to_idx.items():
-        data_idx[data == c] = i
-
-    cmap = mcolors.ListedColormap(colors)
-    norm = mcolors.BoundaryNorm(
-        boundaries=range(len(present) + 1), ncolors=len(present)
-    )
-
-    fig, ax = plt.subplots(figsize=(10, 7))
-    map_background(ax, bbox_poly, land_polygons_path)
-    ax.imshow(data_idx, cmap=cmap, norm=norm, extent=extent, origin="upper", zorder=2)
-    legend_patches = [
-        Patch(color=_LC_COLORS.get(c, "#808080"), label=_LC_NAMES.get(c, str(c)))
-        for c in present
-    ]
-    ax.legend(
-        handles=legend_patches, loc="lower right", fontsize=7, framealpha=0.9, ncol=2
-    )
-    ax.set_title("Land use" + (f" ({_source_label})" if _source_label else ""))
-    _save(fig, output_path)
-
-
-# Above this many distinct Manning values the roughness map goes continuous
-# (a reclassified class raster holds ~10; an area-averaged one, tens of thousands).
-_ROUGHNESS_MAX_DISCRETE_CLASSES = 24
-
-
-def plot_roughness(
-    roughness_path: str,
-    bbox_poly: Polygon,
-    land_polygons_path: str,
-    output_path: str,
-) -> None:
-    """Plot the Manning's n roughness map.
-
-    One colour per distinct value for a few classes; area-averaged n
-    (src.landuse.aggregate_manning) has tens of thousands of values, so it gets
-    a continuous 2nd-98th percentile scale (a per-value BoundaryNorm overflows
-    its int16 index there).
-    """
-    data, extent = read_raster_reprojected_for_plot(
-        roughness_path, dst_bounds=bbox_poly.bounds
-    )
-    valid = data[~np.isnan(data)]
-    unique_n = sorted({round(float(v), 6) for v in np.unique(valid)})
-    discrete = len(unique_n) <= _ROUGHNESS_MAX_DISCRETE_CLASSES
-
-    fig, ax = plt.subplots(figsize=(9, 7))
-    map_background(ax, bbox_poly, land_polygons_path)
-
-    if discrete:
-        palette = plt.get_cmap("viridis")(np.linspace(0.1, 0.9, len(unique_n)))
-        cmap = mcolors.ListedColormap(palette)
-        norm = mcolors.BoundaryNorm(
-            boundaries=range(len(unique_n) + 1), ncolors=len(unique_n)
-        )
-        plot_data = np.full(data.shape, np.nan)
-        for i, n_val in enumerate(unique_n):
-            plot_data[np.isclose(data, n_val, atol=1e-5)] = i
-    else:
-        cmap, plot_data = plt.get_cmap("viridis"), data
-        lo, hi = np.percentile(valid, [2, 98]) if valid.size else (0.0, 1.0)
-        norm = mcolors.Normalize(vmin=float(lo), vmax=float(max(hi, lo + 1e-6)))
-
-    im = ax.imshow(
-        plot_data, cmap=cmap, norm=norm, extent=extent, origin="upper", zorder=2
-    )
-    cb = plt.colorbar(
-        im, ax=ax, fraction=0.03, pad=0.04, extend="neither" if discrete else "both"
-    )
-    if discrete:
-        cb.set_ticks([i + 0.5 for i in range(len(unique_n))])
-        cb.set_ticklabels([f"{n:.4f}" for n in unique_n])
-    cb.set_label("Manning's n")
-    ax.set_title(
-        "Surface roughness (Manning's n)"
-        + ("" if discrete else f"  —  area-averaged, {len(unique_n):,} distinct values")
-    )
-    _save(fig, output_path)
-
-
-def plot_elevation_merged(
-    merged_path: str,
-    bbox_poly: Polygon,
-    land_polygons_path: str,
-    output_path: str,
-    title_str: str,
-) -> None:
-    """Plot merged FathomDEM+GEBCO elevation on a diverging scale centred at 0 m.
-
-    The scale is fixed at -10 m / 30 m so basins compare; values beyond it
-    take the end colours.
-    """
-    data, extent = read_raster_reprojected_for_plot(
-        merged_path, dst_bounds=bbox_poly.bounds
-    )
-
-    vmin, vmax = -10.0, 30.0
-
-    fig, ax = plt.subplots(figsize=(9, 7))
-    map_background(ax, bbox_poly, land_polygons_path)
-    im = ax.imshow(
-        data,
-        cmap=_BATHY_CMAP,
-        norm=mcolors.TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax),
-        extent=extent,
-        origin="upper",
-        zorder=2,
-    )
-
-    cb = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04)
-    cb.set_label("Elevation (m)")
-    ax.set_title(title_str)
-    _save(fig, output_path)
-
-
-def plot_sea_mask(
-    sea_mask_path: str,
-    bbox_poly: Polygon,
-    land_polygons_path: str,
-    output_path: str,
-) -> None:
-    """Plot the sea / inland-water mask (landuse 200; nodata = land or outside domain).
-
-    This is a land/sea mask, not the initial water level; rule build_sfincs
-    (13) turns it into zsini.tif (sea cells = calm_sea_level_m).
-    """
-    data, extent = read_raster_reprojected_for_plot(
-        sea_mask_path, dst_bounds=bbox_poly.bounds
-    )
-    water_mask = ~np.isnan(data)
-    n_water = int(water_mask.sum())
-
-    fig, ax = plt.subplots(figsize=(9, 7))
-    map_background(ax, bbox_poly, land_polygons_path)
-    ax.imshow(
-        np.where(water_mask, 1.0, np.nan),
-        cmap=mcolors.ListedColormap(["#3860D0"]),
-        vmin=0,
-        vmax=2,
-        extent=extent,
-        origin="upper",
-        zorder=10,
-    )
-
-    ax.legend(
-        handles=[
-            Patch(color="#3860D0", label=f"Sea / inland water — {n_water:,} px"),
-        ],
-        loc="lower right",
-        framealpha=0.9,
-    )
-    ax.set_title("Sea / inland-water mask")
-    _save(fig, output_path)
-
-
 def plot_protection_levels(
     delta_polygon_wgs84: Polygon,
     geogunit_raster_path: str,
@@ -751,248 +568,84 @@ def plot_domain_map(
     _save(fig, output_path)
 
 
-def plot_forcing_timeseries(
-    surge_ds: xr.Dataset,
-    river_ds: xr.Dataset,
-    rp_yr: int | str | None,
-    output_path: str,
-) -> None:
-    """Plot surge water level (left) and river discharge (right) forcing timeseries.
-
-    The surge boundary is never reduced by the FLOPROS coastal protection
-    level (a weir models it). When river_ds carries 'discharge_uncorrected' /
-    'protection_discharge' (rule 07d does not write them), the river panel shows
-    the undefended hydrograph, the constant protection discharge and the
-    effective hydrograph; otherwise one series per crossing.
-    """
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-
-    river_corrected = "discharge_uncorrected" in river_ds
-
-    t_surge = surge_ds["time"].values
-    water_level_m = surge_ds["water_level"].values
-    for i in range(water_level_m.shape[0]):
-        ax1.plot(t_surge, water_level_m[i], color="steelblue", alpha=0.5, linewidth=0.8)
-
-    ax1.set_xlabel("Time (hours since start)")
-    ax1.set_ylabel("Water level (m, GOCO06s frame)")
-    rp_label = (
-        f"surge_rp_yr={rp_yr}"
-        if rp_yr is None or isinstance(rp_yr, str)
-        else f"RP{rp_yr}"
-    )
-    ax1.set_title(f"Surge forcing — {rp_label} ({water_level_m.shape[0]} stations)")
-    ax1.grid(True, alpha=0.3)
-
-    max_box = dict(boxstyle="round,pad=0.3", fc="white", ec="grey", alpha=0.85)
-    if water_level_m.size:
-        ax1.text(
-            0.01,
-            0.97,
-            f"Max WL = {np.nanmax(water_level_m):.2f} m",
-            transform=ax1.transAxes,
-            fontsize=9,
-            va="top",
-            ha="left",
-            bbox=max_box,
-        )
-
-    # Correction chain rp_raw → +MDT → peak(GOCO06s). water_level/storm_tide_at_rp_m are
-    # MDT-only (src.surge.apply_slr_fingerprint); SLR is added at scenario
-    # build time as slr_fingerprint × slr_m, so only the dimensionless
-    # fingerprint is shown. The FLOPROS coastal level only floors the weir
-    # crest (rule 12a) and is never netted out of this series.
-    has_raw = "storm_tide_at_rp_raw_m" in surge_ds
-    has_mdt = "mdt" in surge_ds
-    if has_raw and has_mdt:
-        rp_levels = surge_ds[
-            "storm_tide_at_rp_m"
-        ].values  # peak in GOCO06s (= rp_raw + MDT, MDT-only)
-        rp_levels_raw = surge_ds[
-            "storm_tide_at_rp_raw_m"
-        ].values  # raw COAST-RP (local MSL)
-        mdts = surge_ds["mdt"].values
-        fingerprint_arr = (
-            surge_ds["slr_fingerprint"].values
-            if "slr_fingerprint" in surge_ds
-            else np.full(len(rp_levels), np.nan)
-        )
-
-        header = "Stn  rp_raw    +MDT  peak(GOCO06s) SLR fingerprint"
-        rows = [header, "─" * len(header)]
-        for i, (rl_raw, mdt_i, fp_i, rl) in enumerate(
-            zip(rp_levels_raw, mdts, fingerprint_arr, rp_levels)
-        ):
-            rows.append(
-                f" {i + 1:2d}  {rl_raw:+7.3f}  {mdt_i:+6.3f}    {rl:+7.3f}       {fp_i:5.2f}"
-            )
-        rows.append("─" * len(header))
-        bm = (
-            float(surge_ds["calm_sea_level_m"].values)
-            if "calm_sea_level_m" in surge_ds
-            else float(np.mean(mdts))
-        )
-        rows.append(f"  calm_sea_level_m (MWL (=0) + MDT, MDT-only): {bm:+.4f} m")
-        rows.append(
-            "  (SLR added downstream: slr_fingerprint × configured slr_m target)"
-        )
-
-        ax1.text(
-            0.01,
-            0.02,
-            "\n".join(rows),
-            transform=ax1.transAxes,
-            fontsize=6.0,
-            family="monospace",
-            va="bottom",
-            ha="left",
-            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="grey", alpha=0.85),
-        )
-
-    t_river = river_ds["time"].values
-    q = river_ds["discharge"].values
-    active = river_ds["has_glofas"].values.astype(bool)
-    if river_corrected:
-        q_raw = river_ds["discharge_uncorrected"].values
-        protection_discharge = river_ds["protection_discharge"].values
-        for i in range(q.shape[0]):
-            if not active[i]:
-                continue
-            ax2.plot(
-                t_river,
-                q_raw[i],
-                color="grey",
-                alpha=0.4,
-                linewidth=0.8,
-                linestyle="--",
-            )
-            ax2.hlines(
-                protection_discharge[i],
-                t_river.min(),
-                t_river.max(),
-                color="darkorange",
-                alpha=0.6,
-                linewidth=0.8,
-                linestyle=":",
-            )
-            ax2.plot(t_river, q[i], color="teal", alpha=0.7, linewidth=0.8)
-        ax2.legend(
-            handles=[
-                Line2D([0], [0], color="grey", linestyle="--", label="Original"),
-                Line2D(
-                    [0],
-                    [0],
-                    color="darkorange",
-                    linestyle=":",
-                    label="Protection level",
-                ),
-                Line2D([0], [0], color="teal", label="Effective (modelled)"),
-            ],
-            loc="upper right",
-            fontsize=8,
-            framealpha=0.9,
-        )
-    else:
-        for i in range(q.shape[0]):
-            if active[i]:
-                ax2.plot(t_river, q[i], color="teal", alpha=0.6, linewidth=0.8)
-    ax2.set_xlabel("Time (hours since start)")
-    ax2.set_ylabel("Discharge (m³ s⁻¹)")
-    ax2.set_title(
-        f"River discharge forcing ({int(active.sum())}/{len(active)} crossings with GloFAS)"
-    )
-    ax2.grid(True, alpha=0.3)
-    if active.any():
-        ax2.text(
-            0.01,
-            0.97,
-            f"Max Q river = {np.nanmax(q[active]):,.0f} m³/s",
-            transform=ax2.transAxes,
-            fontsize=9,
-            va="top",
-            ha="left",
-            bbox=max_box,
-        )
-
-    fig.tight_layout()
-    _save(fig, output_path)
-
-
-def plot_applied_forcing(
-    surge_times: list,
-    water_level_m: np.ndarray,
-    river_times: list,
-    discharge_m3s: np.ndarray,
-    surge_rp_label: str,
-    tstart_event,
-    spinup_days: float,
-    suptitle: str,
+def plot_run_forcing(
+    sfincs_root: str | Path,
     output_path: str | Path,
+    basin_id: str,
+    run_label: str,
 ) -> None:
-    """Plot the boundary forcing a scenario model applies: water level and discharge.
+    """Plot the boundary forcing a SFINCS run reads: water level (top), river discharge (bottom).
 
-    water_level_m is (station, time), discharge_m3s (crossing, time) for the
-    active crossings. tstart_event (datetime or None) draws the event start.
+    Read from the run's own sfincs.inp/.bzs/.dis, so every run (calibration,
+    spin-up, scenario, adaptation) is shown the same way. A dashed line marks
+    tstart when the timeseries start earlier (the spin-up lead-in).
     """
     import matplotlib.dates as mdates
+    from src.sfincs_run import read_boundary_forcing
 
+    forcing = read_boundary_forcing(sfincs_root)
     fig, (ax_wl, ax_q) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
-
-    for i in range(water_level_m.shape[0]):
-        ax_wl.plot(surge_times, water_level_m[i, :], linewidth=0.8, alpha=0.7)
-    ax_wl.set_ylabel("Water level (m+ref)")
-    ax_wl.set_title(f"Surge boundary — water level, {surge_rp_label} (all stations)")
-    ax_wl.grid(True, alpha=0.3)
-
-    n_cross = discharge_m3s.shape[0]
-    for i in range(n_cross):
-        ax_q.plot(river_times, discharge_m3s[i, :], linewidth=0.8, alpha=0.7)
-    ax_q.set_ylabel("Discharge (m³/s)")
-    ax_q.set_title(f"River discharge ({n_cross} active GloFAS crossing(s))")
-    ax_q.grid(True, alpha=0.3)
-
-    # Peak boxes: max over all stations/crossings and the full timeseries; the
-    # river boundary is a discharge boundary, so its box reports max Q.
     max_box = dict(boxstyle="round,pad=0.3", fc="white", ec="grey", alpha=0.85)
-    if water_level_m.size:
-        ax_wl.text(
-            0.01,
-            0.97,
-            f"Max WL = {np.nanmax(water_level_m):.2f} m",
-            transform=ax_wl.transAxes,
-            fontsize=9,
-            va="top",
-            ha="left",
-            bbox=max_box,
-        )
-    if discharge_m3s.size:
-        ax_q.text(
-            0.01,
-            0.97,
-            f"Max Q river = {np.nanmax(discharge_m3s):,.0f} m³/s",
-            transform=ax_q.transAxes,
-            fontsize=9,
-            va="top",
-            ha="left",
-            bbox=max_box,
-        )
-
-    if tstart_event is not None:
-        for ax in (ax_wl, ax_q):
+    panels = (
+        (
+            ax_wl,
+            forcing["wl_times"],
+            forcing["wl_m"],
+            "Water level (m+ref)",
+            "Water-level boundary",
+            "Max WL = {:.2f} m",
+        ),
+        (
+            ax_q,
+            forcing["q_times"],
+            forcing["q_m3s"],
+            "Discharge (m³/s)",
+            "River discharge",
+            "Max Q = {:,.0f} m³/s",
+        ),
+    )
+    for ax, times, values, ylabel, title, max_fmt in panels:
+        for series in values:
+            ax.plot(times, series, linewidth=0.8, alpha=0.7)
+        ax.set_ylabel(ylabel)
+        ax.set_title(f"{title} ({values.shape[0]} point(s))")
+        ax.grid(True, alpha=0.3)
+        if values.size:
+            ax.text(
+                0.01,
+                0.97,
+                max_fmt.format(np.nanmax(values)),
+                transform=ax.transAxes,
+                fontsize=9,
+                va="top",
+                ha="left",
+                bbox=max_box,
+            )
+        else:
+            ax.text(
+                0.5,
+                0.5,
+                "none in this run",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                color="grey",
+            )
+        starts = [t[0] for t in (forcing["wl_times"], forcing["q_times"]) if len(t)]
+        if starts and forcing["tstart"] > min(starts):
             ax.axvline(
-                tstart_event,
+                forcing["tstart"],
                 color="black",
                 linewidth=1.2,
                 linestyle="--",
-                label=f"event start (after {spinup_days}d spinup)",
+                label="model tstart (end of spin-up lead-in)",
             )
             ax.legend(fontsize=8, loc="upper right")
 
     locator = mdates.AutoDateLocator()
     ax_q.xaxis.set_major_locator(locator)
     ax_q.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
-
-    fig.suptitle(suptitle, fontsize=10)
+    fig.suptitle(f"Basin {basin_id} | {run_label} | boundary forcing", fontsize=10)
     fig.tight_layout()
     save_figure(fig, output_path, dpi=150, bbox_inches="tight")
 
@@ -1615,50 +1268,6 @@ def plot_river_depth_width(
     _save(fig, output_path)
 
 
-def plot_river_depth(
-    rivers_wgs: gpd.GeoDataFrame,
-    bbox_poly: Polygon,
-    land_polygons_path: str,
-    output_path: str,
-) -> None:
-    """Plot the river network coloured by hydraulic depth ('river_depth_m', m)."""
-    lon_min, lat_min, lon_max, lat_max = bbox_poly.bounds
-    margin = max(lon_max - lon_min, lat_max - lat_min) * 0.3
-    map_bounds = (
-        lon_min - margin,
-        lat_min - margin,
-        lon_max + margin,
-        lat_max + margin,
-    )
-
-    land = gpd.read_file(land_polygons_path, bbox=map_bounds)
-
-    fig, ax = plt.subplots(figsize=(9, 7))
-    if not land.empty:
-        land.plot(ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
-    if not rivers_wgs.empty and "river_depth_m" in rivers_wgs.columns:
-        rivers_wgs.plot(
-            ax=ax,
-            column="river_depth_m",
-            cmap="Blues",
-            linewidth=0.8,
-            zorder=3,
-            legend=True,
-            legend_kwds={"label": "Hydraulic depth (m)", "shrink": 0.6},
-        )
-
-    bx, by = bbox_poly.exterior.xy
-    ax.plot(bx, by, color="black", linewidth=1.5, zorder=4)
-    ax.set_xlim(map_bounds[0], map_bounds[2])
-    ax.set_ylim(map_bounds[1], map_bounds[3])
-    ax.set_aspect("equal")
-    ax.set_xlabel("Longitude (°)")
-    ax.set_ylabel("Latitude (°)")
-    ax.set_title("River network — hydraulic depth")
-    ax.grid(True, alpha=0.3, linewidth=0.5)
-    _save(fig, output_path)
-
-
 def _overlay_layers(
     crs,
     bounds: tuple[float, float, float, float],
@@ -2204,126 +1813,54 @@ def plot_wetland_dike_positions(
     _save(fig, output_path)
 
 
-def plot_calibration_round_profiles(
+def plot_crest_profiles(
     basin_id: str,
-    seed: str,
-    profiles_by_round: dict[int, pd.DataFrame],
-    n_rounds: int,
-    output_subplots_path: str,
-    output_combined_path: str,
-    round_titles: list[str] | None = None,
-    water_level_labels: list[str] | None = None,
+    profiles: dict[str, pd.DataFrame],
+    output_path: str | Path,
 ) -> None:
-    """Plot bed, weir crest and water level along one seed-to-mouth path.
+    """Plot DEM, river bed and dike crest along each seed-to-mouth path, one panel per seed.
 
-    One subplot per round plus an all-rounds overlay. profiles_by_round maps
-    round_idx (0..n_rounds) to a DataFrame with 'along_path_m', 'dem_m',
-    'river_depth_m', 'weir_crest_m', 'zs_m' (src.river_depth_calibration.
+    profiles maps seed reach id to a DataFrame with 'along_path_m', 'dem_m',
+    'river_depth_m' and 'weir_crest_m' (src.river_depth_calibration.
     gather_calibration_round_profile); the bed is dem_m - river_depth_m.
-    water_level_labels names the level stored in 'zs_m' per round (default:
-    period max); a subplot gets its own legend when its label differs from
-    round 0's.
     """
-    if round_titles is None:
-        round_titles = [f"round {i}" for i in range(n_rounds + 1)]
-    if water_level_labels is None:
-        water_level_labels = ["water level, period max"] * (n_rounds + 1)
+    seeds = list(profiles) or [None]
     fig, axes = plt.subplots(
-        n_rounds + 1, 1, figsize=(11, 2.6 * (n_rounds + 1)), sharex=True, sharey=True
+        len(seeds), 1, figsize=(12, 3.4 * len(seeds)), squeeze=False
     )
-    if n_rounds == 0:
-        axes = [axes]
-    for round_idx, ax in enumerate(axes):
-        df = profiles_by_round[round_idx]
+    for ax, seed in zip(axes[:, 0], seeds):
+        if seed is None:
+            ax.text(
+                0.5,
+                0.5,
+                "no seed reach",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                color="grey",
+            )
+            continue
+        df = profiles[seed]
+        x_km = df["along_path_m"] / 1000.0
+        ax.plot(x_km, df["dem_m"], color="grey", lw=1.0, ls=":", label="DEM")
         ax.plot(
-            df["along_path_m"],
-            df["dem_m"],
-            color="grey",
-            lw=1.0,
-            ls=":",
-            label="natural DEM",
-        )
-        ax.plot(
-            df["along_path_m"],
+            x_km,
             df["dem_m"] - df["river_depth_m"],
             color="steelblue",
             lw=1.4,
-            label="river bed (excavated)",
+            label="river bed",
         )
-        ax.plot(
-            df["along_path_m"],
-            df["weir_crest_m"],
-            color="firebrick",
-            lw=1.4,
-            label="weir crest",
-        )
-        ax.plot(
-            df["along_path_m"],
-            df["zs_m"],
-            color="black",
-            lw=1.2,
-            ls="-.",
-            label=water_level_labels[round_idx],
-        )
+        ax.plot(x_km, df["weir_crest_m"], color="firebrick", lw=1.4, label="dike crest")
         ax.set_ylabel("Elevation (m)")
-        ax.set_title(round_titles[round_idx], fontsize=9)
+        ax.set_title(f"seed {seed}", fontsize=9)
         ax.grid(True, alpha=0.3)
-        if round_idx == 0 or water_level_labels[round_idx] != water_level_labels[0]:
-            ax.legend(loc="best", fontsize=8)
-    axes[-1].set_xlabel("Distance along path from seed (m)")
+        ax.legend(loc="best", fontsize=8)
+    axes[-1, 0].set_xlabel("Distance along path from seed (km)")
     fig.suptitle(
-        f"Basin {basin_id}, seed {seed}: bed/crest/water-level profile per round"
+        f"Basin {basin_id}: DEM, river bed and dike crest along each seed-to-mouth path"
     )
     fig.tight_layout()
-    save_figure(fig, output_subplots_path, dpi=150)
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    df0 = profiles_by_round[0]
-    ax.plot(
-        df0["along_path_m"],
-        df0["dem_m"],
-        color="black",
-        lw=1.2,
-        ls=":",
-        label="natural DEM",
-    )
-    colors = cm.viridis(np.linspace(0.0, 0.9, n_rounds + 1))
-    for round_idx in range(n_rounds + 1):
-        df = profiles_by_round[round_idx]
-        color = colors[round_idx]
-        ax.plot(
-            df["along_path_m"],
-            df["dem_m"] - df["river_depth_m"],
-            color=color,
-            lw=1.3,
-            ls="-",
-            label=f"round {round_idx} bed",
-        )
-        ax.plot(
-            df["along_path_m"],
-            df["weir_crest_m"],
-            color=color,
-            lw=1.3,
-            ls="--",
-            label=f"round {round_idx} crest",
-        )
-        ax.plot(
-            df["along_path_m"],
-            df["zs_m"],
-            color=color,
-            lw=1.1,
-            ls="-.",
-            label=f"round {round_idx} zs",
-        )
-    ax.set_xlabel("Distance along path from seed (m)")
-    ax.set_ylabel("Elevation (m)")
-    ax.set_title(
-        f"Basin {basin_id}, seed {seed}: bed (solid) / crest (dashed) / water level (dash-dot), all rounds"
-    )
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="best", fontsize=7, ncol=2)
-    fig.tight_layout()
-    save_figure(fig, output_combined_path, dpi=150)
+    save_figure(fig, output_path, dpi=150)
 
 
 def draw_depth_map(

@@ -15,7 +15,6 @@ rule grid_align_landuse:
         landuse                = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
         # Grid reference of landuse_channels.tif and roughness.tif.
         elevation_merged       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"),
-        land_polygons          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
         # Manning's n is area-averaged from the native source.
         landuse_source         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"),
         matching_lu_roughness  = raw_input("lu_to_roughness_lookup"),
@@ -27,13 +26,10 @@ rule grid_align_landuse:
         landuse_channels         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_channels.tif"),
         # Elevation grid subdivided to the source's pixel size: subgrid tables only.
         spec_roughness           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"),
-        plot_roughness           = results_path("{basin_id}/preprocessing_inputs/visuals/09_roughness.png"),
         landuse_on_grid          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_on_grid.tif"),
         roughness_on_grid        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness_on_grid.tif"),
         # Land mask (land use != 200), WGS84, cell-aligned: figure background.
         land_mask_on_grid        = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
-        plot_landuse_on_grid     = results_path("{basin_id}/preprocessing_inputs/visuals/09_landuse_on_grid.png"),
-        plot_roughness_on_grid   = results_path("{basin_id}/preprocessing_inputs/visuals/09_roughness_on_grid.png"),
     params:
         water_code            = config["landuse"]["water_code"],
         roughness_aggregation = config["landuse"]["roughness_aggregation"],

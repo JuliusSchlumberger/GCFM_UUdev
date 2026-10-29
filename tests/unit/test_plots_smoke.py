@@ -81,44 +81,42 @@ def _round_profile():
     )
 
 
-def test_calibration_round_profiles_read_river_depth_m(tmp_path):
-    subplots, combined = tmp_path / "sub.png", tmp_path / "comb.png"
-    profiles = {i: _round_profile() for i in range(2)}
-    plots.plot_calibration_round_profiles(
-        "0", "1", profiles, 1, str(subplots), str(combined)
-    )
-    assert subplots.exists() and combined.exists()
-
-
-def _subplot_legend_texts(monkeypatch, tmp_path, **kwargs) -> list[list[str]]:
+def test_crest_profiles_one_panel_per_seed_with_dem_bed_and_crest(
+    monkeypatch, tmp_path
+):
     figs = []
     monkeypatch.setattr(plots, "save_figure", lambda fig, *_a, **_k: figs.append(fig))
-    profiles = {i: _round_profile() for i in range(2)}
-    plots.plot_calibration_round_profiles(
-        "0",
-        "1",
-        profiles,
-        1,
-        str(tmp_path / "s.png"),
-        str(tmp_path / "c.png"),
-        **kwargs,
+    plots.plot_crest_profiles(
+        "0", {"1": _round_profile(), "2": _round_profile()}, str(tmp_path / "p.png")
     )
-    return [
-        [t.get_text() for t in ax.get_legend().get_texts()] if ax.get_legend() else []
-        for ax in figs[0].axes
-    ]
+    axes = figs[0].axes
+    assert len(axes) == 2
+    for ax in axes:
+        labels = [t.get_text() for t in ax.get_legend().get_texts()]
+        assert labels == ["DEM", "river bed", "dike crest"]
+        bed = ax.get_lines()[1].get_ydata()
+        assert np.allclose(bed, [0.5, 0.0, 0.0])  # dem_m - river_depth_m
 
 
-def test_round_profile_legend_says_end_of_run_for_round0(monkeypatch, tmp_path):
-    labels = ["water level, end of run", "water level, period max"]
-    round0, round1 = _subplot_legend_texts(
-        monkeypatch, tmp_path, water_level_labels=labels
+def test_crest_profiles_without_seed_still_writes(tmp_path):
+    out = tmp_path / "p.png"
+    plots.plot_crest_profiles("0", {}, str(out))
+    assert out.exists()
+
+
+def test_run_forcing_reads_bzs_and_dis_and_marks_tstart(monkeypatch, tmp_path):
+    (tmp_path / "sfincs.inp").write_text(
+        "tref = 20000101 000000\ntstart = 20000101 020000\n"
+        "bzsfile = sfincs.bzs\ndisfile = sfincs.dis\n"
     )
-    assert "water level, end of run" in round0
-    assert "water level, period max" in round1
-
-
-def test_round_profile_legend_defaults_to_period_max(monkeypatch, tmp_path):
-    round0, round1 = _subplot_legend_texts(monkeypatch, tmp_path)
-    assert "water level, period max" in round0
-    assert round1 == []
+    np.savetxt(
+        tmp_path / "sfincs.bzs", [[0, 0.1, 0.2], [3600, 0.5, 0.6], [7200, 0.3, 0.4]]
+    )
+    np.savetxt(tmp_path / "sfincs.dis", [[0, 10.0], [7200, 50.0]])
+    figs = []
+    monkeypatch.setattr(plots, "save_figure", lambda fig, *_a, **_k: figs.append(fig))
+    plots.plot_run_forcing(tmp_path, tmp_path / "f.png", "0", "default")
+    ax_wl, ax_q = figs[0].axes
+    assert len(ax_wl.get_lines()) == 2 + 1  # two boundary points + tstart line
+    assert len(ax_q.get_lines()) == 1 + 1
+    assert "default" in figs[0]._suptitle.get_text()

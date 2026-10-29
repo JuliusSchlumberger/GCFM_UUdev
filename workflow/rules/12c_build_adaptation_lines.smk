@@ -2,7 +2,7 @@
 # closure, mouth pump) of a basin from its skeleton's baseline weir.
 # Strategies reference them as `locations: auto/<name>`
 # (config/adaptation_strategies.yml), which makes them inputs of the adapt
-# rules; nothing else requests them. adaptation_lines.png is for review.
+# rules; nothing else requests them. figures/60_adapt_lines.png is for review.
 
 rule build_adaptation_lines:
     input:
@@ -16,7 +16,7 @@ rule build_adaptation_lines:
         **{name: results_path(f"{{basin_id}}/adaptation_lines/{name}.geojson")
            for name in ADAPTATION_LINE_NAMES},
         gpkg       = results_path("{basin_id}/adaptation_lines/adaptation_lines.gpkg"),
-        plot       = results_path("{basin_id}/adaptation_lines/adaptation_lines.png"),
+        plot       = figure_path("60_adapt_lines.png"),
         build_info = results_path("{basin_id}/adaptation_lines/build_info.json"),
     params:
         skeleton_root = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),

@@ -26,18 +26,20 @@ rule get_boundary_forcings:
         river_forcing = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
         surge_forcing = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         glofas_clip   = results_path("{basin_id}/preprocessing_inputs/forcing/glofas_clip.nc"),
-        plot_map             = results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_locations.png"),
-        plot_timeseries      = results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_timeseries.png"),
-        plot_eva_diagnostics = results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_eva.png"),
-        plot_bias_correction = directory(results_path("{basin_id}/preprocessing_inputs/visuals/07_bias_correction")),
-        plot_surge_correction = results_path("{basin_id}/preprocessing_inputs/visuals/07_surge_correction.png"),
+        **analysis_outputs(
+            plot_map              = analysis_figure_path("07_forcing_locations.png"),
+            plot_eva_diagnostics  = analysis_figure_path("07_forcing_river_eva.png"),
+            # One figure per GRDC-corrected GloFAS cell, named by crossing and cell.
+            plot_bias_correction  = directory(analysis_figure_path("07_forcing_bias_correction")),
+            plot_surge_correction = analysis_figure_path("07_forcing_surge_correction.png"),
+        ),
     params:
         max_width_fill_m = config["river_processing"]["width_qa"]["max_width_fill_m"],
         # shared surge + river timeseries axis
         lead_days = config["boundary_forcings"]["lead_days"],
         dt_hr = config["boundary_forcings"]["dt_hr"],
         # surge
-        # Diagnostic-preview RP only (storm_tide_at_rp_m/storm_tide_at_rp_raw_m, 07_surge_correction.png),
+        # Diagnostic-preview RP only (storm_tide_at_rp_m/storm_tide_at_rp_raw_m, 07_forcing_surge_correction.png),
         # taken from the "default" scenario so this basin-level rule stays off
         # the scenario axis; rule 14 uses the requested scenario's surge_rp_yr.
         # 'Tide' or null: storm_tide_at_rp_m at RP1 (src.surge.preview_station_rp_yr)

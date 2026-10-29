@@ -13,18 +13,23 @@ import rioxarray as rxr
 
 from src.adaptation_method_post import dispatch_rules
 from src.adaptation_scaling import resolve_forcing_params
+from src.domain import load_domain
 from src.log import setup_logging
-from src.plots import plot_inundation_check
-from src.postprocessing import compute_max_inundation, compute_risk_metrics, read_land_bed_level
+from src.plots import plot_inundation_check, plot_max_inundation_map
+from src.postprocessing import (
+    compute_max_inundation,
+    compute_risk_metrics,
+    read_land_bed_level,
+)
 
 log = setup_logging(snakemake.log[0])
 
 # Params
-measures_def         = snakemake.params.measures_def
-adaptation_root      = Path(snakemake.params.adaptation_root)
+measures_def = snakemake.params.measures_def
+adaptation_root = Path(snakemake.params.adaptation_root)
 baseline_sfincs_root = Path(snakemake.params.baseline_sfincs_root)
-hmin                 = float(snakemake.params.hmin)
-urban_code           = int(snakemake.params.urban_code)
+hmin = float(snakemake.params.hmin)
+urban_code = int(snakemake.params.urban_code)
 
 # Same resolver as 17b_adapt_pre.py, so pre and post see the same crest/discharge values.
 strategy_def = resolve_forcing_params(
@@ -80,7 +85,9 @@ _, da_dep = compute_max_inundation(
     hmin=hmin,
 )
 if da_dep is None:
-    raise RuntimeError("bed level unavailable — did the baseline event run (rule 15) finish?")
+    raise RuntimeError(
+        "bed level unavailable — did the baseline event run (rule 15) finish?"
+    )
 
 # masked=True: measures write a literal nodata (e.g. -9999) and
 # compute_risk_metrics treats every non-null cell as flooded.
@@ -95,16 +102,29 @@ metrics = compute_risk_metrics(
 )
 
 # Inundation ratio plot as rule 15's Check 1, from the adapted raster (no zsmax here).
-n_land    = int(da_dep.notnull().sum().item())
+n_land = int(da_dep.notnull().sum().item())
 n_flooded = int(da_hmax.notnull().sum().item())
 plot_inundation_check(
-    da_hmax, hmin, n_flooded, n_land,
-    str(snakemake.input.land_mask_on_grid), str(snakemake.input.river_network),
+    da_hmax,
+    hmin,
+    n_flooded,
+    n_land,
+    str(snakemake.input.land_mask_on_grid),
+    str(snakemake.input.clean_river_network),
     str(snakemake.output.plot_inundation_ratio),
     basin_id=snakemake.wildcards.basin_id,
-    run_label="post-adaptation",
+    run_label=snakemake.params.run_label,
 )
 log.info(f"Inundation ratio plot written: {snakemake.output.plot_inundation_ratio}")
+plot_max_inundation_map(
+    da_hmax,
+    load_domain(snakemake.input.spec_basins_meta, snakemake.input.domain_gpkg)[2],
+    snakemake.input.land_mask_on_grid,
+    snakemake.input.clean_river_network,
+    snakemake.output.plot_max_depth,
+    basin_id=snakemake.wildcards.basin_id,
+    run_label=snakemake.params.run_label,
+)
 
 row = {
     "basin_id": snakemake.wildcards.basin_id,

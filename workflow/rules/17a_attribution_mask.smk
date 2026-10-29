@@ -16,7 +16,7 @@ rule attribution_mask:
         baseline_flood_map = results_path("{basin_id}/runs/{scenario}/visuals/max_flood_depth.tif"),
     output:
         attribution_mask_tif = results_path("{basin_id}/runs/{scenario}/attribution_mask.tif"),
-        attribution_mask_png = results_path("{basin_id}/runs/{scenario}/attribution_mask.png"),
+        attribution_mask_png = figure_path("61_adapt_attribution_mask__{scenario}.png"),
         # classes=(1,3), i.e. river and compound (coastal and spin-up water
         # excluded); read by rules 17b and 17c for water_retention sizing.
         baseline_excess_volume = results_path("{basin_id}/runs/{scenario}/baseline_excess_volume.json"),

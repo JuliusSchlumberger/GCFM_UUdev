@@ -30,7 +30,6 @@ from src.domain import load_domain
 from src.grid import load_grid_def
 from src.landuse import write_channel_landuse, write_roughness_raster
 from src.log import setup_logging
-from src.plots import plot_landuse, plot_roughness
 from src.profiling import ScriptProfiler
 from src.raster import vectorize_land_mask_on_grid
 from src.river_burn import channel_polygons
@@ -40,7 +39,7 @@ log = setup_logging(snakemake.log[0])
 profiler = ScriptProfiler(snakemake)
 write_roughness_raster = profiler.wrap(write_roughness_raster)
 
-wgs84_bounds, domain_crs, domain_poly = load_domain(
+wgs84_bounds, _, _ = load_domain(
     snakemake.input.spec_basins_meta, snakemake.input.domain_gpkg
 )
 log.info(f"Domain WGS84 bounds: {wgs84_bounds}")
@@ -74,7 +73,11 @@ unmapped, info = write_roughness_raster(
     snakemake.output.spec_roughness,
     method=method,
     refine_to_source=True,
-    channel=(channel_polygons(rivers.to_crs(ref_meta["crs"])), ref_meta["crs"], channel_n),
+    channel=(
+        channel_polygons(rivers.to_crs(ref_meta["crs"])),
+        ref_meta["crs"],
+        channel_n,
+    ),
 )
 if unmapped:
     log.warning(
@@ -86,10 +89,6 @@ log.info(
     f"{info['shape'][1]}x{info['shape'][0]} px @ {info['resolution_m']} m "
     f"(elevation grid subdivided by {info['refine_factor']}). "
     f"Written: {snakemake.output.spec_roughness}"
-)
-plot_roughness(
-    snakemake.output.spec_roughness, domain_poly,
-    snakemake.input.land_polygons, snakemake.output.plot_roughness,
 )
 
 # Land use and roughness on the SFINCS grid
@@ -121,13 +120,20 @@ reproject(
     resampling=Resampling.mode,
 )
 landuse_on_grid_meta = {
-    "driver": "GTiff", "dtype": lu_arr.dtype, "count": 1,
-    "height": grid_shape[0], "width": grid_shape[1],
-    "crs": src_crs, "transform": grid_transform, "nodata": src_nodata,
+    "driver": "GTiff",
+    "dtype": lu_arr.dtype,
+    "count": 1,
+    "height": grid_shape[0],
+    "width": grid_shape[1],
+    "crs": src_crs,
+    "transform": grid_transform,
+    "nodata": src_nodata,
     "compress": "deflate",
 }
 Path(snakemake.output.landuse_on_grid).parent.mkdir(parents=True, exist_ok=True)
-with rasterio.open(snakemake.output.landuse_on_grid, "w", **landuse_on_grid_meta) as dst:
+with rasterio.open(
+    snakemake.output.landuse_on_grid, "w", **landuse_on_grid_meta
+) as dst:
     dst.write(lu_on_grid, 1)
 log.info(
     f"landuse resampled onto the SFINCS grid (mode, single pass): "
@@ -137,7 +143,12 @@ log.info(
 unmapped, _info = write_roughness_raster(
     snakemake.input.landuse_source,
     snakemake.input.matching_lu_roughness,
-    {"height": grid_shape[0], "width": grid_shape[1], "transform": grid_transform, "crs": src_crs},
+    {
+        "height": grid_shape[0],
+        "width": grid_shape[1],
+        "transform": grid_transform,
+        "crs": src_crs,
+    },
     snakemake.output.roughness_on_grid,
     method=method,
     # The model's own "manning" field: stays on the model grid.
@@ -158,15 +169,8 @@ log.info(
 # every figure of model output.
 land_mask = vectorize_land_mask_on_grid(snakemake.output.landuse_on_grid)
 land_mask.to_file(snakemake.output.land_mask_on_grid, driver="GPKG")
-log.info(f"Land mask on the SFINCS grid: {len(land_mask)} polygon(s). Written: {snakemake.output.land_mask_on_grid}")
-
-plot_landuse(
-    snakemake.output.landuse_on_grid, domain_poly,
-    snakemake.output.land_mask_on_grid, snakemake.output.plot_landuse_on_grid,
-)
-plot_roughness(
-    snakemake.output.roughness_on_grid, domain_poly,
-    snakemake.output.land_mask_on_grid, snakemake.output.plot_roughness_on_grid,
+log.info(
+    f"Land mask on the SFINCS grid: {len(land_mask)} polygon(s). Written: {snakemake.output.land_mask_on_grid}"
 )
 profiler.stop()
 log.info("Done")

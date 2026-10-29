@@ -53,20 +53,27 @@ surface, rivers_oriented = build_water_surface(
 write_water_surface(surface, snakemake.output.water_surface, dem_crs)
 log.info(f"Written: {snakemake.output.water_surface}")
 condition_channels_to_surface(
-    surface, rivers_oriented, merged_path, landuse_path, snakemake.output.elevation_conditioned
+    surface,
+    rivers_oriented,
+    merged_path,
+    landuse_path,
+    snakemake.output.elevation_conditioned,
 )
 log.info(f"Written: {snakemake.output.elevation_conditioned}")
 
-seeds = sorted(
-    normalize_reach_id(r) for r, s in zip(rivers_oriented["reach_id"], rivers_oriented.get("is_seed", [])) if bool(s)
-)
-plot_water_surface_profiles(
-    surface,
-    rivers_oriented,
-    seeds,
-    snakemake.output.plot_water_surface,
-    f"Basin {snakemake.wildcards.basin_id}: river water surface (rule 10) along each seed's widest arm",
-)
+if hasattr(snakemake.output, "plot_water_surface"):
+    seeds = sorted(
+        normalize_reach_id(r)
+        for r, s in zip(rivers_oriented["reach_id"], rivers_oriented.get("is_seed", []))
+        if bool(s)
+    )
+    plot_water_surface_profiles(
+        surface,
+        rivers_oriented,
+        seeds,
+        snakemake.output.plot_water_surface,
+        f"Basin {snakemake.wildcards.basin_id}: river water surface (rule 10) along each seed's widest arm",
+    )
 
 # Elevation ceiling for the active-cell mask in rules 11/12a
 # (plus sfincs.grid.active_mask.elevation_buffer_m): the highest surface level.
@@ -94,8 +101,10 @@ with rasterio.open(snakemake.output.elevation_conditioned) as src:
 # spurious flooding. Rule 05a's buffer exceeds HydroMT's margin.
 inv_grid = ~grid_transform
 corners = [
-    (src_bounds[0], src_bounds[1]), (src_bounds[2], src_bounds[1]),
-    (src_bounds[0], src_bounds[3]), (src_bounds[2], src_bounds[3]),
+    (src_bounds[0], src_bounds[1]),
+    (src_bounds[2], src_bounds[1]),
+    (src_bounds[0], src_bounds[3]),
+    (src_bounds[2], src_bounds[3]),
 ]
 cols, rows = zip(*(inv_grid * c for c in corners))
 col_off = int(np.floor(min(cols)))
@@ -119,12 +128,22 @@ reproject(
 )
 
 dst_meta = dict(
-    driver="GTiff", dtype=src_arr.dtype, width=dst_shape[1], height=dst_shape[0],
-    count=1, crs=dst_crs, transform=dst_transform, nodata=src_nodata,
+    driver="GTiff",
+    dtype=src_arr.dtype,
+    width=dst_shape[1],
+    height=dst_shape[0],
+    count=1,
+    crs=dst_crs,
+    transform=dst_transform,
+    nodata=src_nodata,
     compress="deflate",
 )
-Path(snakemake.output.elevation_conditioned_sfincs_grid).parent.mkdir(parents=True, exist_ok=True)
-with rasterio.open(snakemake.output.elevation_conditioned_sfincs_grid, "w", **dst_meta) as dst:
+Path(snakemake.output.elevation_conditioned_sfincs_grid).parent.mkdir(
+    parents=True, exist_ok=True
+)
+with rasterio.open(
+    snakemake.output.elevation_conditioned_sfincs_grid, "w", **dst_meta
+) as dst:
     dst.write(dst_arr, 1)
 log.info(
     f"Written: {snakemake.output.elevation_conditioned_sfincs_grid} "

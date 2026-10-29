@@ -1,6 +1,7 @@
 """Build surge and river boundary forcing for a basin; run by rule get_boundary_forcings."""
 
 import json
+import sys
 from pathlib import Path
 
 import geopandas as gpd
@@ -20,7 +21,6 @@ from src.extreme_values import (
 )
 from src.log import setup_logging
 from src.river_forcing import (
-    build_design_discharge_matrix,
     build_river_dataset,
     find_best_glofas_cell,
     find_boundary_crossings,
@@ -31,7 +31,7 @@ from src.river_forcing import (
     load_grdc_stations,
     resolve_inside_domain_reaches,
 )
-from src.plots import plot_domain_map, plot_forcing_timeseries, plot_surge_corrections, save_figure
+from src.plots import plot_domain_map, plot_surge_corrections, save_figure
 from src.raster import latlon_dims
 from src.river_network import normalize_channel_widths
 from src.surge import (
@@ -53,24 +53,24 @@ from src.profiling import ScriptProfiler
 log = setup_logging(snakemake.log[0])
 
 profiler = ScriptProfiler(snakemake)
-load_selected_stations        = profiler.wrap(load_selected_stations)
-load_mdt                       = profiler.wrap(load_mdt)
-apply_mdt_correction           = profiler.wrap(apply_mdt_correction)
-load_slr_fingerprint           = profiler.wrap(load_slr_fingerprint)
-compute_global_mean_slr        = profiler.wrap(compute_global_mean_slr)
-apply_slr_fingerprint          = profiler.wrap(apply_slr_fingerprint)
-build_surge_dataset           = profiler.wrap(build_surge_dataset)
+load_selected_stations = profiler.wrap(load_selected_stations)
+load_mdt = profiler.wrap(load_mdt)
+apply_mdt_correction = profiler.wrap(apply_mdt_correction)
+load_slr_fingerprint = profiler.wrap(load_slr_fingerprint)
+compute_global_mean_slr = profiler.wrap(compute_global_mean_slr)
+apply_slr_fingerprint = profiler.wrap(apply_slr_fingerprint)
+build_surge_dataset = profiler.wrap(build_surge_dataset)
 extract_hydrograph_components = profiler.wrap(extract_hydrograph_components)
-find_boundary_crossings       = profiler.wrap(find_boundary_crossings)
+find_boundary_crossings = profiler.wrap(find_boundary_crossings)
 resolve_inside_domain_reaches = profiler.wrap(resolve_inside_domain_reaches)
-load_glofas_clip              = profiler.wrap(load_glofas_clip)
-find_best_glofas_cell         = profiler.wrap(find_best_glofas_cell)
-analyse_cell                  = profiler.wrap(analyse_cell)
-build_river_dataset           = profiler.wrap(build_river_dataset)
-load_grdc_stations             = profiler.wrap(load_grdc_stations)
-find_nearest_grdc_station      = profiler.wrap(find_nearest_grdc_station)
-load_grdc_series                = profiler.wrap(load_grdc_series)
-bias_correct_discharge          = profiler.wrap(bias_correct_discharge)
+load_glofas_clip = profiler.wrap(load_glofas_clip)
+find_best_glofas_cell = profiler.wrap(find_best_glofas_cell)
+analyse_cell = profiler.wrap(analyse_cell)
+build_river_dataset = profiler.wrap(build_river_dataset)
+load_grdc_stations = profiler.wrap(load_grdc_stations)
+find_nearest_grdc_station = profiler.wrap(find_nearest_grdc_station)
+load_grdc_series = profiler.wrap(load_grdc_series)
+bias_correct_discharge = profiler.wrap(bias_correct_discharge)
 
 # domain
 wgs84_bounds, domain_crs, domain_poly = load_domain(
@@ -97,10 +97,10 @@ log.info(
 # surge forcing
 log.info("--- Surge forcing ---")
 
-surge_lead    = snakemake.params.lead_days
-surge_period  = snakemake.params.surge_period_hr
-surge_dt      = snakemake.params.dt_hr
-# Diagnostic-preview RP only (storm_tide_at_rp_m columns, 07_surge_correction.png): the
+surge_lead = snakemake.params.lead_days
+surge_period = snakemake.params.surge_period_hr
+surge_dt = snakemake.params.dt_hr
+# Diagnostic-preview RP only (storm_tide_at_rp_m columns, 07_forcing_surge_correction.png): the
 # "default" scenario's surge_rp_yr. Rule 13 uses the requested scenario's surge_rp_yr.
 surge_rp_yr = snakemake.params.surge_rp_yr
 station_rp_yr = preview_station_rp_yr(surge_rp_yr)
@@ -149,8 +149,11 @@ log.info(
 slr_cfg = snakemake.params.surge_slr
 if slr_cfg["enabled"]:
     slr_ds = load_slr_fingerprint(
-        snakemake.input.slr_data, slr_cfg["ssp_scenario"],
-        slr_cfg["confidence_level"], slr_cfg["year"], slr_cfg["quantile"],
+        snakemake.input.slr_data,
+        slr_cfg["ssp_scenario"],
+        slr_cfg["confidence_level"],
+        slr_cfg["year"],
+        slr_cfg["quantile"],
     )
     global_mean_slr_m = compute_global_mean_slr(slr_ds)
     stations = apply_slr_fingerprint(
@@ -167,9 +170,9 @@ else:
     stations["slr_fingerprint"] = np.nan
 
 # River shares lead_days/dt_hr with surge on one time axis; only period_hr differs.
-river_lead   = surge_lead
+river_lead = surge_lead
 river_period = snakemake.params.river_period_hr
-river_dt     = surge_dt
+river_dt = surge_dt
 
 # Storm-tide hydrograph mode: the peaks sit after the lead-in plus the longer
 # of the storm-tide half-window and, for real GloFAS floods, the room for the
@@ -198,7 +201,9 @@ if hg_cfg["enabled"]:
         f"surge and river peaks at {hg_peak_hr:.0f} h"
     )
 else:
-    forcing_total_hr = max(surge_lead * 24 + surge_period, river_lead * 24 + river_period)
+    forcing_total_hr = max(
+        surge_lead * 24 + surge_period, river_lead * 24 + river_period
+    )
     log.info(
         f"Forcing total duration: {forcing_total_hr:.0f} h "
         f"(surge: {surge_lead * 24 + surge_period:.0f} h, "
@@ -208,7 +213,9 @@ t_surge = build_time_axis(surge_lead, surge_period, surge_dt, total_hr=forcing_t
 
 # Calm sea level = mean MDT applied to storm_tide_at_rp_m, MDT-only (no SLR). Rules 10 and 13
 # initialise sea cells at it.
-calm_sea_level_m = float((stations["storm_tide_at_rp_m"] - stations["storm_tide_at_rp_raw_m"]).mean())
+calm_sea_level_m = float(
+    (stations["storm_tide_at_rp_m"] - stations["storm_tide_at_rp_raw_m"]).mean()
+)
 log.info(
     f"Surge boundary baseline (MDT-only, SLR applied downstream): {calm_sea_level_m:+.4f} m "
     f"(= mean(+MDT) across {len(stations)} stations — local MSL in model coords)"
@@ -216,10 +223,17 @@ log.info(
 
 # Per-station calm sea levels (+mdt_i, local MSL in model coordinates) keep each
 # station's wave amplitude = storm_tide_at_rp_raw_m_i; scalar calm_sea_level_m is for zsini.
-station_calm_sea_level_m = (stations["storm_tide_at_rp_m"] - stations["storm_tide_at_rp_raw_m"]).to_numpy()
+station_calm_sea_level_m = (
+    stations["storm_tide_at_rp_m"] - stations["storm_tide_at_rp_raw_m"]
+).to_numpy()
 surge_ds = build_surge_dataset(
-    stations, t_surge, surge_lead, surge_period, station_rp_yr,
-    calm_sea_level_m=calm_sea_level_m, station_calm_sea_level_m=station_calm_sea_level_m,
+    stations,
+    t_surge,
+    surge_lead,
+    surge_period,
+    station_rp_yr,
+    calm_sea_level_m=calm_sea_level_m,
+    station_calm_sea_level_m=station_calm_sea_level_m,
 )
 
 # Protection is a weir crest (rule 12a), never subtracted from water_level:
@@ -229,7 +243,7 @@ surge_ds = build_surge_dataset(
 # without reflecting actual defense heights.
 protection_level_raw = interpolate_protection_level(stations, surge_protection_rp_yr)
 mean_prot_raw = float(protection_level_raw.mean())
-protection_level = np.full(len(stations), mean_prot_raw)   # uniform across stations
+protection_level = np.full(len(stations), mean_prot_raw)  # uniform across stations
 
 # COAST-RP is local MSL; +MDT (as for storm_tide_at_rp_m) puts the crest in the DEM's GOCO06s frame.
 coastal_protection_crest_m = mean_prot_raw + float(stations["mdt"].mean())
@@ -268,9 +282,13 @@ log.info(
 # storm-tide hydrographs (HGRAPHER): tide + surge shape per station
 # Used by build_design_surge_matrix for every surge scenario (an RP and "Tide").
 if hg_cfg["enabled"]:
-    hg_time_hr, hg_tide, hg_shape, hg_rps_yr, hg_match_km = extract_hydrograph_components(
-        snakemake.input.storm_tide_hydrographs,
-        stations.geometry.x.to_numpy(), stations.geometry.y.to_numpy(), hg_window_hr,
+    hg_time_hr, hg_tide, hg_shape, hg_rps_yr, hg_match_km = (
+        extract_hydrograph_components(
+            snakemake.input.storm_tide_hydrographs,
+            stations.geometry.x.to_numpy(),
+            stations.geometry.y.to_numpy(),
+            hg_window_hr,
+        )
     )
     max_match_km = float(hg_cfg["max_match_km"])
     if np.nanmax(hg_match_km) > max_match_km:
@@ -280,30 +298,53 @@ if hg_cfg["enabled"]:
             f"was built for other stations; rerun rules select_surge_stations/extract_gtsm_series/"
             f"storm_tide_hydrographs for this basin"
         )
-    surge_ds = surge_ds.assign_coords(hg_time_hr=("hg_time_hr", hg_time_hr), hg_rp_yr=("hg_rp_yr", hg_rps_yr))
-    surge_ds["hg_rp_yr"].attrs = {"units": "yr", "long_name": "return period each surge shape was derived for"}
-    surge_ds["hg_time_hr"].attrs = {"units": "hours", "long_name": "hours relative to the surge peak / tidal high water"}
+    surge_ds = surge_ds.assign_coords(
+        hg_time_hr=("hg_time_hr", hg_time_hr), hg_rp_yr=("hg_rp_yr", hg_rps_yr)
+    )
+    surge_ds["hg_rp_yr"].attrs = {
+        "units": "yr",
+        "long_name": "return period each surge shape was derived for",
+    }
+    surge_ds["hg_time_hr"].attrs = {
+        "units": "hours",
+        "long_name": "hours relative to the surge peak / tidal high water",
+    }
     surge_ds["hg_tide_m"] = (
-        ["station", "hg_time_hr"], hg_tide,
-        {"units": "m", "long_name": "average tide signal (HGRAPHER), local MSL, high water at hg_time_hr=0"},
+        ["station", "hg_time_hr"],
+        hg_tide,
+        {
+            "units": "m",
+            "long_name": "average tide signal (HGRAPHER), local MSL, high water at hg_time_hr=0",
+        },
     )
     surge_ds["hg_surge_shape"] = (
-        ["station", "hg_rp_yr", "hg_time_hr"], hg_shape,
-        {"units": "1", "long_name": "normalised surge hydrograph per return period (HGRAPHER), peak=1 at hg_time_hr=0"},
+        ["station", "hg_rp_yr", "hg_time_hr"],
+        hg_shape,
+        {
+            "units": "1",
+            "long_name": "normalised surge hydrograph per return period (HGRAPHER), peak=1 at hg_time_hr=0",
+        },
     )
     surge_ds["hg_match_km"] = (
-        ["station"], hg_match_km,
-        {"units": "km", "long_name": "distance to the matched storm-tide hydrograph location"},
+        ["station"],
+        hg_match_km,
+        {
+            "units": "km",
+            "long_name": "distance to the matched storm-tide hydrograph location",
+        },
     )
-    surge_ds.attrs.update({
-        "hg_peak_hr": float(hg_peak_hr),
-        "hg_window_hr": float(hg_window_hr),
-        "hg_ramp_hr": float(hg_cfg["ramp_hr"]),
-    })
-    # Diagnostic preview (07 timeseries plot) at the default RP, built the
+    surge_ds.attrs.update(
+        {
+            "hg_peak_hr": float(hg_peak_hr),
+            "hg_window_hr": float(hg_window_hr),
+            "hg_ramp_hr": float(hg_cfg["ramp_hr"]),
+        }
+    )
+    # Diagnostic preview at the default RP, built the
     # same way the production boundary is (rule 14) instead of the cosine.
     surge_ds["water_level"] = (
-        ["station", "time"], build_design_surge_matrix(surge_ds, surge_rp_yr),
+        ["station", "time"],
+        build_design_surge_matrix(surge_ds, surge_rp_yr),
         surge_ds["water_level"].attrs,
     )
     log.info(
@@ -315,19 +356,25 @@ elif not surge_rp_is_numeric:
     # The cosine above rises to RP{station_rp_yr}; show the default scenario's own
     # boundary instead (None: calm sea; 'Tide' raises, as rule 14 would).
     surge_ds["water_level"] = (
-        ["station", "time"], build_design_surge_matrix(surge_ds, surge_rp_yr),
+        ["station", "time"],
+        build_design_surge_matrix(surge_ds, surge_rp_yr),
         surge_ds["water_level"].attrs,
     )
 
 Path(snakemake.output.surge_forcing).parent.mkdir(parents=True, exist_ok=True)
 surge_ds.to_netcdf(snakemake.output.surge_forcing)
-log.info(f"Written surge forcing ({len(stations)} stations): {snakemake.output.surge_forcing}")
-
-plot_surge_corrections(
-    stations,
-    output_path=snakemake.output.plot_surge_correction,
+log.info(
+    f"Written surge forcing ({len(stations)} stations): {snakemake.output.surge_forcing}"
 )
-log.info(f"Wrote surge correction diagnostic plot: {snakemake.output.plot_surge_correction}")
+
+if hasattr(snakemake.output, "plot_surge_correction"):
+    plot_surge_corrections(
+        stations,
+        output_path=snakemake.output.plot_surge_correction,
+    )
+    log.info(
+        f"Wrote surge correction diagnostic plot: {snakemake.output.plot_surge_correction}"
+    )
 
 # river forcing
 log.info("--- River forcing ---")
@@ -341,10 +388,12 @@ eva_cfg = dict(snakemake.params.eva)
 # solves on.
 sfincs_resolution_m = float(snakemake.params.sfincs_resolution_m)
 glofas_radius_m = float(snakemake.params.glofas_search_radius_km) * 1000.0
-glofas_min_q    = float(snakemake.params.glofas_min_mean_discharge_m3s)
-glofas_variable = "dis24"  # sole variable in data_catalogue's river_discharge (GloFAS v4) source
-bias_cfg        = dict(snakemake.params.bias_correction)
-grdc_radius_m   = float(bias_cfg["grdc_search_radius_km"]) * 1000.0
+glofas_min_q = float(snakemake.params.glofas_min_mean_discharge_m3s)
+glofas_variable = (
+    "dis24"  # sole variable in data_catalogue's river_discharge (GloFAS v4) source
+)
+bias_cfg = dict(snakemake.params.bias_correction)
+grdc_radius_m = float(bias_cfg["grdc_search_radius_km"]) * 1000.0
 
 grdc_stations = load_grdc_stations(snakemake.input.grdc_data)
 log.info(f"  Loaded GRDC station table: {len(grdc_stations)} station(s)")
@@ -375,9 +424,9 @@ if crossings.empty:
     mean_discharge_m3s = np.array([])
     flood_q = np.array([])
     results: list = []
-    bias_corrected_arr    = np.zeros(0, dtype=np.int8)
-    grdc_station_id_arr   = np.full(0, -1, dtype=np.int64)
-    grdc_correlation_arr  = np.full(0, np.nan)
+    bias_corrected_arr = np.zeros(0, dtype=np.int8)
+    grdc_station_id_arr = np.full(0, -1, dtype=np.int64)
+    grdc_correlation_arr = np.full(0, np.nan)
     grdc_overlap_days_arr = np.full(0, np.nan)
     # Empty dataset so the declared output exists and is valid netCDF.
     Path(snakemake.output.glofas_clip).parent.mkdir(parents=True, exist_ok=True)
@@ -403,9 +452,7 @@ else:
     )
     if n_enters < len(crossings):
         excluded_ids = crossings.loc[~crossings["enters_domain"], "reach_id"].tolist()
-        log.info(
-            f"  Excluded (rch_id_dn not in domain): reach_id(s) = {excluded_ids}"
-        )
+        log.info(f"  Excluded (rch_id_dn not in domain): reach_id(s) = {excluded_ids}")
 
     # Step 4: visible_on_grid (diagnostic only -- does NOT gate anything)
     # Not a gate: it would tie rule 08's seed set (which reaches survive) to the
@@ -461,22 +508,22 @@ else:
 
     lat_dim, lon_dim = latlon_dims(glofas_clip)
     time_dim = "valid_time" if "valid_time" in glofas_clip.dims else "time"
-    lat_arr  = glofas_clip[lat_dim].values
-    lon_arr  = glofas_clip[lon_dim].values
+    lat_arr = glofas_clip[lat_dim].values
+    lon_arr = glofas_clip[lon_dim].values
     times_arr = glofas_clip[time_dim].values
 
     n = len(crossings)
     has_glofas = np.zeros(n, dtype=bool)
-    cell_lon   = np.full(n, np.nan)
-    cell_lat   = np.full(n, np.nan)
-    bankfull_discharge_m3s   = np.full(n, np.nan)
-    mean_discharge_m3s       = np.full(n, np.nan)
+    cell_lon = np.full(n, np.nan)
+    cell_lat = np.full(n, np.nan)
+    bankfull_discharge_m3s = np.full(n, np.nan)
+    mean_discharge_m3s = np.full(n, np.nan)
     discharge_rp_table = np.full((n, len(STANDARD_RETURN_PERIODS_YR)), np.nan)
-    results      = [None] * n
+    results = [None] * n
 
-    bias_corrected_arr    = np.zeros(n, dtype=np.int8)
-    grdc_station_id_arr   = np.full(n, -1, dtype=np.int64)
-    grdc_correlation_arr  = np.full(n, np.nan)
+    bias_corrected_arr = np.zeros(n, dtype=np.int8)
+    grdc_station_id_arr = np.full(n, -1, dtype=np.int64)
+    grdc_correlation_arr = np.full(n, np.nan)
     grdc_overlap_days_arr = np.full(n, np.nan)
 
     cell_i_lat = np.full(n, -1, dtype=int)
@@ -499,8 +546,12 @@ else:
         label = f"crossing{i}_reach{inside_id}"
 
         match = find_best_glofas_cell(
-            glofas_clip, glofas_variable,
-            pt_lon, pt_lat, glofas_radius_m, glofas_min_q,
+            glofas_clip,
+            glofas_variable,
+            pt_lon,
+            pt_lat,
+            glofas_radius_m,
+            glofas_min_q,
             utm_crs=domain_crs,
         )
         if match is None:
@@ -515,21 +566,34 @@ else:
         if (i_lat, i_lon) in eva_cache:
             eva = eva_cache[(i_lat, i_lon)]
         else:
-            ts = glofas_clip[glofas_variable].isel(
-                {lat_dim: i_lat, lon_dim: i_lon}
-            ).values.astype(float)
+            ts = (
+                glofas_clip[glofas_variable]
+                .isel({lat_dim: i_lat, lon_dim: i_lon})
+                .values.astype(float)
+            )
 
             # GRDC bias correction (first crossing reaching this cell)
             # TODO: GRDC-Daily.nc covers only the 8 basins of 8_polygons.json, not
             # the globe; other basins typically fall back to GloFAS-as-truth.
             bc_diag = None
             grdc_id = find_nearest_grdc_station(
-                grdc_stations, pt_lon, pt_lat, grdc_radius_m, utm_crs=domain_crs,
+                grdc_stations,
+                pt_lon,
+                pt_lat,
+                grdc_radius_m,
+                utm_crs=domain_crs,
             )
             if grdc_id is not None:
-                grdc_times, grdc_values = load_grdc_series(snakemake.input.grdc_data, grdc_id)
+                grdc_times, grdc_values = load_grdc_series(
+                    snakemake.input.grdc_data, grdc_id
+                )
                 ts_corrected, bc_diag = bias_correct_discharge(
-                    times_arr, ts, grdc_times, grdc_values, bias_cfg, label=label,
+                    times_arr,
+                    ts,
+                    grdc_times,
+                    grdc_values,
+                    bias_cfg,
+                    label=label,
                 )
                 if bc_diag is not None:
                     ts = ts_corrected
@@ -557,15 +621,18 @@ else:
         eva = results[i]
         i_lat, i_lon = int(cell_i_lat[i]), int(cell_i_lon[i])
         has_glofas[i] = True
-        cell_lon[i]   = float(lon_arr[i_lon])
-        cell_lat[i]   = float(lat_arr[i_lat])
+        cell_lon[i] = float(lon_arr[i_lon])
+        cell_lat[i] = float(lat_arr[i_lat])
         bankfull_discharge_m3s[i] = eva.q_rp2
         # Same series as the bankfull fit, so "mean" and "bankfull" river_rp_yr agree.
         mean_discharge_m3s[i] = float(np.nanmean(ts_cache[(i_lat, i_lon)]))
         # From the fitted POT/GPD curve; each scenario's river_rp_yr is looked up
         # here at SFINCS build time.
         discharge_rp_table[i] = gpd_return_value_table(
-            eva.pot_threshold, eva.pot_scale, eva.pot_shape, eva.pot_peaks_per_year,
+            eva.pot_threshold,
+            eva.pot_scale,
+            eva.pot_shape,
+            eva.pot_peaks_per_year,
         )
         log.info(
             f"  {label}: GloFAS ({lat_arr[i_lat]:.3f}°N, {lon_arr[i_lon]:.3f}°E)  "
@@ -575,9 +642,9 @@ else:
 
         bc_diag = bias_cache.get((i_lat, i_lon))
         if bc_diag is not None:
-            bias_corrected_arr[i]    = 1
-            grdc_station_id_arr[i]   = bc_diag["grdc_station_id"]
-            grdc_correlation_arr[i]  = bc_diag["correlation_raw"]
+            bias_corrected_arr[i] = 1
+            grdc_station_id_arr[i] = bc_diag["grdc_station_id"]
+            grdc_correlation_arr[i] = bc_diag["correlation_raw"]
             grdc_overlap_days_arr[i] = bc_diag["grdc_overlap_days"]
 
     n_has_glofas = int(has_glofas.sum())
@@ -586,10 +653,19 @@ else:
         f"crossing(s) matched to GloFAS and EVA successful"
     )
 
-t_river  = build_time_axis(river_lead, river_period, river_dt, total_hr=forcing_total_hr)
+t_river = build_time_axis(river_lead, river_period, river_dt, total_hr=forcing_total_hr)
 river_ds = build_river_dataset(
-    crossings, has_glofas, bankfull_discharge_m3s, discharge_rp_table, STANDARD_RETURN_PERIODS_YR,
-    cell_lon, cell_lat, t_river, river_lead, river_period, results,
+    crossings,
+    has_glofas,
+    bankfull_discharge_m3s,
+    discharge_rp_table,
+    STANDARD_RETURN_PERIODS_YR,
+    cell_lon,
+    cell_lat,
+    t_river,
+    river_lead,
+    river_period,
+    results,
     bankfull_rp_yr=eva_cfg["bankfull_rp_yr"],
     mean_discharge_m3s=mean_discharge_m3s,
     bias_corrected=bias_corrected_arr,
@@ -605,12 +681,21 @@ if int(has_glofas.sum()) > 0:
     for i in np.flatnonzero(has_glofas):
         daily[i] = ts_cache[(cell_i_lat[i], cell_i_lon[i])]
     river_ds = river_ds.assign_coords(
-        day=("day", (times_arr.astype("datetime64[D]") - np.datetime64("1970-01-01")).astype(np.int64),
-             {"long_name": "day of the daily discharge series, days since 1970-01-01"})
+        day=(
+            "day",
+            (times_arr.astype("datetime64[D]") - np.datetime64("1970-01-01")).astype(
+                np.int64
+            ),
+            {"long_name": "day of the daily discharge series, days since 1970-01-01"},
+        )
     )
     river_ds["discharge_daily"] = (
-        ["crossing", "day"], daily,
-        {"units": "m3 s-1", "long_name": "daily mean discharge (GloFAS, bias-corrected where bias_corrected)"},
+        ["crossing", "day"],
+        daily,
+        {
+            "units": "m3 s-1",
+            "long_name": "daily mean discharge (GloFAS, bias-corrected where bias_corrected)",
+        },
     )
 # End of the lead-in: where a real flood event's discharge blends in from the mean.
 river_ds.attrs["event_start_hr"] = float(surge_lead) * 24.0
@@ -622,16 +707,12 @@ log.info(
     f"{int(has_glofas.sum())} with GloFAS): {snakemake.output.river_forcing}"
 )
 
-# Preview at the diagnostic RP for the timeseries plot only; not written to
-# river_forcing.nc.
-if int(has_glofas.sum()) > 0:
-    preview_matrix = np.full((len(crossings), len(t_river)), np.nan)
-    preview_matrix[has_glofas] = build_design_discharge_matrix(
-        river_ds, has_glofas, eva_cfg["preview_rp_yr"], event=snakemake.params.river_event,
-    )
-    river_ds["discharge"] = (["crossing", "time"], preview_matrix)
+if not hasattr(snakemake.output, "plot_map"):
+    profiler.stop()
+    log.info("Done")
+    sys.exit(0)
 
-# summary plots
+# summary plots (config analysis: true)
 log.info("--- Summary plots ---")
 
 plot_domain_map(
@@ -642,12 +723,6 @@ plot_domain_map(
     has_glofas=has_glofas,
     land_polygons_path=snakemake.input.land_polygons,
     output_path=snakemake.output.plot_map,
-)
-plot_forcing_timeseries(
-    surge_ds=surge_ds,
-    river_ds=river_ds,
-    rp_yr=surge_rp_yr,
-    output_path=snakemake.output.plot_timeseries,
 )
 
 # EVA diagnostic plot for the active crossing with the highest q_rp100
@@ -662,9 +737,7 @@ if active_idx:
     diag_i = active_idx[int(np.argmax([results[i].q_rp100 for i in active_idx]))]
 
     i_lat, i_lon = int(cell_i_lat[diag_i]), int(cell_i_lon[diag_i])
-    diag_label = (
-        f"crossing{diag_i}_cell({cell_lat[diag_i]:.3f},{cell_lon[diag_i]:.3f})"
-    )
+    diag_label = f"crossing{diag_i}_cell({cell_lat[diag_i]:.3f},{cell_lon[diag_i]:.3f})"
     plot_cell_diagnostics(
         times=glofas_clip[time_dim].values,
         values=ts_cache[(i_lat, i_lon)],
@@ -676,12 +749,22 @@ if active_idx:
 else:
     log.warning("No active GloFAS crossings — writing placeholder EVA diagnostic plot")
     import matplotlib.pyplot as plt
+
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.text(0.5, 0.5, "No active GloFAS crossings\n(EVA could not be fitted)",
-            ha="center", va="center", transform=ax.transAxes,
-            fontsize=13, color="grey")
+    ax.text(
+        0.5,
+        0.5,
+        "No active GloFAS crossings\n(EVA could not be fitted)",
+        ha="center",
+        va="center",
+        transform=ax.transAxes,
+        fontsize=13,
+        color="grey",
+    )
     ax.set_axis_off()
-    save_figure(fig, snakemake.output.plot_eva_diagnostics, dpi=100, bbox_inches="tight")
+    save_figure(
+        fig, snakemake.output.plot_eva_diagnostics, dpi=100, bbox_inches="tight"
+    )
 
 # Bias-correction diagnostic plots (one per crossing/cell with a GRDC match)
 bc_out_dir = Path(snakemake.output.plot_bias_correction)
@@ -703,10 +786,10 @@ for i in range(len(crossings)):
     plot_bias_correction(
         glofas_times=glofas_clip[time_dim].values,
         glofas_values=glofas_clip[glofas_variable]
-            .isel({lat_dim: i_lat, lon_dim: i_lon})
-            .values.astype(float),
+        .isel({lat_dim: i_lat, lon_dim: i_lon})
+        .values.astype(float),
         diagnostics=bc_diag,
-        output_path=bc_out_dir / f"07_bias_correction_{label_i}.png",
+        output_path=bc_out_dir / f"{label_i}.png",
         label=label_i,
     )
     n_bc_plots += 1
@@ -715,16 +798,21 @@ if n_bc_plots:
     log.info(f"Written {n_bc_plots} bias-correction diagnostic plot(s) to {bc_out_dir}")
 else:
     import matplotlib.pyplot as plt
+
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.text(
-        0.5, 0.5,
+        0.5,
+        0.5,
         "No GRDC bias correction applied for any crossing\n"
         "(no GRDC station within search radius / insufficient overlap)",
-        ha="center", va="center", transform=ax.transAxes,
-        fontsize=13, color="grey",
+        ha="center",
+        va="center",
+        transform=ax.transAxes,
+        fontsize=13,
+        color="grey",
     )
     ax.set_axis_off()
-    save_figure(fig, bc_out_dir / "07_bias_correction_none.png", dpi=100, bbox_inches="tight")
+    save_figure(fig, bc_out_dir / "none.png", dpi=100, bbox_inches="tight")
 
 profiler.stop()
 log.info("Done")

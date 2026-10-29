@@ -1,11 +1,19 @@
 """Compute the max flood depth raster and risk metrics of one SFINCS event run.
 
-Run by rules compute_flood_metrics and adapt_flood_metrics_pre.
+Run by rules compute_flood_metrics and adapt_flood_metrics_pre; also draws the
+max flood depth map.
 """
+
 from pathlib import Path
 import pandas as pd
 
-from src.postprocessing import compute_max_inundation, compute_risk_metrics, read_land_bed_level
+from src.domain import load_domain
+from src.plots import plot_max_inundation_map
+from src.postprocessing import (
+    compute_max_inundation,
+    compute_risk_metrics,
+    read_land_bed_level,
+)
 from src.raster import FLOAT_GTIFF_COMPRESSION, FLOAT_NODATA
 
 sfincs_root = Path(snakemake.params.sfincs_root)
@@ -17,11 +25,25 @@ da_hmax, da_dep = compute_max_inundation(
     hmin=float(snakemake.params.hmin),
 )
 if da_hmax is None:
-    raise RuntimeError("zsmax/bed level unavailable — did the event run (rule 15) finish?")
+    raise RuntimeError(
+        "zsmax/bed level unavailable — did the event run (rule 15) finish?"
+    )
 
 tif_path = Path(snakemake.output.flood_map_tif)
 tif_path.parent.mkdir(parents=True, exist_ok=True)
-da_hmax.raster.to_raster(str(tif_path), dtype="float32", nodata=FLOAT_NODATA, **FLOAT_GTIFF_COMPRESSION)
+da_hmax.raster.to_raster(
+    str(tif_path), dtype="float32", nodata=FLOAT_NODATA, **FLOAT_GTIFF_COMPRESSION
+)
+
+plot_max_inundation_map(
+    da_hmax,
+    load_domain(snakemake.input.spec_basins_meta, snakemake.input.domain_gpkg)[2],
+    snakemake.input.land_mask_on_grid,
+    snakemake.input.clean_river_network,
+    snakemake.output.plot_max_depth,
+    basin_id=snakemake.wildcards.basin_id,
+    run_label=snakemake.params.run_label,
+)
 
 # A water_retention zone is excluded from the risk metrics: water stored there
 # is the measure working, not flood risk. strategy_def is only set by rule
@@ -42,7 +64,10 @@ metrics = compute_risk_metrics(
     urban_code=int(snakemake.params.urban_code),
     exclude_geom_path=exclude_geom_path,
 )
-row = {"basin_id": snakemake.wildcards.basin_id,
-       "scenario": snakemake.wildcards.scenario, **metrics}
+row = {
+    "basin_id": snakemake.wildcards.basin_id,
+    "scenario": snakemake.wildcards.scenario,
+    **metrics,
+}
 
 pd.DataFrame([row]).to_csv(snakemake.output.metrics_csv, index=False)

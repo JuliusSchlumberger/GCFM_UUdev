@@ -52,29 +52,28 @@ rule modelled_depth_estimation:
         # this rule's grid (pixel-identical to the skeleton's, both from
         # sfincs_grid.json), so it is used with zero resampling.
         zsini_sea_cells               = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
-        # Fixed-name copies of round 2's (verification) files.
-        plot_calibration             = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_depth.png"),
         # Round 0's node table (bed, width, level, design discharge along the
         # network); read by the analysis checks (analysis/_upstream_profile.py).
         # Round 1's subgrid table and mask; rule 12a copies the table when its
         # mask is identical instead of building the same table again.
         calibration_subgrid          = calibration_subgrid_files(),
         river_bed_nodes              = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_bed/{basin_id}_river_bed_nodes.csv"),
-        # River network on land: colour = water depth at the design discharge
-        # (dashed where the slope floor sets it), line width = channel width.
-        plot_river_network_depth     = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_network_depth.png"),
-        # Same network: colour = steady GVF level on the bed at the design
-        # discharge minus rule 10's surface (fixed -3..3 m).
-        plot_river_network_forward_check = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_network_forward_check.png"),
-        plot_water_level_timeseries  = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/water_level_timeseries.png"),
-        plot_max_inundation          = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/max_inundation.png"),
-        animation_flood_progress     = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/flood_animation.mp4"),
-        plot_crest_gap_map           = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/crest_gap_map.png"),
-        # Dike position with unprotected_ocean_wetlands off vs on; config picks the simulated one.
-        plot_dike_positions          = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/dike_positions_wetland_switch.png"),
-        # Per-round diagnostics (round 0 = confined/un-excavated, round 1 =
-        # confined/excavated, round 2 = verification with the real crests) are
-        # written undeclared to round_visuals_dir.
+        # DEM, bed and crest along each seed-to-mouth path.
+        plot_crest_profile           = figure_path("30_calib_crest_profile.png"),
+        # Boundary forcing and max flood depth of every SFINCS round (calib_r1, calib_r2).
+        **calibration_round_figures(),
+        **analysis_outputs(
+            # River network on land: colour = water depth at the design discharge
+            # (dashed where the slope floor sets it), line width = channel width.
+            plot_river_network_depth         = analysis_figure_path("11_calib_river_depth_network.png"),
+            # Same network: colour = steady GVF level on the bed at the design
+            # discharge minus rule 10's surface (fixed -3..3 m).
+            plot_river_network_forward_check = analysis_figure_path("11_calib_river_forward_check.png"),
+            # Crest minus the last round's period-max water level.
+            plot_crest_gap_map               = analysis_figure_path("11_calib_crest_gap.png"),
+            # Dike position with unprotected_ocean_wetlands off vs on; config picks the simulated one.
+            plot_dike_positions              = analysis_figure_path("11_calib_dike_position_wetlands.png"),
+        ),
     params:
         calib_root  = lambda wildcards: results_path(f"{wildcards.basin_id}/preprocessing_inputs/depth_crest_calibration"),
         resolution_m = lambda wildcards: grid_resolution_m(wildcards.basin_id),

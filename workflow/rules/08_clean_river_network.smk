@@ -9,8 +9,10 @@ rule clean_river_network:
     output:
         clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
         delta_outflow_points = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_outflow_points.gpkg"),
-        plot_clean_network     = results_path("{basin_id}/preprocessing_inputs/visuals/08_river_clean.png"),
-        plot_discharge_network = results_path("{basin_id}/preprocessing_inputs/visuals/08_river_discharge.png"),
+        **analysis_outputs(
+            plot_clean_network     = analysis_figure_path("08_river_network_clean.png"),
+            plot_discharge_network = analysis_figure_path("08_river_discharge.png"),
+        ),
     params:
         discharge_variable = config["river_processing"]["flow_accumulation"]["discharge_variable"],
         max_width_fill_m   = config["river_processing"]["width_qa"]["max_width_fill_m"],

@@ -19,7 +19,7 @@ from src.plots import add_land_background_to_geoaxes, save_figure
 
 def generate_attribution_maps(
     base_root: Path,
-    attribution_runs: list[tuple[str, Path, Path, Path, Path]],
+    attribution_runs: list[tuple[str, Path, Path, Path, Path, Path]],
     land_mask_path: str | Path,
     threshold: float = 0.05,
     colors_cat: list[str] = ["#d1c740", "#2168c5", "#b063c0", "#7a9cb1"],
@@ -31,7 +31,7 @@ def generate_attribution_maps(
     ],
     data_libs: list[str] | None = None,
 ) -> None:
-    """Write attribution_mask.tif and .png for each (label, river, coastal, spinup, out) run.
+    """Write attribution_mask.tif and its map for each (label, river, coastal, spinup, out_dir, png) run.
 
     Classes: 1 river, 2 coastal, 3 compound, 4 permanent water. Cells wet in
     the spin-up (e.g. the perennial channel, which every event run restarts
@@ -46,12 +46,20 @@ def generate_attribution_maps(
 
     mod_ref = SfincsModel(root=str(base_root), data_libs=data_libs, mode="r")
 
-    for label, river_tif, coastal_tif, spinup_tif, out_folder in attribution_runs:
-        river_tif, coastal_tif, spinup_tif, out_folder = (
+    for (
+        label,
+        river_tif,
+        coastal_tif,
+        spinup_tif,
+        out_folder,
+        out_png,
+    ) in attribution_runs:
+        river_tif, coastal_tif, spinup_tif, out_folder, out_png = (
             Path(river_tif),
             Path(coastal_tif),
             Path(spinup_tif),
             Path(out_folder),
+            Path(out_png),
         )
         if (
             not river_tif.exists()
@@ -122,6 +130,5 @@ def generate_attribution_maps(
             fontsize=10,
         )
         ax.set_title(f"Flood source attribution – {label}")
-        out_png = out_folder / "attribution_mask.png"
         save_figure(fig, out_png, dpi=150, bbox_inches="tight")
         print(f"  Saved PNG: {out_png}")

@@ -36,11 +36,16 @@ import xarray as xr
 from hydromt_sfincs import SfincsModel
 
 from src.log import setup_logging
-from src.plots import plot_applied_forcing
+from src.plots import plot_run_forcing
 from src.river_burn import build_centerline_cells_regular
 from src.river_forcing import build_design_discharge_matrix
 from src.river_network import outflow_crossing_mask
-from src.sfincs_run import FORCING_FILE_KEYS, parse_sfincs_inp, place_discharge_points, write_sfincs_inp
+from src.sfincs_run import (
+    FORCING_FILE_KEYS,
+    parse_sfincs_inp,
+    place_discharge_points,
+    write_sfincs_inp,
+)
 from src.surge import build_design_surge_matrix
 
 # ── logging ──
@@ -55,18 +60,18 @@ for _name in ("hydromt", "hydromt_sfincs"):
 # ── paths & params ──
 surge_forcing_path = Path(snakemake.input.surge_forcing)
 river_forcing_path = Path(snakemake.input.river_forcing)
-skeleton_root       = Path(snakemake.params.skeleton_root)
-sfincs_root         = Path(snakemake.params.sfincs_root)
-spin_up_root        = Path(snakemake.params.spin_up_root)
-resolution_m        = snakemake.params.resolution_m
+skeleton_root = Path(snakemake.params.skeleton_root)
+sfincs_root = Path(snakemake.params.sfincs_root)
+spin_up_root = Path(snakemake.params.spin_up_root)
+resolution_m = snakemake.params.resolution_m
 
-tref_str          = snakemake.params.tref
-dtmapout          = snakemake.params.dtmapout
-dtmaxout          = snakemake.params.dtmaxout
-dthisout          = snakemake.params.dthisout
-storevelmax       = snakemake.params.storevelmax
-storetwet         = snakemake.params.storetwet
-forcing_mode      = snakemake.params.forcing_mode
+tref_str = snakemake.params.tref
+dtmapout = snakemake.params.dtmapout
+dtmaxout = snakemake.params.dtmaxout
+dthisout = snakemake.params.dthisout
+storevelmax = snakemake.params.storevelmax
+storetwet = snakemake.params.storetwet
+forcing_mode = snakemake.params.forcing_mode
 river_only_flat_level_m = float(snakemake.params.river_only_flat_level_m)
 # Design RPs may be None (no driver on that side: zero discharge), "mean"
 # (river: constant mean-discharge hydrograph) or "tide" (surge: each station's
@@ -82,8 +87,8 @@ if isinstance(surge_rp_yr, str) and surge_rp_yr.strip().lower() == "tide":
     pass
 elif surge_rp_yr is not None:
     surge_rp_yr = float(surge_rp_yr)
-compound_lag_hr   = float(snakemake.params.compound_lag_hr)
-river_event       = snakemake.params.river_event
+compound_lag_hr = float(snakemake.params.compound_lag_hr)
+river_event = snakemake.params.river_event
 # Target global-mean SLR (m); 0.0 when SLR is disabled, leaving the MDT-only fields.
 effective_slr_m = float(snakemake.params.slr_m) if snakemake.params.slr_enabled else 0.0
 # The spin-up restart has no SLR: the SLR term rises in over the event's first
@@ -91,9 +96,9 @@ effective_slr_m = float(snakemake.params.slr_m) if snakemake.params.slr_enabled 
 slr_ramp_hr = float(snakemake.params.slr_ramp_hr)
 flat_boundary_point_spacing_m = snakemake.params.flat_boundary_point_spacing_m
 water_level_buffer_m = snakemake.params.water_level_buffer_m
-include_rstart    = snakemake.params.include_rstart
-spinup_days       = snakemake.params.spinup_days
-rst_fname         = snakemake.params.rst_fname
+include_rstart = snakemake.params.include_rstart
+spinup_days = snakemake.params.spinup_days
+rst_fname = snakemake.params.rst_fname
 
 sfincs_root.mkdir(parents=True, exist_ok=True)
 log.info(f"Forcing mode: {forcing_mode!r}")
@@ -120,8 +125,7 @@ sim_duration_hr = max(surge_end_hr, river_end_hr)
 tstop = tref + timedelta(hours=sim_duration_hr)
 
 log.info(
-    f"Simulation period: {tref} → {tstop} "
-    f"({sim_duration_hr:.0f} h from forcing files)"
+    f"Simulation period: {tref} → {tstop} ({sim_duration_hr:.0f} h from forcing files)"
 )
 
 # The .create() calls slice timeseries by the in-memory model time. The
@@ -152,7 +156,9 @@ else:
 # ── water-level boundary forcing (surge) ──
 # Each station is matched to the nearest boundary cell (mask=2) within the buffer.
 if forcing_mode == "river_only":
-    sf.water_level.create_boundary_points_from_mask(bnd_dist=flat_boundary_point_spacing_m)
+    sf.water_level.create_boundary_points_from_mask(
+        bnd_dist=flat_boundary_point_spacing_m
+    )
     sf.water_level.create_timeseries(shape="constant", offset=river_only_flat_level_m)
     log.info(
         f"Water-level forcing: flat constant boundary at {river_only_flat_level_m:+.4f} m "
@@ -203,7 +209,7 @@ active = river_ds.has_glofas.values.astype(bool) & ~outflow_crossing_mask(
     river_ds, gpd.read_file(snakemake.input.river_network)
 )
 n_active = int(active.sum())
-n_total  = len(active)
+n_total = len(active)
 log.info(f"River forcing: {n_active}/{n_total} crossings with valid GloFAS data")
 
 if n_active == 0:
@@ -222,12 +228,17 @@ else:
         crs="EPSG:4326",
     )
     inside_reach_ids = (
-        river_ds.inside_reach_id.values[active] if "inside_reach_id" in river_ds else [None] * n_active
+        river_ds.inside_reach_id.values[active]
+        if "inside_reach_id" in river_ds
+        else [None] * n_active
     )
 
     dis_df = pd.DataFrame(
         data=build_design_discharge_matrix(
-            river_ds, active, river_rp_yr, event=river_event,
+            river_ds,
+            active,
+            river_rp_yr,
+            event=river_event,
         ).T,
         index=river_times,
         columns=range(n_active),
@@ -259,7 +270,9 @@ else:
     if forcing_mode == "coastal_only":
         # Zeroed rather than skipped so the model structure matches other modes.
         dis_df.loc[:, :] = 0.0
-        log.info("River discharge forced to 0.0 m3/s at all crossings (forcing_mode='coastal_only')")
+        log.info(
+            "River discharge forced to 0.0 m3/s at all crossings (forcing_mode='coastal_only')"
+        )
 
     rivers_utm = gpd.read_file(snakemake.input.river_network).to_crs(sf.crs)
     centerline_cells = build_centerline_cells_regular(
@@ -283,7 +296,9 @@ if include_rstart:
     tstart_event = tref + timedelta(days=spinup_days)
     rst_rel = os.path.relpath(spin_up_root / rst_fname, start=sfincs_root)
     inp_settings["rstfile"] = rst_rel
-    log.info(f"tstart updated to {tstart_event} ({spinup_days} days after tref); rstfile = {rst_rel}")
+    log.info(
+        f"tstart updated to {tstart_event} ({spinup_days} days after tref); rstfile = {rst_rel}"
+    )
 else:
     tstart_event = tref
 
@@ -313,59 +328,11 @@ write_sfincs_inp(
 )
 log.info(f"sfincs.inp written: {sfincs_root / 'sfincs.inp'}")
 
-# ── diagnostic plot: forcing timeseries at this scenario's design RPs ──
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
-plt.ioff()
-figs_dir = Path(snakemake.output.sfincs_inp).parent.parent / "visuals" / "sfincs_build"
-figs_dir.mkdir(parents=True, exist_ok=True)
-
-
-def _hours_to_dt(time_hr):
-    return [tref + timedelta(hours=float(h)) for h in time_hr]
-
-
-with xr.open_dataset(surge_forcing_path, decode_times=False) as _sds:
-    _surge_times = _hours_to_dt(_sds.time.values)
-    # Rebuilt rather than read from surge_forcing.nc's 'water_level', which is
-    # a basin-level preview at a fixed diagnostic RP. Mirrors the water-level
-    # boundary section above, RP-for-RP and mode-for-mode, so this plot always
-    # shows what was really built.
-    if forcing_mode == "river_only":
-        _wl = np.full((_sds.sizes["station"], len(_surge_times)), river_only_flat_level_m)
-    else:
-        _wl = build_design_surge_matrix(
-            _sds, surge_rp_yr, slr_m=effective_slr_m, slr_ramp_hr=slr_ramp_hr
-        )
-
-with xr.open_dataset(river_forcing_path, decode_times=False) as _rds:
-    _river_times  = _hours_to_dt(_rds.time.values)
-    _active_mask  = _rds.has_glofas.values.astype(bool)
-    _n_cross      = int(_active_mask.sum())
-    _dis_active   = (
-        build_design_discharge_matrix(
-            _rds, _active_mask, river_rp_yr, event=river_event,
-        )
-        if _n_cross > 0 else np.zeros((0, len(_river_times)))
-    )
-
-_tstart_event = tstart_event if include_rstart else None
-
-if forcing_mode == "river_only":
-    _surge_rp_label = "flat (river_only)"
-elif isinstance(surge_rp_yr, str):
-    _surge_rp_label = surge_rp_yr
-elif surge_rp_yr:
-    _surge_rp_label = f"RP{surge_rp_yr:g}"
-else:
-    _surge_rp_label = "flat (no surge)"
-
-plot_applied_forcing(
-    _surge_times, _wl, _river_times, _dis_active, _surge_rp_label, _tstart_event, spinup_days,
-    f"SFINCS forcing — basin {sfincs_root.parent.parent.name}, scenario {sfincs_root.parent.name} "
-    f"(full timeseries; dashed = event model tstart)",
-    figs_dir / "05_forcing.png",
+# ── forcing figure: the boundary timeseries as written for SFINCS ──
+plot_run_forcing(
+    sfincs_root,
+    snakemake.output.plot_forcing,
+    snakemake.params.basin_id,
+    snakemake.params.run_label,
 )
-log.info("Plot written: 05_forcing.png")
+log.info(f"Plot written: {snakemake.output.plot_forcing}")

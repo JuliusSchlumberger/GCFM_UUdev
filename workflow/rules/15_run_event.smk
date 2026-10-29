@@ -18,12 +18,13 @@ rule run_event:
         clean_river_network  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
     output:
         sfincs_map_nc              = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"),
-        plot_inundation_ratio      = results_path("{basin_id}/runs/{scenario}/visuals/01_inundation_ratio.png"),
-        animation_flood_progress   = results_path("{basin_id}/runs/{scenario}/visuals/02_flood_animation.mp4"),
+        **analysis_outputs(plot_inundation_ratio=analysis_figure_path("15_run_inundation_ratio__{scenario}.png")),
+        animation_flood_progress   = figure_path("50_run_flood_progression__{scenario}.mp4"),
         flood_timeseries_csv       = results_path("{basin_id}/runs/{scenario}/visuals/flood_timeseries.csv"),
     params:
         sfincs_root                = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),
         **run_event_params(),
+        run_label                  = lambda wildcards: run_label(wildcards.scenario),
     threads: rule_threads("run_event")
     log:
         "logs/{basin_id}/runs/{scenario}/15_run_event.log"

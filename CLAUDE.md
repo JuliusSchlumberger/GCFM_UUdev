@@ -49,7 +49,7 @@ Basin `2433835` (Ebro delta), scenario `default`; adaptation: strategy `advance_
 | code health | `python tests/check_code_health.py` | OK, 82 files |
 | quick-look figures | `pytest -q tests/unit/test_quicklook.py` | 16 PNGs in `.baseline/figures/` (synthetic delta) |
 | preprocess DAG | `snakemake -n preprocess --forceall --cores 1 --config target_basins="[2433835]" target_scenarios="['default']"` | 15 jobs |
-| build DAG | same, target `build` | 22 jobs |
+| build DAG | same, target `build` | 21 jobs (22 with `analysis=True`) |
 
 CI does not use `environment.yml`: `.github/workflows/ci.yml` pip-installs its own list for `tests/unit`.
 When a test, or a `src` module a test imports, gains a module-level third-party import, add it there.

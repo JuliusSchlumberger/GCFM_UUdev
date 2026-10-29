@@ -16,20 +16,25 @@ from pathlib import Path
 
 from src.attribution_plot import generate_attribution_maps
 from src.log import setup_logging
-from src.postprocessing import compute_excess_volume, compute_max_inundation, read_land_bed_level
+from src.postprocessing import (
+    compute_excess_volume,
+    compute_max_inundation,
+    read_land_bed_level,
+)
 from src.raster import FLOAT_GTIFF_COMPRESSION, FLOAT_NODATA
 
 log = setup_logging(snakemake.log[0])
 
 skeleton_root = Path(snakemake.params.skeleton_root)
-spin_up_root  = Path(snakemake.params.spin_up_root)
+spin_up_root = Path(snakemake.params.spin_up_root)
 threshold = float(snakemake.params.hmin)
 
 out_folder = Path(snakemake.output.attribution_mask_tif).parent
 out_folder.mkdir(parents=True, exist_ok=True)
 
 da_hmax_spinup, _ = compute_max_inundation(
-    spin_up_root, read_land_bed_level(snakemake.input.land_bed_level),
+    spin_up_root,
+    read_land_bed_level(snakemake.input.land_bed_level),
     hmin=threshold,
 )
 if da_hmax_spinup is None:
@@ -51,13 +56,16 @@ log.info(
 
 generate_attribution_maps(
     base_root=skeleton_root,
-    attribution_runs=[(
-        snakemake.wildcards.scenario,
-        Path(snakemake.input.river_tif),
-        Path(snakemake.input.coastal_tif),
-        spinup_tif,
-        out_folder,
-    )],
+    attribution_runs=[
+        (
+            snakemake.wildcards.scenario,
+            Path(snakemake.input.river_tif),
+            Path(snakemake.input.coastal_tif),
+            spinup_tif,
+            out_folder,
+            Path(snakemake.output.attribution_mask_png),
+        )
+    ],
     land_mask_path=snakemake.input.land_mask_on_grid,
     threshold=threshold,
 )
@@ -69,4 +77,6 @@ baseline_excess_volume = compute_excess_volume(
 )
 with open(snakemake.output.baseline_excess_volume, "w") as fh:
     json.dump({"baseline_excess_volume": baseline_excess_volume}, fh)
-log.info(f"baseline_excess_volume={baseline_excess_volume:.0f} m3 written: {snakemake.output.baseline_excess_volume}")
+log.info(
+    f"baseline_excess_volume={baseline_excess_volume:.0f} m3 written: {snakemake.output.baseline_excess_volume}"
+)

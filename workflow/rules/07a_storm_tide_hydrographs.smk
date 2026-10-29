@@ -51,7 +51,7 @@ rule storm_tide_hydrographs:
         surge_data  = raw_input("storm_tide_return_periods"),
     output:
         hydrographs = results_path("{basin_id}/preprocessing_inputs/forcing/storm_tide_hydrographs.nc"),
-        plot        = results_path("{basin_id}/preprocessing_inputs/visuals/07c_storm_tide_hydrographs.png"),
+        **analysis_outputs(plot=analysis_figure_path("07_forcing_storm_tide_shapes.png")),
     params:
         window_hr      = lambda wildcards: hydrograph_window_hr(wildcards.basin_id),
         min_events     = config["boundary_forcings"]["surge"]["hydrograph"]["min_events"],

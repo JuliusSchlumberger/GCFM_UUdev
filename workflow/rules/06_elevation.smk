@@ -42,10 +42,14 @@ rule get_elevation:
         mdt         = raw_input("mdt_cnes_cls22"),
     output:
         elevation_merged = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"),
-        plot_elevation   = results_path("{basin_id}/preprocessing_inputs/visuals/06_elevation.png"),
         # Land use on this grid (mode); its class 200 also blanks FathomDEM over sea.
         spec_landuse     = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
-        plot_landuse     = results_path("{basin_id}/preprocessing_inputs/visuals/06_landuse.png"),
+        **analysis_outputs(
+            plot_geoid_offset    = analysis_figure_path("06_datum_geoid_offset.png"),
+            plot_mdt_ocean       = analysis_figure_path("06_datum_mdt_ocean.png"),
+            plot_datum_fathomdem = analysis_figure_path("06_datum_fathomdem_correction.png"),
+            plot_datum_gebco     = analysis_figure_path("06_datum_gebco_correction.png"),
+        ),
     params:
         mdt_load_margin_deg = config["datum_correction"]["mdt_load_margin_deg"],
         gebco_max_depth_m   = config["terrain"]["gebco_max_depth_m"],

@@ -16,8 +16,10 @@ rule build_sfincs:
         ),
     output:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs.inp"),
+        plot_forcing = figure_path("20_forcing_timeseries__{scenario}.png"),
     params:
         **build_sfincs_params(),
+        run_label          = lambda wildcards: run_label(wildcards.scenario),
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         sfincs_root        = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),
         spin_up_root       = lambda wildcards: results_path(f"{wildcards.basin_id}/spin_up"),

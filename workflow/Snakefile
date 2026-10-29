@@ -43,41 +43,41 @@ _PREPROCESS_OUTPUTS = [
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/03_protection_levels.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/06_elevation.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/06_landuse.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/09_roughness.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network.gpkg"), basin_id=BASINS),
     *(expand(results_path("{basin_id}/preprocessing_inputs/forcing/storm_tide_hydrographs.nc"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/07c_storm_tide_hydrographs.png"), basin_id=BASINS)
+      + (expand(analysis_figure_path("07_forcing_storm_tide_shapes.png"), basin_id=BASINS) if ANALYSIS else [])
       if config["boundary_forcings"]["surge"]["hydrograph"]["enabled"] else []),
     expand(results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/forcing/glofas_clip.nc"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_locations.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_timeseries.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_eva.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_bias_correction"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_surge_correction.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/08_river_clean.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/08_river_discharge.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sfincs_grid.json"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_river_surface.png"), basin_id=BASINS),
     # Rule modelled_depth_estimation (11)
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_subgrid.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_depth.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/water_level_timeseries.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/max_inundation.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/flood_animation.mp4"), basin_id=BASINS),
+    expand(figure_path("30_calib_crest_profile.png"), basin_id=BASINS),
+    expand(figure_path("20_forcing_timeseries__calib_r{r}.png"), basin_id=BASINS, r=CALIB_ROUNDS),
+    expand(figure_path("40_run_max_flood_depth__calib_r{r}.png"), basin_id=BASINS, r=CALIB_ROUNDS),
+    *(expand(analysis_figure_path("{name}"), basin_id=BASINS, name=[
+        "03_protection_levels.png",
+        "06_datum_geoid_offset.png", "06_datum_mdt_ocean.png",
+        "06_datum_fathomdem_correction.png", "06_datum_gebco_correction.png",
+        "07_forcing_locations.png", "07_forcing_river_eva.png",
+        "07_forcing_bias_correction", "07_forcing_surge_correction.png",
+        "08_river_network_clean.png", "08_river_discharge.png",
+        "10_river_surface.png",
+        "11_calib_river_depth_network.png", "11_calib_river_forward_check.png",
+        "11_calib_crest_gap.png", "11_calib_dike_position_wetlands.png",
+      ] + [f"11_calib_water_level__calib_r{r}.png" for r in CALIB_ROUNDS]
+        + [f"11_calib_flood_progression__calib_r{r}.mp4" for r in CALIB_ROUNDS])
+      if ANALYSIS else []),
 ]
 
 # Basin-level, scenario-independent: skeleton, spin-up (run_spinup, mean river
@@ -86,18 +86,18 @@ _BUILD_OUTPUTS_BASIN = [
     expand(results_path("{basin_id}/sfincs_skeleton/sfincs.inp"), basin_id=BASINS),
     expand(results_path("{basin_id}/sfincs_skeleton/sfincs.weir"), basin_id=BASINS),
     expand(results_path("{basin_id}/sfincs_skeleton/{basin_id}_coastal_protection_weir.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/01_grid.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/02_elevation.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/03_mask.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/04_roughness.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/07_coastal_protection_weir.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/sfincs_skeleton/sfincs_subgrid.nc"), basin_id=BASINS),
+    expand(figure_path("{name}"), basin_id=BASINS, name=[
+        "10_build_grid.png", "11_build_elevation.png", "12_build_mask.png",
+        "13_build_roughness.png", "14_build_zsini.png", "15_build_coastal_weir.png",
+    ]),
     *(expand(results_path("{basin_id}/spin_up/" + RST_FNAME), basin_id=BASINS)
       + expand(results_path("{basin_id}/spin_up/sfincs_map.nc"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/spin_up/validation_spinup.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/spin_up/validation_max_inundation.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/spin_up/01_inundation_ratio.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/spin_up/02_flood_animation.mp4"), basin_id=BASINS)
+      + expand(figure_path("20_forcing_timeseries__spinup.png"), basin_id=BASINS)
+      + expand(figure_path("40_run_max_flood_depth__spinup.png"), basin_id=BASINS)
+      + (expand(analysis_figure_path("{name}"), basin_id=BASINS, name=[
+          "13_spinup_water_level.png", "13_spinup_inundation_ratio.png", "13_spinup_flood_progression.mp4",
+        ]) if ANALYSIS else [])
       if config["sfincs"]["spinup"]["enabled"] else []),
 ]
 
@@ -105,9 +105,12 @@ _BUILD_OUTPUTS_BASIN = [
 _BUILD_OUTPUTS_SCENARIO = [
     expand(results_path("{basin_id}/runs/{scenario}/sfincs/sfincs.inp"), basin_id=BASINS, scenario=SCENARIOS),
     expand(results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"), basin_id=BASINS, scenario=SCENARIOS),
-    expand(results_path("{basin_id}/runs/{scenario}/visuals/01_inundation_ratio.png"), basin_id=BASINS, scenario=SCENARIOS),
-    expand(results_path("{basin_id}/runs/{scenario}/visuals/02_flood_animation.mp4"), basin_id=BASINS, scenario=SCENARIOS),
     expand(results_path("{basin_id}/runs/{scenario}/visuals/flood_timeseries.csv"), basin_id=BASINS, scenario=SCENARIOS),
+    expand(figure_path("20_forcing_timeseries__{scenario}.png"), basin_id=BASINS, scenario=SCENARIOS),
+    expand(figure_path("40_run_max_flood_depth__{scenario}.png"), basin_id=BASINS, scenario=SCENARIOS),
+    expand(figure_path("50_run_flood_progression__{scenario}.mp4"), basin_id=BASINS, scenario=SCENARIOS),
+    *(expand(analysis_figure_path("15_run_inundation_ratio__{scenario}.png"), basin_id=BASINS, scenario=SCENARIOS)
+      if ANALYSIS else []),
     expand(results_path("{basin_id}/runs/{scenario}/visuals/max_flood_depth.tif"), basin_id=BASINS, scenario=SCENARIOS),
     expand(results_path("{basin_id}/runs/{scenario}/metrics/flood_metrics.csv"), basin_id=BASINS, scenario=SCENARIOS),
 ]
@@ -121,9 +124,13 @@ if "pre" in METHODS:
     _ADAPT_OUTPUTS += (
         expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
-        + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/01_inundation_ratio.png"),
+        + expand(figure_path("20_forcing_timeseries__{scenario}__pre_{strategy}.png"),
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
-        + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/02_flood_animation.mp4"),
+        + expand(figure_path("40_run_max_flood_depth__{scenario}__pre_{strategy}.png"),
+               basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+        + expand(figure_path("62_adapt_inundation_ratio__{scenario}__pre_{strategy}.png"),
+               basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+        + expand(figure_path("63_adapt_flood_progression__{scenario}__pre_{strategy}.mp4"),
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
         + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_timeseries.csv"),
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
@@ -137,6 +144,9 @@ if "post" in METHODS:
         expand(results_path("{basin_id}/runs/{scenario}/adaptation/post/{strategy}/max_flood_depth.tif"),
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
         + expand(results_path("{basin_id}/runs/{scenario}/adaptation/post/{strategy}/flood_metrics.csv"),
+               basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+        + expand(figure_path("{name}__{scenario}__post_{strategy}.png"),
+               name=["40_run_max_flood_depth", "62_adapt_inundation_ratio"],
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
     )
 if {"pre", "post"} <= set(METHODS):

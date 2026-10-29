@@ -42,6 +42,34 @@ def parse_sfincs_inp(path: str | Path) -> dict[str, str]:
     return cfg
 
 
+def read_boundary_forcing(sfincs_root: str | Path) -> dict:
+    """Return the water-level and discharge boundary timeseries a SFINCS run reads.
+
+    Keys: wl_times, wl_m (point, time), q_times, q_m3s (point, time), tstart.
+    Times are datetimes counted from tref; a run without a bzsfile or disfile
+    gets empty arrays for it.
+    """
+    root = Path(sfincs_root)
+    cfg = parse_sfincs_inp(root / "sfincs.inp")
+    tref = pd.to_datetime(cfg["tref"], format="%Y%m%d %H%M%S")
+
+    def _series(key: str) -> tuple[pd.DatetimeIndex, np.ndarray]:
+        if not cfg.get(key):
+            return pd.DatetimeIndex([]), np.empty((0, 0))
+        table = np.loadtxt(root / cfg[key], ndmin=2)
+        return tref + pd.to_timedelta(table[:, 0], unit="s"), table[:, 1:].T
+
+    wl_times, wl_m = _series("bzsfile")
+    q_times, q_m3s = _series("disfile")
+    return {
+        "wl_times": wl_times,
+        "wl_m": wl_m,
+        "q_times": q_times,
+        "q_m3s": q_m3s,
+        "tstart": pd.to_datetime(cfg["tstart"], format="%Y%m%d %H%M%S"),
+    }
+
+
 def forward_geometry_files(
     cfg: dict[str, str],
     source_root: str | Path,

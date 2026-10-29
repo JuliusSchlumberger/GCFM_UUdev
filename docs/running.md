@@ -53,6 +53,9 @@ are parsed as YAML.
 | `target_strategies` | `[]` (no adaptation runs) | `target_strategies="['advance_1','retreat']"` | strategy names or families from `config/adaptation_strategies.yml`; a family selects all its scales |
 | `target_method` | `['pre','post']` | `target_method="['post']"` | adaptation methods to run |
 
+A top-level `config/config.yml` key can be overridden the same way; a boolean must be
+written `True` or `False` (`analysis=True`), as `false` arrives as a string.
+
 ## Scenarios
 
 `config/scenarios.yml` defines named scenarios; the name is the `{scenario}`
@@ -98,7 +101,7 @@ spin-up restart and the spin-up map.
 - nothing extra for `locations: auto/<name>` (`grey_protect_open`,
   `protect_closed`): rule `build_adaptation_lines` (12c) derives these lines from
   the basin's skeleton into `<results_dir>/{basin_id}/adaptation_lines/`, and
-  reruns with the skeleton. Review `adaptation_lines.png` there. The rule fails if
+  reruns with the skeleton. Review `figures/60_adapt_lines.png`. The rule fails if
   a mouth closure does not seal its river; `--keep-incomplete` keeps the figure
   for inspection;
 - an `event` key on each scenario;
@@ -147,11 +150,39 @@ restart file). The failed rule must be rerun; upstream outputs are kept.
 ## Outputs
 
 The output layout under `<results_dir>/{basin_id}/` is listed in the
-[README](../README.md#what-it-produces). Each preprocessing rule writes a
-diagnostic figure to `preprocessing_inputs/visuals/`; the depth and crest
-calibration keeps its disposable model and per-round state in
-`preprocessing_inputs/depth_crest_calibration/` and its figures in
-`preprocessing_inputs/visuals/10_calibration/`.
+[README](../README.md#what-it-produces). The depth and crest calibration keeps
+its disposable model and per-round state in
+`preprocessing_inputs/depth_crest_calibration/`.
+
+### Figures
+
+Every figure of a basin is in `<results_dir>/{basin_id}/figures/`, named
+`NN_stage_quantity[__run].ext`; the number orders the folder as the pipeline
+runs, and the run label is the same in file names and titles:
+
+| run | label |
+|---|---|
+| calibration round 1 (round 2 with `verify_crests: true`) | `calib_r1`, `calib_r2` |
+| spin-up | `spinup` |
+| event run | `{scenario}` |
+| adaptation run | `{scenario}__pre_{strategy}`, `{scenario}__post_{strategy}` |
+
+| prefix | figures |
+|---|---|
+| `10`-`15` | SFINCS build: grid, elevation, mask, roughness, zsini, coastal weir |
+| `20` | boundary forcing per run: water level (top), river discharge (bottom) |
+| `30` | DEM, river bed and dike crest along each seed-to-mouth path |
+| `40` | maximum flood depth per run |
+| `50` | flood progression animation per scenario |
+| `60`-`63` | adaptation: lines, attribution mask, inundation ratio, flood progression |
+
+`analysis: true` (config) also writes the diagnostic figures to
+`figures/analysis/`, prefixed with the rule number (datum corrections,
+forcing diagnostics, river network, calibration maps and water levels, spin-up
+and inundation-ratio checks); the `analysis/` scripts write there too, as
+`90_<script>_*`, and outputs spanning several basins go to
+`<results_dir>/figures/analysis/`. Switching it on for a built basin reruns
+the rules whose diagnostics are missing, rule 11's calibration included.
 
 ## Rule graphs
 
@@ -181,5 +212,7 @@ snakemake preprocess --dag --forceall --config target_basins="[2433835]" | dot -
 They have no command-line options: set the basin and scenarios in the constants
 at the top of each script, then run it, for example
 `python analysis/flood_maps.py`. They read `config/site.yml` through
-`analysis/_common.py` (`site_path`) and save their figures under
-`<results_dir>/{basin_id}/runs/`; Snakemake does not track them.
+`analysis/_common.py` (`site_path`) and save their outputs to
+`<results_dir>/{basin_id}/figures/analysis/` as `90_<script>_*`, or to
+`<results_dir>/figures/analysis/` when they span several basins
+(`analysis_path`); Snakemake does not track them.
