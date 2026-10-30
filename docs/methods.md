@@ -318,7 +318,9 @@ opened read-only (`"r"`) and redirected to a new root with
 The network is SWORD v17c (`river_network`: one GeoPackage per region, layer
 `reaches`), read by `src.sword.read_sword_reaches`, which maps the published
 topology (`rch_id_dn_1..4`, `rch_id_up_1..4`) to the `rch_id_dn`/`rch_id_up`
-list strings used downstream. Rule 06 then overwrites `width` on the reaches in
+list strings used downstream, and reverses every reach line that runs upstream
+(SWORD v17c draws all reaches of the current basins from mouth to source), so
+every rule reads lines that run downstream. Rule 02 then overwrites `width` on the reaches in
 `config/sword_width_corrections.csv` (from satellite-image inspection; the rule
 stops if a reach's SWORD width no longer matches the expected value) and marks
 them `width_source = manual`. Rule 11's bifurcation comparison runs the network

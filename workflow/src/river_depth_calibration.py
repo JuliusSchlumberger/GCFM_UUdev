@@ -80,8 +80,8 @@ def gather_calibration_round_profile(
     0..n_rounds (dem_m, river_depth_m, weir_crest_m, zs_m). zs_m is the period-max
     water level, except in round 0: the river-bed level. weir_crest_m is NaN
     in round 0. rivers_utm may be in any CRS. The state's along_m runs along
-    each SWORD line as stored; for a line that runs upstream it is flipped, so
-    the path runs downstream throughout.
+    each reach line as stored; a line that runs upstream (none on rule 02's
+    network) is flipped, so the path runs downstream throughout.
 
     Returns:
         (path_rids, {round_idx: rows on the path with 'along_path_m', sorted}).

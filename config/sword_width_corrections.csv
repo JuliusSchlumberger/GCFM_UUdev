@@ -1,5 +1,5 @@
 # Manual SWORD reach widths from satellite-image inspection, applied by rule
-# get_river_network (06) via src.sword.apply_width_corrections. expected_width_m
+# get_river_network (02) via src.sword.apply_width_corrections. expected_width_m
 # is SWORD's width; a reach whose SWORD width differs from it by more than 1 m
 # stops the rule (wrong reach_id or changed source data).
 reach_id,expected_width_m,width_m,delta,note

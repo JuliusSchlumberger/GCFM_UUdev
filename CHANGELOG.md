@@ -3,6 +3,50 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-10-30: SWORD reach lines oriented downstream in rule 02 (- JS)
+
+- **Why:** SWORD v17c draws every reach from its downstream to its upstream end
+  (all 448 rule 02 reaches in the 8 basins). Rules 07d, 10 and 11 reversed
+  them in memory, but rule 08's T-junction fix ran on the lines as drawn, so it
+  matched the wrong reach ends.
+- **Change:** `src.sword.read_sword_reaches` reverses upstream-running lines
+  after the clip (`orient_reaches_downstream`), so `river_network.gpkg` runs
+  downstream; the later in-memory checks flip nothing.
+- **Effect** (rules 02 and 08 rerun into scratch, all 8 basins):
+  - rule 02: the same reaches and attributes, every line reversed;
+  - rule 08: T-junction fixes now 8 on 1248635 (was 3, all at the
+    wrong end), 4 on 1416812 (was 0), 2 on 3279946 (was 0); tails 19-64 m
+    moved onto the downstream reach. 30 reaches change shape (21, 5, 4); reach
+    ids, discharge, flags and delta outflow points are unchanged;
+  - 1475442, 2209166, 2433835, 2444235, 620947: geometry reversed only.
+- Every basin reruns from rule 02.
+
+# 2026-10-30: calibration sea held at the storm tide; walled travel time benchmarked on it (- JS)
+
+- **Held sea in rule 11:** calibration rounds 1 and 2 hold every sea station
+  at its storm tide at the coastal protection RP from the start, instead of
+  ramping it from the calm level over `ramp_hr`.
+  - Sea and river channel cells start no lower than the highest station's
+    storm tide (`src.water_surface.raise_wet_cells_to`). Only the rivers ramp.
+  - With the ramped sea, the level at the mouth reached its half rise at
+    3.0–4.5 h on all 7 basins, the sea ramp's own midpoint. The sea's rise also
+    ran up the channels (3279946: about 150 km), so the river's arrival at the
+    mouth could not be read off.
+  - Without a coastal protection RP the sea stays at the calm level, as before.
+  - The skeleton's `zsini`, the spin-up and the event runs are unchanged.
+  - Coastal crests that came from a ramp-driven transient at the dike may come
+    out lower. Not yet run.
+- **Benchmark:** `analysis/benchmark_peak_travel.py` compares rule 11's walled
+  travel time with the time the water level in round 1 reaches half its rise,
+  after the inflow's half rise.
+  - It runs on each forcing point's mainstem, with rule 11's own inputs, and
+    compares at the mouth.
+  - It refuses runs whose sea boundary changes. All 7 existing runs predate
+    the held sea, so there are no results until rule 11 reruns.
+- **Found on the old runs:**
+  - Round 2 was bit-identical to round 1, since no crest was overtopped.
+  - On 3279946, the run was still changing at its 59 h end (TODO B34).
+
 # 2026-10-29: subgrid table built once per basin; chunked source rasters (- JS)
 
 - **Skeleton reuses rule 11's subgrid table:** rule 11 declares round 1's
@@ -19,26 +63,6 @@ the pipeline works; this file only describes *what changed and why*.
   - Unchunked, each subgrid block's clip-and-load decompressed the whole file
     (3279946: about 10 s of a block's merge; 1.5 s chunked).
   - 2433835: the table and subgrid GeoTIFFs are equal to the unchunked build.
-
-# 2026-10-29: walled travel time benchmarked on the crest-calibration runs (- JS)
-
-- `analysis/benchmark_peak_travel.py` compares rule 11's walled travel time with
-  the settle time of the water level in calibration round 1.
-  - Settle time: searching back from the run end, the last time a node is more
-    than `steady_check.tol_m` from its final level, minus `ramp_hr`.
-  - It runs on the forcing point's mainstem, with rule 11's own inputs.
-  - Round 2 is bit-identical to round 1 on the basins checked, since no crest
-    is overtopped.
-  - The sea settles within `ramp_hr` + 1 h, so later changes are the river's.
-- Results on 7 basins, 8 forcing points:
-  - Only the last 1–5 km settle with the sea.
-  - Settle time peaks mid-path and falls towards both ends. That is backwater
-    adjustment of the whole reach, not a travelling front, so it does not
-    measure the peak travel time.
-  - Settle time exceeds the estimate in the middle reaches: 2433835 10.5 h vs
-    2–4 h, and 3279946 over 52 h vs 10–30 h. On 3279946, 296 and 429 path nodes
-    are still changing at the 59 h run end.
-  - 1248635 has no calibration run.
 
 # 2026-10-29: river event from its real rising limb; smooth river forcing (- JS)
 

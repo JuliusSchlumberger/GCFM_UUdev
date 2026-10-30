@@ -80,7 +80,7 @@ def resolve_inside_domain_reaches(
     boundary. Returns a copy of `crossings` with geometry at the entry point,
     'inside_reach_id' of that reach and its 'width'/'max_width'; on failure the
     crossing point is kept and inside_reach_id is None. All inputs EPSG:4326.
-    Reach lines are oriented downstream first (SWORD lines often run upstream),
+    Reach lines are oriented downstream first (a no-op on rule 02's network),
     so the entry is the upstream end of the part inside the domain.
     """
     import pandas as pd

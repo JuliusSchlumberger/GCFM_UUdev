@@ -11,7 +11,9 @@ pipeline expects topology as bracketed id strings (``rch_id_dn``,
 ``is_mainstem`` and keeps every published field, including the SWOT
 ``*_obs_*`` statistics. ``obstr_type`` 5, undocumented in the v17c variable
 reference (0 none, 1 dam, 2 lock, 3 low-head, 4 falls), is read as 0; the
-published value stays in ``obstr_type_published``.
+published value stays in ``obstr_type_published``. Reach lines are reversed
+where SWORD draws them upstream (whole basins, e.g. 3279946 and 1248635), so
+every line the pipeline reads runs downstream.
 """
 
 from __future__ import annotations
@@ -24,7 +26,11 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pyogrio
+import shapely
 from shapely.geometry import box
+from src.geometry import pick_utm_crs
+from src.gvf_target import orient_downstream
+from src.river_network import build_downstream_adjacency, normalize_reach_id
 
 log = logging.getLogger(__name__)
 
@@ -63,13 +69,28 @@ def to_pipeline_schema(reaches: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return out
 
 
+def orient_reaches_downstream(reaches: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Reverse the reach lines that run upstream (src.gvf_target.orient_downstream).
+
+    The direction is decided in a metric CRS; the reversal is applied to the
+    original coordinates, part by part for a clipped multi-part reach.
+    """
+    metric = reaches.to_crs(pick_utm_crs(reaches))
+    _, flipped = orient_downstream(metric, build_downstream_adjacency(metric))
+    out = reaches.copy()
+    sel = out["reach_id"].map(normalize_reach_id).isin(set(flipped)).to_numpy()
+    out.loc[sel, "geometry"] = shapely.reverse(out.geometry[sel].to_numpy())
+    return out
+
+
 def read_sword_reaches(
     paths: Sequence[str | Path], wgs84_bounds: tuple[float, float, float, float]
 ) -> gpd.GeoDataFrame:
-    """Read and clip the reaches of all regional files to a WGS84 box.
+    """Read and clip the reaches of all regional files to a WGS84 box, lines downstream.
 
-    Reaches are clipped to the box (geometry cut at its edge), as rule 02
-    always did; regions without reaches in the box contribute nothing.
+    Reaches are clipped to the box (geometry cut at its edge); regions without
+    reaches in the box contribute nothing. Line direction is set after the
+    clip, from the neighbours inside the box.
     """
     parts = []
     for path in paths:
@@ -87,7 +108,7 @@ def read_sword_reaches(
         reaches.crs
     )
     reaches = gpd.clip(reaches, clip_box).reset_index(drop=True)
-    return to_pipeline_schema(reaches)
+    return orient_reaches_downstream(to_pipeline_schema(reaches))
 
 
 def read_sword_nodes(

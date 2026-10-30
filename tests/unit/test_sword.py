@@ -70,6 +70,16 @@ def test_reaches_are_clipped_to_the_box(regions):
     assert rivers.geometry.iloc[0].bounds[2] == pytest.approx(0.25)
 
 
+def test_reach_drawn_upstream_is_reversed(tmp_path):
+    up = _reach(31, 0.0, dn=(32,))
+    down = _reach(32, 0.5, up=(31,))
+    down["geometry"] = LineString([(1.0, 0.0), (0.75, 0.0), (0.5, 0.0)])
+    path = _region(tmp_path / "sword_EU_v17c.gpkg", [up, down])
+    rivers = read_sword_reaches([path], (-1.0, -1.0, 2.0, 1.0)).set_index("reach_id")
+    assert list(rivers.loc[31].geometry.coords) == [(0.0, 0.0), (0.5, 0.0)]
+    assert list(rivers.loc[32].geometry.coords) == [(0.5, 0.0), (0.75, 0.0), (1.0, 0.0)]
+
+
 def test_no_reach_in_box_fails_loudly(regions):
     with pytest.raises(ValueError, match="No SWORD reach"):
         read_sword_reaches(regions, (100.0, 10.0, 101.0, 11.0))

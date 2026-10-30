@@ -9,6 +9,7 @@ from shapely.geometry import LineString
 from src.water_surface import (
     build_water_surface,
     condition_channels_to_surface,
+    raise_wet_cells_to,
     read_water_surface,
     river_cells_at_surface,
     sample_centrelines,
@@ -375,3 +376,13 @@ def test_no_sea_mouth_fails_loudly(water_surface_cfg):
             water_surface_cfg,
             sea_level_m=0.0,
         )
+
+
+def test_raise_wet_cells_lifts_only_wet_masked_cells_below_the_level():
+    ini = np.array([[0.5, 2.0, np.nan], [0.1, 0.1, 0.1]], dtype=np.float32)
+    mask = np.array([[True, True, True], [True, False, False]])
+    out, n = raise_wet_cells_to(ini, mask, 1.0)
+    np.testing.assert_array_equal(out[0, :2], [1.0, 2.0])
+    assert np.isnan(out[0, 2])
+    np.testing.assert_allclose(out[1], [1.0, 0.1, 0.1], rtol=1e-6)
+    assert n == 2

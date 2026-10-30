@@ -680,3 +680,16 @@ def river_cells_at_surface(
     _, nearest = tree.query(np.column_stack([xs, ys]))
     out[rows, cols] = nodes["level_m"].to_numpy(dtype=np.float32)[nearest]
     return out, int(rows.size)
+
+
+def raise_wet_cells_to(
+    ini: np.ndarray, wet_mask: np.ndarray, level_m: float
+) -> tuple[np.ndarray, int]:
+    """Return the initial water level with wet_mask cells below level_m raised to it.
+
+    NaN cells (dry, no initial level) stay NaN.
+    """
+    raise_ = wet_mask & np.isfinite(ini) & (ini < level_m)
+    out = ini.copy()
+    out[raise_] = np.float32(level_m)
+    return out, int(raise_.sum())
