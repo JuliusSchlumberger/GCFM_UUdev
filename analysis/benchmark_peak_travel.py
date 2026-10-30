@@ -1,11 +1,12 @@
-"""Benchmark rule 11's walled peak travel time against the crest-calibration SFINCS run.
+"""Benchmark rule 11's walled peak travel time against a held-sea copy of its calibration run.
 
-Rule 11 holds the sea at the coastal protection storm tide from the start
-(zsini no lower than it) and ramps only the rivers, so every water-level
-change in its calibration runs is the river's. Per forcing point, along the
-mainstem rule 11 sizes its run on, in round 1 (confined by 1000 m walls: the
-walled case itself; round 2 matches it wherever no production crest is
-overtopped):
+Rule 11's rounds force the sea with the storm-tide hydrograph, so their levels
+mix the sea's rise with the river's. `--run` copies round 1 (confined by 1000 m
+walls: the walled case itself) to <results_dir>/../scratch_peak_travel/<basin>/held_sea/,
+holds every boundary point at its peak level from the start, raises the wet
+initial cells (sea and river channel) to at least the highest of them, and
+reruns SFINCS there; every water-level change in that run is the river's.
+Per forcing point, along the mainstem rule 11 sizes its run on:
 
   observed: t50 of the water level at each node (first time its rise from the
   run start reaches half its rise to the run end) minus t50 of the forcing
@@ -20,18 +21,20 @@ MIN_RISE_M. A run whose sea boundary changes over time is refused. tau95 (hours
 before the peak the inflow stays within 5 % of it) of the RP100 GloFAS event at
 the main inflow sets the scale an error matters on for the compound lag.
 
-Reads rule 11's outputs (node table, depth-estimated network,
-depth_crest_calibration/round1/), river_forcing.nc and config; writes
+Reads rule 11's outputs (node table, depth-estimated network), the held-sea
+run, river_forcing.nc and config; writes
 <results_dir>/figures/analysis/benchmark_peak_travel_summary.csv (one row per
 basin and forcing point) and, per basin, <results_dir>/<basin>/figures/analysis/
 90_benchmark_peak_travel_nodes.csv and _benchmark.png.
 
 Usage:
-    python analysis/benchmark_peak_travel.py            # every basin with a calibration run
+    python analysis/benchmark_peak_travel.py --run 2433835   # build and run the held-sea copy
+    python analysis/benchmark_peak_travel.py            # every basin with a held-sea run
     python analysis/benchmark_peak_travel.py 2433835 3279946
 """
 
 import logging
+import shutil
 
 import matplotlib
 
@@ -101,12 +104,60 @@ def _event_tau95(river_forcing_path, event_cfg: dict) -> float:
     return hours_before_peak_within(ds["time"].values.astype(float), q[main], 0.95)
 
 
+def held_sea_dir(results_dir, basin_id: str):
+    """Return the held-sea copy of a basin's round 1."""
+    return results_dir.parent / "scratch_peak_travel" / basin_id / "held_sea"
+
+
+def run_held_sea(results_dir, basin_id: str, threads: int) -> None:
+    """Copy round 1, hold its sea at each boundary point's peak, and run SFINCS."""
+    from src.io import site_setting
+    from src.sfincs_run import run_sfincs_subprocess
+
+    src = (
+        results_dir
+        / basin_id
+        / "preprocessing_inputs"
+        / "depth_crest_calibration"
+        / "round1"
+    )
+    dst = held_sea_dir(results_dir, basin_id)
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(
+        src,
+        dst,
+        ignore=shutil.ignore_patterns("sfincs_map.nc", "sfincs_his.nc", "*.rst"),
+    )
+    bzs = np.loadtxt(dst / "sfincs.bzs", ndmin=2)
+    held = bzs[:, 1:].max(axis=0)
+    bzs[:, 1:] = held
+    np.savetxt(dst / "sfincs.bzs", bzs, fmt=["%7.1f"] + ["%7.3f"] * len(held))
+    # Binary float32 initial levels; dry cells hold -9999.
+    ini = np.fromfile(dst / "sfincs.ini", dtype="<f4")
+    wet = ini > -9000.0
+    ini[wet] = np.maximum(ini[wet], np.float32(held.max()))
+    ini.tofile(dst / "sfincs.ini")
+    log.info(
+        f"{basin_id}: sea held at {held.min():+.2f}..{held.max():+.2f} m, "
+        f"{int(wet.sum()):,} wet initial cell(s) raised to at least {held.max():+.2f} m; running in {dst}"
+    )
+    run_sfincs_subprocess(
+        site_setting("sfincs_exe"),
+        dst,
+        6 * 3600,
+        log,
+        label=f"held-sea timing run ({basin_id})",
+        n_threads=threads,
+    )
+
+
 def benchmark_basin(results_dir, basin_id: str, cfg: dict) -> pd.DataFrame | None:
     from src.river_network import build_downstream_adjacency, normalize_reach_id
     from src.river_profile import walled_travel_time
 
     pre = results_dir / basin_id / "preprocessing_inputs"
-    run = pre / "depth_crest_calibration" / "round1"
+    run = held_sea_dir(results_dir, basin_id)
     nodes_path = (
         pre
         / "visuals"
@@ -115,13 +166,13 @@ def benchmark_basin(results_dir, basin_id: str, cfg: dict) -> pd.DataFrame | Non
         / f"{basin_id}_river_bed_nodes.csv"
     )
     if not (run / "sfincs_map.nc").exists() or not nodes_path.exists():
-        log.info(f"{basin_id}: skipped, no calibration run or node table")
+        log.info(f"{basin_id}: skipped, no held-sea run (--run) or node table")
         return None
     bzs = np.loadtxt(run / "sfincs.bzs", ndmin=2)
     if np.abs(bzs[:, 1:] - bzs[0, 1:]).max() > SEA_HELD_TOL_M:
         log.info(
-            f"{basin_id}: skipped, the calibration sea boundary changes over the run "
-            f"(run predates the held-sea setup) -- rerun rule modelled_depth_estimation"
+            f"{basin_id}: skipped, the sea boundary of {run} changes over the run "
+            f"-- rebuild it with --run"
         )
         return None
 
@@ -271,13 +322,24 @@ def main() -> None:
     parser.add_argument(
         "basin_ids",
         nargs="*",
-        help="basin ids (default: every basin with a calibration run)",
+        help="basin ids (default: every basin with a held-sea run)",
     )
+    parser.add_argument(
+        "--run",
+        action="store_true",
+        help="build and run the held-sea copy of round 1 for the given basins first",
+    )
+    parser.add_argument("--threads", type=int, default=8)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     results_dir = site_path("results_dir")
     cfg = _config()
+    if args.run:
+        if not args.basin_ids:
+            raise SystemExit("--run needs basin ids")
+        for b in args.basin_ids:
+            run_held_sea(results_dir, b, args.threads)
     basin_ids = args.basin_ids or sorted(
         p.name for p in results_dir.iterdir() if p.name.isdigit()
     )
@@ -286,7 +348,7 @@ def main() -> None:
     ]
     if not tables:
         raise SystemExit(
-            f"No basin with a held-sea crest-calibration run under {results_dir}"
+            f"No basin with a held-sea run under {results_dir.parent / 'scratch_peak_travel'}"
         )
     df = pd.concat(tables, ignore_index=True)
     df.to_csv(

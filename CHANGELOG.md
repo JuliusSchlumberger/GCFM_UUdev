@@ -3,6 +3,22 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-10-30b: crest calibration against the storm-tide hydrograph; held sea only for timing (- JS)
+
+- **Rule 11 sea boundary:** rounds 1 and 2 force every station with the event
+  runs' storm-tide wave (`src.surge.storm_tide_event` at the coastal protection
+  RP), peaking at `ramp_hr + T_walled`, when the calibration discharge reaches
+  the coast, and blended in linearly from the calm level over `ramp_hr`.
+  - Replaces the sea held at the storm tide from t = 0. Crests now see the
+    wave production sends, including its tide.
+  - The sea starts calm; sea and channel cells are no longer raised to the
+    storm tide at the start.
+- **Timing check:** `analysis/benchmark_peak_travel.py --run <basin>` copies
+  round 1, holds the sea at each boundary point's peak, raises the wet initial
+  cells to it and reruns SFINCS in `<results_dir>/../scratch_peak_travel/`; the
+  benchmark reads that run instead of round 1.
+- Rule 11 and everything after it rerun on every basin.
+
 # 2026-10-30: adaptation_modelling (PR #17) merged into the restructured pipeline (- JS)
 
 Kiara's changes of 2026-10-21 to 2026-10-27 (entries below, `-KL`) were
