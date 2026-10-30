@@ -361,8 +361,8 @@ the rivers:
   (`src.surge.storm_tide_event`: average tide plus the surge shape, peaking at
   its storm tide at the FLOPROS coastal return period), with the peak at
   `ramp_hr + T_walled`, when the calibration discharge reaches the coast, so
-  river and surge maxima coincide; it is blended in linearly from the calm level
-  over `ramp_hr`, and the sea starts calm. The arrival time of the river at the
+  river and surge maxima coincide; it is blended in from the calm level over
+  `ramp_hr` with the rivers' half-cosine weight, and the sea starts calm. The arrival time of the river at the
   mouth is checked separately, on a copy of round 1 with the sea held at the
   storm tide (`analysis/benchmark_peak_travel.py --run`);
 - rivers: each crossing from its reach's mean discharge (the flow that holds the

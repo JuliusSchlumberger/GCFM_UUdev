@@ -12,7 +12,7 @@ at calm_sea_level_m. Forcing: every sea station gets the storm-tide hydrograph
 of the event runs (src.surge.storm_tide_event: average tide + surge shape,
 peaking at its storm tide at the FLOPROS coastal RP) with the peak at
 ramp_hr + T_walled, when the calibration discharge reaches the coast, blended
-in linearly from the calm level over ramp_hr; every crossing ramped over
+in from the calm level over ramp_hr with the half-cosine ramp; every crossing ramped over
 ramp_hr (half-cosine, src.river_forcing.cosine_ramp)
 from its mean discharge to the discharge at the protection RP (bankfull as
 fallback), then held to the run end. Run length: ramp_hr + T_walled +
@@ -1213,7 +1213,8 @@ sf.water_level.create_boundary_points_from_mask(bnd_dist=5000.0)
 if surge_protection_rp_yr is not None:
     # The event runs' storm-tide wave, peaking when the calibration discharge
     # reaches the coast, so river and surge maxima coincide (conservative at
-    # the mouth); blended in from the calm level, where the sea starts.
+    # the mouth); blended in from the calm level, where the sea starts, with
+    # the rivers' half-cosine ramp.
     # On a boundary sample (hourly), so the forcing reaches the peak level exactly.
     surge_peak_hr = float(np.round(ramp_hr + t_walled_hr))
     _surge_time_hr = np.arange(0.0, run_hr + 1e-9, 1.0)
@@ -1224,11 +1225,7 @@ if surge_protection_rp_yr is not None:
             coastal_design_peaks,
             rp_yr=surge_protection_rp_yr,
         )
-    _blend = (
-        np.clip(_surge_time_hr / ramp_hr, 0.0, 1.0)
-        if ramp_hr > 0
-        else np.ones_like(_surge_time_hr)
-    )
+    _blend = cosine_ramp(_surge_time_hr, 0.0, ramp_hr)
     _sea = np.round(calm_sea_level_m + _blend[None, :] * (_event - calm_sea_level_m), 2)
     sf.water_level.create(
         timeseries=pd.DataFrame(
@@ -1245,7 +1242,7 @@ if surge_protection_rp_yr is not None:
     log.info(
         f"Rounds 1-2 coastal forcing: RP {surge_protection_rp_yr:.1f} storm-tide hydrograph at "
         f"{len(_surge_stations)} station(s), peaks {coastal_design_peaks.min():+.2f}..{coastal_design_peaks.max():+.2f} m "
-        f"at {surge_peak_hr:.1f} h (river arrival), blended in from {calm_sea_level_m:+.2f} m over {ramp_hr:g} h"
+        f"at {surge_peak_hr:.1f} h (river arrival), half-cosine blended in from {calm_sea_level_m:+.2f} m over {ramp_hr:g} h"
     )
 else:
     sf.water_level.create_timeseries(shape="constant", offset=calm_sea_level_m)
