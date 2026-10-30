@@ -22,7 +22,7 @@ rule sanity_checks:
         run_label                  = "spinup",
         min_inundation_depth_m     = config["sfincs"]["sanity_checks"]["min_inundation_depth_m"],
         animation_fps              = config["sfincs"]["sanity_checks"]["animation_fps"],
-        spinup_days                = config["sfincs"]["spinup"]["spinup_days"],
+        spinup_days                = lambda wildcards: spinup_days(wildcards.basin_id),
     threads: rule_threads("sanity_checks")
     log:
         "logs/{basin_id}/13b_sanity_checks.log"

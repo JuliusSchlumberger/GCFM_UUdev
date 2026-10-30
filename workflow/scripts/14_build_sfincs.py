@@ -91,9 +91,15 @@ compound_lag_hr = float(snakemake.params.compound_lag_hr)
 river_event = snakemake.params.river_event
 # Target global-mean SLR (m); 0.0 when SLR is disabled, leaving the MDT-only fields.
 effective_slr_m = float(snakemake.params.slr_m) if snakemake.params.slr_enabled else 0.0
-# The spin-up restart has no SLR: the SLR term rises in over the event's first
-# hours instead of stepping in at the event start (src.surge._ramp_in_slr).
+# The spin-up restart has the spin-up scenario's SLR: the SLR term goes from
+# it to the scenario's over the event's first hours instead of stepping at the
+# event start (src.surge._ramp_in_slr).
 slr_ramp_hr = float(snakemake.params.slr_ramp_hr)
+spinup_slr_m = (
+    float(snakemake.params.spinup_slr_m)
+    if bool(snakemake.params.include_rstart)
+    else 0.0
+)
 flat_boundary_point_spacing_m = snakemake.params.flat_boundary_point_spacing_m
 water_level_buffer_m = snakemake.params.water_level_buffer_m
 include_rstart = snakemake.params.include_rstart
@@ -182,7 +188,11 @@ else:
 
     wl_df = pd.DataFrame(
         data=build_design_surge_matrix(
-            surge_ds, surge_rp_yr, slr_m=effective_slr_m, slr_ramp_hr=slr_ramp_hr
+            surge_ds,
+            surge_rp_yr,
+            slr_m=effective_slr_m,
+            slr_ramp_hr=slr_ramp_hr,
+            spinup_slr_m=spinup_slr_m,
         ).T,
         index=surge_times,
         columns=range(n_stations),
@@ -196,7 +206,7 @@ else:
     log.info(
         f"Water-level forcing: {n_stations} stations, {len(surge_times)} time steps "
         f"(SLR: {effective_slr_m:+.3f} m target × per-station fingerprint, "
-        f"ramped in over {slr_ramp_hr:g} h after the event start)"
+        f"ramped from the spin-up's {spinup_slr_m:+.3f} m over {slr_ramp_hr:g} h after the event start)"
     )
 sf.water_level.write()
 

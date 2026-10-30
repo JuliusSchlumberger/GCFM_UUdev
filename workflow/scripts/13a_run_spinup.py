@@ -6,16 +6,19 @@ relative path (src.sfincs_run.forward_geometry_files), as in 14_build_sfincs.py.
 
 Forcing, held constant over spinup_days: each crossing's mean_discharge_m3s (the
 record's grand mean, the base flow every event hydrograph starts from) and
-each station's calm-sea level (calm_sea_levels, where every event's boundary
-lead-in starts). Matching both avoids a jump at the restart; an RP=1 spin-up
+each station's calm-sea level plus the spin-up scenario's SLR (config
+sfincs.spinup.scenario; calm_sea_levels, where every event's boundary lead-in
+starts). Matching both avoids a jump at the restart; an RP=1 spin-up
 sea dropped the boundary 0.30 m at the event start (basin 2433835) and
 overtopped the coastal dike during spin-up.
 
-Writes, under results/{basin_id}/spin_up/: sfincs.inp, the restart
-sfincs.YYYYMMDD.HHMMSS.rst at t = spinup_days, sfincs_map.nc/sfincs_his.nc;
+Writes, under results/{basin_id}/spin_up/: sfincs.inp, the restart at
+t = spinup_days (SFINCS's sfincs.YYYYMMDD.HHMMSS.rst, renamed to
+sfincs.spinup.rst), sfincs_map.nc/sfincs_his.nc;
 and the spin-up's forcing and max flood depth figures.
 """
 
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -53,7 +56,7 @@ resolution_m = snakemake.params.resolution_m
 tref_str = snakemake.params.tref
 spinup_days = snakemake.params.spinup_days
 sfincs_exe = Path(snakemake.params.sfincs_exe)
-rst_fname = snakemake.params.rst_fname  # e.g. sfincs.20000102.000000.rst
+rst_fname = snakemake.params.rst_fname  # fixed name (00_common RST_FNAME)
 dtmapout_s = int(snakemake.params.dtmapout_s)
 dthisout_s = int(snakemake.params.dthisout_s)
 timeout_s = int(snakemake.params.timeout_s)
@@ -117,7 +120,9 @@ stations_gdf = gpd.GeoDataFrame(
     crs="EPSG:4326",
 )
 start_level = read_calm_sea_level_m(surge_ds)
-calm_levels = calm_sea_levels(surge_ds)  # (n_station,)
+spinup_slr_m = float(snakemake.params.spinup_slr_m)
+# Each station's calm level plus the spin-up scenario's SLR x fingerprint.
+calm_levels = calm_sea_levels(surge_ds, spinup_slr_m)  # (n_station,)
 ramp_end = tref + timedelta(hours=min(boundary_ramp_hr, spinup_days * 24.0))
 wl_times = pd.DatetimeIndex(sorted({tref, ramp_end, tstop}))
 wl_values = np.array(
@@ -128,7 +133,7 @@ sf.water_level.create(
     timeseries=wl_df, locations=stations_gdf, buffer=water_level_buffer_m
 )
 log.info(
-    f"Water-level forcing: {n_stations} station(s) at the calm-sea level "
+    f"Water-level forcing: {n_stations} station(s) at the calm-sea level + {spinup_slr_m:g} m SLR "
     f"({calm_levels.min():+.2f}..{calm_levels.max():+.2f} m; ramped from the starting sea "
     f"{start_level:+.2f} m over {boundary_ramp_hr:.1f} h), held until {tstop}"
 )
@@ -221,13 +226,17 @@ run_sfincs_subprocess(
     n_threads=snakemake.threads,
 )
 
-rst_path = spin_up_root / rst_fname
-if not rst_path.exists():
+# SFINCS names the restart by its time; the workflow uses one fixed name, so
+# the spin-up length can differ per basin.
+sfincs_rst = spin_up_root / f"sfincs.{tstop.strftime('%Y%m%d.%H%M%S')}.rst"
+if not sfincs_rst.exists():
     written = [f.name for f in spin_up_root.iterdir() if f.is_file()]
     raise FileNotFoundError(
-        f"SFINCS ran but expected restart file not found: {rst_path}\n"
+        f"SFINCS ran but expected restart file not found: {sfincs_rst}\n"
         f"Files in spin_up dir: {written}"
     )
+rst_path = spin_up_root / rst_fname
+os.replace(sfincs_rst, rst_path)
 log.info(f"Restart file written: {rst_path} ({rst_path.stat().st_size / 1e6:.1f} MB)")
 
 # ── forcing figure ──

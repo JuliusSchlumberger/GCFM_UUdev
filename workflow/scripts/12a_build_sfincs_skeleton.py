@@ -27,7 +27,7 @@ import pandas as pd
 import xarray as xr
 import yaml
 from rasterio.transform import Affine
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 from hydromt_sfincs import SfincsModel
 
 from src.grid import create_model_grid, load_grid_def
@@ -50,7 +50,8 @@ from src.raster import FLOAT_NODATA, dry_isolated_sea_cells, read_on_grid
 from src.river_burn import build_channel_mask_regular
 from src.river_network import normalize_reach_id
 from src.surge import read_calm_sea_level_m
-from src.water_surface import river_cells_at_surface
+from src.river_depth_calibration import mouth_sections
+from src.water_surface import read_water_surface, river_cells_at_surface
 
 plt.ioff()
 
@@ -103,6 +104,8 @@ outflow_buffer_m = snakemake.params.outflow_buffer_m
 n_top_crossings = snakemake.params.n_top_crossings
 n_per_crossing = snakemake.params.n_per_crossing
 max_downstream_hops = snakemake.params.max_downstream_hops
+mouth_upstream_m = float(snakemake.params.mouth_upstream_m)
+mouth_section_margin_m = float(snakemake.params.mouth_section_margin_m)
 
 skeleton_root.mkdir(parents=True, exist_ok=True)
 
@@ -523,6 +526,26 @@ if n_active >= 1 and not rivers.empty:
             f"Crossing rank {rank + 1} (Q={bankfull_vals[ci]:.0f} m³/s): "
             f"{N_OBS_PER_CROSSING} obs points along {len(dn_rows)} downstream reaches"
         )
+
+# One obs point and one cross-section at every river mouth (rule 10's mouth
+# nodes, mouth_upstream_m up their reach): level and discharge where river and
+# surge peaks meet (analysis/peak_lag.py).
+surface_nodes, _ = read_water_surface(snakemake.input.water_surface)
+mouths = mouth_sections(
+    surface_nodes.to_crs(sf.crs), mouth_upstream_m, mouth_section_margin_m
+)
+mouths["obs_index"] = range(len(obs_points_list), len(obs_points_list) + len(mouths))
+for _, m in mouths.iterrows():
+    obs_points_list.append(
+        {"obs_id": len(obs_points_list) + 1, "geometry": Point(m["x"], m["y"])}
+    )
+if len(mouths):
+    sf.cross_sections.set(mouths[["name", "geometry"]], merge=False)
+mouths.to_file(snakemake.output.mouths, driver="GPKG")
+log.info(
+    f"River mouths: {len(mouths)} obs point(s) and cross-section(s) "
+    f"{mouth_upstream_m:g} m upstream of rule 10's mouth nodes"
+)
 
 if obs_points_list:
     obs_gdf = gpd.GeoDataFrame(obs_points_list, crs=sf.crs)

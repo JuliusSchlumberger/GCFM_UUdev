@@ -174,3 +174,52 @@ def bifurcation_cross_sections(
         columns=["name", "parent_reach", "arm_reach", "width_m", "geometry"],
         crs=rivers.crs,
     )
+
+
+def mouth_sections(
+    surface_nodes: gpd.GeoDataFrame,
+    upstream_m: float = 1000.0,
+    margin_m: float = 150.0,
+) -> gpd.GeoDataFrame:
+    """Return a cross-section line at every river mouth, upstream_m up its reach.
+
+    surface_nodes: rule 10's node table (src.water_surface.read_water_surface:
+    reach_id, chainage_m, width_m, is_mouth, point geometry), in a projected
+    CRS. Per mouth node, the node of the same reach nearest upstream_m upstream
+    (at most the reach start) carries a line perpendicular to the reach,
+    spanning its width plus margin_m on each side. Columns: name
+    (mouth_<reach>), reach_id, node_id, width_m, x, y (the section centre,
+    for an observation point), geometry.
+    """
+    rows = []
+    for _, mouth in surface_nodes[surface_nodes["is_mouth"].astype(bool)].iterrows():
+        reach = surface_nodes[
+            surface_nodes["reach_id"] == mouth["reach_id"]
+        ].sort_values("chainage_m")
+        target = float(mouth["chainage_m"]) - upstream_m
+        k = int(np.argmin(np.abs(reach["chainage_m"].to_numpy(float) - target)))
+        node = reach.iloc[k]
+        nb = reach.iloc[[max(k - 1, 0), min(k + 1, len(reach) - 1)]]
+        dx = nb.geometry.x.iloc[1] - nb.geometry.x.iloc[0]
+        dy = nb.geometry.y.iloc[1] - nb.geometry.y.iloc[0]
+        norm = float(np.hypot(dx, dy)) or 1.0
+        w = float(node["width_m"]) if np.isfinite(float(node["width_m"])) else 0.0
+        half = w / 2.0 + margin_m
+        nx, ny = -dy / norm * half, dx / norm * half
+        px, py = node.geometry.x, node.geometry.y
+        rows.append(
+            {
+                "name": f"mouth_{mouth['reach_id']}",
+                "reach_id": mouth["reach_id"],
+                "node_id": node["node_id"],
+                "width_m": w,
+                "x": px,
+                "y": py,
+                "geometry": LineString([(px - nx, py - ny), (px + nx, py + ny)]),
+            }
+        )
+    return gpd.GeoDataFrame(
+        rows,
+        columns=["name", "reach_id", "node_id", "width_m", "x", "y", "geometry"],
+        crs=surface_nodes.crs,
+    )

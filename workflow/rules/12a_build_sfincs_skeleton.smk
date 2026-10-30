@@ -26,6 +26,8 @@ rule build_sfincs_skeleton:
         # Plot background only; the water-level boundary uses landuse_on_grid.
         land_mask_on_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
         river_network     = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
+        # Rule 10's node table: its is_mouth nodes place the mouth obs points and cross-sections.
+        water_surface     = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_water_surface.gpkg"),
         delta_outflow_points = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_outflow_points.gpkg"),
         # On this model's grid: main "manning" field and weir diagnostics.
         landuse_on_grid   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_on_grid.tif"),
@@ -41,6 +43,9 @@ rule build_sfincs_skeleton:
         surge_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         river_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
     output:
+        # Mouth obs points (index into sfincs.obs) and cross-sections (sfincs.crs)
+        # every event run inherits; read by analysis/peak_lag.py.
+        mouths         = results_path("{basin_id}/sfincs_skeleton/{basin_id}_mouths.gpkg"),
         sfincs_inp     = results_path("{basin_id}/sfincs_skeleton/sfincs.inp"),
         sfincs_subgrid = results_path("{basin_id}/sfincs_skeleton/sfincs_subgrid.nc"),
         sfincs_weir    = results_path("{basin_id}/sfincs_skeleton/sfincs.weir"),
@@ -65,6 +70,8 @@ rule build_sfincs_skeleton:
         n_top_crossings    = config["sfincs"]["observation_points"]["n_top_crossings"],
         n_per_crossing     = config["sfincs"]["observation_points"]["n_per_crossing"],
         max_downstream_hops = config["sfincs"]["observation_points"]["max_downstream_hops"],
+        mouth_upstream_m   = config["sfincs"]["observation_points"]["mouth_upstream_m"],
+        mouth_section_margin_m = config["sfincs"]["observation_points"]["mouth_section_margin_m"],
     threads: rule_threads("build_sfincs_skeleton")
     log:
         "logs/{basin_id}/12a_build_sfincs_skeleton.log"

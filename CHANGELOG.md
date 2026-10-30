@@ -3,6 +3,31 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-10-30c: spin-up at mean conditions with SLR; per-basin spin-up and lag; mouth outputs (- JS)
+
+- **Spin-up scenario:** `sfincs.spinup.scenario` (`mean_03SLR`) sets the
+  spin-up's SLR: the sea is held at each station's calm level + its `slr_m` x
+  fingerprint (tide-averaged), the rivers at their mean discharge. It must be a
+  mean-conditions scenario (river `Mean`, surge `Tide` or null).
+  - Event boundaries ramp the SLR term from the spin-up's to the scenario's
+    over `slr_ramp_hr` (`src.surge._ramp_in_slr`), so a 0.3 m scenario
+    restarts without a step and without a ramp.
+- **Per-basin spin-up length:** `sfincs.spinup.spinup_overrides_days` sets a
+  basin's spin-up and, with it, its forcing lead-in (rule 07d), which the event
+  run must match. The restart is renamed to the fixed `spin_up/sfincs.spinup.rst`.
+- **Per-basin compound lag:** `compound.lag_overrides_hr` (> 0 delays the
+  river).
+- **River mouths:** the skeleton adds an obs point and a cross-section
+  (`sfincs.crs`) `observation_points.mouth_upstream_m` (1 km) up every mouth
+  reach (rule 10's mouth nodes; `src.river_depth_calibration.mouth_sections`),
+  inherited by every event run, and writes `<basin>_mouths.gpkg`.
+- **`analysis/peak_lag.py`:** surge and river peak arrival at every mouth from
+  a coastal-only and a river-only run (default `coast_100_03SLR`,
+  `river_100_03SLR`; river discharge tide-filtered) and the lag that makes
+  them coincide at the main mouth.
+- The forcing (rule 07d) of a basin with a spin-up override, the skeleton, the
+  spin-up and every event run rebuild.
+
 # 2026-10-30b: crest calibration against the storm-tide hydrograph; held sea only for timing (- JS)
 
 - **Rule 11 sea boundary:** rounds 1 and 2 force every station with the event

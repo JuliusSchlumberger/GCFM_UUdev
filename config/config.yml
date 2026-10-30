@@ -262,12 +262,15 @@ sfincs:
     # driver alone (river_only/coastal_only); both null -> invalid.
     flat_boundary_point_spacing_m: 5000   # boundary-point spacing along the water-level mask, used only when mode="river_only"
     compound:
-      lag_hr: 0 # Shifts the river discharge timeseries relative to the surge timeseries
-    slr_ramp_hr: 24  # the spin-up is shared by all scenarios and has no SLR, so a scenario's
-                        # slr_m would otherwise hit the restart as a step at the event start (a 0.34 m
-                        # step overtopped ~1670 of 1789 coastal weir segments in basin 2433835 within
-                        # the first hour). The SLR term instead rises linearly from 0 over this many
-                        # hours after the event start; must end before the surge/river peak.
+      lag_hr: 0 # Shifts the river discharge timeseries relative to the surge timeseries (> 0 delays the river)
+      lag_overrides_hr: {}  # per basin id, from analysis/peak_lag.py: the shift that makes the river and
+                            # surge peaks reach the main mouth together (coast and river runs of one RP/SLR)
+    slr_ramp_hr: 24  # the spin-up is shared by all scenarios and has the spin-up scenario's SLR, so a
+                        # scenario with another slr_m would otherwise hit the restart as a step at the event
+                        # start (a 0.34 m step overtopped ~1670 of 1789 coastal weir segments in basin
+                        # 2433835 within the first hour). The SLR term instead goes linearly from the
+                        # spin-up's to the scenario's over this many hours after the event start; must
+                        # end before the surge/river peak.
                         # 0 = old behaviour (step). A param of rule 14 only: changing it rebuilds
                         # the scenarios, never rule 07d or the spin-up.
   grid:
@@ -289,6 +292,9 @@ sfincs:
     n_top_crossings: 2           # number of highest-Q boundary crossings to trace downstream
     n_per_crossing: 5            # observation points placed per crossing
     max_downstream_hops: 200     # river-network traversal limit per crossing
+    mouth_upstream_m: 1000       # an obs point and a cross-section (crsfile) at every river mouth (rule 10's
+                                 # is_mouth nodes), this far upstream of it along its reach, for the peak lag
+    mouth_section_margin_m: 150  # cross-section length beyond each bank (m)
 
   simulation: # Main EVENT model config
     tref: "2000-01-01 00:00:00"  # reference datetime; forcing timeseries are in "hours since tref"
@@ -302,7 +308,11 @@ sfincs:
                                   # shared by both the spin-up and main event runs
   spinup: # Spin-up simulation with constant forcings
     enabled: true                # run a spin-up + create a restart file before the main event run
-    spinup_days: 2               # days of constant mean-discharge forcing to reach steady river state
+    spinup_days: 2               # days of constant mean-discharge forcing to reach steady river state; also
+                                 # the forcing lead-in (boundary_forcings.lead_days must equal it)
+    spinup_overrides_days: {}    # per basin id: spin-up length, and so that basin's forcing lead-in (days)
+    scenario: mean_03SLR         # mean-conditions scenario of the spin-up: mean discharge, sea held at the calm
+                                 # level + its slr_m x fingerprint (tide-averaged); every event restarts from it
     boundary_ramp_hr: 6.0     # the spin-up sea is held at each station's calm-sea level (the event lead-in's own level; the river stays at its mean discharge); the boundary ramps linearly from the sea's starting level (rounded basin mean) to those station levels over this many hours -- normally identical, but a step at the boundary sends a front in that can overtop the coastal dike (basin 2433835: a 0.30 m step gave up to +1.1 m at a 0.40 m crest)
     dthisout_s: 3600              # obs-point output interval during spinup (s) — for validation plot
     dtmapout_s: 3600              # map snapshot interval during spinup (s) — controls animation frame count
