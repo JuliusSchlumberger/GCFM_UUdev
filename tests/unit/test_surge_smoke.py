@@ -14,6 +14,7 @@ from src.surge import (
     load_coastrp_stations,
     load_mdt,
     lookup_storm_tide_at_rp,
+    periodic_tide,
     preview_station_rp_yr,
     read_calm_sea_level_m,
     sinusoidal_wave,
@@ -127,7 +128,7 @@ def test_design_matrix_with_hydrograph_peaks_at_storm_tide_at_rp_from_calm_start
     assert np.all(tide_only.max(axis=1) < level)
 
 
-def test_storm_tide_event_hits_peak_and_holds_tide_outside_window():
+def test_storm_tide_event_hits_peak_and_is_tide_outside_window():
     ds = _surge_ds(with_hydrograph=True)
     rel_hr = np.linspace(-20.0, 20.0, 81)
     level = storm_tide_at_rp_interpolated(ds, 30.0)
@@ -243,3 +244,14 @@ def test_slr_lead_in_holds_the_spinup_slr_and_ramps_to_the_scenario():
         up[:, -1], build_design_surge_matrix(ds, 10, slr_m=0.6)[:, -1]
     )
     assert start > 0
+
+
+def test_periodic_tide_repeats_outside_the_window():
+    hg_t = np.arange(-30.0, 30.01, 0.5)
+    tide = 0.5 * np.cos(2.0 * np.pi * hg_t / 12.5)
+    rel_hr = np.array([-80.0, -45.0, 0.0, 47.0, 95.5])
+    np.testing.assert_allclose(
+        periodic_tide(rel_hr, hg_t, tide),
+        0.5 * np.cos(2.0 * np.pi * rel_hr / 12.5),
+        atol=1e-9,
+    )

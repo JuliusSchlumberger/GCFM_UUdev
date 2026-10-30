@@ -262,9 +262,13 @@ sfincs:
     # driver alone (river_only/coastal_only); both null -> invalid.
     flat_boundary_point_spacing_m: 5000   # boundary-point spacing along the water-level mask, used only when mode="river_only"
     compound:
-      lag_hr: 0 # Shifts the river discharge timeseries relative to the surge timeseries (> 0 delays the river)
-      lag_overrides_hr: {}  # per basin id, from analysis/peak_lag.py: the shift that makes the river and
+      lag_hr: 0 # river peak minus surge peak (h) in compound runs with both a surge and a river RP
+                # (> 0 delays the river); the river keeps its place after the restart and the surge moves
+      lag_overrides_hr: {2433835: -12, 3279946: -41}  # per basin id, from analysis/peak_lag.py (placeholders until
+                            # it has run): the shift that makes the river and
                             # surge peaks reach the main mouth together (coast and river runs of one RP/SLR)
+    event_after_peak_hr: 60  # event runs go on at least this long after the last design peak (the surge
+                             # window may end later); the average tide carries on to the end
     slr_ramp_hr: 24  # the spin-up is shared by all scenarios and has the spin-up scenario's SLR, so a
                         # scenario with another slr_m would otherwise hit the restart as a step at the event
                         # start (a 0.34 m step overtopped ~1670 of 1789 coastal weir segments in basin
@@ -310,7 +314,7 @@ sfincs:
     enabled: true                # run a spin-up + create a restart file before the main event run
     spinup_days: 2               # days of constant mean-discharge forcing to reach steady river state; also
                                  # the forcing lead-in (boundary_forcings.lead_days must equal it)
-    spinup_overrides_days: {}    # per basin id: spin-up length, and so that basin's forcing lead-in (days)
+    spinup_overrides_days: {3279946: 6}  # per basin id: spin-up length, and so that basin's forcing lead-in (days)
     scenario: mean_03SLR         # mean-conditions scenario of the spin-up: mean discharge, sea held at the calm
                                  # level + its slr_m x fingerprint (tide-averaged); every event restarts from it
     boundary_ramp_hr: 6.0     # the spin-up sea is held at each station's calm-sea level (the event lead-in's own level; the river stays at its mean discharge); the boundary ramps linearly from the sea's starting level (rounded basin mean) to those station levels over this many hours -- normally identical, but a step at the boundary sends a front in that can overtop the coastal dike (basin 2433835: a 0.30 m step gave up to +1.1 m at a 0.40 m crest)

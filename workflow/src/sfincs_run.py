@@ -27,6 +27,38 @@ from src.river_burn import snap_points_to_centerline_cells
 logger = logging.getLogger(__name__)
 
 
+def event_timeline(
+    start_hr: float,
+    river_peak_hr: float,
+    window_hr: float,
+    ramp_hr: float,
+    after_peak_hr: float,
+    lag_hr: float,
+    surge_event: bool,
+    river_event: bool,
+) -> tuple[float, float, float]:
+    """Return (surge peak, river peak, end) in hours of an event run's forcing.
+
+    start_hr: the event start (restart); river_peak_hr: rule 07d's river
+    peak, which leaves room for the river's rising limb after the restart.
+    With both events lag_hr = river peak - surge peak: the river keeps its
+    place (or moves later for lag_hr > 0) and the surge moves. A surge alone
+    peaks right after its blend from the restart and its half-window; a tide
+    surge (no surge event) takes the river peak. The run ends after_peak_hr
+    after the last design peak, and not before the surge window closes.
+    """
+    if surge_event and river_event:
+        river_hr = river_peak_hr + max(lag_hr, 0.0)
+        surge_hr = river_hr - lag_hr
+    elif surge_event:
+        river_hr = surge_hr = start_hr + ramp_hr + window_hr
+    else:
+        river_hr = surge_hr = river_peak_hr
+    peaks = [p for p, on in ((surge_hr, surge_event), (river_hr, river_event)) if on]
+    end_hr = max([surge_hr + window_hr] + [p + after_peak_hr for p in peaks])
+    return surge_hr, river_hr, end_hr
+
+
 def parse_sfincs_inp(path: str | Path) -> dict[str, str]:
     """Parse a sfincs.inp file into a lowercased {key: value} dict.
 

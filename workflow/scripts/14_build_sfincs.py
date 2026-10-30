@@ -8,9 +8,10 @@ to the skeleton (src.sfincs_run.forward_geometry_files), never copied: HydroMT's
 config writer absolutizes any file reference outside the model root.
 
 forcing_mode (from scenario river_rp_yr/surge_rp_yr, scenario_params in 00_common.smk):
-  "compound"     — surge/tide boundary + river discharge. compound.lag_hr
-                   shifts discharge relative to surge (positive = river peak
-                   later).
+  "compound"     — surge/tide boundary + river discharge. With a surge and
+                   a river RP, compound.lag_hr is the river peak minus the
+                   surge peak (positive = river peak later); in storm-tide
+                   mode the surge moves and the river keeps its place.
   "coastal_only" — surge/tide boundary; discharge points kept with a zeroed
                    timeseries so the model structure matches other modes.
   "river_only"   — river discharge; flat boundary at river_only_flat_level_m,
@@ -42,6 +43,7 @@ from src.river_forcing import build_design_discharge_matrix
 from src.river_network import outflow_crossing_mask
 from src.sfincs_run import (
     FORCING_FILE_KEYS,
+    event_timeline,
     parse_sfincs_inp,
     place_discharge_points,
     write_sfincs_inp,
@@ -88,6 +90,7 @@ if isinstance(surge_rp_yr, str) and surge_rp_yr.strip().lower() == "tide":
 elif surge_rp_yr is not None:
     surge_rp_yr = float(surge_rp_yr)
 compound_lag_hr = float(snakemake.params.compound_lag_hr)
+event_after_peak_hr = float(snakemake.params.event_after_peak_hr)
 river_event = snakemake.params.river_event
 # Target global-mean SLR (m); 0.0 when SLR is disabled, leaving the MDT-only fields.
 effective_slr_m = float(snakemake.params.slr_m) if snakemake.params.slr_enabled else 0.0
@@ -119,20 +122,54 @@ skeleton_cfg = parse_sfincs_inp(skeleton_root / "sfincs.inp")
 
 # ── simulation config ──
 # Forcing time is "hours since simulation start", so t=0 maps to tref and any
-# fixed reference date works. tstop follows the end of the forcing files.
+# fixed reference date works.
 tref = datetime.strptime(tref_str, "%Y-%m-%d %H:%M:%S")
 
-with xr.open_dataset(surge_forcing_path, decode_times=False) as surge_ds:
-    surge_end_hr = float(surge_ds.time.max())
-with xr.open_dataset(river_forcing_path, decode_times=False) as river_ds:
-    river_end_hr = float(river_ds.time.max())
+surge_ds = xr.open_dataset(surge_forcing_path, decode_times=False)
+river_ds = xr.open_dataset(river_forcing_path, decode_times=False)
 
-sim_duration_hr = max(surge_end_hr, river_end_hr)
+
+def _is_event(rp_yr) -> bool:
+    return rp_yr is not None and not isinstance(rp_yr, str)
+
+
+# Storm-tide hydrograph mode: the event timeline is set here, not in rule 07d,
+# so a new compound lag rebuilds the event runs only (rule 11's crests stay).
+# The river keeps rule 07d's place after the restart; the surge peak, the run
+# length and so the time axis follow from the lag (src.sfincs_run.event_timeline).
+hydrograph_mode = "hg_peak_hr" in surge_ds.attrs
+if hydrograph_mode:
+    dt_hr = float(surge_ds.attrs.get("dt_hr", np.median(np.diff(surge_ds.time.values))))
+    start_hr = float(surge_ds.attrs["lead_days"]) * 24.0
+    river_period_hr = float(river_ds.attrs["period_hr"])
+    surge_peak_hr, river_peak_hr, sim_duration_hr = event_timeline(
+        start_hr,
+        float(river_ds.attrs["lead_days"]) * 24.0 + river_period_hr / 2.0,
+        float(surge_ds.attrs["hg_window_hr"]),
+        float(surge_ds.attrs.get("hg_ramp_hr", 0.0)),
+        event_after_peak_hr,
+        compound_lag_hr if forcing_mode == "compound" else 0.0,
+        surge_event=_is_event(surge_rp_yr),
+        river_event=_is_event(river_rp_yr),
+    )
+    sim_duration_hr = float(np.ceil(sim_duration_hr / dt_hr) * dt_hr)
+    event_times_hr = np.arange(0.0, sim_duration_hr + dt_hr / 2.0, dt_hr)
+    # The builders read only the time axis, the attrs and non-time variables.
+    surge_ds = surge_ds.drop_dims("time").assign_coords(time=event_times_hr)
+    surge_ds.attrs["hg_peak_hr"] = surge_peak_hr
+    river_ds = river_ds.drop_dims("time").assign_coords(time=event_times_hr)
+    river_ds.attrs["lead_days"] = (river_peak_hr - river_period_hr / 2.0) / 24.0
+    river_ds.attrs["event_start_hr"] = start_hr
+    log.info(
+        f"Event timeline: restart at {start_hr:.0f} h, surge peak at {surge_peak_hr:.0f} h, "
+        f"river peak at {river_peak_hr:.0f} h (lag {river_peak_hr - surge_peak_hr:+.0f} h), "
+        f"end at {sim_duration_hr:.0f} h"
+    )
+else:
+    sim_duration_hr = max(float(surge_ds.time.max()), float(river_ds.time.max()))
 tstop = tref + timedelta(hours=sim_duration_hr)
 
-log.info(
-    f"Simulation period: {tref} → {tstop} ({sim_duration_hr:.0f} h from forcing files)"
-)
+log.info(f"Simulation period: {tref} → {tstop} ({sim_duration_hr:.0f} h)")
 
 # The .create() calls slice timeseries by the in-memory model time. The
 # skeleton's sfincs.inp sets no tref/tstart/tstop, so the defaults (today's
@@ -171,7 +208,6 @@ if forcing_mode == "river_only":
         f"(forcing_mode='river_only')"
     )
 else:
-    surge_ds = xr.open_dataset(surge_forcing_path, decode_times=False)
     surge_times = pd.DatetimeIndex(
         [tref + timedelta(hours=float(h)) for h in surge_ds.time.values]
     )
@@ -212,7 +248,6 @@ sf.water_level.write()
 
 # ── river discharge forcing ──
 # Only has_glofas=1 crossings have an EVA fit; the others carry zero discharge.
-river_ds = xr.open_dataset(river_forcing_path, decode_times=False)
 # Crossings on a seed that flows out of the network (rule 08's
 # 'seed_flows_out') inject nothing -- they are free-outflow boundaries.
 active = river_ds.has_glofas.values.astype(bool) & ~outflow_crossing_mask(
@@ -254,7 +289,12 @@ else:
         columns=range(n_active),
     )
 
-    if forcing_mode == "compound" and compound_lag_hr != 0 and len(river_times) > 1:
+    if (
+        not hydrograph_mode
+        and forcing_mode == "compound"
+        and compound_lag_hr != 0
+        and len(river_times) > 1
+    ):
         dt_hr = float((river_times[1] - river_times[0]).total_seconds() / 3600.0)
         shift_steps = int(round(compound_lag_hr / dt_hr))
         if shift_steps != 0:

@@ -12,11 +12,12 @@ mouth_upstream_m up each mouth reach):
   cross-section (Godin 24-24-25 h running means), and of the tide-filtered
   level as a check.
 
-lag_hr = t_surge_mouth - t_river_mouth is the shift of the river hydrograph
-(sfincs.boundary_setup.compound.lag_overrides_hr, > 0 delays the river) that
-makes both peaks reach that mouth together in a compound run. The basin's
-value is the main mouth's: the one with the largest filtered river-peak
-discharge. Times are hours from the forcing's tref, shared by both runs.
+lag_hr = surge_travel_hr - river_travel_hr is the river peak minus the surge
+peak at the boundary (sfincs.boundary_setup.compound.lag_overrides_hr, > 0
+delays the river) that makes both peaks reach that mouth together in a
+compound run; travel times do not depend on where each run places its peak.
+The basin's value is the main mouth's: the one with the largest filtered
+river-peak discharge. Times are hours from the forcing's tref.
 
 Writes per basin 90_peak_lag_<coast>_<river>.png to
 <results_dir>/<basin>/figures/analysis/ and peak_lag_summary.csv (one row per
@@ -114,10 +115,21 @@ def lag_basin(
                 "t_river_mouth_level_hr": peak_hr(tr, zs_f),
                 "river_travel_hr": t_river_mouth - t_river_inflow,
                 "q_river_mouth_peak_m3s": float(np.nanmax(q_f)),
-                "lag_hr": t_surge_mouth - t_river_mouth,
+                "lag_hr": (t_surge_mouth - t_surge_boundary)
+                - (t_river_mouth - t_river_inflow),
             }
         )
-        panels.append((m["name"], zs_coast, q_river, q_f, t_surge_mouth, t_river_mouth))
+        panels.append(
+            (
+                m["name"],
+                zs_coast,
+                q_river,
+                q_f,
+                t_surge_mouth,
+                t_river_mouth,
+                rows[-1]["lag_hr"],
+            )
+        )
     cds.close()
     rds.close()
     main = max(rows, key=lambda r: r["q_river_mouth_peak_m3s"])
@@ -127,7 +139,7 @@ def lag_basin(
     fig, axes = plt.subplots(
         len(panels), 1, figsize=(11, 3.2 * len(panels)), squeeze=False
     )
-    for ax, (name, zs_c, q, qf, ts, trv) in zip(axes[:, 0], panels):
+    for ax, (name, zs_c, q, qf, ts, trv, lag) in zip(axes[:, 0], panels):
         ax.plot(tc, zs_c, color="tab:blue", lw=1.0, label=f"{coast}: level at mouth")
         ax.axvline(ts, color="tab:blue", ls="--", lw=1)
         ax2 = ax.twinx()
@@ -144,7 +156,7 @@ def lag_basin(
         ax.set_ylabel("water level (m)")
         ax2.set_ylabel("discharge (m3/s)")
         ax.set_title(
-            f"{name}: lag = {ts - trv:+.1f} h (surge peak - river peak at the mouth)",
+            f"{name}: lag = {lag:+.1f} h (surge travel - river travel to the mouth)",
             fontsize=9,
         )
         ax.grid(alpha=0.3)

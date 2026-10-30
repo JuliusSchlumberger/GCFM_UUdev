@@ -145,6 +145,32 @@ def surge_shape_at_rp(surge_ds: xr.Dataset, rp_yr: float) -> np.ndarray:
     return (1.0 - frac) * shape[:, lo] + frac * shape[:, hi]
 
 
+def periodic_tide(rel_hr: np.ndarray, hg_t: np.ndarray, tide: np.ndarray) -> np.ndarray:
+    """Return the average tide at rel_hr, repeated with its own period outside the stored window.
+
+    The period is the lag of the tide's highest autocorrelation between 11 and
+    26 h (12.42 h semidiurnal, 24.84 h diurnal or mixed); beyond either end of
+    the window the last (first) period is repeated, so the tide carries on
+    through a long river flood instead of holding its edge value.
+    """
+    rel_hr = np.asarray(rel_hr, dtype=float)
+    dt = float(np.median(np.diff(hg_t)))
+    lags = np.arange(int(np.ceil(11.0 / dt)), int(np.floor(26.0 / dt)) + 1)
+    lags = lags[lags < len(tide) - 1]
+    if lags.size == 0:
+        return np.interp(rel_hr, hg_t, tide)
+    a = tide - tide.mean()
+    corr = [np.dot(a[:-k], a[k:]) / max(np.dot(a, a), 1e-12) for k in lags]
+    period = float(lags[int(np.argmax(corr))] * dt)
+    t0, t1 = float(hg_t[0]), float(hg_t[-1])
+    folded = np.where(
+        rel_hr > t1,
+        t1 - period + np.mod(rel_hr - t1, period),
+        np.where(rel_hr < t0, t0 + np.mod(rel_hr - t0, period), rel_hr),
+    )
+    return np.interp(folded, hg_t, tide)
+
+
 def storm_tide_event(
     surge_ds: xr.Dataset,
     rel_hr: np.ndarray,
@@ -163,14 +189,14 @@ def storm_tide_event(
     Shared by the production boundary (rule 14) and the crest calibration
     (rule 11), so crests are calibrated against the wave production sends.
     peak_level: absolute level per station (same slr_m), or None for tide
-    only; rp_yr is required with it. Outside the stored window the tide holds
-    its edge value and the surge is 0.
+    only; rp_yr is required with it. Outside the stored window the tide
+    repeats with its own period (periodic_tide) and the surge is 0.
     """
     hg_t = surge_ds["hg_time_hr"].values
     tide = surge_ds["hg_tide_m"].values
     base = _station_calm_levels_unrounded(surge_ds, slr_m)
     event = (
-        np.stack([np.interp(rel_hr, hg_t, tide[i]) for i in range(len(base))])
+        np.stack([periodic_tide(rel_hr, hg_t, tide[i]) for i in range(len(base))])
         + base[:, None]
     )
     if peak_level is not None:
@@ -194,14 +220,14 @@ def storm_tide_event(
 def _hydrograph_surge_matrix(
     surge_ds: xr.Dataset, rp_yr: float | str, slr_m: float
 ) -> np.ndarray:
-    # Window t=0 sits at attrs["hg_peak_hr"]. Before the window the boundary
-    # holds the calm lead-in level (as the spin-up ends); over the first
-    # attrs["hg_ramp_hr"] it blends linearly into the event (surge still 0
-    # there), so the event starts from the restart without a step.
+    # Window t=0 sits at attrs["hg_peak_hr"]. Up to the
+    # event start (the restart, lead_days) the boundary holds the calm level
+    # the spin-up ends at; over attrs["hg_ramp_hr"] from there it blends into
+    # the event (tide, and the surge in its window) with the half-cosine
+    # weight, so the event starts from the restart without a step or a kink.
     times = surge_ds["time"].values
     peak_hr = float(surge_ds.attrs["hg_peak_hr"])
     ramp_hr = float(surge_ds.attrs.get("hg_ramp_hr", 0.0))
-    hg_t = surge_ds["hg_time_hr"].values
     is_tide = isinstance(rp_yr, str) and rp_yr.strip().lower() == "tide"
     level = None if is_tide else lookup_storm_tide_at_rp(surge_ds, rp_yr, slr_m=slr_m)
     event = storm_tide_event(
@@ -212,12 +238,13 @@ def _hydrograph_surge_matrix(
         rp_yr=None if is_tide else float(rp_yr),
     )
 
-    start_hr = peak_hr + hg_t[0]
-    w = (
+    start_hr = float(surge_ds.attrs["lead_days"]) * 24.0
+    s = (
         np.clip((times - start_hr) / ramp_hr, 0.0, 1.0)
         if ramp_hr > 0
         else (times >= start_hr).astype(float)
     )
+    w = 0.5 * (1.0 - np.cos(np.pi * s))
     calm = calm_sea_levels(surge_ds, slr_m)
     return (1.0 - w) * calm[:, None] + w * event
 

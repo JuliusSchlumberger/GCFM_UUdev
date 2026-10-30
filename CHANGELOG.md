@@ -3,6 +3,30 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-10-30d: event timeline set in rule 14 from the compound lag; tide runs on (- JS)
+
+- **Event timeline (rule 14, `src.sfincs_run.event_timeline`):** the river
+  keeps rule 07d's place after the restart; with a surge and a river RP the
+  surge peaks `compound.lag_hr` before it (> 0 delays the river), a surge
+  alone right after its blend and half-window. Runs end
+  `boundary_setup.event_after_peak_hr` (60 h) after the last design peak.
+  Rule 14 builds its own time axis, so a new lag rebuilds the event runs only,
+  not rule 07d or the crest calibration (rule 11). The river shift of the
+  compound lag is gone in storm-tide mode.
+- **Tide beyond the window:** `src.surge.periodic_tide` repeats the average
+  tide with its own period (11-26 h autocorrelation peak) instead of holding
+  its edge value, so it lasts through the river flood.
+- **Restart blend:** the boundary blends from the restart's calm level into
+  the event (tide included) from the event start with a half-cosine weight
+  over `hydrograph.ramp_hr`.
+- **`analysis/peak_lag.py`:** lag = surge travel - river travel to the mouth,
+  independent of where each run places its peak.
+- `sfincs.spinup.spinup_overrides_days`: `3279946: 6`;
+  `compound.lag_overrides_hr`: `2433835: -12`, `3279946: -41` (placeholders
+  until `peak_lag.py` has run).
+- `spinup_days()` keeps the configured value's type, so an int `spinup_days`
+  does not show up as a changed rule-07d param.
+
 # 2026-10-30c: spin-up at mean conditions with SLR; per-basin spin-up and lag; mouth outputs (- JS)
 
 - **Spin-up scenario:** `sfincs.spinup.scenario` (`mean_03SLR`) sets the

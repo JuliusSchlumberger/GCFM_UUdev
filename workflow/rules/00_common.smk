@@ -326,7 +326,7 @@ _SPINUP_OVERRIDES = {
 
 def spinup_days(basin_id):
     """Return a basin's spin-up length (days), which is also its forcing lead-in (lead_days)."""
-    return _SPINUP_OVERRIDES.get(int(basin_id), float(_SPINUP_CFG["spinup_days"]))
+    return _SPINUP_OVERRIDES.get(int(basin_id), _SPINUP_CFG["spinup_days"])
 
 def spinup_slr_m():
     """Return the SLR (m, global mean) of the spin-up scenario; 0 with SLR disabled."""
@@ -483,6 +483,7 @@ def build_sfincs_params():
         river_rp_yr        = lambda wildcards: scenario_params(wildcards.scenario)["river_rp_yr"],
         surge_rp_yr        = lambda wildcards: scenario_params(wildcards.scenario)["surge_rp_yr"],
         compound_lag_hr    = lambda wildcards: compound_lag_hr(wildcards.basin_id),
+        event_after_peak_hr = config["sfincs"]["boundary_setup"]["event_after_peak_hr"],
         # Real GloFAS flood event or synthetic wave; changing it only rebuilds scenarios.
         river_event        = config["boundary_forcings"]["river"]["event_hydrograph"],
         # Target global-mean SLR (m) × surge_forcing.nc's dimensionless

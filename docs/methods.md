@@ -552,8 +552,7 @@ spin-up mean and blends into the flood with a half-cosine weight over
 `max(min_ramp_hr, π/2 × gap / (max_rise_per_hr × peak))`, ending at the rising-limb
 start, so the blend's steepest rise is `max_rise_per_hr × peak` per hour.
 Large rivers' floods rise over weeks, so their rising-limb start can still be well
-above the mean. `compound.lag_hr` shifts discharge relative to surge
-(positive = later); in `coastal_only` the discharge points stay with zero flow.
+above the mean. In `coastal_only` the discharge points stay with zero flow.
 
 **Surge.** Rule 07a picks 6-10 COAST-RP stations (deduplicated within 1 km,
 search radii 10-1000 km). Return levels are exact table lookups at the
@@ -562,9 +561,21 @@ cell within `water_level_buffer_m`, and SFINCS interpolates between them. With
 hydrographs enabled the event is the average tide plus a surge shape peaking on
 tidal high water over ±`window_hr` (60 h; 168 h for `2433835`), shapes taken from
 historic GTSM events near each return level (HGRAPHER, Dullaart et al., 2023;
-GTSMv3 hourly reanalysis 1950-2024). The river peak is aligned with the surge
-peak. In `river_only` the sea boundary is flat at
-`-(gebco_max_depth_m + 0.5)` m.
+GTSMv3 hourly reanalysis 1950-2024). Outside the window the average tide
+repeats with its own period (the lag of its highest autocorrelation in 11-26 h).
+From the restart the boundary blends from the spin-up's calm level into the
+event with a half-cosine weight over `hydrograph.ramp_hr`. In `river_only` the
+sea boundary is flat at `-(gebco_max_depth_m + 0.5)` m.
+
+**Event timeline (rule 14).** The river peak keeps rule 07d's place, which
+leaves room for its rising limb after the restart. With a surge and a river
+return period, the surge peaks `compound.lag_hr` (per basin
+`lag_overrides_hr`, from `analysis/peak_lag.py`) before the river peak
+(positive = river later), so both peaks reach the main mouth together. A
+surge alone peaks right after its blend and half-window. Runs end
+`event_after_peak_hr` after the last design peak, and not before the surge
+window closes. The timeline is set in rule 14, so a new lag reruns the event
+runs only, not the crest calibration.
 
 **No tide-gauge bias correction.** The surge forcing is not corrected against
 GESLA v4.1 tide-gauge records. That option was tested on the nine basins and

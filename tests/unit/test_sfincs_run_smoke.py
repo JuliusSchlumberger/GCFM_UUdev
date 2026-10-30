@@ -11,6 +11,7 @@ import pytest
 from pyproj import CRS
 from shapely.geometry import LineString, box
 from src.sfincs_run import (
+    event_timeline,
     forward_geometry_files,
     parse_sfincs_inp,
     place_discharge_points,
@@ -186,3 +187,26 @@ def test_place_discharge_points_raises_when_no_crossing_is_inside():
             100.0,
         )
     assert not created
+
+
+def test_advanced_river_keeps_its_place_and_the_surge_peaks_later():
+    surge_hr, river_hr, end_hr = event_timeline(
+        144.0, 312.0, 60.0, 6.0, 60.0, -41.0, surge_event=True, river_event=True
+    )
+    assert (river_hr, surge_hr) == (312.0, 353.0)
+    assert end_hr == max(353.0 + 60.0, 312.0 + 60.0)
+
+
+def test_delayed_river_moves_later_and_the_surge_keeps_its_place():
+    surge_hr, river_hr, _ = event_timeline(
+        48.0, 216.0, 60.0, 6.0, 60.0, 12.0, surge_event=True, river_event=True
+    )
+    assert (surge_hr, river_hr) == (216.0, 228.0)
+
+
+def test_surge_alone_peaks_after_its_blend_and_half_window_and_ignores_the_lag():
+    surge_hr, _, end_hr = event_timeline(
+        48.0, 216.0, 60.0, 6.0, 60.0, -12.0, surge_event=True, river_event=False
+    )
+    assert surge_hr == 48.0 + 6.0 + 60.0
+    assert end_hr == surge_hr + 60.0

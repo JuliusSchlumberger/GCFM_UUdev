@@ -33,3 +33,4 @@ Decision table; mark each row's decision. Previous table: git show 580633b:TODO.
 | id | file:line | issue (one line) | kind | effort | impact | recommendation |
 |---|---|---|---|---|---|---|
 | X57 | LICENSE; CITATION.cff | missing before sharing | text | S | repo shareable and citable | decide: licence; then fix |
+| X58 | workflow/scripts/07c_storm_tide_hydrographs.py:92 | 3279946 average tide (hg_tide_m) has a 0.15 m step within 10 min once per 24.8 h period at all 8 stations (p99 0.06 m) | behaviour | S | sharper tidal boundary than the gauge-scale tide | check whether real (shallow-water rise) or a stacking artefact |
