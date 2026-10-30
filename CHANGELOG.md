@@ -3,6 +3,48 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-10-30c: spin-up at mean conditions with SLR; per-basin spin-up and lag; mouth outputs (- JS)
+
+- **Spin-up scenario:** `sfincs.spinup.scenario` (`mean_03SLR`) sets the
+  spin-up's SLR: the sea is held at each station's calm level + its `slr_m` x
+  fingerprint (tide-averaged), the rivers at their mean discharge. It must be a
+  mean-conditions scenario (river `Mean`, surge `Tide` or null).
+  - Event boundaries ramp the SLR term from the spin-up's to the scenario's
+    over `slr_ramp_hr` (`src.surge._ramp_in_slr`), so a 0.3 m scenario
+    restarts without a step and without a ramp.
+- **Per-basin spin-up length:** `sfincs.spinup.spinup_overrides_days` sets a
+  basin's spin-up and, with it, its forcing lead-in (rule 07d), which the event
+  run must match. The restart is renamed to the fixed `spin_up/sfincs.spinup.rst`.
+- **Per-basin compound lag:** `compound.lag_overrides_hr` (> 0 delays the
+  river).
+- **River mouths:** the skeleton adds an obs point and a cross-section
+  (`sfincs.crs`) `observation_points.mouth_upstream_m` (1 km) up every mouth
+  reach (rule 10's mouth nodes; `src.river_depth_calibration.mouth_sections`),
+  inherited by every event run, and writes `<basin>_mouths.gpkg`.
+- **`analysis/peak_lag.py`:** surge and river peak arrival at every mouth from
+  a coastal-only and a river-only run (default `coast_100_03SLR`,
+  `river_100_03SLR`; river discharge tide-filtered) and the lag that makes
+  them coincide at the main mouth.
+- The forcing (rule 07d) of a basin with a spin-up override, the skeleton, the
+  spin-up and every event run rebuild.
+
+# 2026-10-30b: crest calibration against the storm-tide hydrograph; held sea only for timing (- JS)
+
+- **Rule 11 sea boundary:** rounds 1 and 2 force every station with the event
+  runs' storm-tide wave (`src.surge.storm_tide_event` at the coastal protection
+  RP), peaking at `ramp_hr + T_walled`, when the calibration discharge reaches
+  the coast, and blended in from the calm level over `ramp_hr` with the rivers'
+  half-cosine ramp (`src.river_forcing.cosine_ramp`).
+  - Replaces the sea held at the storm tide from t = 0. Crests now see the
+    wave production sends, including its tide.
+  - The sea starts calm; sea and channel cells are no longer raised to the
+    storm tide at the start.
+- **Timing check:** `analysis/benchmark_peak_travel.py --run <basin>` copies
+  round 1, holds the sea at each boundary point's peak, raises the wet initial
+  cells to it and reruns SFINCS in `<results_dir>/../scratch_peak_travel/`; the
+  benchmark reads that run instead of round 1.
+- Rule 11 and everything after it rerun on every basin.
+
 # 2026-10-30: attribution class 4 from the crest calibration run, not the spin-up (- JS)
 
 > **⚠ KIARA, PLEASE REVIEW: this changes the adaptation module's results.**

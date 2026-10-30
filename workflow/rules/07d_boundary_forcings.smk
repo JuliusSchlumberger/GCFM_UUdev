@@ -34,7 +34,8 @@ rule get_boundary_forcings:
     params:
         max_width_fill_m = config["river_processing"]["width_qa"]["max_width_fill_m"],
         # shared surge + river timeseries axis
-        lead_days = config["boundary_forcings"]["lead_days"],
+        # The basin's spin-up length: the event run starts at its restart.
+        lead_days = lambda wildcards: spinup_days(wildcards.basin_id),
         dt_hr = config["boundary_forcings"]["dt_hr"],
         # surge
         # Diagnostic-preview RP only (storm_tide_at_rp_m/storm_tide_at_rp_raw_m, 07_forcing_surge_correction.png),

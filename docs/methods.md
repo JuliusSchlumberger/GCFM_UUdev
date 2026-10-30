@@ -351,16 +351,20 @@ and subgrid set-up, production weir geometry) then runs twice:
 | round | weir | channel | sea boundary | purpose |
 |---|---|---|---|---|
 | 0 | -- | estimated bed | -- | river bed (no SFINCS run) |
-| 1 | every edge at `weir_crest_m` (1000 m) | burned bed | storm tide at the FLOPROS coastal RP, held | crest per weir edge |
+| 1 | every edge at `weir_crest_m` (1000 m) | burned bed | storm-tide hydrograph at the FLOPROS coastal RP | crest per weir edge |
 | 2 | production crests | as round 1 | as round 1 | verification: reports overtopped edges, changes nothing; runs only with `verify_crests: true` |
 
-Both SFINCS rounds hold the sea and ramp only the rivers:
+Both SFINCS rounds force the sea with the event runs' storm-tide wave and ramp
+the rivers:
 
-- sea: every station at its storm tide at the FLOPROS coastal return period from
-  the start; sea and river channel cells start no lower than the highest
-  station's storm tide, so no rising sea runs up the channels and the level at
-  the mouth responds to the river alone (`analysis/benchmark_peak_travel.py`
-  times it);
+- sea: every station gets the storm-tide hydrograph of the event runs
+  (`src.surge.storm_tide_event`: average tide plus the surge shape, peaking at
+  its storm tide at the FLOPROS coastal return period), with the peak at
+  `ramp_hr + T_walled`, when the calibration discharge reaches the coast, so
+  river and surge maxima coincide; it is blended in from the calm level over
+  `ramp_hr` with the rivers' half-cosine weight, and the sea starts calm. The arrival time of the river at the
+  mouth is checked separately, on a copy of round 1 with the sea held at the
+  storm tide (`analysis/benchmark_peak_travel.py --run`);
 - rivers: each crossing from its reach's mean discharge (the flow that holds the
   initial river level, below) to the discharge at the FLOPROS riverine return
   period (`river_protection_rp_yr`, log-RP interpolated from the discharge
