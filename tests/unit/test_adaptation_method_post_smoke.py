@@ -2,7 +2,10 @@
 
 import numpy as np
 import pytest
-from src.adaptation_method_post import validate_measure_params
+from src.adaptation_method_post import (
+    _unpumped_river_volume_m3,
+    validate_measure_params,
+)
 
 METHOD = "postprocessing"
 MEASURE_DEF = {
@@ -66,6 +69,24 @@ def test_uniform_layer_depth_is_monotonic_in_volume():
     depths = np.array([0.2, 0.4, 1.5])
     ds = [_uniform_layer_depth(depths, v, 1.0) for v in np.linspace(0, 3, 13)]
     assert np.all(np.diff(ds) >= 0)
+
+
+def test_unpumped_volume_is_total_discharge_above_capacity(tmp_path):
+    (tmp_path / "sfincs.inp").write_text(
+        "tref = 20200101 000000\ntstart = 20200101 000000\ntstop = 20200101 020000\n"
+    )
+    # two points, total 100 -> 300 m3/s linearly over 2 h
+    np.savetxt(tmp_path / "sfincs.dis", [[0, 50.0, 50.0], [7200, 150.0, 150.0]])
+    vols = [
+        _unpumped_river_volume_m3(str(tmp_path), q) for q in (0.0, 100.0, 200.0, 300.0)
+    ]
+    assert vols[0] == pytest.approx(
+        200.0 * 7200, rel=0.01
+    )  # mean total discharge x 2 h
+    assert vols[2] == pytest.approx(0.5 * 100.0 * 3600, rel=0.02)  # triangle above 200
+    assert vols[3] == 0.0
+    assert np.all(np.diff(vols) <= 0)
+    assert _unpumped_river_volume_m3(str(tmp_path / "none"), 10.0) == 0.0
 
 
 def test_bool_param_rejects_non_bool_value():

@@ -86,8 +86,11 @@ rule adapt_run_event_pre:
     output:
         sfincs_map_nc            = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),
         plot_inundation_ratio    = figure_path("62_adapt_inundation_ratio__{scenario}__pre_{strategy}.png"),
-        animation_flood_progress = figure_path("63_adapt_flood_progression__{scenario}__pre_{strategy}.mp4"),
-        flood_timeseries_csv     = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_timeseries.csv"),
+        # Diagnostics (analysis only), as in rule run_event.
+        **({
+            "animation_flood_progress": figure_path("63_adapt_flood_progression__{scenario}__pre_{strategy}.mp4"),
+            "flood_timeseries_csv": results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_timeseries.csv"),
+        } if ANALYSIS else {}),
     params:
         sfincs_root   = lambda wildcards: results_path(
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs"),

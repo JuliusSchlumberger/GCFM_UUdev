@@ -106,19 +106,21 @@ spin-up restart and the spin-up map.
   for inspection;
 - an `event` key on each scenario;
 - for the attribution mask (rule 17a, used by `post` and by water-retention
-  measures): a river-only sibling scenario with the same `river_rp_yr` and
-  `surge_rp_yr: null`, and a coastal-only sibling with the same `surge_rp_yr`
-  and `river_rp_yr: null`.
+  measures): a river counterpart with the same `river_rp_yr` and
+  `surge_rp_yr: Tide`, and a coastal counterpart with the same `surge_rp_yr`
+  and `river_rp_yr: Mean`, both with the same `slr_m`. A scenario that already
+  has that form is its own counterpart.
 
 ```bash
-snakemake adapt --cores 4 --config target_basins="[2433835]" target_scenarios="['compound_100']" target_strategies="['advance_1']"
+snakemake adapt --cores 4 --config target_basins="[2433835]" target_scenarios="['compound_100_03SLR']" target_strategies="['advance_1']"
 ```
 
 `advance_1`, the smallest adaptation case, reads
-`<adaptation_data_root>/2433835/offshore_island.geojson`, and `compound_100`
-has the siblings `river_only_100` and `coast_only_100`. On an empty `<results_dir>`
-the dry run (`-n`) of this command lists 34 jobs, including `preprocess` and the
-`build` of all three scenarios.
+`<adaptation_data_root>/2433835/offshore_island.geojson`, and
+`compound_100_03SLR` has the counterparts `river_100_03SLR` and
+`coast_100_03SLR`. On an empty `<results_dir>` the dry run (`-n`) of this
+command lists 34 jobs, including `preprocess` and the `build` of all three
+scenarios.
 
 | method | rule | what it does |
 |---|---|---|

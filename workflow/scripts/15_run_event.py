@@ -5,10 +5,11 @@ build_sfincs in sfincs_root: tstop = end of forcing; with spin-up, tstart =
 spin-up end and rstfile = the basin-level restart; without, tstart = tref from
 a dry bed.
 
-Writes the inundation-ratio map (zsmax envelope, as rule sanity_checks), the
-flood animation and flood_timeseries.csv. flood_volume_m3 is the total volume
-at each output step (instantaneous depth × pixel area), so its max is the true
-peak; summing each pixel's zsmax would overstate it.
+Writes the inundation-ratio map (zsmax envelope, as rule sanity_checks) and,
+when the rule declares them (analysis), the flood animation and
+flood_timeseries.csv. flood_volume_m3 is the total volume at each output step
+(instantaneous depth × pixel area), so its max is the true peak; summing each
+pixel's zsmax would overstate it.
 """
 
 import gc
@@ -110,51 +111,52 @@ if hasattr(snakemake.output, "plot_inundation_ratio"):
     )
     log.info(f"Inundation ratio plot written: {snakemake.output.plot_inundation_ratio}")
 
-# ── flood progression: animation + per-timestep area/volume CSV ──
-animation_out_path = Path(snakemake.output.animation_flood_progress)
-csv_out_path = Path(snakemake.output.flood_timeseries_csv)
-animation_out_path.parent.mkdir(parents=True, exist_ok=True)
+# ── flood progression (analysis): animation + per-timestep area/volume CSV ──
+if hasattr(snakemake.output, "animation_flood_progress"):
+    animation_out_path = Path(snakemake.output.animation_flood_progress)
+    csv_out_path = Path(snakemake.output.flood_timeseries_csv)
+    animation_out_path.parent.mkdir(parents=True, exist_ok=True)
 
-da_h = compute_flood_progression(sfincs_root, sea_mask_path)
-if da_h is None:
-    raise RuntimeError(f"No 'zs' or 'zb' in the SFINCS event output of {sfincs_root}")
-animate_flood_progression(
-    da_h,
-    domain_poly,
-    str(land_polygons_path),
-    str(river_network_path),
-    str(animation_out_path),
-    basin_id=basin_id,
-    run_label=run,
-    fps=animation_fps,
-)
-log.info(f"Flood animation written: {animation_out_path}")
-
-# Free da_h: the celltree-based rasterize_like below needs the memory.
-del da_h
-gc.collect()
-
-# At the subgrid-downscaled resolution of compute_max_inundation, one
-# frame at a time; da_h is mesh resolution and unmasked.
-df = compute_flood_timeseries_stats(
-    sfincs_root,
-    da_land_dep,
-    min_inundation_depth_m,
-)
-if df is None:
-    raise RuntimeError(f"No 'zs' in the SFINCS event output of {sfincs_root}")
-csv_out_path.parent.mkdir(parents=True, exist_ok=True)
-df.to_csv(csv_out_path, index=False)
-
-if len(df):
-    i_peak = int(df["flood_volume_m3"].idxmax())
-    log.info(
-        f"Flood timeseries written: {csv_out_path} ({len(df)} step(s)). "
-        f"Peak total flood volume {df['flood_volume_m3'].iloc[i_peak]:.3e} m³ "
-        f"(area {df['flooded_area_km2'].iloc[i_peak]:.2f} km²) at "
-        f"t={df['time'].iloc[i_peak]}"
+    da_h = compute_flood_progression(sfincs_root, sea_mask_path)
+    if da_h is None:
+        raise RuntimeError(f"No 'zs' or 'zb' in the SFINCS event output of {sfincs_root}")
+    animate_flood_progression(
+        da_h,
+        domain_poly,
+        str(land_polygons_path),
+        str(river_network_path),
+        str(animation_out_path),
+        basin_id=basin_id,
+        run_label=run,
+        fps=animation_fps,
     )
-else:
-    log.warning("Flood timeseries is empty — no output timesteps found")
+    log.info(f"Flood animation written: {animation_out_path}")
+
+    # Free da_h: the celltree-based rasterize_like below needs the memory.
+    del da_h
+    gc.collect()
+
+    # At the subgrid-downscaled resolution of compute_max_inundation, one
+    # frame at a time; da_h is mesh resolution and unmasked.
+    df = compute_flood_timeseries_stats(
+        sfincs_root,
+        da_land_dep,
+        min_inundation_depth_m,
+    )
+    if df is None:
+        raise RuntimeError(f"No 'zs' in the SFINCS event output of {sfincs_root}")
+    csv_out_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(csv_out_path, index=False)
+
+    if len(df):
+        i_peak = int(df["flood_volume_m3"].idxmax())
+        log.info(
+            f"Flood timeseries written: {csv_out_path} ({len(df)} step(s)). "
+            f"Peak total flood volume {df['flood_volume_m3'].iloc[i_peak]:.3e} m³ "
+            f"(area {df['flooded_area_km2'].iloc[i_peak]:.2f} km²) at "
+            f"t={df['time'].iloc[i_peak]}"
+        )
+    else:
+        log.warning("Flood timeseries is empty — no output timesteps found")
 
 log.info("Done")

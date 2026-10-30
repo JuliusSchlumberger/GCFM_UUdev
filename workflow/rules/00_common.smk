@@ -7,7 +7,7 @@ from src.io import general_path as _gen_path
 from src.river_forcing import derive_forcing_mode
 from src.hydromt_sfincs_patch import MASK_FILES, SUBGRID_TABLE_FILES
 from src.adaptation_strategies import (
-    ADAPTATION_LINE_NAMES, expand_strategies, location_path, resolve_locations,
+    ADAPTATION_LINE_NAMES, FILE_PARAMS, expand_strategies, location_path, resolve_locations,
 )
 import geopandas as gpd
 
@@ -268,28 +268,42 @@ def scenario_params(name):
     }
 
 def attribution_counterparts(scenario):
-    """Return the (river_only, coastal_only) sibling scenarios with matching RPs.
+    """Return the (river, coastal) scenarios the attribution mask compares `scenario` with.
 
-    Siblings have river_rp_yr=X & surge_rp_yr=None, and surge_rp_yr=Y & river_rp_yr=None.
-    Raises ValueError if scenarios.yml has no exact match; RPs are never guessed.
+    Each keeps one driver at `scenario`'s own level and puts the other at mean
+    conditions, with the same slr_m (SLR is part of the sea, not a driver):
+    river: river_rp_yr as `scenario`, surge_rp_yr Tide; coastal: surge_rp_yr as
+    `scenario`, river_rp_yr Mean. compound_100_03SLR pairs with river_100_03SLR
+    and coast_100_03SLR; a single-driver scenario pairs with itself and the
+    mean-conditions run. The other driver is never null: a null sea is a flat
+    boundary far below sea level, which removes the sea's backwater from the
+    river run. `scenario` itself is preferred when it matches. Raises ValueError
+    if scenarios.yml has no match; counterparts are never guessed.
     """
+    s0 = SCENARIO_DEFS[scenario]
+    slr_m = s0.get("slr_m", 0.0)
 
-    river_rp_yr = SCENARIO_DEFS[scenario]["river_rp_yr"]
-    surge_rp_yr = SCENARIO_DEFS[scenario]["surge_rp_yr"]
+    def _norm(v):
+        return v.strip().lower() if isinstance(v, str) else v
 
-    def _find(rp_key, other_key, rp_val):
-        matches = [n for n, s in SCENARIO_DEFS.items()
-                   if s.get(rp_key) == rp_val and s.get(other_key) is None]
+    def _find(want):
+        def ok(s):
+            return s.get("slr_m", 0.0) == slr_m and all(
+                _norm(s.get(k)) == _norm(v) for k, v in want.items()
+            )
+        if ok(s0):
+            return scenario
+        matches = [n for n, s in SCENARIO_DEFS.items() if ok(s)]
         if not matches:
             raise ValueError(
-                f"No {rp_key}={rp_val}-matched, {other_key}=None sibling scenario "
-                f"for {scenario!r} -- add one to config/scenarios.yml"
+                f"No attribution counterpart {want} with slr_m={slr_m} for "
+                f"{scenario!r} -- add one to config/scenarios.yml"
             )
         return matches[0]
 
-    river_only = _find("river_rp_yr", "surge_rp_yr", river_rp_yr)
-    coastal_only = _find("surge_rp_yr", "river_rp_yr", surge_rp_yr)
-    return river_only, coastal_only
+    river = _find({"river_rp_yr": s0["river_rp_yr"], "surge_rp_yr": "tide"})
+    coastal = _find({"surge_rp_yr": s0["surge_rp_yr"], "river_rp_yr": "mean"})
+    return river, coastal
 
 
 # What to run: CLI override, else just the "default" scenario.
@@ -362,7 +376,7 @@ def strategy_measure_input_paths(strategy, basin_id):
     paths = []
     for _measure_params in STRATEGY_DEFS[strategy]["measures"].values():
         for _k, _v in _measure_params.items():
-            if _k == "locations" and isinstance(_v, str):
+            if _k in FILE_PARAMS and isinstance(_v, str):
                 paths.append(location_path(_v, adaptation_data_root(), adaptation_lines_dir(basin_id), basin_id))
     return paths
 

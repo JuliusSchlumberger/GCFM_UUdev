@@ -1,7 +1,8 @@
 """Plot flood depth maps per scenario and a depth | attribution comparison.
 
-Scenarios: the SCENARIOS list (coast_100, river_500, compound_100c_500r). Panels use the EPSG:4326 style
-of rule 15's plot_inundation_check (land polygons + river network), so depth and
+Scenarios: the SCENARIOS list (coast_100_03SLR, river_100_03SLR,
+compound_100_03SLR). Panels use the EPSG:4326 style of rule 15's
+plot_inundation_check (land polygons + river network), so depth and
 attribution columns share identical panel geometry.
 
 Outputs (all in <results_dir>/2433835/figures/analysis/):
@@ -34,7 +35,7 @@ from src.plots import draw_depth_map, read_raster_reprojected_for_plot  # noqa: 
 
 BASIN_ID = "2433835"
 
-SCENARIOS = ["coast_100", "river_500", "compound_100c_500r"]
+SCENARIOS = ["coast_100_03SLR", "river_100_03SLR", "compound_100_03SLR"]
 
 ATTR_COLORS = ["#d1c740", "#3277d3", "#d883e9"]
 ATTR_LABELS = ["River", "Coastal", "Compound"]

@@ -1,5 +1,5 @@
-# Rule: run the scenario's SFINCS event from build_sfincs's sfincs.inp, then the
-# rule 13b diagnostics for this run plus a per-timestep flooded-area/volume CSV.
+# Rule: run the scenario's SFINCS event from build_sfincs's sfincs.inp; with
+# analysis, also its flood animation and per-timestep flooded-area/volume CSV.
 
 rule run_event:
     input:
@@ -18,8 +18,12 @@ rule run_event:
         clean_river_network  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
     output:
         sfincs_map_nc              = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"),
-        animation_flood_progress   = figure_path("50_run_flood_progression__{scenario}.mp4"),
-        flood_timeseries_csv       = results_path("{basin_id}/runs/{scenario}/visuals/flood_timeseries.csv"),
+        # Diagnostics (analysis only): the time series rasterizes every map frame
+        # onto the subgrid (~12 min per run); nothing downstream reads either.
+        **({
+            "animation_flood_progress": figure_path("50_run_flood_progression__{scenario}.mp4"),
+            "flood_timeseries_csv": results_path("{basin_id}/runs/{scenario}/visuals/flood_timeseries.csv"),
+        } if ANALYSIS else {}),
     params:
         sfincs_root                = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),
         **run_event_params(),

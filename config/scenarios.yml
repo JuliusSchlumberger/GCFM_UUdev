@@ -30,7 +30,14 @@ default:                  # what plain `snakemake build` runs (no target_scenari
   slr_m: 0.3
   event: compound
 
-# Attribution runs (also uses spinup for the "always flooded" class)
+# Mean conditions: average tide, mean river, SLR -- attribution counterpart
+# (00_common.smk attribution_counterparts)
+mean_03SLR:
+  surge_rp_yr: Tide
+  river_rp_yr: Mean
+  slr_m: 0.3
+  event: compound
+
 coast_only:
   surge_rp_yr: Tide
   river_rp_yr: Null # No discharge forcing
@@ -51,13 +58,6 @@ coast_100_03SLR:
   slr_m: 0.3
   event: coastal
 
-coast_only_100: # needed? because Null will mean that the dynamics change
-  surge_rp_yr: 100
-  river_rp_yr: Null # No discharge forcing
-  slr_m: 0.3
-  event: coastal
-
-
 # ----------------------------------------------------------------------------------------
 # River flood
 river_100_03SLR:
@@ -66,22 +66,17 @@ river_100_03SLR:
   slr_m: 0.3
   event: river
 
-river_only_100: # needed? because Null will mean that the dynamics change
-  surge_rp_yr: Null
-  river_rp_yr: 100
-  slr_m: 0.3
-  event: river
-
-
-# Compound
-compound_100:
+# ----------------------------------------------------------------------------------------
+# Compound flood
+compound_100_03SLR:
   surge_rp_yr: 100
   river_rp_yr: 100
   slr_m: 0.3
   event: compound
 
-compound_500:
-  surge_rp_yr: 500
-  river_rp_yr: 500
-  slr_m: 0.3
-  event: compound
+# Storm Gloria (Jan 2020) validation, 0.7 m surge
+storm_gloria:
+  surge_rp_yr: 1000 # (0.5 m)
+  river_rp_yr: Mean
+  slr_m: 0.2
+  event: coastal

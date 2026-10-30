@@ -13,9 +13,10 @@ when measures.yml flags it `scale: true`. A param value is one of:
 - current_protection: today's baseline weir crest, never scaled
 - {fixed: x}: x, never scaled
 
-A measure's `locations` is a path under adaptation_data_root, in which `{basin_id}`
-stands for the basin, or `auto/<name>`: the basin's <name>.geojson written by
-rule build_adaptation_lines.
+A measure's file params (FILE_PARAMS: `locations`, water_retention's `inlet`)
+are paths under adaptation_data_root, in which `{basin_id}` stands for the
+basin, or `auto/<name>`: the basin's <name>.geojson written by rule
+build_adaptation_lines.
 """
 
 import os
@@ -29,6 +30,7 @@ STRATEGY_EVENTS = ("coastal", "river", "compound")
 DERIVED_PARAMS = {"max_coastal_water_level", "max_river_water_level", "max_discharge"}
 UNSCALED_DERIVED_PARAMS = {"current_protection"}
 
+FILE_PARAMS = ("locations", "inlet")
 AUTO_LOCATIONS_PREFIX = "auto/"
 BASIN_PLACEHOLDER = "{basin_id}"
 # Files rule build_adaptation_lines writes per basin as <name>.geojson.
@@ -66,17 +68,17 @@ def location_path(
 
 
 def resolve_locations(strategy_def: dict, lines_dir: str | Path, basin_id: str) -> dict:
-    """Return strategy_def with its locations resolved for one basin.
+    """Return strategy_def with its file params (FILE_PARAMS) resolved for one basin.
 
     `auto/<name>` becomes an absolute path into lines_dir: the adapt scripts join
-    locations onto adaptation_data_root, and an absolute path survives that join
-    unchanged. Other locations keep their adaptation_data_root-relative form with
+    file params onto adaptation_data_root, and an absolute path survives that join
+    unchanged. Other values keep their adaptation_data_root-relative form with
     `{basin_id}` filled in.
     """
     lines_dir = Path(os.path.abspath(lines_dir)).as_posix()
 
     def _resolve(param, value):
-        if param != "locations" or not isinstance(value, str):
+        if param not in FILE_PARAMS or not isinstance(value, str):
             return value
         name = auto_line_name(value)
         if name is not None:
@@ -224,8 +226,9 @@ def expand_strategies(
                 raise ValueError(
                     f"strategy {fam!r}: measure {m!r} not defined in {measures_file}"
                 )
-            if isinstance((mparams or {}).get("locations"), str):
-                auto_line_name(mparams["locations"])
+            for p in FILE_PARAMS:
+                if isinstance((mparams or {}).get(p), str):
+                    auto_line_name(mparams[p])
         for s in scales:
             name = f"{fam}_{scale_tag(s)}"
             if not re.fullmatch(r"[A-Za-z0-9_-]+", name):

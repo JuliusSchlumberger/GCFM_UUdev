@@ -1,8 +1,8 @@
 """Classify a flood map by dominant source (river, coastal, compound, permanent water).
 
-Uses existing max_flood_depth.tif rasters of the river-only and coastal-only
-counterpart scenarios (RP-matched by 00_common.smk attribution_counterparts) and
-the spin-up (mean river discharge, calm sea). Called by rule attribution_mask
+Uses existing max_flood_depth.tif rasters of the river and coastal counterpart
+scenarios (00_common.smk attribution_counterparts: one driver at the target
+scenario's own level, the other at mean conditions, same slr_m) and the spin-up (mean river discharge, calm sea). Called by rule attribution_mask
 (17a_attribution_mask.py).
 """
 

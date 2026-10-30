@@ -106,11 +106,11 @@ _BUILD_OUTPUTS_BASIN = [
 _BUILD_OUTPUTS_SCENARIO = [
     expand(results_path("{basin_id}/runs/{scenario}/sfincs/sfincs.inp"), basin_id=BASINS, scenario=SCENARIOS),
     expand(results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"), basin_id=BASINS, scenario=SCENARIOS),
-    expand(results_path("{basin_id}/runs/{scenario}/visuals/flood_timeseries.csv"), basin_id=BASINS, scenario=SCENARIOS),
     expand(figure_path("20_forcing_timeseries__{scenario}.png"), basin_id=BASINS, scenario=SCENARIOS),
     expand(figure_path("40_run_max_flood_depth__{scenario}.png"), basin_id=BASINS, scenario=SCENARIOS),
-    expand(figure_path("50_run_flood_progression__{scenario}.mp4"), basin_id=BASINS, scenario=SCENARIOS),
-    *(expand(analysis_figure_path("15_run_inundation_ratio__{scenario}.png"), basin_id=BASINS, scenario=SCENARIOS)
+    *((expand(analysis_figure_path("15_run_inundation_ratio__{scenario}.png"), basin_id=BASINS, scenario=SCENARIOS)
+       + expand(figure_path("50_run_flood_progression__{scenario}.mp4"), basin_id=BASINS, scenario=SCENARIOS)
+       + expand(results_path("{basin_id}/runs/{scenario}/visuals/flood_timeseries.csv"), basin_id=BASINS, scenario=SCENARIOS))
       if ANALYSIS else []),
     expand(results_path("{basin_id}/runs/{scenario}/visuals/max_flood_depth.tif"), basin_id=BASINS, scenario=SCENARIOS),
     expand(results_path("{basin_id}/runs/{scenario}/metrics/flood_metrics.csv"), basin_id=BASINS, scenario=SCENARIOS),
@@ -131,10 +131,11 @@ if "pre" in METHODS:
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
         + expand(figure_path("62_adapt_inundation_ratio__{scenario}__pre_{strategy}.png"),
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
-        + expand(figure_path("63_adapt_flood_progression__{scenario}__pre_{strategy}.mp4"),
-               basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
-        + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_timeseries.csv"),
-               basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+        + ((expand(figure_path("63_adapt_flood_progression__{scenario}__pre_{strategy}.mp4"),
+                   basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+            + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_timeseries.csv"),
+                   basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES))
+           if ANALYSIS else [])
         + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/max_flood_depth.tif"),
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
         + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_metrics.csv"),

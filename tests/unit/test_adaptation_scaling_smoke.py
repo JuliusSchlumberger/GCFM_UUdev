@@ -115,6 +115,33 @@ def test_current_protection_is_unscaled_max_of_matched_crests(baseline):
     assert v == {"current": True, "fill_crest": 4.0}
 
 
+def _levee(kind, scale):
+    return {
+        "measures": {
+            "coastal_levee": {
+                "elevation": {"from_forcing": kind, "scale": scale},
+                "locations": "levee.geojson",
+            }
+        }
+    }
+
+
+def test_levee_raise_by_is_scaled_shortfall_of_the_lowest_matched_crest(baseline):
+    # matched crests 3.0 and 4.0 against the 2.5 m coastal peak: no shortfall
+    out = resolve_forcing_params(_levee("max_coastal_water_level", 1.0), **baseline)
+    assert out["measures"]["coastal_levee"]["raise_by"] == 0.0
+    baseline["skeleton_weir"].write_text(
+        _weir_text([[(0, 0, 1.0), (500, 0, 1.0)], [(500, 0, 2.0), (1000, 0, 2.0)]])
+    )
+    for scale in (0.4, 1.0):
+        out = resolve_forcing_params(
+            _levee("max_coastal_water_level", scale), **baseline
+        )
+        levee = out["measures"]["coastal_levee"]
+        assert levee["raise_by"] == pytest.approx(scale * (BZS_MAX - 1.0))
+        assert levee["elevation"] == pytest.approx(scale * BZS_MAX)
+
+
 def test_input_strategy_is_not_mutated(baseline):
     strategy = _strategy("max_discharge", 1.0)
     resolve_forcing_params(strategy, **baseline)

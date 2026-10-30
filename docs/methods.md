@@ -189,7 +189,8 @@ outside the model root absolute). It runs after the spin-up, whose restart file
 the event starts from.
 
 **15 `run_event`.** Runs the scenario's `sfincs.inp` and writes the
-inundation-ratio map, an animation and `flood_timeseries.csv`. The flood volume
+inundation-ratio map; with `analysis: true` also an animation and
+`flood_timeseries.csv` (about 12 min per run). The flood volume
 there is the volume present at each map output (every `dtmapout`), so its maximum
 is the peak volume at that sampling; summing each pixel's maximum depth would
 overstate it.

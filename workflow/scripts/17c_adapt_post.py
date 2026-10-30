@@ -13,6 +13,7 @@ import rioxarray as rxr
 
 from src.adaptation_method_post import dispatch_rules
 from src.adaptation_scaling import resolve_forcing_params
+from src.adaptation_strategies import FILE_PARAMS
 from src.domain import load_domain
 from src.log import setup_logging
 from src.plots import plot_inundation_check, plot_max_inundation_map
@@ -54,7 +55,7 @@ landuse_path = str(snakemake.input.landuse)
 for measure_type, raw_params in strategy_def["measures"].items():
     measure_def = measures_def[measure_type]
     resolved = {
-        k: (str(adaptation_root / v) if k == "locations" and isinstance(v, str) else v)
+        k: (str(adaptation_root / v) if k in FILE_PARAMS and isinstance(v, str) else v)
         for k, v in raw_params.items()
     }
     if measure_type == "water_retention":

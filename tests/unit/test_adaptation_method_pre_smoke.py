@@ -1,7 +1,10 @@
 """Smoke tests for src.adaptation_method_pre parameter validation."""
 
+import geopandas as gpd
+import numpy as np
 import pytest
-from src.adaptation_method_pre import validate_measure_params
+from shapely.geometry import LineString
+from src.adaptation_method_pre import _levee_crests, validate_measure_params
 
 METHOD = "preprocessing"
 MEASURE_DEF = {
@@ -56,3 +59,13 @@ def test_bool_param_rejects_non_bool_value():
     validate_measure_params("coastal_levee", {"merge": False}, METHOD, spec)
     with pytest.raises(ValueError, match="'merge'.*true or false"):
         validate_measure_params("coastal_levee", {"merge": "no"}, METHOD, spec)
+
+
+def test_raise_by_lifts_matched_segments_and_new_stretches_get_the_design_crest():
+    baseline = gpd.GeoDataFrame(geometry=[LineString([(0, 0, 3.0), (500, 0, 3.0)])])
+    new = gpd.GeoDataFrame(
+        geometry=[LineString([(0, 0), (500, 0)]), LineString([(0, 1000), (500, 1000)])]
+    )
+    crests = _levee_crests(new, 5.0, baseline, 2.0, raise_by=0.5)
+    assert np.allclose(crests, [3.5, 5.0])
+    assert _levee_crests(new, 5.0, baseline, 2.0) == 5.0

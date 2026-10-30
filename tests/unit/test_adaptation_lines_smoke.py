@@ -10,6 +10,7 @@ from src.adaptation_lines import (
     KIND_RIVER,
     build_adaptation_lines,
     build_info,
+    centrelines_off_sea,
     measure_line_layers,
     plot_adaptation_lines,
     require_sealed,
@@ -75,6 +76,15 @@ def _build():
         unprotected_ocean_wetlands=False,
         closure=CLOSURE,
     )
+
+
+def test_seaward_tail_of_the_outlet_reach_is_cut_at_the_coast():
+    _weir, landuse, _valid, rivers = _delta()
+    out = centrelines_off_sea(rivers, landuse == LANDUSE_SEA_CODE, TRANSFORM)
+    coast_y = (N - COAST_ROW) * CELL_M
+    outlet = out.set_index("reach_id").geometry[2]
+    assert min(y for _, y in outlet.coords) >= coast_y - CELL_M / 4
+    assert out.set_index("reach_id").geometry[1].equals(rivers.geometry[0])
 
 
 def test_mouth_is_closed_sealed_and_pump_runs_inland_to_sea():

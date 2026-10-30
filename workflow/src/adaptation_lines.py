@@ -12,10 +12,12 @@ Steps
 1. Label every baseline weir segment by the water it faces (label_weir_kinds):
    "coast" when a grid cell on either side is open sea (landuse 200, plus
    sea-linked wetlands when those are left unprotected), else "river" when
-   one is river channel. A segment with land on both sides faces a small
-   land island the weir builder merged into the water (fewer than
-   min_component_cells cells); it takes the kind of the water that island
-   borders.
+   one is river channel, burned without the network's seaward tail
+   (centrelines_off_sea) so SWORD running on past the coastline does not
+   turn coastal weir into river. A segment with land on both sides faces a
+   small land island the weir builder merged into the water (fewer than
+   min_component_cells cells) and takes the kind of the water that island
+   borders; failing that, the kind of the nearest water cell.
 2. Close each river mouth (mouth_closures): for every SWORD outlet reach
    (n_rch_dn == 0), the closure is the narrowest straight crossing through
    the reach's upstream end (where the channel meets the sea) that reaches
@@ -45,7 +47,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
 from matplotlib.patches import Polygon as MplPolygon
-from scipy.ndimage import generate_binary_structure
+from scipy.ndimage import distance_transform_edt, generate_binary_structure
 from scipy.ndimage import label as ndimage_label
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
@@ -135,6 +137,71 @@ def protected_land(
     return valid & (labels != _open_sea_label(labels, seaward, valid))
 
 
+def centrelines_off_sea(
+    rivers: gpd.GeoDataFrame, seaward: np.ndarray, transform
+) -> gpd.GeoDataFrame:
+    """Return the river network without its seaward tail.
+
+    From every outlet reach (n_rch_dn == 0) the downstream-end part running
+    through sea cells is dropped; a reach lying wholly in the sea passes the cut
+    on to its upstream reaches. SWORD often carries a river on past the land-use
+    coastline (ghost reaches, a channel hugging the shore), and burning that tail
+    as channel would label the coastal weir beside it "river". Sea cells
+    mid-river (land use classing part of a wide channel as sea) are left alone.
+    """
+    inv = ~transform
+    step = float(np.hypot(transform.a, transform.d)) / 4
+    ids = rivers["reach_id"].astype("int64").to_numpy()
+    by_id = dict(zip(ids, range(len(rivers))))
+
+    def _line(geom) -> LineString:
+        if geom.geom_type == "MultiLineString":
+            geom = linemerge(geom)
+        if geom.geom_type != "LineString":
+            geom = max(geom.geoms, key=lambda g: g.length)
+        return geom
+
+    def _in_sea(p) -> bool:
+        c, r = inv * (p.x, p.y)
+        rc = (int(np.floor(r)), int(np.floor(c)))
+        return _in_grid(rc, seaward.shape) and bool(seaward[rc])
+
+    geoms = list(rivers.geometry)
+    stack = [(rid, None) for rid in ids[(rivers["n_rch_dn"] == 0).to_numpy()]]
+    done = set()
+    while stack:
+        rid, dn_line = stack.pop()
+        if rid in done or rid not in by_id:
+            continue
+        done.add(rid)
+        i = by_id[rid]
+        line = _line(rivers.geometry.iloc[i])
+        ups = [u for u in _reach_ids(rivers["rch_id_up"].iloc[i]) if u in by_id]
+        start, end = Point(line.coords[0]), Point(line.coords[-1])
+        if dn_line is not None:  # downstream end = the one touching the reach below
+            flip = start.distance(dn_line) < end.distance(dn_line)
+        elif ups:  # outlet: downstream end = the one away from the reaches above
+            up = unary_union([rivers.geometry.iloc[by_id[u]] for u in ups])
+            flip = end.distance(up) < start.distance(up)
+        else:
+            flip = False
+        if flip:
+            line = LineString(line.coords[::-1])
+        keep = line.length
+        while keep > 0 and _in_sea(line.interpolate(keep)):
+            keep -= step
+        if keep >= line.length:
+            continue
+        if keep <= 0:
+            geoms[i] = None
+            stack.extend((u, line) for u in ups)
+        else:
+            geoms[i] = substring(line, 0.0, keep)
+    out = rivers.copy()
+    out["geometry"] = geoms
+    return out[out.geometry.notna()]
+
+
 def label_weir_kinds(
     weir_gdf: gpd.GeoDataFrame,
     seaward: np.ndarray,
@@ -174,7 +241,20 @@ def label_weir_kinds(
             )
         return island_kind[lab]
 
-    kinds, n_island, n_unresolved = [], 0, 0
+    # Land on both sides away from a small island (e.g. a shoreline weir whose
+    # outer cell is a land strip the sea-clipped channel mask no longer covers):
+    # the kind of the nearest water cell.
+    dist_sea = distance_transform_edt(~seaward) if seaward.any() else None
+    dist_chan = distance_transform_edt(~channel) if channel.any() else None
+
+    def _nearest_water_kind(sides: list) -> str | None:
+        d_sea = min(dist_sea[rc] for rc in sides) if dist_sea is not None else np.inf
+        d_chan = min(dist_chan[rc] for rc in sides) if dist_chan is not None else np.inf
+        if np.isinf(d_sea) and np.isinf(d_chan):
+            return None
+        return KIND_COAST if d_sea <= d_chan else KIND_RIVER
+
+    kinds, n_island, n_nearest, n_unresolved = [], 0, 0, 0
     for seg in weir_gdf.geometry:
         sides = [rc for rc in _edge_cells(seg, inv) if _in_grid(rc, shape)]
         if any(seaward[rc] for rc in sides):
@@ -191,6 +271,9 @@ def label_weir_kinds(
             ]
             kind = _island_kind(small[0]) if small else None
             if kind is None:
+                kind = _nearest_water_kind(sides)
+                n_nearest += kind is not None
+            if kind is None:
                 n_unresolved += 1
                 kind = KIND_RIVER
             kinds.append(kind)
@@ -198,6 +281,7 @@ def label_weir_kinds(
         KIND_COAST: kinds.count(KIND_COAST),
         KIND_RIVER: kinds.count(KIND_RIVER),
         "facing_small_island": n_island,
+        "by_nearest_water": n_nearest,
         "unresolved_as_river": n_unresolved,
     }
     return kinds, counts
@@ -485,7 +569,12 @@ def build_adaptation_lines(
             transform,
         )
         seaward = seaward | ocean_linked_wetland_mask(landuse, seaward, grid)
-    channel = build_channel_mask_regular(rivers, "width", landuse.shape, transform)
+    channel = build_channel_mask_regular(
+        centrelines_off_sea(rivers, seaward, transform),
+        "width",
+        landuse.shape,
+        transform,
+    )
 
     kinds, kind_counts = label_weir_kinds(
         weir_gdf, seaward, channel, valid, transform, min_component_cells
@@ -575,6 +664,7 @@ def build_info(
         },
         "baseline_weir_kinds": lines.weir["kind"].value_counts().to_dict(),
         "facing_small_island": lines.kind_counts["facing_small_island"],
+        "by_nearest_water": lines.kind_counts["by_nearest_water"],
         "unresolved_as_river": lines.kind_counts["unresolved_as_river"],
         "estuary_cells": int(lines.estuary.sum()),
         "mouths": [

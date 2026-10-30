@@ -138,6 +138,24 @@ def test_auto_location_becomes_absolute_and_survives_the_raw_root_join(tmp_path)
     assert per_basin["measures"]["dike"]["locations"] == "site_7/dike.geojson"
 
 
+def test_inlet_resolves_like_locations(tmp_path):
+    sdef = {
+        "measures": {
+            "water_retention": {
+                "locations": "{basin_id}/zone.geojson",
+                "inlet": "{basin_id}/inlet.geojson",
+                "storage_fraction": 1,
+            }
+        }
+    }
+    out = resolve_locations(sdef, tmp_path, "7")["measures"]["water_retention"]
+    assert out == {
+        "locations": "7/zone.geojson",
+        "inlet": "7/inlet.geojson",
+        "storage_fraction": 1,
+    }
+
+
 def test_unknown_auto_line_fails_at_expansion():
     with pytest.raises(ValueError, match="unknown adaptation line 'moat'"):
         _expand(_strategies(crest=1.0, locations="auto/moat"))

@@ -15,6 +15,7 @@ from hydromt_sfincs import SfincsModel
 
 from src.adaptation_method_pre import dispatch_rules
 from src.adaptation_scaling import resolve_forcing_params
+from src.adaptation_strategies import FILE_PARAMS
 from src.hydromt_sfincs_patch import patch_nearest_extrapolation, patch_subgrid_write
 from src.log import setup_logging
 from src.postprocessing import land_bed_level, write_land_bed_level
@@ -78,19 +79,24 @@ COMPONENT_OF_MEASURE = {
 # 3. Apply measures in adaptation_strategies.yml order
 touched = set()
 applied = set()  # a measure can skip itself (water_retention)
+# Elevation/roughness the next subgrid measure starts from: the basin's own until
+# a subgrid measure has run, then that measure's result, so a later one
+# (water_retention after nbs_land_reclamation) builds on it instead of erasing it.
+current_dep = str(skeleton_root / "subgrid" / "dep_subgrid.tif")
+current_roughness = str(snakemake.input.roughness_native)
 for measure_type, raw_params in strategy_def["measures"].items():
     measure_def = measures_def[measure_type]
     resolved = {
-        k: (str(adaptation_root /v) if k == "locations" and isinstance(v, str) else v)
+        k: (str(adaptation_root / v) if k in FILE_PARAMS and isinstance(v, str) else v)
         for k, v in raw_params.items()
     }
     # retreat/urban_raising pick eligible cells from the baseline flood map
     flood_map_path = str(baseline_flood_map_path) if measure_type in ("retreat", "urban_raising") else None
 
     if measure_type in ("retreat", "nbs_land_reclamation", "water_retention", "urban_raising"):
-        # Never strategy-configured: always the basin's built elevation/roughness.
-        resolved["dep_subgrid"] = str(skeleton_root / "subgrid" / "dep_subgrid.tif")
-        resolved["roughness_native_path"] = str(snakemake.input.roughness_native)
+        # Never strategy-configured.
+        resolved["dep_subgrid"] = current_dep
+        resolved["roughness_native_path"] = current_roughness
 
     if measure_type in ("water_retention",):
         # baseline_excess_volume comes from rule attribution_mask, per basin x scenario.
@@ -136,6 +142,18 @@ for measure_type, raw_params in strategy_def["measures"].items():
                         **resolved)
     touched.update(COMPONENT_OF_MEASURE[measure_type])
     applied.add(measure_type)
+
+    if "subgrid" in COMPONENT_OF_MEASURE[measure_type]:
+        # Copies: the next subgrid measure rewrites subgrid/ (write_dep_tif,
+        # write_man_tif) while reading its input.
+        for name in ("dep_subgrid.tif", "manning_subgrid.tif"):
+            dst = adapted_root / f"after_{measure_type}_{name}"
+            shutil.copy2(adapted_root / "subgrid" / name, dst)
+            if name == "dep_subgrid.tif":
+                current_dep = str(dst)
+            else:
+                current_roughness = str(dst)
+        log.info(f"Next subgrid measure starts from {measure_type}'s elevation/roughness")
 
 # 3b. adapt_flood_metrics_pre reads retreat_landuse.tif so urban metrics reflect
 # the reclassification; copy the raw landuse when no measure wrote it.

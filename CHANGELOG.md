@@ -3,6 +3,45 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-10-30: adaptation_modelling (PR #17) merged into the restructured pipeline (- JS)
+
+Kiara's changes of 2026-10-21 to 2026-10-27 (entries below, `-KL`) were
+written against the old layout. Where they live now:
+
+- **Levees raise today's profile** (`raise_by`): `src/adaptation_scaling.py`,
+  `src/adaptation_method_pre.py`. Kinds use this branch's names
+  (`max_coastal_water_level`, `max_river_water_level`).
+- **Retention inlet**: `apply_water_retention(inlet=...)`. `inlet` is a
+  file param resolved like `locations` (`src.adaptation_strategies.FILE_PARAMS`,
+  `{basin_id}/` and `auto/` forms). `config/adaptation_strategies.yml` now
+  references `<adaptation_data_root>/{basin_id}/water_retention_inlet.geojson`,
+  which is not on this machine yet: `NbS_protect_open_*` stops at a missing
+  input until it is added.
+- **Pumps**: preprocessing splits the total capacity over the pump lines;
+  postprocessing limits the river + compound flood volume to the unpumped
+  river volume.
+- **Post river levee**: compares against the max zsmax along the levee line.
+- **Chained subgrid measures**: in `17b_adapt_pre.py`.
+- **Adaptation lines**: the seaward tail cut and the nearest-water fallback
+  are in `src/adaptation_lines.py` (rule 12c), not `tools/build_adaptation_lines.py`.
+- **Attribution counterparts**: one driver at the scenario's level, the other
+  at mean conditions (`surge_rp_yr: Tide` / `river_rp_yr: Mean`), same `slr_m`.
+- **Scenarios**: `mean_03SLR` and `storm_gloria` added; `compound_100`
+  renamed to `compound_100_03SLR`; `coast_only_100`, `river_only_100` and
+  `compound_500` removed.
+- **Run-event animation and `flood_timeseries.csv`**: these are now
+  `analysis: true` outputs of rules `run_event` and `adapt_run_event_pre`,
+  not the PR's `animation_scenarios` / `timeseries_scenarios` lists, so a
+  plain build skips both (about 12 min per run).
+- **Analysis scripts**: ported into this branch's `analysis/` scripts and
+  conventions. `analysis/csi_pre_vs_post.py` is removed, as the PR removed its
+  source; `pre_post_heatmap.py` and `pre_post_floodmap.py` replace it.
+
+New unit tests cover `raise_by`, the levee crests, the unpumped volume, the
+seaward tail cut and the inlet path. Dry runs: preprocess 15 jobs, build 21
+(23 with `analysis=True`, as before the merge), adapt `advance_1` on
+`compound_100_03SLR` 34.
+
 # 2026-10-30: SWORD reach lines oriented downstream in rule 02 (- JS)
 
 - **Why:** SWORD v17c draws every reach from its downstream to its upstream end
@@ -466,6 +505,169 @@ the pipeline works; this file only describes *what changed and why*.
   1248635 and 4267691: same reaches and widths; `rch_id_dn` changes on 16 and
   14 reaches (partly order only, e.g. 74230100061 now drains into
   74230100011).
+
+# 2026-10-26: Change the way pump capacity is calculated in post approach, analysis scripts moved to own folder (-KL)
+
+## analysis scripts moved to their own folder (-KL)
+
+The analysis and figure scripts lived in `tests/` next to the pipeline's
+diagnostics. They now have their own top-level folder, `analysis/`, without
+the `KL_` prefix and renamed. The scripts find the repo from their own location one level down, as before,
+so `analysis/` needs no path changes. `tests/` keeps the pipeline checks.
+
+## Change the way pump capacity is calculated in post approach
+`apply_pumps` (src/adaptation_method_post.py) removed capacity x flood
+duration from the river + compound flood cells. That spends all pump
+capacity on floodplain water, as if the river itself needed no pumping.
+Behind a closed mouth (protect_closed's coastal levee, advance's offshore
+barrier), the pumps must first carry the whole river to sea. The duration
+also covered the whole 336 h window (the river stays above its start level
+throughout). So in river_100_03SLR, scale 0.4 (1510 m3/s) already removed
+1.8e9 m3 against 8.2e7 m3 of flood water, and post-processing cleared all
+river flooding at every scale.
+
+Now the river + compound flood volume is limited to the river volume the
+pumps cannot discharge, integral of max(Q_river(t) - capacity, 0) dt over the
+event (new `_unpumped_river_volume_m3`, discharge summed over all
+`sfincs.dis` points, replacing `_river_flood_duration_s`). The difference is
+removed as the same uniform layer as before. river_100_03SLR: scale 0.4
+leaves 9.2e8 m3 unpumped (full risk), 0.9 leaves 3.0e7 m3 (about 36% of the
+flood volume), 1 leaves 0 (fully drained). The flood map is from an
+open-mouth run, so the rule scales the volume of its flooding and does not
+move it to where water would pond behind the closed mouth. Rerun the
+protect_closed and advance post-processing runs (`--forcerun
+adapt_metrics_post`, since Snakemake does not track changes to src modules).
+
+# 2026-10-23: event flood time series only on request (-KL)
+
+## event flood time series only on request
+
+`16_run_event.py` (rules run_event and adapt_run_event_pre) rasterized every
+map frame onto the subgrid for `flood_timeseries.csv` after each SFINCS run:
+~12 min per run with the 168 h event window (337 hourly frames), single
+threaded while the job holds all `--cores`. Nothing downstream reads the CSV
+(metrics, strategy sizing and the comparison all use zsmax). Now only for
+scenarios listed in the new top-level config key `timeseries_scenarios`
+(default `[]`), like `animation_scenarios`; every other run writes a
+header-only CSV, so the rules' declared outputs are unchanged. As with the
+animation change, add `--rerun-triggers mtime params input` to avoid
+rerunning finished event runs because the script changed.
+
+# 2026-10-21: edits to adaptation strategies and adjustment to scenarios for attribution runs (-KL)
+
+## event flood animations only on request
+
+`16_run_event.py` (rules run_event and adapt_run_event_pre) made a flood
+animation (`02_flood_animation.mp4`) for every event run, which took ~15 min
+after each SFINCS run. Now only for scenarios listed in the new top-level
+config key `animation_scenarios` (default `[]`), e.g.
+`--config animation_scenarios="['river_100_03SLR']"` -- that scenario's
+baseline and adaptation runs. Every other run writes an empty placeholder
+file, so the rules' declared outputs are unchanged; the flood time series CSV
+is still computed for every run. Editing the script makes Snakemake treat
+every finished event run as changed: add `--rerun-triggers mtime params
+input` to the next run to avoid rerunning them for this alone.
+
+## water_retention inlet (test) (-KL)
+
+The retention zone's ring weir sat at the nearby levee crest (~4.29 m) all
+around it, also behind the river levee, so river water hardly got in
+(river_100_03SLR: 2-11% of the target storage filled). New optional
+`water_retention` params: `inlet` (polyline over existing levee segments,
+adaptation_ebro/water_retention_inlet.geojson: 27 segments, 2.7 km, both
+banks at the upstream end) and `inlet_sill_below_crest` (default 0.2 m).
+With `inlet`, the levee segments under it get their own crest - 0.2 m
+(4.42-4.52 -> 4.22-4.32 m, via apply_river_levee with raise_by < 0) and the
+ring weir is left out wherever the zone runs along an existing levee (18 of
+38.5 km), so the levee is the zone's only wall on the river side. Without
+`inlet` nothing changes. To be checked in a test run: when and how full the
+basin fills.
+
+## subgrid measures in one strategy build on each other (-KL)
+
+`18a_adapt_pre.py` gave every subgrid measure (nbs_land_reclamation,
+water_retention, retreat, urban_raising) the basin's own `dep_subgrid.tif`
+and native roughness, and each rebuilds the whole subgrid -- so the last one
+erased the earlier ones. In NbS_protect_open (river, compound),
+water_retention erased the foreshore: the model bed under it stayed at the
+original -6.9 m (instead of 0.0 m) and kept sea roughness, while
+`retreat_landuse.tif`/`sea_mask.tif` marked it as land -- so ~105 km2 of
+open sea counted as land flooded 3.5-7 m deep (river NbS_1: 705 of 898 Mm3
+of the flood volume). Coastal NbS runs (no water_retention) were unaffected.
+
+Now each subgrid measure after the first starts from copies of the previous
+one's `subgrid/dep_subgrid.tif` and `manning_subgrid.tif`
+(`after_<measure>_*.tif` in the strategy's sfincs_skeleton), so the order of
+the measures no longer decides which survives. Rerun every NbS_protect_open
+PRE run (river, compound).
+
+## preprocessed pump capacity is split over the pump lines (-KL)
+
+`apply_pumps` (adaptation_method_pre.py) passed the strategy's `discharge`
+to every line in `locations`, and SFINCS gives every line in sfincs.drn its
+own discharge -- so advance's 7 pumps (advance_pumps.geojson) had 7x the
+intended capacity: river_100_03SLR advance_04 / advance_1 = 10,600 / 26,400
+m3/s in total vs a 3775 m3/s river peak, which pumped the water behind the
+offshore barrier down to -0.3 / -3 m and made every scale identical. Now
+`discharge` is the measure's total capacity, split evenly over the lines
+(same total the postprocessing pumps rule already used). protect_closed
+(1 line, pump_river_mouth.geojson) is unchanged. Rerun every advance PRE
+run.
+
+## attribution compares against mean conditions, not a null driver (-KL)
+
+The attribution mask (rule attribution_mask, 18c) used to compare a scenario
+against single-driver siblings with the OTHER driver null (river_only_100,
+coast_only). A null sea is a flat boundary at -10.5 m (13_build_sfincs.py,
+river_only), which removes the sea's backwater from the river run, and
+coast_only had no SLR -- so in river_100_03SLR (river 100 + tide + 0.3 m SLR)
+53 km2 (26% of the flooded area), the low seaward land the tide + SLR
+reaches, was flooded in neither sibling: class 0, which no postprocessing
+rule touches (e.g. advance's offshore barrier removed it in PRE but not in
+POST).
+
+`attribution_counterparts` (00_common.smk) now returns, per scenario, one run
+per driver that keeps that driver at the scenario's event level and the other
+at mean conditions (surge_rp Tide / river_rp Mean), same slr_m, matched on
+those values (not on names). New scenario `mean_03SLR` (Tide / Mean / 0.3 m
+SLR). coast_100_03SLR -> (mean_03SLR, itself); river_100_03SLR -> (itself,
+mean_03SLR); compound_100_03SLR -> (river_100_03SLR, coast_100_03SLR). The
+null-driver scenarios (coast_only, river_only, *_only_100) are no longer used
+for attribution. Class 3 is now "flooded by either driver alone" -- for a
+single-driver scenario, flooded already under mean conditions with SLR. In a
+compound scenario class 0 is the genuine compound interaction (flooded only
+when both drivers act together); no postprocessing rule handles it yet.
+
+Rerun: build + run mean_03SLR, then attribution_mask, every POST run, and the
+NbS_protect_open PRE runs (water_retention is sized from
+baseline_excess_volume, classes 1 and 3).
+
+## preprocessed levees raise today's levee instead of replacing its crest (-KL)
+
+A coastal_levee/river_levee resolved from `max_coastal_waterlevel` or
+`max_river_waterlevel` used to set every segment on its polyline to one flat
+crest (scale x max water level). That crest replaced today's levee, so lower
+scales LOWERED it (coast: 0.31 m at scale 0.4 vs today's 0.40 m; river:
+2.21 m at scale 0.4 lowered 85% of the river levee segments by up to 3 m,
+which is why river grey_protect_open_04 came out worse than no adaptation),
+and the flat river crest at scale 1 sat up to 5 m above the water level near
+the mouth.
+
+Now `src/adaptation_scaling.py` also adds `raise_by` = scale x the largest
+shortfall of today's levee on the polyline (target water level - existing
+crest; target = max coastal water level for the coast, each segment's own
+local baseline `zsmax` for the river), and the preprocessing levee
+(`_levee_crests`) raises every segment on a baseline levee by `raise_by`:
+the new crest follows today's profile and is never lowered. Segments with no
+baseline levee under them (protect_closed's river-mouth closure) still get
+`elevation` (scale x max water level). No freeboard. Basin 2433835: largest
+shortfall 0.37 m on the coast, 0.40 m on the river (coast_100_03SLR /
+river_100_03SLR), so scale 1/0.9/0.4 raise by 0.37/0.33/0.15 m and
+0.40/0.36/0.16 m.
+
+`elevation` itself is unchanged, so the postprocessing levees (binary: scale
+x max water level vs max water level) are unchanged. Rerun every
+grey_protect_open and protect_closed PRE run.
 
 # 2026-10-16: adaptation strategies written once at scale 1, levee lines derived from the baseline weir, SLR ramped in at the event start (-KL)
 
