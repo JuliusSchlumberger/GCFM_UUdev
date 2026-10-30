@@ -3,7 +3,44 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-10-30: attribution class 4 from the crest calibration run, not the spin-up (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW: this changes the adaptation module's results.**
+> Water-retention sizing (`baseline_excess_volume`) and every post-processing
+> measure that clears attribution classes 1 to 3 (levees, offshore barrier,
+> pumps, retention) are affected. Revert or adjust if this does not match your
+> intended definition.
+
+- **What changed:** class 4 of the attribution mask is now every pixel wet in
+  rule 11's last crest calibration round (round 2 with `verify_crests`, else
+  round 1). That run carries the design discharge (FLOPROS riverine RP) and the
+  coastal storm tide, held by the dikes. Before, class 4 was every pixel wet in
+  the spin-up (mean discharge, calm sea).
+- **Why:** class 4 is left out of `baseline_excess_volume` and of the
+  post-processing removals. With the spin-up as reference, all in-channel water
+  between the mean-flow channel and the dike crest counted as river flooding
+  "in excess", which oversizes water retention. The calibration run is what the
+  embanked system holds at its protection standard, so the excess is now the
+  water beyond that.
+- **Effect** (2433835 `default` run, hmin 0.05 m): class 4 grows from 15.35 to
+  20.59 km²; flooding outside class 4 falls from 254.87 to 249.65 km² and from
+  278.6 to 267.7 Mm³ (-3.9%). The full `baseline_excess_volume` was not
+  recomputed: no counterpart runs exist on this machine.
+- **Caveats:** pixels are excluded whole, so in-channel water ABOVE the design
+  level in a larger event still drops out (only the overflow onto the floodplain
+  counts); the reference run is at present-day sea level, while the scenarios
+  add 0.3 m. The label in the attribution figure is now "Embanked water".
+- Rule `attribution_mask` now reads the calibration round's `sfincs_map.nc`
+  instead of `spin_up/sfincs_map.nc`; its intermediate raster is
+  `calibration_max_flood_depth.tif` (was `spinup_max_flood_depth.tif`).
+
 # 2026-10-30: adaptation_modelling (PR #17) merged into the restructured pipeline (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW** the points where this merge departs from your
+> branch: the run-event animation and `flood_timeseries.csv` are gated by
+> `analysis: true` instead of `animation_scenarios`/`timeseries_scenarios`;
+> `inlet` is resolved like `locations` (`{basin_id}/...`); the attribution
+> counterparts use this branch's `_yr` keys and no `discharge_multiplier`.
 
 Kiara's changes of 2026-10-21 to 2026-10-27 (entries below, `-KL`) were
 written against the old layout. Where they live now:

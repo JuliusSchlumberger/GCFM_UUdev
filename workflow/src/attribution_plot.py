@@ -1,9 +1,10 @@
-"""Classify a flood map by dominant source (river, coastal, compound, permanent water).
+"""Classify a flood map by dominant source (river, coastal, compound, embanked water).
 
 Uses existing max_flood_depth.tif rasters of the river and coastal counterpart
 scenarios (00_common.smk attribution_counterparts: one driver at the target
-scenario's own level, the other at mean conditions, same slr_m) and the spin-up (mean river discharge, calm sea). Called by rule attribution_mask
-(17a_attribution_mask.py).
+scenario's own level, the other at mean conditions, same slr_m) and of rule
+11's last crest calibration round (class 4: the water the dikes hold at the
+protection standard). Called by rule attribution_mask (17a_attribution_mask.py).
 """
 
 from pathlib import Path
@@ -27,15 +28,15 @@ def generate_attribution_maps(
         "River",
         "Coastal",
         "Compound",
-        "Permanent water",
+        "Embanked water",
     ],
     data_libs: list[str] | None = None,
 ) -> None:
-    """Write attribution_mask.tif and its map for each (label, river, coastal, spinup, out_dir, png) run.
+    """Write attribution_mask.tif and its map for each (label, river, coastal, reference, out_dir, png) run.
 
-    Classes: 1 river, 2 coastal, 3 compound, 4 permanent water. Cells wet in
-    the spin-up (e.g. the perennial channel, which every event run restarts
-    from) are class 4 and override the others. threshold is the depth (m)
+    Classes: 1 river, 2 coastal, 3 compound, 4 embanked water. Cells wet in the
+    reference run (rule 11's crest calibration: the channel and foreshore up to
+    the dikes at the design flood) are class 4 and override the others. threshold is the depth (m)
     above which a cell counts as flooded in each input raster. base_root is
     opened read-only for the basemap only; land_mask_path
     ({basin}_land_mask_on_grid.gpkg) is the background, no web tiles. Runs with
@@ -50,21 +51,21 @@ def generate_attribution_maps(
         label,
         river_tif,
         coastal_tif,
-        spinup_tif,
+        reference_tif,
         out_folder,
         out_png,
     ) in attribution_runs:
-        river_tif, coastal_tif, spinup_tif, out_folder, out_png = (
+        river_tif, coastal_tif, reference_tif, out_folder, out_png = (
             Path(river_tif),
             Path(coastal_tif),
-            Path(spinup_tif),
+            Path(reference_tif),
             Path(out_folder),
             Path(out_png),
         )
         if (
             not river_tif.exists()
             or not coastal_tif.exists()
-            or not spinup_tif.exists()
+            or not reference_tif.exists()
         ):
             print(f"  Skipping '{label}': TIF(s) not found.")
             continue
@@ -76,12 +77,12 @@ def generate_attribution_maps(
             profile = src.profile.copy()
         with rasterio.open(coastal_tif) as src:
             coastal = src.read(1)
-        with rasterio.open(spinup_tif) as src:
-            spinup = src.read(1)
+        with rasterio.open(reference_tif) as src:
+            reference = src.read(1)
 
         r_flood = river > threshold
         c_flood = coastal > threshold
-        s_flood = spinup > threshold
+        s_flood = reference > threshold
 
         attr_mask = np.zeros(river.shape, dtype=np.uint8)
         attr_mask[r_flood & ~c_flood] = 1
@@ -117,7 +118,7 @@ def generate_attribution_maps(
                 _ax.remove()
         # Classes 1-3 (river/coastal/compound) always appear in the legend
         # regardless of whether this basin x scenario actually has any
-        # pixels in them; class 4 (spin-up/permanent water) is masked out of
+        # pixels in them; class 4 (embanked water) is masked out of
         # the map and gets no legend entry, since it isn't a real attribution
         # outcome.
         ax.legend(
@@ -129,6 +130,6 @@ def generate_attribution_maps(
             framealpha=0.9,
             fontsize=10,
         )
-        ax.set_title(f"Flood source attribution – {label}")
+        ax.set_title(f"Flood source attribution â€“ {label}")
         save_figure(fig, out_png, dpi=150, bbox_inches="tight")
         print(f"  Saved PNG: {out_png}")

@@ -671,10 +671,12 @@ connected to the open sea.
 | `post` | 17c | chains each measure on the baseline `max_flood_depth.tif` without SFINCS |
 
 Rule 17a classifies the baseline flood map by dominant source: 1 river,
-2 coastal, 3 compound, 4 permanent water (wet in the spin-up, overriding the
-others), from the river-only and coastal-only sibling scenarios.
-`baseline_excess_volume.json` is the excess volume of classes 1 and 3, which
-sizes water-retention measures. Rule 18 gathers every baseline, `pre` and `post`
+2 coastal, 3 compound, from the river and coastal counterpart scenarios, and
+4 embanked water, overriding the others: every pixel wet in rule 11's last
+crest calibration round, i.e. the channel and foreshore up to the dikes at the
+design discharge and coastal storm tide (present-day sea level).
+`baseline_excess_volume.json` is the flood volume of classes 1 and 3, the water
+beyond what the dikes hold, which sizes water-retention measures. Rule 18 gathers every baseline, `pre` and `post`
 `flood_metrics.csv` of a basin into `runs/metrics_comparison.csv`.
 
 ## References

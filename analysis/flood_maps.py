@@ -100,7 +100,7 @@ def draw_attribution_panel(ax, scen, dst_bounds, basin_root):
 
     if not land.empty:
         land.plot(ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
-    # Class 4 (spin-up/permanent water, e.g. the river channel) has no colour
+    # Class 4 (embanked water, e.g. the river channel) has no colour
     # slot and would clip to "compound"; masked as in attribution_plot.py.
     attr_arr = np.nan_to_num(wgs_arr, nan=0)
     attr_plot = np.ma.masked_where((attr_arr == 0) | (attr_arr == 4), attr_arr)
