@@ -3,6 +3,15 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-10-30e: CI pins hydromt 1.3.1 (- JS)
+
+- The CI unit-test job pip-installed `hydromt` unpinned and got 1.4.1.
+  `src.hydromt_sfincs_patch.patch_nearest_extrapolation` refuses any version
+  other than 1.3.1, so `test_nearest_extrapolation_patch_matches_griddata_nearest`
+  failed (1 of 376). `.github/workflows/ci.yml` now installs `hydromt==1.3.1`,
+  the version `environment.yml` pins. Checked by running the suite in a venv built
+  from the CI pip list: 1 failed before the pin, 376 passed after.
+
 # 2026-10-30d: event timeline set in rule 14 from the compound lag; tide runs on (- JS)
 
 - **Event timeline (rule 14, `src.sfincs_run.event_timeline`):** the river
