@@ -120,3 +120,34 @@ def test_run_forcing_reads_bzs_and_dis_and_marks_tstart(monkeypatch, tmp_path):
     assert len(ax_wl.get_lines()) == 2 + 1  # two boundary points + tstart line
     assert len(ax_q.get_lines()) == 1 + 1
     assert "default" in figs[0]._suptitle.get_text()
+
+
+def test_storm_tide_shapes_drawn_from_the_hydrograph_file(tmp_path):
+    import xarray as xr
+
+    rp = np.array([1, 10, 50, 100, 250, 1000], dtype=float)
+    t = np.linspace(-24, 24, 49)
+    shape = np.exp(-((t / 6.0) ** 2))[None, None, :].repeat(len(rp), 1).repeat(2, 0)
+    ds = xr.Dataset(
+        {
+            "average_tide": (
+                ("station", "time_hr"),
+                np.cos(t / 12.42 * 2 * np.pi)[None].repeat(2, 0),
+            ),
+            "surge_shape": (("station", "rp_yr", "time_hr"), shape),
+            "storm_tide_level_m": (
+                ("station", "rp_yr"),
+                np.tile(np.linspace(1.5, 3.0, len(rp)), (2, 1)),
+            ),
+            "shape_n_events": (("station", "rp_yr"), np.full((2, len(rp)), 5)),
+            "shape_dur50_hr": (("station", "rp_yr"), np.full((2, len(rp)), 12.0)),
+            "shape_mode": (("station", "rp_yr"), np.full((2, len(rp)), "window")),
+            "high_water_m": (("station",), [1.0, 1.0]),
+        },
+        coords={"time_hr": t, "rp_yr": rp, "gtsm_station": ("station", [7, 8])},
+        attrs={"match_on": "surge_peak"},
+    )
+    ds.to_netcdf(tmp_path / "h.nc")
+    out = tmp_path / "shapes.png"
+    plots.plot_storm_tide_shapes(tmp_path / "h.nc", "0", out)
+    assert out.stat().st_size > 0

@@ -28,7 +28,9 @@ rule river_surface:
         # active_mask.elevation_buffer_m to set the active-cell elevation ceiling.
         river_elevation_max    = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_elevation_max.json"),
         water_surface          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_water_surface.gpkg"),
-        **analysis_outputs(plot_water_surface=analysis_figure_path("10_river_surface.png")),
+        # Surface along each seed's widest arm (rule analysis_preprocess draws it).
+        surface_profile_points = diagnostics_path("river_surface_profile_points.csv"),
+        surface_profile_paths  = diagnostics_path("river_surface_profile_paths.csv"),
     params:
         water_surface = config["river_processing"]["water_surface"],
         water_code    = config["landuse"]["water_code"],

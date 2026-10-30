@@ -225,8 +225,8 @@ def test_fast_chainage_within_half_a_step_of_the_projection():
     assert np.max(np.abs(exact[2][straight] - fast[2][straight])) <= 15.0 + 1e-6
 
 
-def test_water_surface_profile_figure_renders(tmp_path, water_surface_cfg):
-    from src.plots import plot_water_surface_profiles
+def test_water_surface_profile_tables_drive_the_figure(tmp_path, water_surface_cfg):
+    from src.plots import plot_water_surface_profiles, water_surface_profile_tables
 
     rivers = _rivers(
         {
@@ -240,8 +240,13 @@ def test_water_surface_profile_figure_renders(tmp_path, water_surface_cfg):
         _sampler(lambda r, a: (6.0 if r == "1" else 3.0) - 1e-4 * a),
         water_surface_cfg,
     )
+    points, paths = water_surface_profile_tables(surface, rivers_o, ["1"])
+    assert set(points["kind"]) >= {"water", "node"}
+    assert paths["n_reaches"].iloc[0] == 2
+    nodes = points[points["kind"] == "node"]
+    assert nodes["along_m"].is_monotonic_increasing
     out = tmp_path / "10_river_surface.png"
-    plot_water_surface_profiles(surface, rivers_o, ["1"], str(out), "test")
+    plot_water_surface_profiles(points, paths, str(out), "test")
     assert out.stat().st_size > 0
 
 

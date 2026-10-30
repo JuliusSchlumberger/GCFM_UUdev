@@ -95,21 +95,20 @@ from src.hydromt_sfincs_patch import (
 from src.landuse import LANDUSE_SEA_CODE
 from src.log import setup_logging
 from src.plots import (
-    animate_flood_progression,
     plot_crest_profiles,
-    plot_crest_gap_map,
     plot_max_inundation_map,
-    plot_river_depth_width,
     plot_run_forcing,
-    plot_water_level_timeseries,
-    plot_wetland_dike_positions,
 )
 from src.postprocessing import (
-    compute_flood_progression,
     compute_max_inundation,
     land_bed_level,
 )
-from src.raster import FLOAT_NODATA, dry_isolated_sea_cells, read_on_grid
+from src.raster import (
+    FLOAT_NODATA,
+    dry_isolated_sea_cells,
+    read_on_grid,
+    write_float_raster,
+)
 from src.river_burn import (
     build_centerline_cells_regular,
     build_channel_mask_regular,
@@ -200,7 +199,6 @@ min_component_cells = int(snakemake.params.min_component_cells)
 nr_subgrid_pixels = int(snakemake.params.nr_subgrid_pixels)
 nr_levels = int(snakemake.params.nr_levels)
 nrmax = int(snakemake.params.nrmax)
-animation_fps = int(snakemake.params.animation_fps)
 active_mask_enabled = snakemake.params.active_mask_enabled
 active_mask_elevation_buffer_m = float(snakemake.params.active_mask_elevation_buffer_m)
 outflow_buffer_m = float(snakemake.params.outflow_buffer_m)
@@ -661,8 +659,6 @@ ROUND_TITLES = [
     "round 1 (confined, excavated)",
     "round 2 (verification, real crests)",
 ]
-# Diagnostic figures (config analysis: true) are declared only then.
-ANALYSIS = hasattr(snakemake.output, "plot_dike_positions")
 
 
 def _start_round(round_idx: int) -> Path:
@@ -780,60 +776,23 @@ def _round_diagnostics(
         basin_id=basin_id,
         run_label=run,
     )
-    if not ANALYSIS:
-        return
-
-    plot_water_level_timeseries(
-        final_times_s / 86400.0,
+    # Water level at one centreline cell per reach, for the analysis figures.
+    pd.DataFrame(
         final_zs[:, representative_cell_pos],
-        str(getattr(out, f"plot_water_level_r{round_idx}")),
-        day_markers=[(run_hr / 24.0, f"{run_hr:.0f} h (run end)")],
-        station_labels=[f"reach {reach_id}" for reach_id in representative_reach_ids],
-        basin_id=f"Basin {basin_id}",
-        run_label=f"{run} -- {round_label}",
+        columns=[f"reach {reach_id}" for reach_id in representative_reach_ids],
+    ).assign(time_s=final_times_s).to_csv(
+        getattr(out, f"water_level_r{round_idx}"), index=False
     )
-    da_h = compute_flood_progression(round_root, _round_ocean_mask_path)
-    if da_h is None:
-        raise RuntimeError(
-            f"[{round_label}] no zs or zb in the SFINCS output of {round_root}"
-        )
-    animate_flood_progression(
-        da_h,
-        domain_poly,
-        str(land_mask_path),
-        str(river_network_path),
-        str(getattr(out, f"animation_r{round_idx}")),
-        basin_id=basin_id,
-        run_label=f"{run} -- {round_label}",
-        fps=animation_fps,
-    )
-
     if round_idx == N_ROUNDS_AFTER_0:
-        # None when the production weir is not applicable (no ocean cells on
-        # the grid); all-NaN when it has no seaward edge. Both leave no crest to map.
-        if (
-            crest_gap_crest_on_grid is None
-            or not np.isfinite(crest_gap_crest_on_grid).any()
-        ):
-            log.warning(
-                f"[{round_label}] no weir crest cells -- writing empty crest gap map sentinel"
-            )
-            Path(out.plot_crest_gap_map).touch()
-        else:
-            plot_crest_gap_map(
-                crest_gap_crest_on_grid,
-                grid.transform,
-                str(round_root / "sfincs_map.nc"),
-                weir_gdf,
-                rivers_utm,
-                crossings_utm.geometry.x.to_numpy(),
-                crossings_utm.geometry.y.to_numpy(),
-                str(out.plot_crest_gap_map),
-                basin_id=basin_id,
-                run_label=f"{run} -- {round_label}",
-                min_overtop_m=CREST_PRECISION_M,
-            )
-    log.info(f"[{round_label}] Diagnostic plots written")
+        # Production crest on each edge's water-side cell; all-NaN when the weir
+        # is not applicable (no ocean cells) or has no seaward edge.
+        crest = (
+            np.full(grid.shape, np.nan, dtype=np.float32)
+            if crest_gap_crest_on_grid is None
+            else crest_gap_crest_on_grid
+        )
+        write_float_raster(out.crest_on_grid, crest, grid.transform, grid.crs)
+    log.info(f"[{round_label}] Diagnostics written")
 
 
 def _edge_crest_on_grid(weir_diagnostics: dict) -> np.ndarray | None:
@@ -863,39 +822,38 @@ confinement_weir_gdf, confinement_weir_diagnostics = build_coastal_protection_we
     unprotected_ocean_wetlands=unprotected_ocean_wetlands,
 )
 
-if ANALYSIS:
-    # dike position with unprotected_ocean_wetlands off vs on (figure only)
-    # The other setting is traced for the figure only, never simulated or exported.
-    log.info(
-        f"Tracing the weir with unprotected_ocean_wetlands={not unprotected_ocean_wetlands} "
-        f"(comparison figure only, not simulated)"
-    )
-    _alt_weir_gdf, _ = build_coastal_protection_weir(
-        grid,
-        landuse_on_grid,
-        channel_mask,
-        weir_crest_m,
-        min_component_cells,
-        weir_par1,
-        water_side_crest_on_grid=np.full(grid.shape, np.nan, dtype=np.float32),
-        channel_mask_gap_free=True,
-        unprotected_ocean_wetlands=not unprotected_ocean_wetlands,
-    )
-    _weir_off, _weir_on = (
-        (_alt_weir_gdf, confinement_weir_gdf)
-        if unprotected_ocean_wetlands
-        else (confinement_weir_gdf, _alt_weir_gdf)
-    )
-    plot_wetland_dike_positions(
-        landuse_on_grid,
-        grid.transform,
-        _weir_off,
-        _weir_on,
-        ocean_linked_wetland_mask(landuse_on_grid, ocean_mask_grid, grid),
-        str(snakemake.output.plot_dike_positions),
-        active_on=unprotected_ocean_wetlands,
-        basin_id=basin_id,
-    )
+# Dike position with unprotected_ocean_wetlands off vs on, for the analysis
+# figure. The other setting is traced only for that, never simulated or exported.
+log.info(
+    f"Tracing the weir with unprotected_ocean_wetlands={not unprotected_ocean_wetlands} "
+    f"(diagnostic only, not simulated)"
+)
+_alt_weir_gdf, _ = build_coastal_protection_weir(
+    grid,
+    landuse_on_grid,
+    channel_mask,
+    weir_crest_m,
+    min_component_cells,
+    weir_par1,
+    water_side_crest_on_grid=np.full(grid.shape, np.nan, dtype=np.float32),
+    channel_mask_gap_free=True,
+    unprotected_ocean_wetlands=not unprotected_ocean_wetlands,
+)
+_weir_off, _weir_on = (
+    (_alt_weir_gdf, confinement_weir_gdf)
+    if unprotected_ocean_wetlands
+    else (confinement_weir_gdf, _alt_weir_gdf)
+)
+_weir_off.to_file(snakemake.output.dike_wetlands_off, driver="GPKG")
+_weir_on.to_file(snakemake.output.dike_wetlands_on, driver="GPKG")
+write_float_raster(
+    snakemake.output.ocean_wetland_mask,
+    ocean_linked_wetland_mask(landuse_on_grid, ocean_mask_grid, grid).astype(
+        np.float32
+    ),
+    grid.transform,
+    grid.crs,
+)
 
 # round 0: river bed from the water-surface slope (no SFINCS run)
 round_label = ROUND_TITLES[0]
@@ -980,38 +938,12 @@ _write_calibration_state(
     zs=round0_zs,
 )
 
-if ANALYSIS:
-    # river network map: water depth at the design discharge per node pair (colour;
-    # dashed where the slope is the floor) and the width used (line width).
-    _depth_segments = depth_segments(river_bed, crs=sf.crs)
-    design_discharge = bed_cfg["design_discharge"]
-    _depth_label = f"Water depth at {design_discharge} discharge (m)"
-    _depth_title = (
-        f"Basin {basin_id}: river depth from the water-surface slope (rule 10), GloFAS {design_discharge} Q, "
-        f"n = {channel_manning_n}"
-    )
-    plot_river_depth_width(
-        _depth_segments,
-        land_mask_path=str(land_mask_path),
-        domain_outline=sf.region.to_crs(sf.crs).geometry.union_all(),
-        output_path=str(snakemake.output.plot_river_network_depth),
-        depth_label=_depth_label,
-        title=_depth_title,
-    )
-    plot_river_depth_width(
-        _depth_segments,
-        land_mask_path=str(land_mask_path),
-        domain_outline=sf.region.to_crs(sf.crs).geometry.union_all(),
-        output_path=str(snakemake.output.plot_river_network_forward_check),
-        depth_label="Steady GVF level on the bed minus the rule-10 surface (m)",
-        title=(
-            f"Basin {basin_id}: river bed forward check, GloFAS {design_discharge} Q, n = {channel_manning_n} "
-            "(positive: the bed carries Q above the smoothed FathomDEM level)"
-        ),
-        value_col="forward_minus_surface_m",
-        value_range=(-3.0, 3.0),
-        cmap_name="RdBu_r",
-    )
+# River depth and forward check per node pair, and the model region, for the
+# analysis figures of the network.
+depth_segments(river_bed, crs=sf.crs).to_file(
+    snakemake.output.depth_segments, driver="GPKG"
+)
+sf.region.to_crs(sf.crs).to_file(snakemake.output.model_region, driver="GPKG")
 
 # excavation (shared by rounds 1 and 2)
 # One anchor per centerline cell: rivbed = DEM_at_cell - river_depth_m.
@@ -1271,6 +1203,7 @@ log.info(
 
 # For round 2's crest gap map.
 crossings_utm = crossings_filt.to_crs(grid.crs)
+crossings_utm.to_file(snakemake.output.discharge_points, driver="GPKG")
 
 sf.water_level.create_boundary_points_from_mask(bnd_dist=5000.0)
 if surge_protection_rp_yr is not None:
@@ -1554,4 +1487,11 @@ Path(snakemake.output.depth_estimated_river_network).parent.mkdir(
 rivers.to_file(snakemake.output.depth_estimated_river_network, driver="GPKG")
 log.info(f"Written: {snakemake.output.depth_estimated_river_network}")
 
+# Run length and round titles, for the analysis figures.
+with open(snakemake.output.calibration_rounds, "w") as _f:
+    json.dump(
+        {"run_hr": run_hr, "n_rounds": N_ROUNDS_AFTER_0, "titles": ROUND_TITLES},
+        _f,
+        indent=2,
+    )
 log.info("Done")

@@ -9,7 +9,6 @@ from src.io import require_keys
 from src.log import setup_logging
 from src.profiling import ScriptProfiler
 from src.river_forcing import load_forcing_crossings, snap_crossings_to_reaches
-from src.plots import plot_clean_network_discharge, plot_cleaned_network
 from src.river_network import (
     _as_linestring,
     accumulate_discharge,
@@ -191,34 +190,6 @@ outflow_points.to_file(snakemake.output.delta_outflow_points, driver="GPKG")
 log.info(
     f"Written: {snakemake.output.delta_outflow_points} ({len(outflow_points)} point(s))"
 )
-
-# Summary plots
-
-rivers_wgs = (
-    rivers_clean.to_crs("EPSG:4326")
-    if rivers_clean.crs is not None and rivers_clean.crs.to_epsg() != 4326
-    else rivers_clean
-)
-if hasattr(snakemake.output, "plot_clean_network"):
-    rivers_orig_wgs = (
-        rivers.to_crs("EPSG:4326")
-        if rivers.crs is not None and rivers.crs.to_epsg() != 4326
-        else rivers
-    )
-
-    plot_cleaned_network(
-        rivers_orig=rivers_orig_wgs,
-        rivers_clean=rivers_wgs,
-        bbox_poly=domain_poly,
-        land_polygons_path=snakemake.input.land_polygons,
-        output_path=snakemake.output.plot_clean_network,
-    )
-    plot_clean_network_discharge(
-        rivers_wgs=rivers_wgs,
-        bbox_poly=domain_poly,
-        land_polygons_path=snakemake.input.land_polygons,
-        output_path=snakemake.output.plot_discharge_network,
-    )
 
 profiler.stop()
 log.info("Done")

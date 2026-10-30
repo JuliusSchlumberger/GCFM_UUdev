@@ -12,8 +12,8 @@ sea dropped the boundary 0.30 m at the event start (basin 2433835) and
 overtopped the coastal dike during spin-up.
 
 Writes, under results/{basin_id}/spin_up/: sfincs.inp, the restart
-sfincs.YYYYMMDD.HHMMSS.rst at t = spinup_days, sfincs_map.nc/sfincs_his.nc,
-and the validation plots.
+sfincs.YYYYMMDD.HHMMSS.rst at t = spinup_days, sfincs_map.nc/sfincs_his.nc;
+and the spin-up's forcing and max flood depth figures.
 """
 
 from datetime import datetime, timedelta
@@ -31,7 +31,6 @@ from src.log import setup_logging
 from src.plots import (
     plot_max_inundation_map,
     plot_run_forcing,
-    plot_water_level_timeseries,
 )
 from src.river_network import outflow_crossing_mask
 from src.postprocessing import compute_max_inundation, read_land_bed_level
@@ -235,54 +234,6 @@ log.info(f"Restart file written: {rst_path} ({rst_path.stat().st_size / 1e6:.1f}
 plot_run_forcing(
     spin_up_root, snakemake.output.plot_forcing, spin_up_root.parent.name, "spinup"
 )
-
-# ── validation plot (config analysis: true) ──
-if hasattr(snakemake.output, "plot_spinup"):
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    plt.ioff()
-    plot_path = Path(snakemake.output.plot_spinup)
-    his_path = spin_up_root / "sfincs_his.nc"
-
-    if not his_path.exists():
-        raise FileNotFoundError(
-            f"SFINCS ran but expected history file not found: {his_path}"
-        )
-    try:
-        ds = xr.open_dataset(his_path)
-    except ValueError:
-        # Time units SFINCS wrote that xarray cannot decode: use raw seconds.
-        ds = xr.open_dataset(his_path, decode_times=False)
-    t = ds["time"].values
-    if np.issubdtype(t.dtype, np.datetime64):
-        t_days = (t - t[0]) / np.timedelta64(1, "D")
-    else:
-        t_days = np.asarray(t, dtype=float) / 86400.0
-
-    zs_var = next((v for v in ("point_zs", "zs") if v in ds), None)
-    if zs_var is None:
-        raise KeyError(
-            f"No water-level variable (point_zs, zs) in {his_path}; available: {list(ds.data_vars)}"
-        )
-    zs = ds[zs_var].values
-    if zs.ndim == 1:
-        zs = zs[:, np.newaxis]
-    if zs.shape[0] != len(t_days):
-        zs = zs.T
-
-    plot_water_level_timeseries(
-        t_days,
-        zs,
-        plot_path,
-        day_markers=[(spinup_days, f"Day {spinup_days} (restart written)")],
-        basin_id=f"Basin {spin_up_root.parent.name}",
-        run_label=f"Spin-up validation | lines should be near-flat at day {spinup_days} if spin-up is sufficient",
-        ylabel=f"Water level — {zs_var} (m)",
-    )
-    log.info(f"Validation plot written: {plot_path}")
 
 # ── max inundation depth map ──
 plot_inundation_path = Path(snakemake.output.plot_max_depth)

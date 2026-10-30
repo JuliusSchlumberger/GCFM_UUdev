@@ -29,6 +29,38 @@ FLOAT_GTIFF_COMPRESSION = {
 }
 
 
+def write_float_raster(path: str | Path, arr: np.ndarray, transform, crs) -> None:
+    """Write a 2-D array as a float32 GeoTIFF, NaN as FLOAT_NODATA."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    tiled = min(arr.shape) >= FLOAT_GTIFF_COMPRESSION["blockxsize"]
+    options = (
+        FLOAT_GTIFF_COMPRESSION if tiled else {"compress": "deflate", "predictor": 3}
+    )
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=arr.shape[0],
+        width=arr.shape[1],
+        count=1,
+        dtype="float32",
+        crs=crs,
+        transform=transform,
+        nodata=FLOAT_NODATA,
+        **options,
+    ) as dst:
+        dst.write(np.where(np.isfinite(arr), arr, FLOAT_NODATA).astype(np.float32), 1)
+
+
+def read_float_raster(path: str | Path) -> tuple[np.ndarray, object, object]:
+    """Return (array with NaN for nodata, transform, crs) of a single-band raster."""
+    with rasterio.open(path) as src:
+        arr = src.read(1).astype(np.float32)
+        if src.nodata is not None:
+            arr[arr == np.float32(src.nodata)] = np.nan
+        return arr, src.transform, src.crs
+
+
 def reproject_nan_aware(
     source: np.ndarray,
     src_transform,

@@ -198,3 +198,15 @@ def test_dry_isolated_sea_cells_without_sea_is_noop():
     out, n_dried = dry_isolated_sea_cells(zsini, np.zeros((5, 5)), -9999.0, 0.0)
     assert n_dried == 0
     assert np.isnan(out).all()
+
+
+def test_float_raster_roundtrip_keeps_nan_and_grid(tmp_path):
+    from src.raster import read_float_raster, write_float_raster
+
+    arr = np.array([[1.5, np.nan], [-2.0, 3.25]], dtype=np.float32)
+    transform = from_origin(500_000.0, 4_500_000.0, 30.0, 30.0)
+    write_float_raster(tmp_path / "x.tif", arr, transform, "EPSG:32631")
+    back, t, crs = read_float_raster(tmp_path / "x.tif")
+    assert np.array_equal(np.isnan(back), np.isnan(arr))
+    assert np.allclose(back[~np.isnan(back)], arr[~np.isnan(arr)])
+    assert t == transform and crs.to_epsg() == 32631

@@ -34,7 +34,6 @@ rule get_elevation:
         # Sea/land: land use 200 = sea, the criterion zsini, weir tracing and
         # the water-level boundary also use.
         landuse_source          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"),
-        land_polygons           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
         # Datum-correction inputs (mandatory — FathomDEM's native EGM2008 datum
         # must not be blended with GEBCO/COAST-RP/MDT, which share GOCO06s).
         goco06s_gfc = raw_input("goco06s"),
@@ -44,12 +43,13 @@ rule get_elevation:
         elevation_merged = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"),
         # Land use on this grid (mode); its class 200 also blanks FathomDEM over sea.
         spec_landuse     = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"),
-        **analysis_outputs(
-            plot_geoid_offset    = analysis_figure_path("06_datum_geoid_offset.png"),
-            plot_mdt_ocean       = analysis_figure_path("06_datum_mdt_ocean.png"),
-            plot_datum_fathomdem = analysis_figure_path("06_datum_fathomdem_correction.png"),
-            plot_datum_gebco     = analysis_figure_path("06_datum_gebco_correction.png"),
-        ),
+        # Datum corrections, drawn by rule analysis_preprocess: geoid offset
+        # (EGM2008 - GOCO06s), raw MDT over the ocean, and the corrections
+        # applied to FathomDEM and GEBCO on this rule's UTM grid.
+        geoid_offset     = diagnostics_path("geoid_offset.tif"),
+        mdt_ocean        = diagnostics_path("mdt_ocean.tif"),
+        datum_fathomdem  = diagnostics_path("datum_correction_fathomdem.tif"),
+        datum_gebco      = diagnostics_path("datum_correction_gebco.tif"),
     params:
         mdt_load_margin_deg = config["datum_correction"]["mdt_load_margin_deg"],
         gebco_max_depth_m   = config["terrain"]["gebco_max_depth_m"],

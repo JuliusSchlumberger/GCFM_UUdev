@@ -95,8 +95,9 @@ def results_path(pattern):
 
 
 # ── figures ──
-# Core figures in {basin_id}/figures/, diagnostics (config analysis: true only)
-# in {basin_id}/figures/analysis/. Names: NN_stage_quantity[__run_label].
+# Core figures in {basin_id}/figures/; diagnostics (config analysis: true only)
+# in {basin_id}/figures/analysis/, drawn by the analysis rules (19) from
+# finished outputs and diagnostic files. Names: NN_stage_quantity[__run_label].
 if not isinstance(config["analysis"], bool):
     raise ValueError(
         f"config analysis must be true or false, got {config['analysis']!r} "
@@ -112,9 +113,10 @@ def analysis_figure_path(name):
     """Return the path of an analysis figure of {basin_id}."""
     return results_path(f"{{basin_id}}/figures/analysis/{name}")
 
-def analysis_outputs(**outputs):
-    """Return the named analysis outputs when config analysis is on, else none."""
-    return outputs if ANALYSIS else {}
+def diagnostics_path(name):
+    """Return the path of a diagnostic data file of {basin_id}, drawn by the analysis rules."""
+    return results_path(f"{{basin_id}}/preprocessing_inputs/diagnostics/{{basin_id}}_{name}")
+
 
 def run_label(scenario=None, method=None, strategy=None):
     """Return the label naming a run in figure names and titles.
@@ -130,16 +132,20 @@ def run_label(scenario=None, method=None, strategy=None):
 CALIB_ROUNDS = [1, 2] if config["river_processing"]["river_depth_modelling"]["verify_crests"] else [1]
 
 def calibration_round_figures():
-    """Return rule 11's figures of each SFINCS round (calib_r1, calib_r2 with verify_crests)."""
-    figures = {}
+    """Return rule 11's outputs of each SFINCS round (calib_r1, calib_r2 with verify_crests).
+
+    Forcing and max-depth figures, the round's map (read by the analysis
+    figures) and its water level at one centreline cell per reach.
+    """
+    outputs = {}
     for r in CALIB_ROUNDS:
-        figures[f"plot_forcing_r{r}"] = figure_path(f"20_forcing_timeseries__calib_r{r}.png")
-        figures[f"plot_max_depth_r{r}"] = figure_path(f"40_run_max_flood_depth__calib_r{r}.png")
-        figures.update(analysis_outputs(**{
-            f"plot_water_level_r{r}": analysis_figure_path(f"11_calib_water_level__calib_r{r}.png"),
-            f"animation_r{r}": analysis_figure_path(f"11_calib_flood_progression__calib_r{r}.mp4"),
-        }))
-    return figures
+        outputs[f"plot_forcing_r{r}"] = figure_path(f"20_forcing_timeseries__calib_r{r}.png")
+        outputs[f"plot_max_depth_r{r}"] = figure_path(f"40_run_max_flood_depth__calib_r{r}.png")
+        outputs[f"water_level_r{r}"] = diagnostics_path(f"calibration_water_level_r{r}.csv")
+        outputs[f"map_r{r}"] = results_path(
+            f"{{basin_id}}/preprocessing_inputs/depth_crest_calibration/round{r}/sfincs_map.nc"
+        )
+    return outputs
 
 
 def calibration_subgrid_files():

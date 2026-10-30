@@ -12,7 +12,6 @@ rule get_boundary_forcings:
             if config["boundary_forcings"]["surge"]["hydrograph"]["enabled"]
             else []
         ),
-        land_polygons = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"),
         grdc_data = raw_input("grdc_discharge"),
         mdt_data = raw_input("mdt_cnes_cls22"),
         slr_data = (
@@ -26,13 +25,12 @@ rule get_boundary_forcings:
         river_forcing = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
         surge_forcing = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         glofas_clip   = results_path("{basin_id}/preprocessing_inputs/forcing/glofas_clip.nc"),
-        **analysis_outputs(
-            plot_map              = analysis_figure_path("07_forcing_locations.png"),
-            plot_eva_diagnostics  = analysis_figure_path("07_forcing_river_eva.png"),
-            # One figure per GRDC-corrected GloFAS cell, named by crossing and cell.
-            plot_bias_correction  = directory(analysis_figure_path("07_forcing_bias_correction")),
-            plot_surge_correction = analysis_figure_path("07_forcing_surge_correction.png"),
-        ),
+        # Diagnostics for rule analysis_preprocess: boundary crossings with their
+        # flags and GloFAS cell, the surge stations with their MDT correction,
+        # and the GRDC bias-correction series per corrected GloFAS cell.
+        crossings       = diagnostics_path("river_crossings.gpkg"),
+        surge_stations  = diagnostics_path("surge_stations.gpkg"),
+        bias_correction = diagnostics_path("bias_correction.npz"),
     params:
         max_width_fill_m = config["river_processing"]["width_qa"]["max_width_fill_m"],
         # shared surge + river timeseries axis
@@ -70,7 +68,8 @@ rule get_boundary_forcings:
         glofas_search_radius_km    = config["boundary_forcings"]["river"]["glofas_search_radius_km"],
         glofas_min_mean_discharge_m3s = config["boundary_forcings"]["river"]["glofas_min_mean_discharge_m3s"],
         bias_correction            = config["boundary_forcings"]["river"]["bias_correction"],
-        # Preview plot only; the scenario's river event is built in rule build_sfincs.
+        # Sets where the surge peak sits (room for a GloFAS event's rise); the
+        # scenario's river event is built in rule build_sfincs.
         river_event                = config["boundary_forcings"]["river"]["event_hydrograph"],
     threads: rule_threads("get_boundary_forcings")
     resources:

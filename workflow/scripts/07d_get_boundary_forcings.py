@@ -1,7 +1,6 @@
 """Build surge and river boundary forcing for a basin; run by rule get_boundary_forcings."""
 
 import json
-import sys
 from pathlib import Path
 
 import geopandas as gpd
@@ -16,8 +15,7 @@ from src.extreme_values import (
     bias_correct_discharge,
     eva_active_flags,
     gpd_return_value_table,
-    plot_bias_correction,
-    plot_cell_diagnostics,
+    write_bias_diagnostics,
 )
 from src.log import setup_logging
 from src.river_forcing import (
@@ -31,7 +29,6 @@ from src.river_forcing import (
     load_grdc_stations,
     resolve_inside_domain_reaches,
 )
-from src.plots import plot_domain_map, plot_surge_corrections, save_figure
 from src.raster import latlon_dims
 from src.river_network import normalize_channel_widths
 from src.surge import (
@@ -367,15 +364,6 @@ log.info(
     f"Written surge forcing ({len(stations)} stations): {snakemake.output.surge_forcing}"
 )
 
-if hasattr(snakemake.output, "plot_surge_correction"):
-    plot_surge_corrections(
-        stations,
-        output_path=snakemake.output.plot_surge_correction,
-    )
-    log.info(
-        f"Wrote surge correction diagnostic plot: {snakemake.output.plot_surge_correction}"
-    )
-
 # river forcing
 log.info("--- River forcing ---")
 
@@ -707,112 +695,40 @@ log.info(
     f"{int(has_glofas.sum())} with GloFAS): {snakemake.output.river_forcing}"
 )
 
-if not hasattr(snakemake.output, "plot_map"):
-    profiler.stop()
-    log.info("Done")
-    sys.exit(0)
+# Diagnostics for rule analysis_preprocess: crossings with their flags, the
+# surge stations with their corrections, and the GRDC bias-correction series.
+crossings_out = crossings.copy()
+crossings_out["has_glofas"] = has_glofas
+crossings_out["glofas_cell_lat"] = cell_lat
+crossings_out["glofas_cell_lon"] = cell_lon
+# Size ranking at the fixed diagnostic RP (eva_cfg["preview_rp_yr"]).
+crossings_out["q_preview_m3s"] = [
+    r.q_rp100 if r is not None else np.nan for r in results
+]
+Path(snakemake.output.crossings).parent.mkdir(parents=True, exist_ok=True)
+crossings_out.to_file(snakemake.output.crossings, driver="GPKG")
+stations.to_file(snakemake.output.surge_stations, driver="GPKG")
 
-# summary plots (config analysis: true)
-log.info("--- Summary plots ---")
-
-plot_domain_map(
-    bbox_poly=domain_poly,
-    river_gdf=river_gdf,
-    stations=stations,
-    crossings=crossings,
-    has_glofas=has_glofas,
-    land_polygons_path=snakemake.input.land_polygons,
-    output_path=snakemake.output.plot_map,
-)
-
-# EVA diagnostic plot for the active crossing with the highest q_rp100
-# Selected by discharge rather than raw SWORD reach "width": a crossing's
-# width and the accumulated flow at its matched GloFAS cell can diverge
-# (e.g. distributary vs. mainstem reaches). Selecting by q_rp100 ties this
-# diagnostic to discharge, the quantity that drives the forcing.
-active_idx = [i for i, g in enumerate(has_glofas) if g]
-if active_idx:
-    # eva.q_rp100 is at the fixed diagnostic RP (eva_cfg["preview_rp_yr"]): a stable,
-    # scenario-independent size ranking.
-    diag_i = active_idx[int(np.argmax([results[i].q_rp100 for i in active_idx]))]
-
-    i_lat, i_lon = int(cell_i_lat[diag_i]), int(cell_i_lon[diag_i])
-    diag_label = f"crossing{diag_i}_cell({cell_lat[diag_i]:.3f},{cell_lon[diag_i]:.3f})"
-    plot_cell_diagnostics(
-        times=glofas_clip[time_dim].values,
-        values=ts_cache[(i_lat, i_lon)],
-        eva_cfg=eva_cfg,
-        output_path=snakemake.output.plot_eva_diagnostics,
-        label=diag_label,
-    )
-    log.info(f"Written EVA diagnostic plot: {snakemake.output.plot_eva_diagnostics}")
-else:
-    log.warning("No active GloFAS crossings — writing placeholder EVA diagnostic plot")
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.text(
-        0.5,
-        0.5,
-        "No active GloFAS crossings\n(EVA could not be fitted)",
-        ha="center",
-        va="center",
-        transform=ax.transAxes,
-        fontsize=13,
-        color="grey",
-    )
-    ax.set_axis_off()
-    save_figure(
-        fig, snakemake.output.plot_eva_diagnostics, dpi=100, bbox_inches="tight"
-    )
-
-# Bias-correction diagnostic plots (one per crossing/cell with a GRDC match)
-bc_out_dir = Path(snakemake.output.plot_bias_correction)
-bc_out_dir.mkdir(parents=True, exist_ok=True)
-
-n_bc_plots = 0
-plotted_cells: set[tuple[int, int]] = set()
+bias_cells, seen_cells = [], set()
 for i in range(len(crossings)):
     if results[i] is None:
         continue
     cell_key = (int(cell_i_lat[i]), int(cell_i_lon[i]))
-    bc_diag = bias_cache.get(cell_key)
-    if bc_diag is None or cell_key in plotted_cells:
+    if bias_cache.get(cell_key) is None or cell_key in seen_cells:
         continue
-    plotted_cells.add(cell_key)
-
-    i_lat, i_lon = cell_key
-    label_i = f"crossing{i}_cell({lat_arr[i_lat]:.3f},{lon_arr[i_lon]:.3f})"
-    plot_bias_correction(
-        glofas_times=glofas_clip[time_dim].values,
-        glofas_values=glofas_clip[glofas_variable]
-        .isel({lat_dim: i_lat, lon_dim: i_lon})
-        .values.astype(float),
-        diagnostics=bc_diag,
-        output_path=bc_out_dir / f"{label_i}.png",
-        label=label_i,
+    seen_cells.add(cell_key)
+    bias_cells.append(
+        {
+            "label": f"crossing{i}_cell({lat_arr[cell_key[0]]:.3f},{lon_arr[cell_key[1]]:.3f})",
+            "i_lat": cell_key[0],
+            "i_lon": cell_key[1],
+            "diagnostics": bias_cache[cell_key],
+        }
     )
-    n_bc_plots += 1
-
-if n_bc_plots:
-    log.info(f"Written {n_bc_plots} bias-correction diagnostic plot(s) to {bc_out_dir}")
-else:
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.text(
-        0.5,
-        0.5,
-        "No GRDC bias correction applied for any crossing\n"
-        "(no GRDC station within search radius / insufficient overlap)",
-        ha="center",
-        va="center",
-        transform=ax.transAxes,
-        fontsize=13,
-        color="grey",
-    )
-    ax.set_axis_off()
-    save_figure(fig, bc_out_dir / "none.png", dpi=100, bbox_inches="tight")
+write_bias_diagnostics(snakemake.output.bias_correction, bias_cells)
+log.info(
+    f"Diagnostics written: {len(crossings_out)} crossing(s), {len(bias_cells)} bias-corrected cell(s)"
+)
 
 profiler.stop()
 log.info("Done")

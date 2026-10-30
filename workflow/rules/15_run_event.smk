@@ -18,7 +18,6 @@ rule run_event:
         clean_river_network  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
     output:
         sfincs_map_nc              = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"),
-        **analysis_outputs(plot_inundation_ratio=analysis_figure_path("15_run_inundation_ratio__{scenario}.png")),
         animation_flood_progress   = figure_path("50_run_flood_progression__{scenario}.mp4"),
         flood_timeseries_csv       = results_path("{basin_id}/runs/{scenario}/visuals/flood_timeseries.csv"),
     params:

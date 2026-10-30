@@ -338,6 +338,9 @@ resources:
     build_sfincs:                         1
     run_spinup:                           all
     sanity_checks:                        1
+    analysis_preprocess:                  1
+    analysis_calibration:                 1
+    analysis_run_event:                   1
     run_event:                            all
     compute_flood_metrics:                1
     attribution_mask:                     1

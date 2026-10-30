@@ -237,3 +237,47 @@ def test_analyse_cell_missing_config_key_names_its_path():
         KeyError, match=r"boundary_forcings\.river\.eva\.bankfull_rp_yr"
     ):
         analyse_cell(times, q, cfg)
+
+
+def test_bias_diagnostics_roundtrip_keeps_arrays_scalars_and_times(tmp_path):
+    from src.extreme_values import read_bias_diagnostics, write_bias_diagnostics
+
+    times = pd.date_range("2000-01-01", periods=4, freq="D").values
+    diag = {
+        "glofas_overlap": np.array([1.0, 2.0, 3.0, 4.0]),
+        "tail_mask": np.array([False, True, True, False]),
+        "glofas_overlap_times": times,
+        "tail_percentile": 90.0,
+        "grdc_station_id": 6123,
+        "correlation_raw": None,
+    }
+    path = tmp_path / "bias.npz"
+    write_bias_diagnostics(
+        path,
+        [
+            {
+                "label": "crossing0_cell(1.000,2.000)",
+                "i_lat": 3,
+                "i_lon": 4,
+                "diagnostics": diag,
+            }
+        ],
+    )
+    (cell,) = read_bias_diagnostics(path)
+    assert (cell["label"], cell["i_lat"], cell["i_lon"]) == (
+        "crossing0_cell(1.000,2.000)",
+        3,
+        4,
+    )
+    d = cell["diagnostics"]
+    assert np.array_equal(d["tail_mask"], diag["tail_mask"])
+    assert np.array_equal(d["glofas_overlap_times"], times)
+    assert d["tail_percentile"] == 90.0 and d["grdc_station_id"] == 6123
+    assert np.isnan(d["correlation_raw"])
+
+
+def test_bias_diagnostics_without_cells_reads_empty(tmp_path):
+    from src.extreme_values import read_bias_diagnostics, write_bias_diagnostics
+
+    write_bias_diagnostics(tmp_path / "b.npz", [])
+    assert read_bias_diagnostics(tmp_path / "b.npz") == []

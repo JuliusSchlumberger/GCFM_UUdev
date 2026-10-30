@@ -650,6 +650,89 @@ def plot_run_forcing(
     save_figure(fig, output_path, dpi=150, bbox_inches="tight")
 
 
+def plot_storm_tide_shapes(
+    hydrographs_path: str | Path, basin_id: str, output_path: str | Path
+) -> None:
+    """Plot surge shape, average tide and storm tide of the station nearest the domain (rule 07c output)."""
+    INK, INK2, MUTED, SURFACE, GRID = (
+        "#0b0b0b",
+        "#52514e",
+        "#898781",
+        "#fcfcfb",
+        "#e6e5e1",
+    )
+    RAMP = [
+        "#b7d3f6",
+        "#86b6ef",
+        "#5598e7",
+        "#2a78d6",
+        "#1c5cab",
+        "#0d366b",
+    ]  # light -> dark = rarer
+    shown = [1, 10, 50, 100, 250, 1000]
+    with xr.open_dataset(hydrographs_path) as ds:
+        s0 = ds.isel(station=0).load()
+        n_stations = ds.sizes["station"]
+        match_on = str(ds.attrs.get("match_on", ""))
+    time_hr = s0["time_hr"].values
+    rps_yr = s0["rp_yr"].values
+    tide = s0["average_tide"].values
+    fig, ax = plt.subplots(1, 3, figsize=(16, 4.6), facecolor=SURFACE)
+    for rp_yr, color in zip(shown, RAMP):
+        j = int(np.flatnonzero(rps_yr == rp_yr)[0])
+        shape = s0["surge_shape"].values[j]
+        level = float(s0["storm_tide_level_m"].values[j])
+        ax[0].plot(
+            time_hr,
+            shape,
+            color=color,
+            lw=1.8,
+            label=f"RP {rp_yr}: {float(s0['shape_dur50_hr'].values[j]):.0f} h, "
+            f"{int(s0['shape_n_events'].values[j])} events ({s0['shape_mode'].values[j]})",
+        )
+        amp = max(level - float(s0["high_water_m"]), 0.0)
+        ax[2].plot(
+            time_hr,
+            tide + amp * shape,
+            color=color,
+            lw=1.6,
+            label=f"RP {rp_yr}: {level:.2f} m",
+        )
+    ax[1].plot(time_hr, tide, color="#2a78d6", lw=1.8)
+    titles = (
+        "Surge shape per return period (hours above half the peak)",
+        "Average tide",
+        "Storm tide = tide + scaled surge",
+    )
+    ylabels = (
+        "normalised surge",
+        "m above local mean sea level",
+        "m above local mean sea level",
+    )
+    for a, title, ylabel in zip(ax, titles, ylabels):
+        a.set_title(title, fontsize=10, loc="left", color=INK)
+        a.set_xlabel("hours from the peak", fontsize=9, color=INK2)
+        a.set_ylabel(ylabel, fontsize=9, color=INK2)
+        a.grid(color=GRID, lw=0.8)
+        a.set_axisbelow(True)
+        a.spines[["top", "right"]].set_visible(False)
+        a.spines[["left", "bottom"]].set_color(MUTED)
+        a.tick_params(labelsize=8, colors=INK2)
+        a.set_facecolor(SURFACE)
+    ax[0].legend(frameon=False, fontsize=7.5, loc="upper left")
+    ax[2].legend(frameon=False, fontsize=7.5, loc="upper left")
+    fig.suptitle(
+        f"Storm-tide hydrograph components -- basin {basin_id}, GTSM station "
+        f"{int(s0['gtsm_station'])} (nearest of {n_stations}), events matched on {match_on.replace('_', ' ')}",
+        fontsize=11,
+        x=0.01,
+        ha="left",
+        color=INK,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    save_figure(fig, output_path, dpi=140, facecolor=SURFACE)
+
+
 def plot_surge_corrections(
     stations: gpd.GeoDataFrame,
     output_path: str,
@@ -976,27 +1059,17 @@ _STRUCTURE_STYLE = {
 }
 
 
-def plot_water_surface_profiles(
-    surface,
-    rivers: gpd.GeoDataFrame,
-    seeds: list[str],
-    output_path: str,
-    title: str,
-) -> None:
-    """Plot the rule 10 water surface along each seed's widest downstream path.
+def water_surface_profile_tables(
+    surface, rivers: gpd.GeoDataFrame, seeds: list[str]
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return the rule-10 surface along each seed's widest path as (points, paths) tables.
 
-    One panel per seed: FathomDEM pixels along the centreline, the water pixels
-    the surface is built from (grey) and the skipped ones (islands, banks, sea;
-    orange), node medians (black crosses), the smoothed surface (blue) and
-    structure junctions coloured by the SWORD obstruction type of either reach
-    (the surface is smoothed across them). The title gives the SWOT check of
-    the path's reaches: surface slope / SWOT slope.
-
-    Args:
-        surface: src.water_surface.WaterSurface (with its centreline samples).
-        rivers: The reaches the surface was built from ('reach_id', 'width',
-            'rch_id_dn', optionally 'obstr_type').
-        seeds: Seed reach ids, one panel each.
+    points: one row per centreline pixel (kind 'water' or 'skipped', level_m
+    = FathomDEM), per node (kind 'node', level_m = node median, surface_m =
+    smoothed surface) and per detected structure junction (kind
+    'structure', structure_type = the larger SWORD obstr_type of the two
+    reaches); along_m from the seed. paths: per seed the reach count, path
+    length and the SWOT slope check of its reaches.
     """
     from src.river_network import normalize_reach_id, trace_widest_path
 
@@ -1011,7 +1084,86 @@ def plot_water_surface_profiles(
                 .astype(int),
             )
         )
-    seeds = [s for s in seeds if s in net.reach_line] or []
+    rows, paths = [], []
+    for seed in [s for s in seeds if s in net.reach_line]:
+        path = [r for r in trace_widest_path(rivers, seed) if r in net.reach_line]
+        offset = 0.0
+        for k, r in enumerate(path):
+            for kind, store in (
+                ("skipped", surface.skipped),
+                ("water", surface.samples),
+            ):
+                along, value = store.get(r, (np.array([]), np.array([])))
+                rows += [
+                    {"seed": seed, "kind": kind, "along_m": offset + a, "level_m": v}
+                    for a, v in zip(np.asarray(along, float), np.asarray(value, float))
+                ]
+            ids, ch = net.reach_nodes[r], net.reach_chainage[r]
+            rows += [
+                {
+                    "seed": seed,
+                    "kind": "node",
+                    "along_m": offset + c,
+                    "level_m": raw,
+                    "surface_m": lev,
+                }
+                for c, raw, lev in zip(
+                    ch, surface.level_raw_m[ids], surface.level_m[ids]
+                )
+            ]
+            offset += net.reach_length[r]
+            nxt = path[k + 1] if k + 1 < len(path) else None
+            if nxt is not None and (r, nxt) in surface.structures:
+                rows.append(
+                    {
+                        "seed": seed,
+                        "kind": "structure",
+                        "along_m": offset,
+                        "structure_type": max(obstr.get(r, 0), obstr.get(nxt, 0)),
+                    }
+                )
+        swot = surface.swot[surface.swot["reach_id"].isin(path)]
+        paths.append(
+            {
+                "seed": seed,
+                "n_reaches": len(path),
+                "length_m": offset,
+                "swot_n_reaches": len(swot),
+                "swot_ratio_median": float(swot["ratio"].median())
+                if len(swot)
+                else np.nan,
+            }
+        )
+    columns = ["seed", "kind", "along_m", "level_m", "surface_m", "structure_type"]
+    return pd.DataFrame(rows, columns=columns), pd.DataFrame(
+        paths,
+        columns=[
+            "seed",
+            "n_reaches",
+            "length_m",
+            "swot_n_reaches",
+            "swot_ratio_median",
+        ],
+    )
+
+
+def plot_water_surface_profiles(
+    points: pd.DataFrame,
+    paths: pd.DataFrame,
+    output_path: str,
+    title: str,
+) -> None:
+    """Plot the rule 10 water surface along each seed's widest downstream path.
+
+    One panel per seed (water_surface_profile_tables): FathomDEM pixels along
+    the centreline, the water pixels the surface is built from (grey) and the
+    skipped ones (islands, banks, sea; orange), node medians (black crosses),
+    the smoothed surface (blue) and structure junctions coloured by SWORD
+    obstruction type (the surface is smoothed across them). The title gives
+    the SWOT check of the path's reaches: surface slope / SWOT slope.
+    """
+    seeds = [str(s) for s in paths["seed"]]
+    points = points.assign(seed=points["seed"].astype(str))
     n = max(len(seeds), 1)
     fig, axes = plt.subplots(n, 1, figsize=(12, 3.6 * n), squeeze=False)
     if not seeds:
@@ -1024,92 +1176,71 @@ def plot_water_surface_profiles(
             transform=axes[0, 0].transAxes,
         )
     used_styles: set[int] = set()
-    for ax, seed in zip(axes[:, 0], seeds):
-        path = [r for r in trace_widest_path(rivers, seed) if r in net.reach_line]
-        offset = 0.0
-        for k, r in enumerate(path):
-            along, value = surface.skipped.get(r, (np.array([]), np.array([])))
+    for ax, (_, path) in zip(axes[:, 0], paths.assign(seed=seeds).iterrows()):
+        p = points[points["seed"] == path["seed"]]
+        for kind, style in (
+            (
+                "skipped",
+                dict(color="tab:orange", alpha=0.6, label="other pixels (skipped)"),
+            ),
+            ("water", dict(color="0.72", label="FathomDEM water pixels")),
+        ):
+            k = p[p["kind"] == kind]
             ax.plot(
-                (offset + along) / 1000,
-                value,
-                ".",
-                ms=1.5,
-                color="tab:orange",
-                alpha=0.6,
-                rasterized=True,
-                label="other pixels (skipped)" if k == 0 else None,
+                k["along_m"] / 1000, k["level_m"], ".", ms=1.5, rasterized=True, **style
             )
-            along, value = surface.samples.get(r, (np.array([]), np.array([])))
-            ax.plot(
-                (offset + along) / 1000,
-                value,
-                ".",
-                ms=1.5,
-                color="0.72",
-                rasterized=True,
-                label="FathomDEM water pixels" if k == 0 else None,
-            )
-            ids, ch = net.reach_nodes[r], net.reach_chainage[r]
-            ax.plot(
-                (offset + ch) / 1000,
-                surface.level_raw_m[ids],
-                "x",
-                ms=3,
-                color="k",
-                label="node median" if k == 0 else None,
-            )
-            ax.plot(
-                (offset + ch) / 1000,
-                surface.level_m[ids],
-                "-",
-                lw=1.5,
-                color="tab:blue",
-                label="smoothed surface" if k == 0 else None,
-            )
-            offset += net.reach_length[r]
-            nxt = path[k + 1] if k + 1 < len(path) else None
-            if nxt is not None and (r, nxt) in surface.structures:
-                t = max(obstr.get(r, 0), obstr.get(nxt, 0))
-                t = t if t in _STRUCTURE_STYLE and t > 0 else 0
-                used_styles.add(t)
-                ax.axvline(
-                    offset / 1000,
-                    color=_STRUCTURE_STYLE[t][1],
-                    lw=0.9,
-                    ls="--",
-                    zorder=0,
-                )
-        finite = (
-            np.concatenate([surface.level_m[net.reach_nodes[r]] for r in path])
-            if path
-            else np.array([0.0])
+        nodes = p[p["kind"] == "node"]
+        ax.plot(
+            nodes["along_m"] / 1000,
+            nodes["level_m"],
+            "x",
+            ms=3,
+            color="k",
+            label="node median",
         )
-        lo, hi = float(np.nanmin(finite)), float(np.nanmax(finite))
+        ax.plot(
+            nodes["along_m"] / 1000,
+            nodes["surface_m"],
+            "-",
+            lw=1.5,
+            color="tab:blue",
+            label="smoothed surface",
+        )
+        for _, s in p[p["kind"] == "structure"].iterrows():
+            t = int(s["structure_type"])
+            t = t if t in _STRUCTURE_STYLE and t > 0 else 0
+            used_styles.add(t)
+            ax.axvline(
+                s["along_m"] / 1000,
+                color=_STRUCTURE_STYLE[t][1],
+                lw=0.9,
+                ls="--",
+                zorder=0,
+            )
+        surface_m = nodes["surface_m"].to_numpy(float)
+        lo, hi = (
+            (float(np.nanmin(surface_m)), float(np.nanmax(surface_m)))
+            if surface_m.size
+            else (0.0, 0.0)
+        )
         # Wide enough for the skipped pixels too (an island under the line);
         # percentiles keep single spikes from flattening the surface.
-        pixels = np.concatenate(
-            [
-                np.asarray(s.get(r, ((), ()))[1], dtype=float)
-                for s in (surface.samples, surface.skipped)
-                for r in path
-            ]
-            or [np.array([])]
-        )
+        pixels = p.loc[p["kind"].isin(["water", "skipped"]), "level_m"].to_numpy(float)
         pixels = pixels[np.isfinite(pixels)]
         if pixels.size:
             lo = min(lo, float(np.percentile(pixels, 1)))
             hi = max(hi, float(np.percentile(pixels, 99)))
         pad = max(0.5, 0.1 * (hi - lo))
         ax.set_ylim(lo - pad, hi + pad)
-        ax.set_xlim(0, max(offset, 1.0) / 1000)
-        swot = surface.swot[surface.swot["reach_id"].isin(path)]
+        ax.set_xlim(0, max(float(path["length_m"]), 1.0) / 1000)
         swot_note = (
-            f"; surface/SWOT slope median {swot['ratio'].median():.2f} over {len(swot)} reach(es)"
-            if len(swot)
+            f"; surface/SWOT slope median {path['swot_ratio_median']:.2f} over "
+            f"{int(path['swot_n_reaches'])} reach(es)"
+            if path["swot_n_reaches"]
             else "; no reliable SWOT slope"
         )
         ax.set_title(
-            f"seed {seed}: {len(path)} reach(es) along the widest arm{swot_note}",
+            f"seed {path['seed']}: {int(path['n_reaches'])} reach(es) along the widest arm{swot_note}",
             fontsize=9,
         )
         ax.set_ylabel("level (m, model datum)")

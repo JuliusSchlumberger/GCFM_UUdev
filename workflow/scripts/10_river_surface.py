@@ -13,7 +13,7 @@ from rasterio.transform import Affine
 from rasterio.warp import reproject
 from src.grid import load_grid_def
 from src.log import setup_logging
-from src.plots import plot_water_surface_profiles
+from src.plots import water_surface_profile_tables
 from src.profiling import ScriptProfiler
 from src.raster import FLOAT_NODATA
 from src.river_network import normalize_reach_id
@@ -61,19 +61,16 @@ condition_channels_to_surface(
 )
 log.info(f"Written: {snakemake.output.elevation_conditioned}")
 
-if hasattr(snakemake.output, "plot_water_surface"):
-    seeds = sorted(
-        normalize_reach_id(r)
-        for r, s in zip(rivers_oriented["reach_id"], rivers_oriented.get("is_seed", []))
-        if bool(s)
-    )
-    plot_water_surface_profiles(
-        surface,
-        rivers_oriented,
-        seeds,
-        snakemake.output.plot_water_surface,
-        f"Basin {snakemake.wildcards.basin_id}: river water surface (rule 10) along each seed's widest arm",
-    )
+# Profile along each seed's widest arm, for the analysis figure.
+seeds = sorted(
+    normalize_reach_id(r)
+    for r, s in zip(rivers_oriented["reach_id"], rivers_oriented.get("is_seed", []))
+    if bool(s)
+)
+_points, _paths = water_surface_profile_tables(surface, rivers_oriented, seeds)
+Path(snakemake.output.surface_profile_points).parent.mkdir(parents=True, exist_ok=True)
+_points.to_csv(snakemake.output.surface_profile_points, index=False)
+_paths.to_csv(snakemake.output.surface_profile_paths, index=False)
 
 # Elevation ceiling for the active-cell mask in rules 11/12a
 # (plus sfincs.grid.active_mask.elevation_buffer_m): the highest surface level.

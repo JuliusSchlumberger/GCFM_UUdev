@@ -176,13 +176,16 @@ runs, and the run label is the same in file names and titles:
 | `50` | flood progression animation per scenario |
 | `60`-`63` | adaptation: lines, attribution mask, inundation ratio, flood progression |
 
-`analysis: true` (config) also writes the diagnostic figures to
+`analysis: true` (config) also draws the diagnostic figures into
 `figures/analysis/`, prefixed with the rule number (datum corrections,
 forcing diagnostics, river network, calibration maps and water levels, spin-up
-and inundation-ratio checks); the `analysis/` scripts write there too, as
-`90_<script>_*`, and outputs spanning several basins go to
-`<results_dir>/figures/analysis/`. Switching it on for a built basin reruns
-the rules whose diagnostics are missing, rule 11's calibration included.
+and inundation-ratio checks). Plot-only rules draw them (rule 19:
+`analysis_preprocess`, `analysis_calibration`, `analysis_run_event`; rule 13b
+for the spin-up) from finished outputs and the small diagnostic files the
+production rules always write to `preprocessing_inputs/diagnostics/`, so
+switching `analysis` on or off never reruns a production rule. The
+`analysis/` scripts write there too, as `90_<script>_*`, and outputs spanning
+several basins go to `<results_dir>/figures/analysis/`.
 
 ## Rule graphs
 

@@ -33,6 +33,7 @@ include: "rules/17a_attribution_mask.smk"
 include: "rules/17b_adapt_pre.smk"
 include: "rules/17c_adapt_post.smk"
 include: "rules/18_adapt_compare.smk"
+include: "rules/19_analysis_figures.smk"
 
 # ── Output lists for the named targets ──
 

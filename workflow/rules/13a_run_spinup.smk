@@ -14,9 +14,9 @@ rule run_spinup:
     output:
         rstart              = results_path("{basin_id}/spin_up/" + RST_FNAME),
         sfincs_map_nc       = results_path("{basin_id}/spin_up/sfincs_map.nc"),
+        sfincs_his          = results_path("{basin_id}/spin_up/sfincs_his.nc"),
         plot_forcing        = figure_path("20_forcing_timeseries__spinup.png"),
         plot_max_depth      = figure_path("40_run_max_flood_depth__spinup.png"),
-        **analysis_outputs(plot_spinup=analysis_figure_path("13_spinup_water_level.png")),
     params:
         skeleton_root             = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         spin_up_root              = lambda wildcards: results_path(f"{wildcards.basin_id}/spin_up"),

@@ -964,6 +964,45 @@ def _plot_overlap_timeseries(
     ax2.legend(loc="upper right", fontsize=8)
 
 
+def write_bias_diagnostics(path: str | Path, cells: list[dict]) -> None:
+    """Write bias-correction diagnostics of GloFAS cells to one .npz.
+
+    cells: one dict per corrected cell with 'label', 'i_lat', 'i_lon' (indices
+    into glofas_clip.nc) and 'diagnostics' (bias_correct_discharge's dict).
+    None values are stored as NaN.
+    """
+    arrays = {"labels": np.array([c["label"] for c in cells], dtype=str)}
+    for k, c in enumerate(cells):
+        arrays[f"{k}__i_lat"] = np.asarray(c["i_lat"])
+        arrays[f"{k}__i_lon"] = np.asarray(c["i_lon"])
+        for key, value in c["diagnostics"].items():
+            arrays[f"{k}__diag__{key}"] = np.asarray(np.nan if value is None else value)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, **arrays)
+
+
+def read_bias_diagnostics(path: str | Path) -> list[dict]:
+    """Return the cells written by write_bias_diagnostics."""
+    with np.load(path, allow_pickle=False) as npz:
+        data = {k: npz[k] for k in npz.files}
+    cells = []
+    for k, label in enumerate(data["labels"]):
+        prefix = f"{k}__diag__"
+        cells.append(
+            {
+                "label": str(label),
+                "i_lat": int(data[f"{k}__i_lat"]),
+                "i_lon": int(data[f"{k}__i_lon"]),
+                "diagnostics": {
+                    key[len(prefix) :]: (v.item() if v.ndim == 0 else v)
+                    for key, v in data.items()
+                    if key.startswith(prefix)
+                },
+            }
+        )
+    return cells
+
+
 def plot_bias_correction(
     glofas_times: np.ndarray,
     glofas_values: np.ndarray,

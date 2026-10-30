@@ -54,6 +54,7 @@ from src.raster import (
     merge_tiles,
     open_water_mask,
     reproject_nan_aware,
+    write_float_raster,
 )
 from src.surge import load_mdt
 
@@ -68,13 +69,11 @@ domain_meta_path = Path(snakemake.input.spec_basins_meta)
 topo_tiles_dir = snakemake.input.global_topography_tiles
 bathymetry_path = Path(snakemake.input.global_bathymetry)
 landuse_source_path = Path(snakemake.input.landuse_source)
-land_polygons_path = Path(snakemake.input.land_polygons)
 goco_path = Path(snakemake.input.goco06s_gfc)
 egm_path = Path(snakemake.input.egm2008_gfc)
 mdt_path = snakemake.input.mdt
 
 out_elev_path = Path(snakemake.output.elevation_merged)
-ANALYSIS = hasattr(snakemake.output, "plot_geoid_offset")
 
 mdt_variable = "mdt"  # sole variable in data_catalogue's mdt_cnes_cls22 source
 mdt_load_margin_deg = float(snakemake.params.mdt_load_margin_deg)
@@ -243,17 +242,9 @@ log.info(
 topo_utm[valid_topo] += offset_on_dem[valid_topo]
 del offset_on_dem
 
-if ANALYSIS:
-    from src.plots import plot_geoid_offset
-
-    plot_geoid_offset(
-        offset_arr=offset_arr,
-        offset_transform=offset_transform,
-        wgs84_bounds=wgs84_bounds,
-        land_polygons_path=str(land_polygons_path),
-        output_path=snakemake.output.plot_geoid_offset,
-    )
-    log.info(f"Plot written: {snakemake.output.plot_geoid_offset}")
+write_float_raster(
+    snakemake.output.geoid_offset, offset_arr, offset_transform, offset_crs
+)
 del offset_arr
 
 delta_correction = np.where(valid_topo, topo_utm - topo_egm2008, np.nan).astype(
@@ -353,17 +344,7 @@ mdt_transform_wgs = _rast_from_origin(
     dlat,
 )
 
-if ANALYSIS:
-    from src.plots import plot_mdt_ocean
-
-    plot_mdt_ocean(
-        mdt_np=mdt_np,
-        mdt_transform=mdt_transform_wgs,
-        wgs84_bounds=wgs84_bounds,
-        land_polygons_path=str(land_polygons_path),
-        output_path=snakemake.output.plot_mdt_ocean,
-    )
-    log.info(f"Plot written: {snakemake.output.plot_mdt_ocean}")
+write_float_raster(snakemake.output.mdt_ocean, mdt_np, mdt_transform_wgs, "EPSG:4326")
 
 # Extrapolate MDT over land (IDW + light smoothing) before resampling.
 # Without this, adding the MDT only affects pixels that happen to overlap
@@ -493,33 +474,13 @@ with rasterio.open(out_elev_path, "w", **dem_meta) as dst:
     dst.write(np.where(np.isnan(merged), FLOAT_NODATA, merged).astype(np.float32), 1)
 log.info(f"Written: {out_elev_path}")
 
-# 6. Diagnostic plots
-if ANALYSIS:
-    from src.plots import plot_datum_correction_delta
-
-    plot_datum_correction_delta(
-        delta=delta_correction,
-        wgs84_bounds=wgs84_bounds,
-        land_polygons_path=str(land_polygons_path),
-        output_path=snakemake.output.plot_datum_fathomdem,
-        title="Vertical datum correction — FathomDEM\n(EGM2008 → GOCO06s geoid)",
-        colorbar_label="Δ elevation (m)  [GOCO06s − EGM2008]",
-        note=(
-            "Note: FathomDEM and the underlying land-use map (grey background) are not fully aligned.\n"
-            "In areas without FathomDEM coverage, GEBCO data are used (see 06_datum_gebco_correction.png)."
-        ),
-    )
-    log.info(f"Plot written: {snakemake.output.plot_datum_fathomdem}")
-
-    plot_datum_correction_delta(
-        delta=gebco_delta_correction,
-        wgs84_bounds=wgs84_bounds,
-        land_polygons_path=str(land_polygons_path),
-        output_path=snakemake.output.plot_datum_gebco,
-        title="Vertical datum correction — GEBCO\n(local MSL → GOCO06s: + MDT_CNES-CLS22)",
-        colorbar_label="Δ elevation (m)  [GOCO06s − raw GEBCO]",
-    )
-    log.info(f"Plot written: {snakemake.output.plot_datum_gebco}")
+# 6. Datum corrections (diagnostics, drawn by rule analysis_preprocess)
+write_float_raster(
+    snakemake.output.datum_fathomdem, delta_correction, transform_utm, utm_crs
+)
+write_float_raster(
+    snakemake.output.datum_gebco, gebco_delta_correction, transform_utm, utm_crs
+)
 
 profiler.stop()
 log.info("Done")

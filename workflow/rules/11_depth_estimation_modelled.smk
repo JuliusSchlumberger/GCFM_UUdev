@@ -62,18 +62,21 @@ rule modelled_depth_estimation:
         plot_crest_profile           = figure_path("30_calib_crest_profile.png"),
         # Boundary forcing and max flood depth of every SFINCS round (calib_r1, calib_r2).
         **calibration_round_figures(),
-        **analysis_outputs(
-            # River network on land: colour = water depth at the design discharge
-            # (dashed where the slope floor sets it), line width = channel width.
-            plot_river_network_depth         = analysis_figure_path("11_calib_river_depth_network.png"),
-            # Same network: colour = steady GVF level on the bed at the design
-            # discharge minus rule 10's surface (fixed -3..3 m).
-            plot_river_network_forward_check = analysis_figure_path("11_calib_river_forward_check.png"),
-            # Crest minus the last round's period-max water level.
-            plot_crest_gap_map               = analysis_figure_path("11_calib_crest_gap.png"),
-            # Dike position with unprotected_ocean_wetlands off vs on; config picks the simulated one.
-            plot_dike_positions              = analysis_figure_path("11_calib_dike_position_wetlands.png"),
-        ),
+        # Diagnostics for rule analysis_calibration: depth and forward check per
+        # node pair, the model region, the calibration discharge points, both
+        # traced dike positions (unprotected_ocean_wetlands off / on) and the
+        # ocean-linked wetland cells, the last round's crest per edge cell, the
+        # water level per round at one centreline cell per reach, and the run
+        # length and round titles. The round maps and ocean mask stay in calib_root.
+        depth_segments     = diagnostics_path("river_depth_segments.gpkg"),
+        model_region       = diagnostics_path("model_region.gpkg"),
+        discharge_points   = diagnostics_path("calibration_discharge_points.gpkg"),
+        dike_wetlands_off  = diagnostics_path("dike_wetlands_off.gpkg"),
+        dike_wetlands_on   = diagnostics_path("dike_wetlands_on.gpkg"),
+        ocean_wetland_mask = diagnostics_path("ocean_wetland_mask.tif"),
+        crest_on_grid      = diagnostics_path("crest_on_grid.tif"),
+        calibration_rounds = diagnostics_path("calibration_rounds.json"),
+        ocean_mask_on_grid = results_path("{basin_id}/preprocessing_inputs/depth_crest_calibration/ocean_mask_on_grid.tif"),
     params:
         calib_root  = lambda wildcards: results_path(f"{wildcards.basin_id}/preprocessing_inputs/depth_crest_calibration"),
         resolution_m = lambda wildcards: grid_resolution_m(wildcards.basin_id),
@@ -100,7 +103,6 @@ rule modelled_depth_estimation:
         weir_freeboard_m              = config["river_processing"]["river_depth_modelling"]["freeboard_m"],
         unprotected_ocean_wetlands    = config["river_processing"]["river_depth_modelling"]["unprotected_ocean_wetlands"],
         min_component_cells           = config["river_processing"]["river_depth_modelling"]["min_component_cells"],
-        animation_fps                 = config["sfincs"]["sanity_checks"]["animation_fps"],
         # Same subgrid setup as rules 12a/13a, so calibration sees the production bathymetry.
         nr_subgrid_pixels  = config["sfincs"]["subgrid"]["nr_subgrid_pixels"],
         nr_levels          = config["sfincs"]["subgrid"]["nr_levels"],
