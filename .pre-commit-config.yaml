@@ -33,22 +33,19 @@ repos:
       - id: pydocstyle
         exclude: |
           (?x)(
-            workflow/archive/|
             analyze_dem_coverage\.py|
             _diag_river.*\.py|
             plot_dag\.py|
-            download_glofas\.py|
-            check_diluvium\.py|
-            sync_deltadtm\.py
+            download_glofas\.py
           )
   - repo: local
     hooks:
-      - id: sync-environment-yml
-        name: sync environment.yml with hmt_sfincs_dev
+      - id: sync-environment-lock
+        name: sync environment.win-64.lock.yml with the project conda env
         description: >-
-          Regenerates environment.yml from the live hmt_sfincs_dev conda env
-          and strips the machine-specific prefix line. Only runs when
-          environment.yml is part of the commit.
+          Regenerates environment.win-64.lock.yml from the live conda env named
+          in it and strips the machine-specific prefix line. Only runs when
+          the lock file is part of the commit.
         entry: python tools/sync_environment.py
         # language: python (not "system") so pre-commit provisions its own
         # managed interpreter at a fixed cached path -- a bare "python" via
@@ -57,5 +54,5 @@ repos:
         # integration), where it can resolve to the Windows Store's python
         # app-execution-alias stub instead and fail with exit code 9009.
         language: python
-        files: ^environment\.yml$
+        files: ^environment\.win-64\.lock\.yml$
         pass_filenames: false

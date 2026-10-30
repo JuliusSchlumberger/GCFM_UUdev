@@ -1,33 +1,21 @@
 #!/usr/bin/env python3
-"""
-Download and unzip FathomDEM (or any Zenodo record) into a target folder.
+"""Download and unzip FathomDEM (or any Zenodo record) into a target folder.
 
-FathomDEM v1-0 Americas (record 14523356) has RESTRICTED files. This version uses
-a Zenodo SHARE LINK token -- the kind you receive by email after requesting access.
-The email link looks like:
+FathomDEM v1-0 Americas (record 14523356) has restricted files, read with the
+Zenodo share-link token from the access email
+(https://zenodo.org/records/14523356?token=...): pass the token as --token or
+the whole link as --share-url. The token goes on the record query and on every
+file download; share links can expire.
 
-    https://zenodo.org/records/14523356?token=eyJhbGciOiJ...
-
-Copy the long string after "?token=" and pass it as --token, OR paste the whole
-URL as --share-url and the script will extract the token for you.
-
-A share-link token is carried on BOTH the record query and every file download.
-These links can expire, so download in a reasonable timeframe after receiving it.
-
-RESUMABILITY
-The script avoids redoing work, using three cases per zip:
-  1. the zip is still on disk      -> unpack it, skipping members already extracted
-                                       (completes an interrupted unpack);
-  2. the zip is gone but a TIF in its degree-range exists -> the zip was already
-     fully unpacked (zips are deleted only after success), so skip;
-  3. neither                       -> download and unpack.
-Tile/zip names follow the FathomDEM convention (e.g. tile n00e006.tif inside zip
-n00e000-n30e030_FathomDEM_v1-0.zip), so a zip's range is read straight from its name.
+Resumable per zip: a zip on disk is unpacked (skipping extracted members); a
+missing zip with any tile in its degree range is skipped, since zips are deleted
+only after full extraction; otherwise it is downloaded and unpacked. The range
+comes from the name (tile n00e006.tif inside n00e000-n30e030_FathomDEM_v1-0.zip).
 
 Usage:
-    python download_fathomdem.py --share-url "https://zenodo.org/records/14523356?token=XXXX" --out D:/data/fathomdem
-    python download_fathomdem.py --token XXXX --out D:/data/fathomdem --filter S60W090
-    python download_fathomdem.py --token XXXX --out D:/data/fathomdem --keep-zip --no-unzip
+    python download_fathomdem.py --share-url "https://zenodo.org/records/14523356?token=XXXX" --out <data_root>/FathomDEM
+    python download_fathomdem.py --token XXXX --out <data_root>/FathomDEM --filter S60W090
+    python download_fathomdem.py --token XXXX --out <data_root>/FathomDEM --keep-zip --no-unzip
 
 The token can also be supplied via the ZENODO_TOKEN environment variable.
 """
@@ -38,9 +26,9 @@ import os
 import sys
 import zipfile
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
-import requests  # pip install requests
+import requests
 
 RECORD_ID = "14523356"  # FathomDEM v1-0 Americas
 API_URL = "https://zenodo.org/api/records/{record_id}"
@@ -55,7 +43,6 @@ def get_token(cli_token: str | None, share_url: str | None) -> str:
     """
     if share_url:
         parsed = urlparse(share_url)
-        # Unwrap Outlook SafeLinks: the genuine URL lives in the 'url' parameter.
         if "safelinks.protection.outlook.com" in parsed.netloc:
             inner = parse_qs(parsed.query).get("url", [None])[0]
             if not inner:
@@ -101,6 +88,7 @@ def fetch_file_list(record_id: str, token: str) -> list[dict]:
 
 
 def md5_of(path: Path) -> str:
+    """Return the hex MD5 digest of a file."""
     h = hashlib.md5()
     with open(path, "rb") as f:
         for block in iter(lambda: f.read(CHUNK), b""):
@@ -108,14 +96,11 @@ def md5_of(path: Path) -> str:
     return h.hexdigest()
 
 
-# --- resumability helpers ---------------------------------------------------
-
-
 def parse_tile_corner(name: str) -> tuple[int, int] | None:
-    """Parse a FathomDEM tile/corner token like 'n00e000' or 's10w090' -> (lat, lon).
+    """Return the SW corner (lat, lon) of a token like 'n00e000' or 's10w090'.
 
     Latitude: n/s + 2 digits. Longitude: e/w + 3 digits. South and West are negative.
-    Returns the SW-corner integer degrees, or None if the token doesn't match.
+    Returns None if the token doesn't match.
     """
     import re
 
@@ -131,10 +116,10 @@ def parse_tile_corner(name: str) -> tuple[int, int] | None:
 
 
 def parse_zip_bbox(zip_key: str) -> tuple[int, int, int, int] | None:
-    """From 'n00e000-n30e030_FathomDEM_v1-0.zip' derive (lat_min, lon_min, lat_max, lon_max).
+    """Return (lat_min, lon_min, lat_max, lon_max) from a zip name.
 
-    The two corner tokens are the SW and NE corners of the 30-degree block.
-    Returns None if the name doesn't contain two parseable corners.
+    In 'n00e000-n30e030_FathomDEM_v1-0.zip' the two tokens are the SW and NE
+    corners of the 30-degree block. Returns None without two parseable corners.
     """
     import re
 
@@ -169,13 +154,10 @@ def tifs_in_bbox(out_dir: Path, bbox: tuple[int, int, int, int]) -> list[Path]:
     return hits
 
 
-# ----------------------------------------------------------------------------
-
-
 def download_file(entry: dict, out_dir: Path, token: str) -> Path:
     """Stream one file to disk, skipping if a checksum-valid copy already exists."""
     name = entry["key"]
-    # Zenodo checksum looks like "md5:abcdef..."
+    # Zenodo checksum format: "md5:abcdef..."
     checksum = entry.get("checksum", "")
     expected_md5 = checksum.split(":", 1)[1] if checksum.startswith("md5:") else None
     link = entry["links"]["self"]
@@ -203,7 +185,7 @@ def download_file(entry: dict, out_dir: Path, token: str) -> Path:
 
 
 def unzip_file(zip_path: Path, out_dir: Path) -> list[str]:
-    """Extract a zip, skipping members already on disk. Returns all member names."""
+    """Extract a zip, skipping members already on disk; return all member names."""
     if not zipfile.is_zipfile(zip_path):
         print(f"  [warn] {zip_path.name} is not a zip; leaving as-is")
         return []
@@ -221,6 +203,7 @@ def unzip_file(zip_path: Path, out_dir: Path) -> list[str]:
 
 
 def main() -> None:
+    """Download and unpack the selected files of one Zenodo record."""
     p = argparse.ArgumentParser(description="Download + unzip FathomDEM from Zenodo.")
     p.add_argument(
         "--token", help="Zenodo share-link token (the string after '?token=')"
@@ -267,13 +250,11 @@ def main() -> None:
         is_zip = name.lower().endswith(".zip")
         dest = out_dir / name
 
-        # Non-zip files (or --no-unzip): just download with the usual checksum skip.
         if not is_zip or args.no_unzip:
             download_file(entry, out_dir, token)
             continue
 
-        # Case 1: the zip is already on disk -> unpack it (skipping members that
-        # already exist, so an interrupted previous unpack is completed).
+        # Completes an interrupted unpack.
         if dest.exists():
             print(f"  [have] {name} present on disk")
             unzip_file(dest, out_dir)
@@ -282,15 +263,13 @@ def main() -> None:
                 print(f"  [rm  ] removed {name}")
             continue
 
-        # Case 2: zip absent, but an in-range TIF exists. Because the zip is only
-        # deleted AFTER a successful full extraction, the presence of any tile in
-        # the zip's degree-range proves the whole zip was already unpacked. Skip.
+        # Zips are deleted only after full extraction, so any tile in the
+        # zip's range proves it was already unpacked.
         bbox = parse_zip_bbox(name)
         if bbox is not None and tifs_in_bbox(out_dir, bbox):
             print(f"  [skip] {name}: tiles in its range already extracted")
             continue
 
-        # Case 3: nothing present -> download and unpack.
         path = download_file(entry, out_dir, token)
         unzip_file(path, out_dir)
         if not args.keep_zip:

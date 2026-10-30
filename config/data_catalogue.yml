@@ -1,11 +1,10 @@
 meta:
   version: '1'
   name: data_catalog_v1
-  # root (raw-data directory all file_path entries below are relative to) is
-  # machine-specific and NOT set here -- it comes from the GCFM_RAW_DATA_ROOT
-  # environment variable. Set it once in PowerShell, then restart your terminal:
-  #   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+  # root: every file_path below is relative to raw_data_root in config/site.yml
+  # (see config/site.example.yml); it is not set here.
 
+# The pipeline reads only name, file_path and attributes; other per-dataset fields are documentation.
 datasets:
   - name: delta_polygons
     description: Dataset of manually drawn polygons representing the delta areas globally based on earth-observation data. The polygons are drawn using five defined points as a first approximation of the geomorphologically active deltaic zone.
@@ -26,26 +25,6 @@ datasets:
     primary_key: BasinID2
     spatial_extent: global
 
-  - name: river_basins
-    description: Dataset of river basins globally, used to identify the upstream drainage area for each delta basin.
-    source: "HydroBASINS (https://www.hydrosheds.org/page/hydrobasins). Lehner, B., Grill G. (2013). Global river hydrography and network routing: baseline data and new approaches to study the world’s large river systems. Hydrological Processes, 27(15). 2171-2186. https://doi.org/10.1002/hyp.9740"
-    file_format: shapefile
-    file_path: HydroBASINS/hybas_global_merged_lev06.shp
-    geometry_type: Polygon
-    crs:
-      epsg: 4326
-      name: WGS 84
-      units: degrees
-    attributes:
-      - name: HYBAS_ID
-        type: integer
-        description: >
-          Unique identifier of the river basin, used as the primary key to join
-          with other datasets in the HydroBASINS dataset.
-        example: 1234567890
-    primary_key: HYBAS_ID
-    spatial_extent: global
-
   - name: fathomdem
     description: >
       Global terrain elevation model covering 60°S–80°N at ~30 m (1 arcsecond)
@@ -57,7 +36,7 @@ datasets:
       WGS84 geographic coordinates (EPSG:4326), 19,210 tiles globally.
       IMPORTANT: pixel values are stored as int32 CENTIMETERS, not meters
       (raster tags: VERTICAL_UNITS=centimeters) — divide by 100 to get meters.
-    source: "Uhe, P., Lucas, C., Hawker, L., Brine, M., Wilkinson, H., Cooper, A., Saoulis, A.A., Savage, J., & Sampson, C. (2025). FathomDEM: an improved global terrain map using a hybrid vision transformer model. Environmental Research Letters, 20, 034002. https://doi.org/10.1088/1748-9326/ada972 . Data: Zenodo record 14523356 (https://doi.org/10.5281/zenodo.14523356), restricted access via share-link token — see tests/download_fathomdem.py."
+    source: "Uhe, P., Lucas, C., Hawker, L., Brine, M., Wilkinson, H., Cooper, A., Saoulis, A.A., Savage, J., & Sampson, C. (2025). FathomDEM: an improved global terrain map using a hybrid vision transformer model. Environmental Research Letters, 20, 034002. https://doi.org/10.1088/1748-9326/ada972 . Data: Zenodo record 14523356 (https://doi.org/10.5281/zenodo.14523356), restricted access via share-link token — see tools/download_fathomdem.py."
     provider: gdal
     file_format: GeoTIFF
     file_path: FathomDEM/
@@ -66,9 +45,7 @@ datasets:
       Lowercase. {ns} is n or s, {ew} is e or w. {lat} (2-digit) and {lon}
       (3-digit) are the tile's SW-corner integer degrees (e.g. n00e010.tif
       spans 0°-1°N, 10°-11°E; s01w090.tif spans 1°-0°S, 90°-89°W). Matches
-      src.raster.find_fathomdem_tiles's fname construction (NTFS path
-      lookups are case-insensitive, so the function's uppercase N/E also
-      resolves these files on Windows).
+      src.raster.find_fathomdem_tiles's fname construction.
     tile_examples:
       - n00e010.tif
       - s01w090.tif
@@ -112,86 +89,25 @@ datasets:
       Model accuracy reported as substantially improved vs. FABDEM (lower
       MAE/RMSE), validated against >2,400 LiDAR reference datasets. The
       only supported coastal topography source (workflow/scripts/
-      05a_get_elevation.py, workflow/src/raster.py find_fathomdem_tiles) —
+      06_get_elevation.py, workflow/src/raster.py find_fathomdem_tiles) —
       see the description's centimeters-unit caveat.
 
-  - name: deltadtm_mask
-    # NOT USED by the pipeline since 2026-10-09: rule 05a now takes sea/land
-    # from the land use (200 = sea) instead. Entry kept for reference.
-    # DeltaDTM's own validity/classification mask, used ONLY to identify
-    # ocean pixels so FathomDEM's known-bad seaward extension (it is a
-    # terrestrial DEM, not bathymetry, and reports spurious near-zero/
-    # shallow "elevation" over open water instead of nodata) can be
-    # excluded before the FathomDEM/GEBCO merge in 05a_get_elevation.py.
-    #
-    # IMPORTANT: this is a 4-class mask (0/1/2/3, +nodata=255), NOT the
-    # simple binary "1=valid land, 0=no-data" scheme some other projects'
-    # copies of this dataset use:
-    #   1        -> ocean/water
-    #   0        -> land outside DeltaDTM's own delta-lowland coverage
-    #               (real hills/inland terrain)
-    #   2        -> land, DeltaDTM's own reliable-data class
-    #   3        -> mostly land but a "leaky" transition class, likely a
-    #               coastal/tidal-flat zone
-    #   255 (nodata) -> no source tile coverage at all; NOT reliably
-    #               ocean (DeltaDTM's tile footprint doesn't necessarily
-    #               reach as far inland as this pipeline's domains do) --
-    #               deliberately NOT treated as ocean, unlike value 1.
-    # Only value 1 is used to clip FathomDEM (see clip_ocean_from_topo in
-    # workflow/src/raster.py).
-    description: >
-      DeltaDTM (Pronk et al. 2024) validity/classification mask, global
-      VRT mosaic of 1 arcsec per-tile GeoTIFFs. Used here purely to
-      identify ocean pixels for FathomDEM ocean-clipping -- NOT to gate
-      the actual DeltaDTM elevation values (this pipeline does not use
-      DeltaDTM's own elevation product).
-    source: "Pronk, M., Hooijer, A., Eilander, D., et al. (2024). DeltaDTM: A global coastal digital terrain model. Earth System Science Data, 16, 2343-2360. https://doi.org/10.5194/essd-16-2343-2024. Data: https://doi.org/10.5281/zenodo.7296982"
-    provider: gdal
-    file_format: VRT (GDAL virtual mosaic over per-tile GeoTIFFs)
-    file_path: DeltaDTM_masks/deltadtm_mask.vrt
-    crs:
-      epsg: 4326
-      name: WGS 84
-      units: degrees
-    raster_properties:
-      data_type: Byte
-      nodata_value: 255
-      band_count: 1
-      pixel_size_arcsec: 1
-    coverage:
-      spatial_extent: Coastal deltas and their immediate surroundings only
-        (not global) -- large gaps expected far from any delta.
-    notes: >
-      Used by workflow/scripts/05a_get_elevation.py (via
-      src.raster.clip_ocean_from_topo) right after FathomDEM is loaded
-      onto the UTM working grid, before the GEBCO hard-merge step.
-
-
   - name: river_network
-    # SWORD (SWOT River Database) v17c, "unpublished" custom export, reach-
-    # level layer -- MANUALLY CORRECTED variant: for a set of specific
-    # tributaries, main_side and width/max_width were adjusted based on
-    # Google Earth imagery and expert knowledge, to improve discharge-
-    # partitioning behaviour at bifurcations SWORD's own attributes get
-    # wrong. This modified file is the pipeline's DEFAULT river network
-    # source (rule get_river_network reads this entry directly). The
-    # unmodified original is kept as the separate `river_network_original`
-    # entry, used by rule bifurcation_calibration_options (script
-    # 11b_bifurcation_calibration_options.py) for a before/after comparison.
-    # Geometry and rch_id_up/rch_id_dn topology are UNCHANGED from the
-    # original -- only attribute values differ for the adjusted reaches.
-    #
-    # v17c carries a richer field set than the official v17b release,
-    # including main_path_id, is_mainstem_edge, path_seg_pos, rch_id_up_main/
-    # rch_id_dn_main, hydro_dist_out, hydro_dist_hw, subnetwork_id,
-    # continent, etc. rch_id_up/rch_id_dn are a Python-list-repr string
-    # (e.g. "[id1, id2]"), NOT the whitespace-separated convention v17b uses.
-    description: SWORD (SWOT River Database) v17c "unpublished" export, global reach-level vector river network, manually corrected for specific bifurcating tributaries.
-    source: "Derived from SWORD (SWOT River Database) v17c (unpublished export; see raw_data/SWORD/v17c_release_notes.pdf and v17c_variable_reference.pdf) with manual attribute corrections based on Google Earth imagery and expert knowledge."
+    # SWORD v17c, published release: one GeoPackage per region, layer
+    # "reaches". Rule get_river_network (06) reads every region within the
+    # domain box (src.sword.read_sword_reaches), maps the published topology
+    # (rch_id_dn_1..4 / rch_id_up_1..4, 0 = none) to the bracketed id
+    # strings the pipeline uses, and applies the manual widths in
+    # config/sword_width_corrections.csv. wse, width and slope are the static
+    # MERIT Hydro / SRTM values carried over from v17b; the SWOT statistics
+    # (wse_obs_*, width_obs_*, slope_obs_*, n_obs) are separate fields.
+    description: SWORD (SWOT River Database) v17c, global reach-level vector river network with SWOT observation statistics, one file per region.
+    source: "Altenau, E. H., Pavelsky, T. M., Durand, M. T., Yang, X., Frasson, R. P. d. M., & Bendezu, L. (2021). The Surface Water and Ocean Topography (SWOT) Mission River Database (SWORD): A global river network for satellite data products. Water Resources Research, 57, e2021WR030054. https://doi.org/10.1029/2021WR030054 . Data: SWORD v17c (July 2026, exported May 2026), see SWORD/v17c/v17c_release_notes.md and v17c_variable_reference.md."
     provider: ogr
     file_format: GeoPackage
-    file_path: SWORD/SWORD_global_v17c_unpublished_modified.gpkg
-    layer_name: global_edges
+    file_path: SWORD/v17c/sword_{region}_v17c.gpkg
+    regions: [AF, AS, EU, NA, OC, SA]
+    layer_name: reaches
     storage: GPKG
     encoding: UTF-8
     crs:
@@ -200,92 +116,53 @@ datasets:
       type: Geographic (2D)
       units: degrees
       datum: World Geodetic System 1984 ensemble (EPSG:6326)
-      accuracy_m: 2
     geometry:
       type: LineString
       geometry_column: geom
-    feature_count: 248672
+    feature_count: 248673
     coverage:
       latitude_range: [-52.0002, 82.3108]
       longitude_range: [-179.9999, 179.9999]
-    primary_key: fid
     fields_of_interest:
-      x:
-        type: Real
-        description: Longitude of the node or reach ranging from 180°E to 180°W (decimal degrees).
-      y:
-        type: Real
-        description: Latitude of the node or reach ranging from 90°S to 90°N (decimal degrees).
       reach_id:
         type: Integer64
-        description:  unique identifier for each river reach
+        description: Unique reach identifier.
       width:
         type: Real
-        description:  reach-averaged width in meters
+        description: Reach-averaged width (m).
       max_width:
         type: Real
-        description:   Maximum width value across the channel for each node or reach that includes island and bar areas (in meters).
-      lakeflag:
-        type: Integer
-        description: "GRWL water body identifier for each reach: 0 – river, 1 – lake/reservoir, 2 – canal, 3 – tidally influenced river."
-      rch_id_up:
-        type: String
-        length: 80
-        description: IDs of upstream reaches (presented as list "[rch_id_up1, rch_id_up2,...]").
-      rch_id_dn:
-        type: String
-        length: 80
-        description: IDs of downstream reaches (presented as list "[rch_id_dn1, rch_id_dn2,...]").
+        description: Maximum channel width across the reach including islands and bars (m); 30 is a fill value.
+      wse:
+        type: Real
+        description: Water surface elevation from MERIT Hydro (m, EGM2008), 0.1 m steps.
+      wse_obs_p10:
+        type: Real
+        description: SWOT water surface elevation percentiles p10 ... p90 over all qualifying overpasses (m); -9999 without observations.
       slope:
         type: Real
-        description:  # add once known — likely reach slope, units to confirm (m/m or m/km)
+        description: MERIT/SRTM reach slope magnitude (m/km).
+      lakeflag:
+        type: Integer
+        description: "0 river, 1 lake/reservoir, 2 canal, 3 tidally influenced river."
+      obstr_type:
+        type: Integer
+        description: "0 none, 1 dam, 2 lock, 3 low-head, 4 falls (v17c variable reference). Value 5 also occurs, is undocumented, and is read as 0 (src.sword); the published value is kept in obstr_type_published."
+      rch_id_dn_1:
+        type: Integer64
+        description: Downstream reach ids rch_id_dn_1 ... rch_id_dn_4 (0 = none); upstream likewise rch_id_up_1 ... 4.
+      n_rch_down:
+        type: Integer
+        description: Number of downstream reaches.
       main_side:
         type: Integer
-        description: "SWORD's own primary-vs-secondary channel classification: 0 = reach is part of the main channel/mainstem; 1 or 2 = reach is a secondary/side channel."
+        description: "0 main channel, 1 or 2 side channel."
       main_path_id:
         type: Integer64
-        description: ID of the main path of the river arm to which the reach belongs (multiple reaches can share the same main_path_id if they belong to the same river arm). Used as the same-river-arm grouping key at bifurcations (src.river_network.trace_seed_mainstem_paths, compute_river_elevation_profile), together with is_mainstem_edge.
-      is_mainstem_edge:
+        description: Main path group id; same-river-arm grouping key at bifurcations (src.river_network).
+      is_mainstem:
         type: Integer
-        description: Flags whether a reach is part of the SWORD-identified mainstem (vs. a distributary/side-channel edge). Tie-breaker at bifurcations when more than one downstream candidate shares main_path_id.
-      path_seg_pos:
-        type: Integer64
-        description: position within main path of river arm (0 = most upstream, increasing downstream)
-
-  - name: river_network_original
-    # Unmodified SWORD v17c "unpublished" export -- same schema/feature
-    # count as `river_network`, but WITHOUT the manual main_side/width
-    # corrections. Used only for the "before" comparison in rule
-    # bifurcation_calibration_options; not read by any production rule
-    # (rule get_river_network reads `river_network`, the modified/default
-    # version).
-    description: SWORD (SWOT River Database) v17c "unpublished" export, global reach-level vector river network, unmodified.
-    source: "SWORD (SWOT River Database) v17c (unpublished export; see raw_data/SWORD/v17c_release_notes.pdf and v17c_variable_reference.pdf)."
-    provider: ogr
-    file_format: GeoPackage
-    file_path: SWORD/SWORD_global_v17c_unpublished.gpkg
-    layer_name: global_edges
-    storage: GPKG
-    encoding: UTF-8
-    crs:
-      epsg: 4326
-      name: WGS 84
-      type: Geographic (2D)
-      units: degrees
-      datum: World Geodetic System 1984 ensemble (EPSG:6326)
-      accuracy_m: 2
-    geometry:
-      type: LineString
-      geometry_column: geom
-    feature_count: 248672
-    coverage:
-      latitude_range: [-52.0002, 82.3108]
-      longitude_range: [-179.9999, 179.9999]
-    primary_key: fid
-    fields_of_interest:
-      # Same schema as `river_network` -- see that entry for full field
-      # documentation. main_side and width/max_width are the fields that
-      # differ (uncorrected) relative to `river_network`.
+        description: 1 if the reach is on the mainstem path of its main_path_id group.
 
   - name: coastal_bathymetry
     description: Global terrain model for ocean and land providing elevation in meters on a 15 arc-second interval grid. Bathymetry over oceans plus land topography in one continuous grid.
@@ -324,7 +201,6 @@ datasets:
     provider: gdal
     file_format: GeoTIFF
     file_path: Copernicus/Copernicus_LandUse.tif
-    # file_path: ESA_Worldcover/esa_worldcover_clipped_2433835.tif
     compression: DEFLATE
     producer:
       institution: VITO NV
@@ -405,14 +281,14 @@ datasets:
   - name: land_use_esa_worldcover
     # Alternative land-use source to `land_use` (Copernicus LC100, 100 m),
     # selected with config landuse.source: esa_worldcover. Rule prepare_landuse
-    # (02b) clips whichever source is selected to the basin's domain bbox.
+    # (05) clips whichever source is selected to the basin's domain bbox.
     #
     # IMPORTANT: WorldCover has NO open-sea class. Sea, lagoons, rivers and
     # lakes are ALL class 80 ("permanent water bodies"), whereas this pipeline
     # identifies the sea everywhere as class 200 (sea_mask, both land masks,
     # the coastal-protection weir's ocean mask, zsini, the water-level
     # boundary). Rule prepare_landuse therefore DERIVES 200: WorldCover water
-    # reaching the domain border, with the basin's own river network (rule 06)
+    # reaching the domain border, with the basin's own river network (rule 02)
     # as a barrier so the sea stops at the river mouths, keeping only bodies
     # that hold an LC100 open-sea pixel -- so the `land_use` entry above is
     # still required when this source is selected, both as that guard and to
@@ -425,7 +301,7 @@ datasets:
       tiles exist over land only (no open-ocean tiles). Class codes 20-100
       coincide with Copernicus LC100's; class 10 (tree cover) replaces
       LC100's 111-126 forest classes and 95 (mangroves) has no LC100
-      equivalent -- both need a row in lu_to_roughness_lookup.
+      equivalent.
     source: "Zanaga, D., Van De Kerchove, R., Daems, D., De Keersmaecker, W., Brockmann, C., Kirches, G., Wevers, J., Cartus, O., Santoro, M., Fritz, S., Lesiv, M., Herold, M., Tsendbazar, N.E., Xu, P., Ramoino, F., Arino, O. (2022). ESA WorldCover 10 m 2021 v200. https://doi.org/10.5281/zenodo.7254221"
     provider: gdal
     file_format: VRT (GDAL virtual mosaic over per-tile GeoTIFFs)
@@ -475,7 +351,7 @@ datasets:
         100: moss_lichen
         0: no_data (NoData)
     notes: >
-      Rule prepare_landuse (02b) writes the per-basin product with 200 for
+      Rule prepare_landuse (05) writes the per-basin product with 200 for
       open sea and 255 for nodata, so every later rule reads the same
       pipeline codes regardless of which source was selected.
 
@@ -584,10 +460,10 @@ datasets:
     description: >
       Hourly total water level (tide + surge + mean sea level) of the GTSMv3 reanalysis
       1950-2024 at ~43,000 output stations worldwide, one NetCDF per month holding every
-      station (reanalysis_waterlevel_hourly_YYYY_MM_v3.nc, variable `waterlevel`). Read by
-      rule extract_gtsm_series at each basin's own surge stations (COAST-RP's coastal
-      stations are GTSM output stations) to derive the storm-tide hydrograph components
-      (rule storm_tide_hydrographs). The folder holds the yearly CDS archives unzipped.
+      station (reanalysis_waterlevel_hourly_YYYY_MM_v3.nc, variable `waterlevel`). Read once
+      by tools/subset_gtsm_stations.py into gtsm_station_subset (COAST-RP's coastal
+      stations are GTSM output stations), from which the storm-tide hydrograph components
+      are derived (rule storm_tide_hydrographs). The folder holds the yearly CDS archives unzipped.
     source: "Copernicus CDS sis-water-level-change-timeseries-cmip6 (GTSMv3 reanalysis, hourly). Downloaded with tools/download_cds_waterlevel.py"
     provider: xarray
     file_format: NetCDF
@@ -602,6 +478,18 @@ datasets:
     provider: xarray
     file_format: NetCDF
     file_path: GTSM_storm_tide_hourly/storm_surge_residual/
+
+  - name: gtsm_station_subset
+    description: >
+      Hourly total water level and surge residual of the GTSMv3 reanalysis at the GTSM
+      stations behind every basin's surge stations, one station-chunked NetCDF (variables
+      `waterlevel`, `surge`; every GTSM station's id and position on dimension
+      `gtsm_station`). Built once from gtsm_total_water_level and gtsm_surge_residual;
+      rebuild after adding a basin. Read by rule extract_gtsm_series.
+    source: "Derived from gtsm_total_water_level and gtsm_surge_residual with tools/subset_gtsm_stations.py"
+    provider: xarray
+    file_format: NetCDF
+    file_path: GTSM_storm_tide_hourly/station_subset.nc
 
 
   - name: river_discharge
@@ -750,7 +638,7 @@ datasets:
     notes: >
       Used by src/river_forcing.py (load_grdc_stations, find_nearest_grdc_station,
       load_grdc_series) and src/extreme_values.py (bias_correct_discharge,
-      compute_grdc_correlation) in rule get_boundary_forcings (07). Search
+      compute_grdc_correlation) in rule get_boundary_forcings (07d). Search
       radius: boundary_forcings.river.bias_correction.grdc_search_radius_km. TODO:
       downloading a global GRDC extract (vs. the current 8-test-delta
       extract) would let the correlation diagnostic and bias correction run
@@ -788,14 +676,14 @@ datasets:
       Subtracting MDT from a GOCO06s-referenced DEM converts it to orthometric
       heights above local Mean Sea Level (MSL): H_MSL = H_GOCO06s − MDT.
       The pipeline works in GOCO06s, so MSL-referenced data (GEBCO, COAST-RP)
-      goes the other way: H_GOCO06s = H_MSL + MDT (rules 05a and 07).
+      goes the other way: H_GOCO06s = H_MSL + MDT (rules 06 and 07d).
       Download from AVISO+ (https://www.aviso.altimetry.fr) — requires free account.
       Note: MDT is defined over ocean only; near-coastal values are used for
       the coastal DiluviumDEM correction (all deltas lie within the 500 km
       validity range from the coast).
     source: "CNES-CLS22 MDT, AVISO+ altimetry data centre. https://doi.org/10.24400/527896/a01-2021.001"
     file_format: NetCDF
-    file_path: AVISO/mdt_hybrid_cnes_cls22_cmems2020_global.nc
+    file_path: Aviso/mdt_hybrid_cnes_cls22_cmems2020_global.nc
     crs:
       epsg: 4326
     variables:

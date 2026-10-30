@@ -1,26 +1,23 @@
-"""
-adaptation_lines.py — derive the adaptation-measure line files (coastal and
-river levee, river-mouth closure, mouth pump) from a basin's own baseline
-protection weir, so they always sit on the current model grid.
+"""Derive adaptation-measure lines (levees, mouth closure, pump) from the baseline weir.
 
-Not part of the Snakemake workflow: tools/build_adaptation_lines.py calls
-this once a basin's skeleton (rule 13) exists and writes the results as
-geojsons into the raw-data folder, where config/adaptation_strategies.yml
-points to them through each measure's `locations`. Rerun it whenever the
-basin's grid changes (new domain polygon, rotation, resolution) -- the
-baseline weir follows the grid's cell edges, and src.protection_weir.
-merge_weir_preserve_unmatched only replaces baseline segments that lie
-within 2 m of a `locations` line.
+Entry point: rule build_adaptation_lines (12c), once per basin after the
+skeleton; config/adaptation_strategies.yml references its geojsons as
+`locations: auto/<name>`. The lines follow the skeleton's baseline weir, which
+runs along the grid's cell edges, and src.protection_weir.
+merge_weir_preserve_unmatched only replaces baseline segments within 2 m of a
+`locations` line.
 
 Steps
 -----
 1. Label every baseline weir segment by the water it faces (label_weir_kinds):
    "coast" when a grid cell on either side is open sea (landuse 200, plus
    sea-linked wetlands when those are left unprotected), else "river" when
-   one is river channel. A segment with land on both sides faces a small
-   land island the weir builder merged into the water (fewer than
-   min_component_cells cells); it takes the kind of the water that island
-   borders.
+   one is river channel, burned without the network's seaward tail
+   (centrelines_off_sea) so SWORD running on past the coastline does not
+   turn coastal weir into river. A segment with land on both sides faces a
+   small land island the weir builder merged into the water (fewer than
+   min_component_cells cells) and takes the kind of the water that island
+   borders; failing that, the kind of the nearest water cell.
 2. Close each river mouth (mouth_closures): for every SWORD outlet reach
    (n_rch_dn == 0), the closure is the narrowest straight crossing through
    the reach's upstream end (where the channel meets the sea) that reaches
@@ -42,33 +39,40 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 
 import geopandas as gpd
+import matplotlib.pyplot as plt
 import numpy as np
-from scipy.ndimage import generate_binary_structure
+import pandas as pd
+from matplotlib.lines import Line2D
+from matplotlib.patches import Polygon as MplPolygon
+from scipy.ndimage import distance_transform_edt, generate_binary_structure
 from scipy.ndimage import label as ndimage_label
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from shapely.geometry import LineString, Point
 from shapely.ops import linemerge, substring, unary_union
+from src.adaptation_strategies import ADAPTATION_LINE_NAMES
+from src.io import require_keys
+from src.landuse import LANDUSE_SEA_CODE
+from src.plots import save_figure
+from src.protection_weir import GridArrays, ocean_linked_wetland_mask
+from src.river_burn import build_channel_mask_regular
 
 log = logging.getLogger(__name__)
 
 KIND_COAST = "coast"
 KIND_RIVER = "river"
 KIND_ESTUARY = "estuary"
+KIND_COLOURS = {KIND_COAST: "black", KIND_ESTUARY: "0.6", KIND_RIVER: "purple"}
 
 _STRUCT8 = generate_binary_structure(2, 2)
 _NEIGHBOURS4 = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 
-# ── grid-edge bookkeeping ────────────────────────────────────────────────────
-
-
 def _edge_cells(seg: LineString, inv_transform) -> tuple[tuple, tuple]:
-    """The two (row, col) cells sharing the grid edge `seg` (a 2-point segment
-    along a cell edge, as the weir builder and closure_edges write them).
-    """
+    """`seg` is a 2-point segment along a cell edge, as the weir builder writes them."""
     (x0, y0), (x1, y1) = seg.coords[0][:2], seg.coords[-1][:2]
     c0, r0 = (round(v) for v in inv_transform * (x0, y0))
     c1, r1 = (round(v) for v in inv_transform * (x1, y1))
@@ -88,9 +92,8 @@ def _in_grid(rc: tuple, shape: tuple) -> bool:
 
 
 def _components(valid: np.ndarray, blocked: set) -> np.ndarray:
-    """Connected components of the valid cells, 4-neighbour links (SFINCS
-    exchanges water across shared cell edges only), never across a blocked
-    edge (a weir). Label -1 = invalid cell.
+    """4-neighbour links only (SFINCS exchanges water across shared cell edges);
+    never across a blocked (weir) edge. Label -1 = invalid cell.
     """
     h, w = valid.shape
     idx = np.arange(h * w).reshape(h, w)
@@ -124,17 +127,79 @@ def _open_sea_label(labels: np.ndarray, seaward: np.ndarray, valid: np.ndarray) 
 def protected_land(
     weir_gdf: gpd.GeoDataFrame, seaward: np.ndarray, valid: np.ndarray, transform
 ) -> np.ndarray:
-    """Cells the baseline weir keeps apart from the open sea. Land in the
-    hydraulic sense the closure has to reach: a land-classified cell with no
-    weir between it and the sea (a small island the weir builder merged into
-    the water, or a cell whose weir ring it dropped as a tiny pinched-off
-    dikering) floods from the sea and does not count.
+    """Return the cells the baseline weir keeps apart from the open sea.
+
+    This is land in the hydraulic sense the closure has to reach: a
+    land-classified cell with no weir between it and the sea (a small merged
+    island, or a dropped tiny dikering) floods from the sea and does not count.
     """
     labels = _components(valid, _weir_edges(weir_gdf, transform))
     return valid & (labels != _open_sea_label(labels, seaward, valid))
 
 
-# ── step 1: coast / river labels ─────────────────────────────────────────────
+def centrelines_off_sea(
+    rivers: gpd.GeoDataFrame, seaward: np.ndarray, transform
+) -> gpd.GeoDataFrame:
+    """Return the river network without its seaward tail.
+
+    From every outlet reach (n_rch_dn == 0) the downstream-end part running
+    through sea cells is dropped; a reach lying wholly in the sea passes the cut
+    on to its upstream reaches. SWORD often carries a river on past the land-use
+    coastline (ghost reaches, a channel hugging the shore), and burning that tail
+    as channel would label the coastal weir beside it "river". Sea cells
+    mid-river (land use classing part of a wide channel as sea) are left alone.
+    """
+    inv = ~transform
+    step = float(np.hypot(transform.a, transform.d)) / 4
+    ids = rivers["reach_id"].astype("int64").to_numpy()
+    by_id = dict(zip(ids, range(len(rivers))))
+
+    def _line(geom) -> LineString:
+        if geom.geom_type == "MultiLineString":
+            geom = linemerge(geom)
+        if geom.geom_type != "LineString":
+            geom = max(geom.geoms, key=lambda g: g.length)
+        return geom
+
+    def _in_sea(p) -> bool:
+        c, r = inv * (p.x, p.y)
+        rc = (int(np.floor(r)), int(np.floor(c)))
+        return _in_grid(rc, seaward.shape) and bool(seaward[rc])
+
+    geoms = list(rivers.geometry)
+    stack = [(rid, None) for rid in ids[(rivers["n_rch_dn"] == 0).to_numpy()]]
+    done = set()
+    while stack:
+        rid, dn_line = stack.pop()
+        if rid in done or rid not in by_id:
+            continue
+        done.add(rid)
+        i = by_id[rid]
+        line = _line(rivers.geometry.iloc[i])
+        ups = [u for u in _reach_ids(rivers["rch_id_up"].iloc[i]) if u in by_id]
+        start, end = Point(line.coords[0]), Point(line.coords[-1])
+        if dn_line is not None:  # downstream end = the one touching the reach below
+            flip = start.distance(dn_line) < end.distance(dn_line)
+        elif ups:  # outlet: downstream end = the one away from the reaches above
+            up = unary_union([rivers.geometry.iloc[by_id[u]] for u in ups])
+            flip = end.distance(up) < start.distance(up)
+        else:
+            flip = False
+        if flip:
+            line = LineString(line.coords[::-1])
+        keep = line.length
+        while keep > 0 and _in_sea(line.interpolate(keep)):
+            keep -= step
+        if keep >= line.length:
+            continue
+        if keep <= 0:
+            geoms[i] = None
+            stack.extend((u, line) for u in ups)
+        else:
+            geoms[i] = substring(line, 0.0, keep)
+    out = rivers.copy()
+    out["geometry"] = geoms
+    return out[out.geometry.notna()]
 
 
 def label_weir_kinds(
@@ -145,8 +210,9 @@ def label_weir_kinds(
     transform,
     min_component_cells: int,
 ) -> tuple[list, dict]:
-    """Per-segment "coast"/"river" label for the baseline weir (module
-    docstring, step 1). Returns (kinds, counts).
+    """Label each baseline weir segment "coast"/"river" (module docstring, step 1).
+
+    Returns (kinds, counts).
     """
     inv = ~transform
     shape = seaward.shape
@@ -175,7 +241,20 @@ def label_weir_kinds(
             )
         return island_kind[lab]
 
-    kinds, n_island, n_unresolved = [], 0, 0
+    # Land on both sides away from a small island (e.g. a shoreline weir whose
+    # outer cell is a land strip the sea-clipped channel mask no longer covers):
+    # the kind of the nearest water cell.
+    dist_sea = distance_transform_edt(~seaward) if seaward.any() else None
+    dist_chan = distance_transform_edt(~channel) if channel.any() else None
+
+    def _nearest_water_kind(sides: list) -> str | None:
+        d_sea = min(dist_sea[rc] for rc in sides) if dist_sea is not None else np.inf
+        d_chan = min(dist_chan[rc] for rc in sides) if dist_chan is not None else np.inf
+        if np.isinf(d_sea) and np.isinf(d_chan):
+            return None
+        return KIND_COAST if d_sea <= d_chan else KIND_RIVER
+
+    kinds, n_island, n_nearest, n_unresolved = [], 0, 0, 0
     for seg in weir_gdf.geometry:
         sides = [rc for rc in _edge_cells(seg, inv) if _in_grid(rc, shape)]
         if any(seaward[rc] for rc in sides):
@@ -192,6 +271,9 @@ def label_weir_kinds(
             ]
             kind = _island_kind(small[0]) if small else None
             if kind is None:
+                kind = _nearest_water_kind(sides)
+                n_nearest += kind is not None
+            if kind is None:
                 n_unresolved += 1
                 kind = KIND_RIVER
             kinds.append(kind)
@@ -199,12 +281,10 @@ def label_weir_kinds(
         KIND_COAST: kinds.count(KIND_COAST),
         KIND_RIVER: kinds.count(KIND_RIVER),
         "facing_small_island": n_island,
+        "by_nearest_water": n_nearest,
         "unresolved_as_river": n_unresolved,
     }
     return kinds, counts
-
-
-# ── step 2: river-mouth closure + pump ───────────────────────────────────────
 
 
 def _reach_ids(value) -> list[int]:
@@ -215,8 +295,9 @@ def _reach_ids(value) -> list[int]:
 def _outlet_centreline(
     rivers: gpd.GeoDataFrame, outlet
 ) -> tuple[LineString, Point, float]:
-    """(upstream reach + outlet reach as one line oriented inland -> sea,
-    the anchor = the outlet reach's upstream end, its distance along that line).
+    """Return (upstream + outlet reach line oriented inland -> sea, anchor, anchor distance).
+
+    The anchor is the outlet reach's upstream end.
     """
     up = rivers[
         rivers["reach_id"].astype("int64").isin(_reach_ids(outlet["rch_id_up"]))
@@ -249,9 +330,7 @@ def _outlet_centreline(
 def _first_land_point(
     anchor, direction, land, inv_transform, max_len, step_m
 ) -> Point | None:
-    """First point along the half-line from `anchor` inside a land cell,
-    sampled every step_m (so grazing a land cell's corner still counts).
-    """
+    """Sampled every step_m, so grazing a land cell's corner still counts."""
     shape = land.shape
     for s in np.arange(0.0, max_len, step_m):
         x, y = anchor.x + direction[0] * s, anchor.y + direction[1] * s
@@ -265,11 +344,10 @@ def _first_land_point(
 
 
 def _crossing_edges(p0, p1, transform, shape, ext_m) -> tuple[list[tuple], float]:
-    """Grid edges between 4-neighbour cells whose centres lie on opposite
-    sides of the line p0-p1, within the segment's extent extended by ext_m
-    at both ends. Returns ([(cell_a, cell_b, along-line position of the
-    edge midpoint)], segment length); a position < 0 or > length lies in
-    the extension.
+    """Return grid edges whose 4-neighbour cells straddle the line p0-p1 (extended by ext_m).
+
+    Returns ([(cell_a, cell_b, along-line edge midpoint position)], segment
+    length); a position < 0 or > length lies in the extension.
     """
     h, w = shape
     rows, cols = np.mgrid[0:h, 0:w]
@@ -298,26 +376,36 @@ def _edge_line(a: tuple, b: tuple, transform) -> LineString:
     return LineString([transform * (cl, r), transform * (cl, r + 1)])
 
 
+CLOSURE_KEYS = (
+    "direction_length_m",
+    "max_tilt_deg",
+    "max_half_length_m",
+    "ext_cells",
+    "pump_upstream_m",
+)
+
+
 def mouth_closures(
     rivers: gpd.GeoDataFrame,
     land: np.ndarray,
     transform,
-    direction_length_m: float = 300.0,
-    max_tilt_deg: float = 60.0,
-    max_half_length_m: float = 5000.0,
-    ext_cells: int = 2,
-    pump_upstream_m: float = 200.0,
+    *,
+    direction_length_m: float,
+    max_tilt_deg: float,
+    max_half_length_m: float,
+    ext_cells: int,
+    pump_upstream_m: float,
 ) -> tuple[list[dict], list[dict], list[dict]]:
-    """Closure edges and pump line per SWORD outlet reach (module docstring,
-    steps 2 and 4); `land` = protected_land(). Returns (closure_rows,
-    pump_rows, report) -- closure rows carry cell_a/cell_b for the
-    connectivity check.
+    """Build closure edges and pump line per SWORD outlet reach (module docstring, steps 2, 4).
+
+    `land` = protected_land(). Returns (closure_rows, pump_rows, report);
+    closure rows carry cell_a/cell_b for the connectivity check.
     """
     inv = ~transform
     cell = float(np.hypot(transform.a, transform.d))
     closures, pumps, report = [], [], []
     for _, outlet in rivers[rivers["n_rch_dn"] == 0].iterrows():
-        rid = int(outlet["reach_id"])
+        reach_id = int(outlet["reach_id"])
         full, anchor, d_anchor = _outlet_centreline(rivers, outlet)
         p_up = full.interpolate(max(d_anchor - direction_length_m, 0.0))
         t = np.array([anchor.x - p_up.x, anchor.y - p_up.y])
@@ -339,11 +427,11 @@ def mouth_closures(
                 best = (total, ends, float(np.degrees(off)))
         if best is None:
             log.warning(
-                f"Outlet reach {rid}: no straight crossing within +-{max_tilt_deg:.0f} deg of "
+                f"Outlet reach {reach_id}: no straight crossing within +-{max_tilt_deg:.0f} deg of "
                 f"perpendicular reaches land on both sides within {max_half_length_m:.0f} m -- "
                 "no closure or pump written for this mouth"
             )
-            report.append({"reach_id": rid, "closed": False})
+            report.append({"reach_id": reach_id, "closed": False})
             continue
         _, ends, tilt = best
         p0, p1 = ends[1].coords[0], ends[0].coords[0]
@@ -357,7 +445,7 @@ def mouth_closures(
                 continue  # extension reaching past the land back into open water
             closures.append(
                 {
-                    "reach_id": rid,
+                    "reach_id": reach_id,
                     "cell_a": a,
                     "cell_b": b,
                     "geometry": _edge_line(a, b, transform),
@@ -365,10 +453,10 @@ def mouth_closures(
             )
             n_kept += 1
         pump = substring(full, max(d_anchor - pump_upstream_m, 0.0), full.length)
-        pumps.append({"reach_id": rid, "geometry": pump})
+        pumps.append({"reach_id": reach_id, "geometry": pump})
         report.append(
             {
-                "reach_id": rid,
+                "reach_id": reach_id,
                 "closed": True,
                 "anchor": [round(anchor.x, 1), round(anchor.y, 1)],
                 "crossing_m": round(length, 1),
@@ -381,14 +469,11 @@ def mouth_closures(
             }
         )
         log.info(
-            f"Outlet reach {rid}: closure {length:.0f} m across the mouth at "
+            f"Outlet reach {reach_id}: closure {length:.0f} m across the mouth at "
             f"({anchor.x:.0f}, {anchor.y:.0f}), {tilt:+.0f} deg from perpendicular, "
             f"{n_kept} grid edge(s); pump line {pump.length:.0f} m"
         )
     return closures, pumps, report
-
-
-# ── step 3: estuary + seal check ─────────────────────────────────────────────
 
 
 def estuary_and_seal(
@@ -399,10 +484,10 @@ def estuary_and_seal(
     valid: np.ndarray,
     transform,
 ) -> np.ndarray:
-    """Sea-classified cells cut off from the open sea by the baseline weir
-    plus the closures (module docstring, step 3). Adds "sealed" to every
-    closed report entry: whether the river check point behind it is cut off
-    from the open sea.
+    """Return sea cells cut off from the open sea by weir + closures (module docstring, step 3).
+
+    Side effect: adds "sealed" to every closed report entry (whether the river
+    check point behind it is cut off from the open sea).
     """
     inv = ~transform
     blocked = _weir_edges(weir_gdf, transform)
@@ -427,6 +512,7 @@ def estuary_and_seal(
 
 
 def relabel_estuary(weir_gdf, kinds, estuary, transform) -> list:
+    """Relabel coast segments bordering an estuary cell as estuary."""
     inv = ~transform
     out = []
     for seg, kind in zip(weir_gdf.geometry, kinds):
@@ -437,3 +523,230 @@ def relabel_estuary(weir_gdf, kinds, estuary, transform) -> list:
             else kind
         )
     return out
+
+
+@dataclass(frozen=True)
+class AdaptationLines:
+    """Labelled baseline weir, mouth closures, pump lines and per-mouth report."""
+
+    weir: gpd.GeoDataFrame
+    closure: gpd.GeoDataFrame
+    pump: gpd.GeoDataFrame
+    seaward: np.ndarray
+    estuary: np.ndarray
+    kind_counts: dict
+    report: list[dict]
+
+
+def build_adaptation_lines(
+    weir_gdf: gpd.GeoDataFrame,
+    landuse: np.ndarray,
+    valid: np.ndarray,
+    transform,
+    rivers: gpd.GeoDataFrame,
+    *,
+    min_component_cells: int,
+    unprotected_ocean_wetlands: bool,
+    closure: dict,
+) -> AdaptationLines:
+    """Label the baseline weir, close every river mouth and draw its pump line.
+
+    `weir_gdf` holds the model's 2-point cell-edge weir segments and `rivers`
+    the clean SWORD network (width, reach_id, n_rch_dn, rch_id_up), both in
+    the CRS of `landuse`/`valid`, which lie on the SFINCS grid (`transform`).
+    `min_component_cells`/`unprotected_ocean_wetlands` are rule 11's weir-builder
+    settings; `closure` is config `adaptation.lines` (mouth_closures settings).
+    """
+    require_keys(closure, CLOSURE_KEYS, "adaptation.lines")
+    crs = weir_gdf.crs
+    seaward = landuse == LANDUSE_SEA_CODE
+    if unprotected_ocean_wetlands:
+        grid = GridArrays(
+            crs,
+            np.zeros(landuse.shape, np.float32),
+            valid,
+            float(np.hypot(transform.a, transform.d)),
+            transform,
+        )
+        seaward = seaward | ocean_linked_wetland_mask(landuse, seaward, grid)
+    channel = build_channel_mask_regular(
+        centrelines_off_sea(rivers, seaward, transform),
+        "width",
+        landuse.shape,
+        transform,
+    )
+
+    kinds, kind_counts = label_weir_kinds(
+        weir_gdf, seaward, channel, valid, transform, min_component_cells
+    )
+    log.info(f"Baseline weir labels: {kind_counts}")
+    land = protected_land(weir_gdf, seaward, valid, transform)
+    closures, pumps, report = mouth_closures(rivers, land, transform, **closure)
+    estuary = estuary_and_seal(weir_gdf, closures, report, seaward, valid, transform)
+    kinds = relabel_estuary(weir_gdf, kinds, estuary, transform)
+    weir = weir_gdf.assign(kind=kinds)
+    log.info(
+        f"After closure: {pd.Series(kinds).value_counts().to_dict()}, "
+        f"{int(estuary.sum())} sea cell(s) cut off as estuary"
+    )
+
+    closure = (
+        gpd.GeoDataFrame(
+            [
+                {
+                    "reach_id": c["reach_id"],
+                    "kind": "closure",
+                    "geometry": c["geometry"],
+                }
+                for c in closures
+            ],
+            geometry="geometry",
+            crs=crs,
+        )
+        if closures
+        else gpd.GeoDataFrame({"reach_id": [], "kind": []}, geometry=[], crs=crs)
+    )
+    pump = (
+        gpd.GeoDataFrame(pumps, geometry="geometry", crs=crs)
+        if pumps
+        else gpd.GeoDataFrame({"reach_id": []}, geometry=[], crs=crs)
+    )
+    return AdaptationLines(weir, closure, pump, seaward, estuary, kind_counts, report)
+
+
+def measure_line_layers(lines: AdaptationLines) -> dict[str, gpd.GeoDataFrame]:
+    """Return the measure line files, keyed by ADAPTATION_LINE_NAMES."""
+    weir = lines.weir[["kind", "geometry"]]
+    layers = {
+        "coastal_protection_weir_PC": pd.concat(
+            [weir[weir["kind"] == KIND_COAST], lines.closure[["kind", "geometry"]]],
+            ignore_index=True,
+        ),
+        "coastal_protection_weir_PO": weir[weir["kind"] == KIND_COAST],
+        "river_protection_weir_PO": weir[weir["kind"].isin([KIND_RIVER, KIND_ESTUARY])],
+        "pump_river_mouth": lines.pump,
+    }
+    return {
+        name: gpd.GeoDataFrame(layers[name], geometry="geometry", crs=lines.weir.crs)
+        for name in ADAPTATION_LINE_NAMES
+    }
+
+
+def unsealed_mouths(report: list[dict]) -> list[int]:
+    """Return the outlet reaches whose closure leaves the river open to the sea."""
+    return [r["reach_id"] for r in report if r.get("closed") and not r.get("sealed")]
+
+
+def require_sealed(report: list[dict]) -> None:
+    """Raise RuntimeError if a mouth closure does not seal its river."""
+    unsealed = unsealed_mouths(report)
+    if unsealed:
+        raise RuntimeError(
+            f"mouth closure does not seal outlet reach(es) {unsealed}: the river "
+            "behind the closure is still connected to the open sea, so "
+            "coastal_protection_weir_PC would leave the mouth open; check "
+            "adaptation_lines.png (snakemake --keep-incomplete keeps it)"
+        )
+
+
+def build_info(
+    lines: AdaptationLines, basin_id: str, built: str, source_weir: str, grid_def: dict
+) -> dict:
+    """Return the build_info.json content: source grid, counts, per-mouth report."""
+    return {
+        "basin_id": basin_id,
+        "built": built,
+        "source_weir": source_weir,
+        "grid": {
+            k: grid_def[k]
+            for k in ("x0", "y0", "dx", "dy", "mmax", "nmax", "rotation")
+            if k in grid_def
+        },
+        "baseline_weir_kinds": lines.weir["kind"].value_counts().to_dict(),
+        "facing_small_island": lines.kind_counts["facing_small_island"],
+        "by_nearest_water": lines.kind_counts["by_nearest_water"],
+        "unresolved_as_river": lines.kind_counts["unresolved_as_river"],
+        "estuary_cells": int(lines.estuary.sum()),
+        "mouths": [
+            {k: v for k, v in r.items() if k != "river_check_point"}
+            for r in lines.report
+        ],
+    }
+
+
+def plot_adaptation_lines(path, lines: AdaptationLines, transform, basin_id) -> None:
+    """Plot the weir by kind with closures and pumps: overview + zoom per mouth."""
+    weir, closure, pump = lines.weir, lines.closure, lines.pump
+    mouths = [r for r in lines.report if r.get("closed")]
+    fig, axes = plt.subplots(
+        1, 1 + len(mouths), figsize=(7.5 * (1 + len(mouths)), 7.5), squeeze=False
+    )
+    axes = axes[0]
+    for kind, colour in KIND_COLOURS.items():
+        part = weir[weir["kind"] == kind]
+        if not part.empty:
+            part.plot(ax=axes[0], color=colour, lw=1)
+    for ax in axes:
+        if not closure.empty:
+            closure.plot(ax=ax, color="red", lw=3)
+        if not pump.empty:
+            pump.plot(ax=ax, color="blue", lw=2.5)
+        ax.set_aspect("equal")
+    axes[0].set_title(f"{basin_id}: baseline weir by kind, closure(s), pump(s)")
+    h, w = lines.seaward.shape
+    for ax, entry in zip(axes[1:], mouths):
+        x, y = entry["anchor"]
+        half = max(1.5 * entry["crossing_m"], 1000.0)
+        for r in range(h):
+            for c in range(w):
+                if not lines.seaward[r, c]:
+                    continue
+                corners = [
+                    transform * (c, r),
+                    transform * (c + 1, r),
+                    transform * (c + 1, r + 1),
+                    transform * (c, r + 1),
+                ]
+                if (
+                    abs(corners[0][0] - x) < half + 200
+                    and abs(corners[0][1] - y) < half + 200
+                ):
+                    ax.add_patch(
+                        MplPolygon(
+                            corners,
+                            fc="#fdd0a2" if lines.estuary[r, c] else "#c6dbef",
+                            ec="none",
+                        )
+                    )
+        for kind, colour in KIND_COLOURS.items():
+            part = weir[weir["kind"] == kind]
+            if not part.empty:
+                part.plot(ax=ax, color=colour, lw=2 if kind == KIND_COAST else 1.5)
+        closure.plot(ax=ax, color="red", lw=3)
+        pump.plot(ax=ax, color="blue", lw=2.5)
+        ax.set_xlim(x - half, x + half)
+        ax.set_ylim(y - half, y + half)
+        ax.set_title(
+            f"mouth of reach {entry['reach_id']}: {entry['crossing_m']:.0f} m crossing, "
+            f"{entry['tilt_deg_from_perpendicular']:+.0f} deg, sealed={entry['sealed']}"
+        )
+    axes[-1].legend(
+        handles=[
+            Line2D([], [], color="black", lw=2, label="coast (raised: PC + PO)"),
+            Line2D(
+                [],
+                [],
+                color="0.6",
+                lw=1.5,
+                label="estuary bank (PC: baseline, PO: river_levee)",
+            ),
+            Line2D([], [], color="purple", lw=1.5, label="river bank (river_levee)"),
+            Line2D([], [], color="red", lw=3, label="mouth closure (PC)"),
+            Line2D([], [], color="blue", lw=2.5, label="pump line (intake -> outlet)"),
+            Line2D([], [], color="#fdd0a2", lw=8, label="sea cells cut off = estuary"),
+        ],
+        loc="upper left",
+        fontsize=8,
+    )
+    fig.tight_layout()
+    save_figure(fig, path, dpi=120)

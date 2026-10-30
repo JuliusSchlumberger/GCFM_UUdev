@@ -4,16 +4,22 @@
 # name = {strategy} wildcard.  scale = the concrete param values, specified HERE.
 # method (pre/post) is chosen at the CLI and validated against measures.yml.
 
-# Relative paths below (locations, dep_subgrid) resolve against the raw-data
-# root, which is machine-specific and NOT set here -- it comes from the
-# GCFM_RAW_DATA_ROOT environment variable. Set it once in PowerShell, then
-# restart your terminal:
-#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
+# Relative `locations` paths below resolve against adaptation_data_root in
+# config/site.yml (see config/site.example.yml), with `{basin_id}` replaced by
+# the basin id, so each basin needs its own files; `auto/<name>` is the basin's
+# <name>.geojson built by rule build_adaptation_lines into
+# <results_dir>/{basin_id}/adaptation_lines/.
 
 # Each block is a strategy FAMILY written at scale 1. The workflow generates
 # <family>_04/_09/_1 from `scales` (x0.4, x0.9, x1.0 on params flagged scale: true
 # in measures.yml). Values: number | {coastal,river,compound} map |
-# max_coastal_waterlevel | max_river_waterlevel | max_discharge | current_protection | {fixed: x}
+# max_coastal_water_level | max_river_water_level | max_discharge | current_protection | {fixed: x}
+#
+# Levees (coastal_levee/river_levee) resolved from max_coastal_water_level or
+# max_river_water_level are not built at that crest in preprocessing: every
+# segment of today's levee is raised by scale x its largest shortfall, so the
+# levee keeps today's profile and is never lowered (src/adaptation_scaling.py).
+# Postprocessing still compares scale x max water level against the max water level.
 
 scales: [0.4, 0.9, 1.0]
 
@@ -21,21 +27,21 @@ scales: [0.4, 0.9, 1.0]
 # ADVANCE
 advance:
   measures:
-    offshore_barrier: {elevation: {coastal: max_coastal_waterlevel, river: {fixed: 0.4}, compound: max_coastal_waterlevel},
-                      locations: adaptation_ebro/offshore_island.geojson }
+    offshore_barrier: {elevation: {coastal: max_coastal_water_level, river: {fixed: 0.4}, compound: max_coastal_water_level},
+                      locations: "{basin_id}/offshore_island.geojson" }
     pumps: {discharge: {coastal: max_discharge, river: max_discharge, compound: max_discharge},
-            locations: adaptation_ebro/advance_pumps.geojson }
+            locations: "{basin_id}/advance_pumps.geojson" }
 
 
 # -----------------------------------------------------------------------------------------------
 # GREY PROTECT-OPEN
 grey_protect_open:
   measures:
-    coastal_levee: {elevation: {coastal: max_coastal_waterlevel, river: current_protection, compound: max_coastal_waterlevel},
-                    locations: adaptation_ebro/auto/coastal_protection_weir_PO.geojson,
+    coastal_levee: {elevation: {coastal: max_coastal_water_level, river: current_protection, compound: max_coastal_water_level},
+                    locations: auto/coastal_protection_weir_PO,
                     merge: false }
-    river_levee: {elevation: {coastal: current_protection, river: max_river_waterlevel, compound: max_river_waterlevel},
-                    locations: adaptation_ebro/auto/river_protection_weir_PO.geojson,
+    river_levee: {elevation: {coastal: current_protection, river: max_river_water_level, compound: max_river_water_level},
+                    locations: auto/river_protection_weir_PO,
                     merge: false }
 
 # -----------------------------------------------------------------------------------------------
@@ -44,22 +50,24 @@ NbS_protect_open:
   measures:
     nbs_land_reclamation: {attenuation_rate: 0.25, # Wamsley: The relationship indicates that storm surge was reduced by 1 m for every 14.5 km inland
                            distance: 2000,
-                           locations: adaptation_ebro/land_reclamation.geojson,
+                           locations: "{basin_id}/land_reclamation.geojson",
                            target_code: 90, # wetlands
                            min_elevation: 0, # floor [m above datum] so foreshore fronted by low mudflats still emerges as land, not just barely-submerged
                            }
     water_retention: {storage_fraction: 1,
-                      locations: adaptation_ebro/water_retention_area_river.geojson}
+                      locations: "{basin_id}/water_retention_area_river.geojson",
+                      inlet: "{basin_id}/water_retention_inlet.geojson", # levee stretch lowered to let river water in
+                      inlet_sill_below_crest: 0.2} # m below the existing levee crest
 
 # -----------------------------------------------------------------------------------------------
 # PROTECT-CLOSED
 protect_closed:
   measures:
-    coastal_levee: {elevation: {coastal: max_coastal_waterlevel, river: current_protection, compound: max_coastal_waterlevel},
-                    locations: adaptation_ebro/auto/coastal_protection_weir_PC.geojson,
+    coastal_levee: {elevation: {coastal: max_coastal_water_level, river: current_protection, compound: max_coastal_water_level},
+                    locations: auto/coastal_protection_weir_PC,
                     merge: false}
     pumps:         {discharge: max_discharge, # same for all flood events
-                    locations: adaptation_ebro/auto/pump_river_mouth.geojson}
+                    locations: auto/pump_river_mouth}
 
 # -----------------------------------------------------------------------------------------------
 # ACCOMMODATE

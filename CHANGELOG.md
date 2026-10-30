@@ -1,8 +1,785 @@
 # Changelog
 
-Newest changes first. See `Reference_memory.txt` for the current, up-to-date
-description of how the pipeline works; this file only describes *what changed
-and why*.
+Newest changes first. See `docs/methods.md` for the current description of how
+the pipeline works; this file only describes *what changed and why*.
+
+# 2026-10-30e: CI pins hydromt 1.3.1 (- JS)
+
+- The CI unit-test job pip-installed `hydromt` unpinned and got 1.4.1.
+  `src.hydromt_sfincs_patch.patch_nearest_extrapolation` refuses any version
+  other than 1.3.1, so `test_nearest_extrapolation_patch_matches_griddata_nearest`
+  failed (1 of 376). `.github/workflows/ci.yml` now installs `hydromt==1.3.1`,
+  the version `environment.yml` pins. Checked by running the suite in a venv built
+  from the CI pip list: 1 failed before the pin, 376 passed after.
+
+# 2026-10-30d: event timeline set in rule 14 from the compound lag; tide runs on (- JS)
+
+- **Event timeline (rule 14, `src.sfincs_run.event_timeline`):** the river
+  keeps rule 07d's place after the restart; with a surge and a river RP the
+  surge peaks `compound.lag_hr` before it (> 0 delays the river), a surge
+  alone right after its blend and half-window. Runs end
+  `boundary_setup.event_after_peak_hr` (60 h) after the last design peak.
+  Rule 14 builds its own time axis, so a new lag rebuilds the event runs only,
+  not rule 07d or the crest calibration (rule 11). The river shift of the
+  compound lag is gone in storm-tide mode.
+- **Tide beyond the window:** `src.surge.periodic_tide` repeats the average
+  tide with its own period (11-26 h autocorrelation peak) instead of holding
+  its edge value, so it lasts through the river flood.
+- **Restart blend:** the boundary blends from the restart's calm level into
+  the event (tide included) from the event start with a half-cosine weight
+  over `hydrograph.ramp_hr`.
+- **`analysis/peak_lag.py`:** lag = surge travel - river travel to the mouth,
+  independent of where each run places its peak.
+- `sfincs.spinup.spinup_overrides_days`: `3279946: 6`;
+  `compound.lag_overrides_hr`: `2433835: -12`, `3279946: -41` (placeholders
+  until `peak_lag.py` has run).
+- `spinup_days()` keeps the configured value's type, so an int `spinup_days`
+  does not show up as a changed rule-07d param.
+
+# 2026-10-30c: spin-up at mean conditions with SLR; per-basin spin-up and lag; mouth outputs (- JS)
+
+- **Spin-up scenario:** `sfincs.spinup.scenario` (`mean_03SLR`) sets the
+  spin-up's SLR: the sea is held at each station's calm level + its `slr_m` x
+  fingerprint (tide-averaged), the rivers at their mean discharge. It must be a
+  mean-conditions scenario (river `Mean`, surge `Tide` or null).
+  - Event boundaries ramp the SLR term from the spin-up's to the scenario's
+    over `slr_ramp_hr` (`src.surge._ramp_in_slr`), so a 0.3 m scenario
+    restarts without a step and without a ramp.
+- **Per-basin spin-up length:** `sfincs.spinup.spinup_overrides_days` sets a
+  basin's spin-up and, with it, its forcing lead-in (rule 07d), which the event
+  run must match. The restart is renamed to the fixed `spin_up/sfincs.spinup.rst`.
+- **Per-basin compound lag:** `compound.lag_overrides_hr` (> 0 delays the
+  river).
+- **River mouths:** the skeleton adds an obs point and a cross-section
+  (`sfincs.crs`) `observation_points.mouth_upstream_m` (1 km) up every mouth
+  reach (rule 10's mouth nodes; `src.river_depth_calibration.mouth_sections`),
+  inherited by every event run, and writes `<basin>_mouths.gpkg`.
+- **`analysis/peak_lag.py`:** surge and river peak arrival at every mouth from
+  a coastal-only and a river-only run (default `coast_100_03SLR`,
+  `river_100_03SLR`; river discharge tide-filtered) and the lag that makes
+  them coincide at the main mouth.
+- The forcing (rule 07d) of a basin with a spin-up override, the skeleton, the
+  spin-up and every event run rebuild.
+
+# 2026-10-30b: crest calibration against the storm-tide hydrograph; held sea only for timing (- JS)
+
+- **Rule 11 sea boundary:** rounds 1 and 2 force every station with the event
+  runs' storm-tide wave (`src.surge.storm_tide_event` at the coastal protection
+  RP), peaking at `ramp_hr + T_walled`, when the calibration discharge reaches
+  the coast, and blended in from the calm level over `ramp_hr` with the rivers'
+  half-cosine ramp (`src.river_forcing.cosine_ramp`).
+  - Replaces the sea held at the storm tide from t = 0. Crests now see the
+    wave production sends, including its tide.
+  - The sea starts calm; sea and channel cells are no longer raised to the
+    storm tide at the start.
+- **Timing check:** `analysis/benchmark_peak_travel.py --run <basin>` copies
+  round 1, holds the sea at each boundary point's peak, raises the wet initial
+  cells to it and reruns SFINCS in `<results_dir>/../scratch_peak_travel/`; the
+  benchmark reads that run instead of round 1.
+- Rule 11 and everything after it rerun on every basin.
+
+# 2026-10-30: attribution class 4 from the crest calibration run, not the spin-up (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW: this changes the adaptation module's results.**
+> Water-retention sizing (`baseline_excess_volume`) and every post-processing
+> measure that clears attribution classes 1 to 3 (levees, offshore barrier,
+> pumps, retention) are affected. Revert or adjust if this does not match your
+> intended definition.
+
+- **What changed:** class 4 of the attribution mask is now every pixel wet in
+  rule 11's last crest calibration round (round 2 with `verify_crests`, else
+  round 1). That run carries the design discharge (FLOPROS riverine RP) and the
+  coastal storm tide, held by the dikes. Before, class 4 was every pixel wet in
+  the spin-up (mean discharge, calm sea).
+- **Why:** class 4 is left out of `baseline_excess_volume` and of the
+  post-processing removals. With the spin-up as reference, all in-channel water
+  between the mean-flow channel and the dike crest counted as river flooding
+  "in excess", which oversizes water retention. The calibration run is what the
+  embanked system holds at its protection standard, so the excess is now the
+  water beyond that.
+- **Effect** (2433835 `default` run, hmin 0.05 m): class 4 grows from 15.35 to
+  20.59 km²; flooding outside class 4 falls from 254.87 to 249.65 km² and from
+  278.6 to 267.7 Mm³ (-3.9%). The full `baseline_excess_volume` was not
+  recomputed: no counterpart runs exist on this machine.
+- **Caveats:** pixels are excluded whole, so in-channel water ABOVE the design
+  level in a larger event still drops out (only the overflow onto the floodplain
+  counts); the reference run is at present-day sea level, while the scenarios
+  add 0.3 m. The label in the attribution figure is now "Embanked water".
+- Rule `attribution_mask` now reads the calibration round's `sfincs_map.nc`
+  instead of `spin_up/sfincs_map.nc`; its intermediate raster is
+  `calibration_max_flood_depth.tif` (was `spinup_max_flood_depth.tif`).
+
+# 2026-10-30: adaptation_modelling (PR #17) merged into the restructured pipeline (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW** the points where this merge departs from your
+> branch: the run-event animation and `flood_timeseries.csv` are gated by
+> `analysis: true` instead of `animation_scenarios`/`timeseries_scenarios`;
+> `inlet` is resolved like `locations` (`{basin_id}/...`); the attribution
+> counterparts use this branch's `_yr` keys and no `discharge_multiplier`.
+
+Kiara's changes of 2026-10-21 to 2026-10-27 (entries below, `-KL`) were
+written against the old layout. Where they live now:
+
+- **Levees raise today's profile** (`raise_by`): `src/adaptation_scaling.py`,
+  `src/adaptation_method_pre.py`. Kinds use this branch's names
+  (`max_coastal_water_level`, `max_river_water_level`).
+- **Retention inlet**: `apply_water_retention(inlet=...)`. `inlet` is a
+  file param resolved like `locations` (`src.adaptation_strategies.FILE_PARAMS`,
+  `{basin_id}/` and `auto/` forms). `config/adaptation_strategies.yml` now
+  references `<adaptation_data_root>/{basin_id}/water_retention_inlet.geojson`,
+  which is not on this machine yet: `NbS_protect_open_*` stops at a missing
+  input until it is added.
+- **Pumps**: preprocessing splits the total capacity over the pump lines;
+  postprocessing limits the river + compound flood volume to the unpumped
+  river volume.
+- **Post river levee**: compares against the max zsmax along the levee line.
+- **Chained subgrid measures**: in `17b_adapt_pre.py`.
+- **Adaptation lines**: the seaward tail cut and the nearest-water fallback
+  are in `src/adaptation_lines.py` (rule 12c), not `tools/build_adaptation_lines.py`.
+- **Attribution counterparts**: one driver at the scenario's level, the other
+  at mean conditions (`surge_rp_yr: Tide` / `river_rp_yr: Mean`), same `slr_m`.
+- **Scenarios**: `mean_03SLR` and `storm_gloria` added; `compound_100`
+  renamed to `compound_100_03SLR`; `coast_only_100`, `river_only_100` and
+  `compound_500` removed.
+- **Run-event animation and `flood_timeseries.csv`**: these are now
+  `analysis: true` outputs of rules `run_event` and `adapt_run_event_pre`,
+  not the PR's `animation_scenarios` / `timeseries_scenarios` lists, so a
+  plain build skips both (about 12 min per run).
+- **Analysis scripts**: ported into this branch's `analysis/` scripts and
+  conventions. `analysis/csi_pre_vs_post.py` is removed, as the PR removed its
+  source; `pre_post_heatmap.py` and `pre_post_floodmap.py` replace it.
+
+New unit tests cover `raise_by`, the levee crests, the unpumped volume, the
+seaward tail cut and the inlet path. Dry runs: preprocess 15 jobs, build 21
+(23 with `analysis=True`, as before the merge), adapt `advance_1` on
+`compound_100_03SLR` 34.
+
+# 2026-10-30: SWORD reach lines oriented downstream in rule 02 (- JS)
+
+- **Why:** SWORD v17c draws every reach from its downstream to its upstream end
+  (all 448 rule 02 reaches in the 8 basins). Rules 07d, 10 and 11 reversed
+  them in memory, but rule 08's T-junction fix ran on the lines as drawn, so it
+  matched the wrong reach ends.
+- **Change:** `src.sword.read_sword_reaches` reverses upstream-running lines
+  after the clip (`orient_reaches_downstream`), so `river_network.gpkg` runs
+  downstream; the later in-memory checks flip nothing.
+- **Effect** (rules 02 and 08 rerun into scratch, all 8 basins):
+  - rule 02: the same reaches and attributes, every line reversed;
+  - rule 08: T-junction fixes now 8 on 1248635 (was 3, all at the
+    wrong end), 4 on 1416812 (was 0), 2 on 3279946 (was 0); tails 19-64 m
+    moved onto the downstream reach. 30 reaches change shape (21, 5, 4); reach
+    ids, discharge, flags and delta outflow points are unchanged;
+  - 1475442, 2209166, 2433835, 2444235, 620947: geometry reversed only.
+- Every basin reruns from rule 02.
+
+# 2026-10-30: calibration sea held at the storm tide; walled travel time benchmarked on it (- JS)
+
+- **Held sea in rule 11:** calibration rounds 1 and 2 hold every sea station
+  at its storm tide at the coastal protection RP from the start, instead of
+  ramping it from the calm level over `ramp_hr`.
+  - Sea and river channel cells start no lower than the highest station's
+    storm tide (`src.water_surface.raise_wet_cells_to`). Only the rivers ramp.
+  - With the ramped sea, the level at the mouth reached its half rise at
+    3.0–4.5 h on all 7 basins, the sea ramp's own midpoint. The sea's rise also
+    ran up the channels (3279946: about 150 km), so the river's arrival at the
+    mouth could not be read off.
+  - Without a coastal protection RP the sea stays at the calm level, as before.
+  - The skeleton's `zsini`, the spin-up and the event runs are unchanged.
+  - Coastal crests that came from a ramp-driven transient at the dike may come
+    out lower. Not yet run.
+- **Benchmark:** `analysis/benchmark_peak_travel.py` compares rule 11's walled
+  travel time with the time the water level in round 1 reaches half its rise,
+  after the inflow's half rise.
+  - It runs on each forcing point's mainstem, with rule 11's own inputs, and
+    compares at the mouth.
+  - It refuses runs whose sea boundary changes. All 7 existing runs predate
+    the held sea, so there are no results until rule 11 reruns.
+- **Found on the old runs:**
+  - Round 2 was bit-identical to round 1, since no crest was overtopped.
+  - On 3279946, the run was still changing at its 59 h end (TODO B34).
+
+# 2026-10-29: subgrid table built once per basin; chunked source rasters (- JS)
+
+- **Skeleton reuses rule 11's subgrid table:** rule 11 declares round 1's
+  `sfincs_subgrid.nc`, `subgrid/*.tif`, `sfincs.ind` and `sfincs.msk` as
+  outputs. Rule 12a copies the table when its own mask files are
+  byte-identical (`src.hydromt_sfincs_patch.copy_subgrid_table`), and builds
+  it only if they differ.
+  - The two builds used the same sources and settings.
+  - 3279946: rule 12a takes 4.5 min instead of 19.5 min. Every skeleton file
+    is byte-identical to the previous build, except the weir GeoPackage's
+    write timestamp.
+- **Chunked catalog rasters:** rules 11 and 12a open their catalog rasters in
+  2048 px dask chunks (`raster_catalog_entry`).
+  - Unchunked, each subgrid block's clip-and-load decompressed the whole file
+    (3279946: about 10 s of a block's merge; 1.5 s chunked).
+  - 2433835: the table and subgrid GeoTIFFs are equal to the unchunked build.
+
+# 2026-10-29: river event from its real rising limb; smooth river forcing (- JS)
+
+- **Smooth GloFAS event:** the event's daily means are joined by a monotone
+  cubic (PCHIP) instead of straight lines (`src.river_forcing.real_flood_event_matrix`).
+  - Straight lines gave a dQ/dt staircase with a step every 24 h and a sharp
+    corner at the peak.
+  - The peak keeps its value (the RP-table discharge the crests are
+    calibrated for) and its hour.
+- **Rising-limb start:** the event starts at the main inflow's lowest daily flow
+  within `event_hydrograph.max_rising_days` (7) before the peak, instead of at
+  the fixed event start (2.5 days before the peak).
+  - In storm-tide mode, rule 07d moves both peaks later to make room. The surge
+    holds the calm level until its window.
+  - Event runs go from 120 to 228 h on all basins except 2433835 (336 h,
+    unchanged).
+  - At RP100, the discharge where the event takes over from the mean fell from
+    0.64–0.81 to 0.34–0.58 of the peak on 1248635, 1475442, 3279946 and 620947.
+    Their floods rise over weeks, so the start stays above the mean.
+- **Cosine ramps for all river forcing:** every river discharge ramp uses one
+  half-cosine weight, `src.river_forcing.cosine_ramp`.
+  - This covers the event blend (rule 14) and rule 11's calibration ramp.
+  - The event blend length is `max(min_ramp_hr, π/2 · gap / (max_rise_per_hr · peak))`,
+    so `max_rise_per_hr` is the blend's steepest rise. It is lowered from 0.05
+    to 0.02 of the peak per hour; real GloFAS rises are about 0.01.
+  - The 6–13 h linear blocks that lifted 30–58 % of the peak are now 13–39 h
+    bell-shaped rises. The largest RP100 slope change drops 4–12×
+    (e.g. 3279946: 174 → 16 m³/s/h²).
+  - Sea-level ramps stay linear.
+
+# 2026-10-29: calibration run length from the wave regime; mainstem follows the network discharge (- JS)
+
+- Rule 11's walled travel time takes per node the speed of its wave regime:
+  the gravity speed u + sqrt(g h) where friction acts slower than the ramp
+  (r * ramp_hr below `wave_regime_rT[0]` = 0.3, r = g n^2 u / h^(4/3)), the
+  kinematic 5/3 u elsewhere, including the transition up to 3
+  (`src.river_profile.walled_travel_time`, `t_wave_hr`, `friction_rT`,
+  `regime`). The all-kinematic estimate ran to weeks in wide, deep, slow
+  reaches: 1248635 Meuse 516 h over 80 km (51 h now), so the rule failed
+  `calibration_max_days`; the Waal/Lek path stays at 33 h.
+
+- `mainstem_profile` picks the path at bifurcations by the network's own reach
+  discharge (rule 11 passes the calibration discharge). A short reach owns no
+  river-bed node, so with the node table alone 1248635's Rhine path went into a
+  zero-discharge canal arm (velocity 0, travel time infinite).
+
+# 2026-10-28: upstream boundary check from steady GVF levels (- JS)
+
+- `analysis/check_upstream_boundary.py` judges each forcing point by the rise
+  of the steady GVF level on rule 11's round-0 bed when the sea goes from calm
+  to the RP100 storm tide plus 0.5 m SLR (`HANDOFF_upstream_boundary.md`
+  phase 2): pass at mean discharge if the rise at the forcing point is below
+  0.05 m and the point lies 5 km beyond where the rise falls below the
+  threshold. Also reports where that sea level meets the calm level at mean
+  discharge, h/S, an e-folding fit and the 10 m rule; writes a CSV, a profile
+  per forcing point and a map. The v1 kinematic/attenuation radii are removed;
+  `--extra-reach` tests other boundary positions. 2433835: the forcing point
+  at 65.5 km passes (rise 0.000 m, influence 54.3 km); the old boundary at
+  47.5 km fails (rise 0.80 m). 2209166 passes (rise 0 at 42.1 km, influence
+  13.8 km); 3279946 passes on both forcing reaches (264.5 and 293.6 km,
+  influence 198.3 and 275.9 km).
+- `analysis/benchmark_upstream_boundary.py <basin> ...` reruns built models
+  steady at mean discharge with the sea calm and at SWL_ext and compares the
+  SFINCS influence end with the GVF one along each main arm, for six sea
+  conditions and three discharges in GVF; writes
+  `figs/upstream_boundary_benchmark/` (README with method, results and the
+  parameter choice, summary, per-arm profiles, GVF/SFINCS maps). GVF/SFINCS
+  0.97-1.00 on five arms of 2433835, 2209166 and 3279946, SFINCS at most
+  2.9 km further; no amplification along the channels (one 3279946 arm rises
+  1.24x its mouth's A0 from a neighbouring coast's higher storm level, below
+  the basin's largest A0). Steady GVF is the criterion; the analytical
+  damping model is not implemented.
+- SWL_ext is the most extreme case per surge station: the highest storm tide
+  plus SLR × fingerprint over every scenario in `scenarios.yml` with a surge
+  RP and a stress case (RP100 + 1 m SLR, which sets it in all three basins;
+  0.6-1.7 m above RP100 + 0.5 m).
+- `testing.upstream_boundary_check` drops `effective_period_fraction`,
+  `surge_rp_yr` and holds the check's parameters: `stress_surge_rp_yr` 100,
+  `stress_slr_m` 1.0, `level_tol_m` 0.05, `margin_km` 5 (covers the 2.9 km by
+  which GVF fell short of SFINCS), `high_gradient_elevation_m` 10. The 10 m
+  rule is reported for comparison only: on 2209166 (2.0 m/km) the 10 m
+  contour lies 4.5 km beyond the SFINCS influence end, on 3279946
+  (0.04 m/km, 4 m surge) only 0.5 km.
+- Rule 07d orients the reach lines downstream before taking the domain entry
+  point (`src.river_forcing.resolve_inside_domain_reaches`). SWORD lines often
+  run upstream, so the forcing point sat at the entering reach's downstream
+  end and the reach above it carried no inflow. 2433835: forcing point moves
+  6.85 km upstream to the domain edge (290565, 4538195); highest crest 12.23
+  -> 16.87 m on the reach that now carries flow; flooded area 270.5 -> 270.8
+  km², volume 0.4105 -> 0.4137 km³; the event run takes 935 s instead of 577 s.
+
+# 2026-10-27e: one river surface for the DEM, zsini and the river bed; GVF inversion removed (- JS)
+
+- Rule 10 is renamed `river_surface` (`10_river_surface.smk/.py`, log and
+  figure `10_river_surface.*`; data file names unchanged). It pins the sea
+  mouths at `calm_sea_level_m` and raises node medians below it to it before
+  the non-increasing fit, holds the mouths fixed through the smoothing, and no
+  longer cuts the network at rising edges or structures (both reported only).
+  It adds the slope along each node's largest-Q path, the node class and a
+  SWOT slope check to the node table. 2433835: 81 of 136 node medians were
+  below the sea; the surface no longer runs 0.2 m below it in the lower 34 km.
+- The slope comes from the same fit smoothed over `water_surface.slope_smoothing_m`
+  (40 km); the level keeps `smoothing_m` (5 km). FathomDEM's stepped surface
+  gave near-zero slopes on its flat treads at 5 km, and a 40 km level rides
+  above concave profiles (2209166: p90 11 m above FathomDEM). Against slope at
+  5 km, nine-basin check: nodes on the slope floor 2433835 54 -> 29 %, 4267691
+  77 -> 52 %; bed jumps > 1 m 3279946 441 -> 59, 4267691 694 -> 358; level
+  unchanged.
+- Rule 11's forward check reports the deviation of the steady GVF level from
+  the surface (p5/median/p95, share within 0.5 and 1 m) for all river nodes
+  and the largest-Q paths, and maps it in the new output
+  `visuals/11_calibration/river_network_forward_check.png` (-3 to 3 m),
+  instead of the share within 0.1 m off the slope floor.
+- Rule 11's round-0 bed hangs from that surface: depth = rectangular Manning
+  depth at the design discharge and `max(slope, slope_floor)`, bed = surface −
+  depth. Its own slope estimate (SWOT / FathomDEM fits, 30 km running median)
+  and level integration with FathomDEM anchors are gone, so round 0's `zs`,
+  the `zsini` river cells and the conditioned DEM share one level. Node widths
+  are smoothed across reach boundaries. A steady GVF solve on the bed over the
+  whole network is logged as a check. 2433835: bed jumps > 1 m 5 -> 3, nodes
+  below the sea 76 -> 0, forward check within 0.1 m on the main path off the
+  slope floor and its backwater 86 %.
+- Removed: the GVF bed inversion (`src/gvf.py`, the inverse half of
+  `src/gvf_solver.py`, `build_gvf_targets`) and config keys
+  `river_depth_modelling.gvf` (whole block), `bed.{info_margin_m,
+  reach_fit_min_m, window_m, min_fit_points, min_plateaus, min_info_fraction,
+  slope_smoothing_m, anchor_median_m, anchor_length_m, mouth_level_tol_m}`,
+  `water_surface.{split_at_structures, cut_rising_edges}`. Moved:
+  `mouth_level_tol_m` and `water_body` to `water_surface`.
+
+# 2026-10-27d: subgrid tables build about 3x faster (- JS)
+
+- hydromt fills the pixels still empty after its inverse-distance step (mostly
+  the inactive area outside the delta polygon) with `griddata(method="nearest")`
+  over every valid pixel of a block, about 17 s per block. That fill is now a
+  distance transform, which gives the same nearest pixel on a regular raster
+  (`src.hydromt_sfincs_patch.patch_nearest_extrapolation`, rules 11, 12a and
+  17b; pinned hydromt 1.3.1 only). 2433835: 133 -> 43 s per build, subgrid
+  table bit-identical.
+
+# 2026-10-27c: weir crests floored at the subgrid face level, so SFINCS keeps every weir (- JS)
+
+- SFINCS keeps a weir face only if its crest is above the face's subgrid
+  minimum level (`uv_zmin`); otherwise the face opens as plain subgrid flow
+  from that level. Crests taken from round 1's water level fell below the bank
+  on many faces, so round 2 and the production model ran without part of the
+  dike they were calibrated with. 2433835: round 2 kept 2,894 of 3,266 faces,
+  differed from round 1 from hour 2 on by up to 0.20 m (651 cells > 1 cm) and
+  "overtopped" 351 edges by up to 0.19 m.
+- Every crest is now at least its face's `uv_zmin` + 1 cm, read from round 1's
+  subgrid table, which round 2 and rule 12a share
+  (`src.protection_weir.floor_crests_above_face_zmin`,
+  `src.sfincs_run.read_face_zmin`). Protection is unchanged: the bank holds
+  water to that level anyway. 2433835: 373 of 3,513 edges raised (median
+  0.82 m); SFINCS keeps all 3,266 faces and round 2 equals round 1 (0 cells
+  > 1 cm).
+- The crest gap map and the round-2 log report only exceedances above 1 cm,
+  the crest precision (`src.surge.CREST_PRECISION_M`).
+
+# 2026-10-27b: river bed from the water-surface slope; inland "sea" removed; 2-day spin-up (- JS)
+
+- Round-0 river bed (rule 11) is now level − Manning depth at the GloFAS mean
+  discharge, with one water-surface slope per reach (SWOT reliable > FathomDEM
+  reach fit > 40 km window > floor 2e-5), the level integrated from the sea and
+  anchored to FathomDEM over 2 km, SWORD node widths, and GEBCO only where it is
+  real bathymetry (`src/river_bed.py`, `river_depth_modelling.bed`). Replaces
+  the GVF inversion, whose flat FathomDEM plateaus and below-sea targets drove
+  beds to the 30 m cap. On the current inputs: p95 depth 4267691 33 -> 24 m,
+  3279946 27 -> 8 m, 1416812 24 -> 9 m; nodes deeper than 30 m 950 -> 13
+  (4267691); the 1416812 GEBCO-clamp sill is gone. Rule 11 gains the SWORD
+  regional files as input.
+- The depth is computed for the GloFAS bankfull discharge
+  (`bed.design_discharge: bankfull`; `mean` restores the mean discharge),
+  below the mean-flow level.
+- Land use: a border water body whose median FathomDEM level exceeds
+  `landuse.sea_max_elevation_m` (3 m) is inland water, not sea (LC100 calls
+  some inland riverbeds open sea): 1475442 loses an 80,785 px "sea" patch at
+  37.5 m inside its river, 1416812 two bodies at 10.5 and 20 m, 2209166 two
+  ponds on reclaimed land (151 px at 4.2 and 5.6 m).
+- Spin-up 2 days (`spinup_days`, `boundary_forcings.lead_days`); the workflow
+  refuses to start if the two differ, as the event run starts at the end of
+  the lead-in.
+- GVF solver: a reach with a single free bed node no longer crashes SciPy's
+  sparse least squares.
+
+# 2026-10-26e: river channel starts wet; calibration discharge ramps from mean discharge (- JS)
+
+- zsini (calibration and skeleton): dry river channel cells start at the river
+  water surface (nearest surface node, mean discharge) instead of dry; sea cells keep
+  `calm_sea_level_m`, land stays dry (`src.water_surface.river_cells_at_surface`).
+  The skeleton rule gains the water-surface input. 2433835: 1,309 channel cells wet at
+  -0.23..-0.14 m; the spin-up river settles in 1-2 h instead of still rising
+  0.3 m/h at 24 h; riverbank crests median 2.95 -> 2.10 m, because the
+  dry-channel fill wave no longer sets them; coastal crests unchanged.
+- Calibration rounds 1-2 ramp each crossing's discharge from its
+  `mean_discharge_m3s` (was bankfull) to the calibration discharge over
+  `discharge_ramp_hr`, so the inflow matches the wet start. 2433835: crests
+  identical; round-2 exceedances 199 -> 200 edges (max 0.25 m), the excess
+  comes from round 2 running a few cm above round 1 against crests with zero
+  freeboard, not from the start.
+
+# 2026-10-27: rules renumbered in run order; merged rules; diagnostics moved to analysis/ (- JS)
+
+- Rules and scripts are numbered in the order they run (01 domain, 02 river
+  network, 03 protection levels, 04 SFINCS grid, 05 land-use source, 06
+  elevation, 07a-d forcing, 08 cleaned network, 09 land surface, 10 water
+  surface, 11 depth and crest calibration, 12a skeleton, 12b land bed level, 12c
+  adaptation lines, 13a spin-up, 13b sanity checks, 14 scenario build, 15 event,
+  16 metrics, 17a-c attribution and adaptation, 18 comparison). Log and figure
+  names follow (e.g. `05a_elevation.png` -> `06_elevation.png`,
+  `10_calibration/` -> `11_calibration/`).
+- Merged: delta polygon + model domain (`determine_model_domain`); land-use
+  source + land polygons (`prepare_landuse`); elevation + land use on its grid
+  (`get_elevation`, which already resampled the land use to find sea pixels);
+  channel land use + roughness + grid alignment (`grid_align_landuse`).
+- Removed: `sea_mask.tif` and its figure (no rule read it); the rules
+  `plot_river_network`, `test_upstream_boundary` and
+  `test_bifurcation_calibration_options`, now `analysis/plot_river_network.py`,
+  `analysis/check_upstream_boundary.py`, `analysis/check_bifurcation_options.py`.
+- Ebro preprocessing 23 -> 15 jobs (build 27 -> 22); outputs identical on Ebro
+  (every data file of rules 01-10 and the GVF bed), apart from the renamed and
+  dropped files.
+- Grid rotation removed: `sfincs.grid.rotated` and `rotated_overrides` are gone,
+  the grid is always axis-aligned (`rotation` 0 in the grid JSON);
+  `domain_bbox.json` no longer has `grid_frame`. Grid definitions and clipping
+  bounds of all 9 basins identical to the previous `rotated: false` code.
+
+# 2026-10-26d: river channel is water: islands skipped, channel land use and roughness (- JS)
+
+- Water surface (rule 09) samples only water pixels (`landuse.water_code`, 80)
+  along the centreline; islands and bars the SWORD line crosses no longer set
+  the level. 2433835, reach 21604100021 (2.2 km over a grassland island):
+  smoothed level 2.23..0.86 m -> -0.23 m, false "rising" cut gone.
+- New rule `channel_landuse` (08b): `landuse_channels.tif`, every non-sea
+  pixel within width/2 of a cleaned reach set to water; read by every rule
+  after 09 (09b, 10, 17, 18a, 18b). 2433835: 1.29 km2 converted (0.06 km2
+  urban); urban exposed in the spin-up 0.08 -> 0.03 km2.
+- Channel Manning n (`river_processing.channel_manning_n`) is set inside the
+  channel in `roughness.tif` (05c) and `roughness_on_grid.tif` (09b), so also
+  on the main grid. `river_roughness_subgrid.tif` (rule 10) and its first place
+  in the subgrid roughness lists of rules 10 and 13 are removed; rule 10's
+  first calibration round now also sees the channel n.
+- `src.river_burn.channel_polygons` is the one channel definition (burn, land
+  use, roughness).
+- River mouth: sea-class GVF nodes (`fixed_bed`, `water_body`) take the lower of
+  their GEBCO bed and the river bed carried down from the nearest estimated
+  node (`src.gvf.carry_bed_to_sea`), applied to the burned channel only. 2433835:
+  the sill where the bed rose from -10.4 m to -2.7 m over 0.5 km (then GEBCO -5
+  to -1 m) is gone; the bed stays at -10.4 m to the sea.
+- Figures: rule 10's round profiles turn reaches whose SWORD line runs upstream
+  (all 5 on 2433835's main path were drawn back to front, which put the mouth
+  next to the island); round 0 shows the GVF bed instead of the DEM; rule 09's
+  water-surface figure shows every centreline pixel, the skipped ones (islands,
+  banks, sea) in orange.
+
+# 2026-10-26c: workflow: GTSM read once, cached land bed level, compressed outputs, per-basin adaptation inputs (- JS)
+
+- GTSM: `tools/subset_gtsm_stations.py` reads the monthly reanalysis once into
+  `GTSM_storm_tide_hourly/station_subset.nc` (catalogue `gtsm_station_subset`)
+  for all basins' stations; rule `extract_gtsm_series` reads the subset (about
+  5 s instead of about 10 min per basin) and fails if a station is missing.
+  Output `gtsm_hourly.nc` identical on 2433835.
+- New rule `land_bed_level` (13c): `sfincs_skeleton/land_bed_level.nc`, the
+  bed level on the flood-depth grid with open sea masked, computed once per
+  skeleton (and per adapted skeleton in `adapt_apply_pre`) instead of in every
+  spin-up, event, metrics and attribution job. Depths, metrics and the flood
+  time series identical on 2433835.
+- Compression, lossless: `max_flood_depth.tif`, `spinup_max_flood_depth.tif`,
+  `sea_mask.tif` deflate + 256 px tiles (2433835: 54 -> 6.7 MB, 7.1 -> 0.08
+  MB); `sfincs_subgrid.nc` zlib (48.6 -> 27.5 MB; SFINCS output identical).
+- Adaptation measure files live under a new site setting
+  `adaptation_data_root` (`GCFM_ADAPTATION_DATA_ROOT`), one folder per basin:
+  strategy `locations` take `{basin_id}` (e.g.
+  `{basin_id}/offshore_island.geojson`), so `advance` and `NbS_protect_open`
+  no longer use Ebro's geometries for every basin.
+- A missing raw input now stops the DAG (input functions `raw_input`,
+  `raw_region_inputs`); before, Snakemake silently dropped the job and reused
+  its old outputs.
+- Threads per rule from `config.yml` `resources.threads` (`rule_threads`);
+  SFINCS rules use all `--cores` (output bit-identical at 4, 7 and 14
+  threads). Rules reading large raw data claim `raw_io`, limited to 1 by the
+  workflow profile `workflow/profiles/default/config.yaml`.
+
+# 2026-10-26b: GVF is the only river-depth method (- JS)
+
+- `river_depth_modelling.method` and the round-0 SFINCS depth calibration
+  (`method: modelled`) are removed: the confined round-0 run and its
+  continuation to steady state, the excavation (`excavation_fraction`), the
+  mouth and no-dig rules, the exit cross-sections and flow balance
+  (`round0_level`, `steady_state`). Rule 10 now runs SFINCS twice (rounds 1-2,
+  crests); round 0 is the GVF bed and writes its calibration state as before.
+  On 1248635 that saves the 5 simulated round-0 days (about 75 min).
+- Removed with it: `compute_excavation_depth`, `steady_state_metrics`,
+  `is_steady`, `compute_end_of_run_zs`, `cell_depth_segments`
+  (src.river_depth_calibration), `set_sfincs_inp_keys` (src.sfincs_run) and
+  `tests/unit/test_round0_steady.py`. The channel roughness raster always
+  carries `channel_manning_n` under the burn.
+
+# 2026-10-26: water surface smoothed across structures; network median window (- JS)
+
+- `river_processing.water_surface.split_at_structures: false` (new key): the
+  water surface, and so the conditioned DEM and the GVF target and bed, are
+  smoothed across weirs, locks and dams instead of keeping the mean-flow level
+  drop as a step. Those structures open in floods; kept as a step, the bed
+  above them sat about one drop higher (1248635: median bed step 1.23 m, max
+  5.83 m over +-2 km at 18 structures; smoothed: 0.77 / 2.84 m, no level jump).
+  Structures are still detected, logged and drawn in `09_water_surface.png`.
+  Downstream rises stay cut (`cut_rising_edges`).
+- Node medians take their +-1 km window across junctions into the
+  neighbouring reaches: a short reach whose FathomDEM pixels are a lock or
+  bridge (1248635: a 0.4 km lock reach at +3 m among river at -0.2 m) no longer
+  sets the level; rising cuts in 1248635 9 -> 6.
+- 1248635 GVF on the new surface: depth p10/50/90 2.3/5.0/12.4 m, level RMSE
+  0.161 m, 3 bound hits.
+
+# 2026-10-20 - 2026-10-25: repository clean-up, portability, performance (- JS)
+
+- Housekeeping: repo `CLAUDE.md` (entry points, protected files, baselines),
+  `TODO.md` decision table; stale and duplicate files deleted (`Leuven_et_al/`,
+  `config/adaptation_strategies_manual.yml`, `tests/archive/`, one-off test
+  scripts, old subgrid-bug notes, `tools/build_deltadtm_mask_vrt.py`);
+  stand-alone figure and check scripts moved from `tests/` to `analysis/`
+  (`KL_` prefixes dropped, shared helpers in `analysis/_common.py`).
+- Tests: synthetic smoke tests for every core `src` module and quick-look
+  figures per stage (`tests/unit/quicklook.py`); docstrings and comments
+  trimmed to one summary line plus units, assumptions and references.
+- Names carry units and one name per concept: return periods `*_rp_yr`
+  (scenarios `surge_rp_yr`, `river_rp_yr`), ramps `*_ramp_hr`,
+  `water_level_buffer_m`, `glofas_min_mean_discharge_m3s`, EVA
+  `bankfull_rp_yr` / `preview_rp_yr`; one `river_processing.channel_manning_n`
+  replaces the GVF and testing copies. Scenario `discharge_multiplier` removed.
+- Portability: machine paths only in `config/site.yml` (template
+  `config/site.example.yml`, keys overridable by `GCFM_*` variables); conda
+  env `gcfm` with a portable `environment.yml` and an exact
+  `environment.win-64.lock.yml`; README as front door, `docs/install.md`,
+  `docs/running.md`, `docs/methods.md` (replaces `Reference_memory.txt`) and
+  `docs/data.md` generated from the data catalogue by `tools/make_data_table.py`;
+  every tool parses `--help` without running. `all` is the default target.
+- Adaptation lines are a workflow rule (`build_adaptation_lines`, 13b; was a
+  manual tool) referenced as `locations: auto/<name>`; its settings moved to
+  `adaptation.lines` in `config.yml`.
+- Shared helpers instead of copies: one `sfincs.inp` writer
+  (`write_sfincs_inp`), zsini dry-out and Kahn ordering consolidated.
+- Performance on 2433835, outputs unchanged: bifurcation calibration options
+  (11b) 259 -> 3 s; river network clip (06) 12 -> 1 s; event run (16)
+  1278 -> 572 s (bit-identical); rule 10 reuses an
+  unchanged subgrid table (275 -> 219 s). A station-chunked GTSM copy was
+  tried and dropped (-6% only).
+
+# 2026-10-23b: river water surface from FathomDEM; conditioned DEM and GVF target built from it (- JS)
+
+- Rule 09 (`src/water_surface.py`, settings `river_processing.water_surface`)
+  replaces the centreline running minimum. On the GVF node network: median of
+  the land centreline pixels within 1 km of each node, structures at level
+  drops, network isotonic regression, 5 km smoothing (ends mirrored), isotonic
+  again; all-sea nodes take `calm_sea_level_m`. Every land pixel of a channel
+  buffer is set to that surface; sea pixels keep their GEBCO bed. New output
+  `{basin}_river_water_surface.gpkg`; new inputs `landuse.tif` and
+  `surge_forcing.nc`.
+- GVF (`method: gvf`) uses that surface as its target instead of SWORD `wse`;
+  the SWORD-wse target, the geoid inputs of rule 10 and `src.gvf.geoid_offset_at`
+  are removed. Pairing stays GloFAS mean discharge. The burn floor and the
+  water-body beds come from the conditioned DEM for both methods.
+- 1248635, before/after (scratch run on the current inputs): reaches with a
+  conditioned centreline pixel below -9 m 25 -> 0; per-reach centreline median
+  minus raw FathomDEM p10/50/90 -9.31/-0.21/0.00 -> -0.17/0.00/+0.19 m; surface
+  gradient 1.55 cm/km (SWOT median 1.80). GVF depth p10/50/90 2.6/5.3/12.5 m
+  (SWORD target: 2.5/8.0/12.3), level RMSE 0.155 m, 7 bound hits. Rule 09
+  logic 11 s. Changes every basin from rule 09 on, for both depth methods.
+- `enforce_non_increasing` updates node-disjoint edge batches with numpy
+  (same optimum, 1 mm tolerance; 95 -> under 5 s on 1248635);
+  `line_window_cells` takes `along_step_m` for a nearest-point chainage
+  (conditioning 40 -> 6 s).
+- New rule 09 figure `visuals/09_water_surface.png`
+  (`src.plots.plot_water_surface_profiles`): per seed along its widest arm,
+  FathomDEM land pixels, node medians, smoothed surface, structure junctions
+  coloured by SWORD obstruction type.
+
+# 2026-10-23: published SWORD v17c replaces the unpublished export (- JS)
+
+- `river_network` is now the published SWORD v17c (July 2026): one
+  GeoPackage per region in `<raw_data_root>/SWORD/v17c/`, layer `reaches`.
+  `src/sword.py` reads every region within the domain box and maps the
+  published topology (`rch_id_dn_1..4`, `rch_id_up_1..4`, `n_rch_down`,
+  `is_mainstem`) to the fields the pipeline uses (`rch_id_dn`/`rch_id_up` id
+  lists, `n_rch_dn`, `is_mainstem_edge`); all published fields are kept,
+  including the SWOT statistics (`wse_obs_*`, `width_obs_*`, `slope_obs_*`,
+  `n_obs`).
+- The 9 manual widths moved from a modified copy of the SWORD file into
+  `config/sword_width_corrections.csv`, applied by rule 06 (stops when a
+  reach's SWORD width no longer matches; marks `width_source = manual`).
+  `tools/prepare_modified_sword_dataset.py` and the `river_network_original`
+  catalogue entry are removed; rule 11b compares the network without and with
+  the table.
+- Against the unpublished export, `wse`, `width`, `max_width`, `slope`,
+  `dist_out` and reach lengths are identical on all 248,672 shared reaches.
+  Changed: `facc` (95,853 reaches), `obstr_type` (19,901; 98 in the test
+  deltas, mostly 0 -> 5; 5 is undocumented in the variable reference and is
+  read as 0, kept as `obstr_type_published`),
+  `lakeflag` (4,351), `type` (2,648) and downstream links (1,725). Rule 06 on
+  1248635 and 4267691: same reaches and widths; `rch_id_dn` changes on 16 and
+  14 reaches (partly order only, e.g. 74230100061 now drains into
+  74230100011).
+
+# 2026-10-26: Change the way pump capacity is calculated in post approach, analysis scripts moved to own folder (-KL)
+
+## analysis scripts moved to their own folder (-KL)
+
+The analysis and figure scripts lived in `tests/` next to the pipeline's
+diagnostics. They now have their own top-level folder, `analysis/`, without
+the `KL_` prefix and renamed. The scripts find the repo from their own location one level down, as before,
+so `analysis/` needs no path changes. `tests/` keeps the pipeline checks.
+
+## Change the way pump capacity is calculated in post approach
+`apply_pumps` (src/adaptation_method_post.py) removed capacity x flood
+duration from the river + compound flood cells. That spends all pump
+capacity on floodplain water, as if the river itself needed no pumping.
+Behind a closed mouth (protect_closed's coastal levee, advance's offshore
+barrier), the pumps must first carry the whole river to sea. The duration
+also covered the whole 336 h window (the river stays above its start level
+throughout). So in river_100_03SLR, scale 0.4 (1510 m3/s) already removed
+1.8e9 m3 against 8.2e7 m3 of flood water, and post-processing cleared all
+river flooding at every scale.
+
+Now the river + compound flood volume is limited to the river volume the
+pumps cannot discharge, integral of max(Q_river(t) - capacity, 0) dt over the
+event (new `_unpumped_river_volume_m3`, discharge summed over all
+`sfincs.dis` points, replacing `_river_flood_duration_s`). The difference is
+removed as the same uniform layer as before. river_100_03SLR: scale 0.4
+leaves 9.2e8 m3 unpumped (full risk), 0.9 leaves 3.0e7 m3 (about 36% of the
+flood volume), 1 leaves 0 (fully drained). The flood map is from an
+open-mouth run, so the rule scales the volume of its flooding and does not
+move it to where water would pond behind the closed mouth. Rerun the
+protect_closed and advance post-processing runs (`--forcerun
+adapt_metrics_post`, since Snakemake does not track changes to src modules).
+
+# 2026-10-23: event flood time series only on request (-KL)
+
+## event flood time series only on request
+
+`16_run_event.py` (rules run_event and adapt_run_event_pre) rasterized every
+map frame onto the subgrid for `flood_timeseries.csv` after each SFINCS run:
+~12 min per run with the 168 h event window (337 hourly frames), single
+threaded while the job holds all `--cores`. Nothing downstream reads the CSV
+(metrics, strategy sizing and the comparison all use zsmax). Now only for
+scenarios listed in the new top-level config key `timeseries_scenarios`
+(default `[]`), like `animation_scenarios`; every other run writes a
+header-only CSV, so the rules' declared outputs are unchanged. As with the
+animation change, add `--rerun-triggers mtime params input` to avoid
+rerunning finished event runs because the script changed.
+
+# 2026-10-21: edits to adaptation strategies and adjustment to scenarios for attribution runs (-KL)
+
+## event flood animations only on request
+
+`16_run_event.py` (rules run_event and adapt_run_event_pre) made a flood
+animation (`02_flood_animation.mp4`) for every event run, which took ~15 min
+after each SFINCS run. Now only for scenarios listed in the new top-level
+config key `animation_scenarios` (default `[]`), e.g.
+`--config animation_scenarios="['river_100_03SLR']"` -- that scenario's
+baseline and adaptation runs. Every other run writes an empty placeholder
+file, so the rules' declared outputs are unchanged; the flood time series CSV
+is still computed for every run. Editing the script makes Snakemake treat
+every finished event run as changed: add `--rerun-triggers mtime params
+input` to the next run to avoid rerunning them for this alone.
+
+## water_retention inlet (test) (-KL)
+
+The retention zone's ring weir sat at the nearby levee crest (~4.29 m) all
+around it, also behind the river levee, so river water hardly got in
+(river_100_03SLR: 2-11% of the target storage filled). New optional
+`water_retention` params: `inlet` (polyline over existing levee segments,
+adaptation_ebro/water_retention_inlet.geojson: 27 segments, 2.7 km, both
+banks at the upstream end) and `inlet_sill_below_crest` (default 0.2 m).
+With `inlet`, the levee segments under it get their own crest - 0.2 m
+(4.42-4.52 -> 4.22-4.32 m, via apply_river_levee with raise_by < 0) and the
+ring weir is left out wherever the zone runs along an existing levee (18 of
+38.5 km), so the levee is the zone's only wall on the river side. Without
+`inlet` nothing changes. To be checked in a test run: when and how full the
+basin fills.
+
+## subgrid measures in one strategy build on each other (-KL)
+
+`18a_adapt_pre.py` gave every subgrid measure (nbs_land_reclamation,
+water_retention, retreat, urban_raising) the basin's own `dep_subgrid.tif`
+and native roughness, and each rebuilds the whole subgrid -- so the last one
+erased the earlier ones. In NbS_protect_open (river, compound),
+water_retention erased the foreshore: the model bed under it stayed at the
+original -6.9 m (instead of 0.0 m) and kept sea roughness, while
+`retreat_landuse.tif`/`sea_mask.tif` marked it as land -- so ~105 km2 of
+open sea counted as land flooded 3.5-7 m deep (river NbS_1: 705 of 898 Mm3
+of the flood volume). Coastal NbS runs (no water_retention) were unaffected.
+
+Now each subgrid measure after the first starts from copies of the previous
+one's `subgrid/dep_subgrid.tif` and `manning_subgrid.tif`
+(`after_<measure>_*.tif` in the strategy's sfincs_skeleton), so the order of
+the measures no longer decides which survives. Rerun every NbS_protect_open
+PRE run (river, compound).
+
+## preprocessed pump capacity is split over the pump lines (-KL)
+
+`apply_pumps` (adaptation_method_pre.py) passed the strategy's `discharge`
+to every line in `locations`, and SFINCS gives every line in sfincs.drn its
+own discharge -- so advance's 7 pumps (advance_pumps.geojson) had 7x the
+intended capacity: river_100_03SLR advance_04 / advance_1 = 10,600 / 26,400
+m3/s in total vs a 3775 m3/s river peak, which pumped the water behind the
+offshore barrier down to -0.3 / -3 m and made every scale identical. Now
+`discharge` is the measure's total capacity, split evenly over the lines
+(same total the postprocessing pumps rule already used). protect_closed
+(1 line, pump_river_mouth.geojson) is unchanged. Rerun every advance PRE
+run.
+
+## attribution compares against mean conditions, not a null driver (-KL)
+
+The attribution mask (rule attribution_mask, 18c) used to compare a scenario
+against single-driver siblings with the OTHER driver null (river_only_100,
+coast_only). A null sea is a flat boundary at -10.5 m (13_build_sfincs.py,
+river_only), which removes the sea's backwater from the river run, and
+coast_only had no SLR -- so in river_100_03SLR (river 100 + tide + 0.3 m SLR)
+53 km2 (26% of the flooded area), the low seaward land the tide + SLR
+reaches, was flooded in neither sibling: class 0, which no postprocessing
+rule touches (e.g. advance's offshore barrier removed it in PRE but not in
+POST).
+
+`attribution_counterparts` (00_common.smk) now returns, per scenario, one run
+per driver that keeps that driver at the scenario's event level and the other
+at mean conditions (surge_rp Tide / river_rp Mean), same slr_m, matched on
+those values (not on names). New scenario `mean_03SLR` (Tide / Mean / 0.3 m
+SLR). coast_100_03SLR -> (mean_03SLR, itself); river_100_03SLR -> (itself,
+mean_03SLR); compound_100_03SLR -> (river_100_03SLR, coast_100_03SLR). The
+null-driver scenarios (coast_only, river_only, *_only_100) are no longer used
+for attribution. Class 3 is now "flooded by either driver alone" -- for a
+single-driver scenario, flooded already under mean conditions with SLR. In a
+compound scenario class 0 is the genuine compound interaction (flooded only
+when both drivers act together); no postprocessing rule handles it yet.
+
+Rerun: build + run mean_03SLR, then attribution_mask, every POST run, and the
+NbS_protect_open PRE runs (water_retention is sized from
+baseline_excess_volume, classes 1 and 3).
+
+## preprocessed levees raise today's levee instead of replacing its crest (-KL)
+
+A coastal_levee/river_levee resolved from `max_coastal_waterlevel` or
+`max_river_waterlevel` used to set every segment on its polyline to one flat
+crest (scale x max water level). That crest replaced today's levee, so lower
+scales LOWERED it (coast: 0.31 m at scale 0.4 vs today's 0.40 m; river:
+2.21 m at scale 0.4 lowered 85% of the river levee segments by up to 3 m,
+which is why river grey_protect_open_04 came out worse than no adaptation),
+and the flat river crest at scale 1 sat up to 5 m above the water level near
+the mouth.
+
+Now `src/adaptation_scaling.py` also adds `raise_by` = scale x the largest
+shortfall of today's levee on the polyline (target water level - existing
+crest; target = max coastal water level for the coast, each segment's own
+local baseline `zsmax` for the river), and the preprocessing levee
+(`_levee_crests`) raises every segment on a baseline levee by `raise_by`:
+the new crest follows today's profile and is never lowered. Segments with no
+baseline levee under them (protect_closed's river-mouth closure) still get
+`elevation` (scale x max water level). No freeboard. Basin 2433835: largest
+shortfall 0.37 m on the coast, 0.40 m on the river (coast_100_03SLR /
+river_100_03SLR), so scale 1/0.9/0.4 raise by 0.37/0.33/0.15 m and
+0.40/0.36/0.16 m.
+
+`elevation` itself is unchanged, so the postprocessing levees (binary: scale
+x max water level vs max water level) are unchanged. Rerun every
+grey_protect_open and protect_closed PRE run.
 
 # 2026-10-16: adaptation strategies written once at scale 1, levee lines derived from the baseline weir, SLR ramped in at the event start (-KL)
 
@@ -159,10 +936,185 @@ pre's sizing the `zsmax` along the levee line, which can differ; the
 adaptation changes are tested offline only (expansion, resolver, levee
 crests on the skeleton), not yet in a full SFINCS adaptation run.
 
-# 2026-10-09d: river events from real GloFAS floods instead of a 24 h wave (- JS)
+# 2026-10-13: river depth map replaces the rule 09 profile plot (- JS)
+
+- New rule 10 output `visuals/10_calibration/river_network_depth.png`
+  (`src.plots.plot_river_depth_width`): the river network on the land mask,
+  in the model CRS (rotated domain outline). Line colour is the river depth,
+  line width the channel width used in the calculation (sqrt-scaled, with a
+  width legend). `method: gvf`: water depth at the mean discharge between
+  consecutive GVF nodes, dashed where it comes from the width-depth fit
+  (no-flow reaches). `method: modelled`: the excavated depth `rivdph`
+  between consecutive centreline cells.
+- Removed rule 09's diagnostic plot `09_condition_elevation.png` (per-seed
+  elevation profiles before and after conditioning) and its code. Rule 09
+  itself is unchanged: rules 10 and 13 still use its conditioned DEM.
+
+# 2026-10-12c: river bed from gradually varied flow (GVF plan WP1-WP3) (- JS)
+
+New `river_processing.river_depth_modelling.method: gvf` (default stays
+`modelled`). The river bed comes from a steady gradually-varied-flow fit to
+SWORD's water levels, after Neal et al. (2021), instead of round 0's
+confined SFINCS run and `excavation_fraction`. Rounds 1-2 are unchanged and
+still set the weir crests at the protection-RP discharge.
+
+- **Target** (`src/gvf_target.py`): SWORD `wse` per reach, taken as correct,
+  moved from EGM2008 to the model datum (GOCO06s) with the same geoid offset
+  rule 05a applies to FathomDEM, placed at reach midpoints, interpolated to
+  nodes every 500 m, smoothed over 5 km and made non-increasing downstream by
+  an exact isotonic regression on the whole network (loops included).
+  Junctions share one node (one level); a drop over 0.5 m, or 0.2 m at a
+  SWORD obstruction reach, is a structure and splits the node. A rise over
+  0.5 m (1248635: the IJssel 1.1 m above its offtake) is cut likewise and
+  logged. Wide sea-class or GEBCO-floor sections are water bodies (target
+  level, DEM bed).
+- **Discharge**: GloFAS `mean_discharge`, routed like the calibration
+  discharge (canal arms and outward seeds excluded). Paired with `wse`
+  because SWORD's levels are long-term means.
+- **Solver** (`src/gvf_solver.py`): dh/dx = (S0 - Sf)/(1 - Fr^2),
+  rectangular channel of SWORD width, Manning n = `gvf.manning_channel`
+  (0.03), RK4 upstream from the sea (`baseline_m`) at mouths and from the
+  target level at other network ends. Beds are inverted by nudging, then
+  per-reach bounded least squares with a bed-slope regulariser and a weak
+  prior towards the normal depth: where the target is flat (tidal delta)
+  the level says almost nothing about the depth, and the fit otherwise runs
+  to the 30 m bound. Beds are per reach at junctions (discordant junctions
+  allowed); levels are per node. Reaches without discharge get their depth
+  from a width-depth fit of the inverted reaches.
+- **Rule 10** (`src/gvf.py`): the bed is interpolated onto the centreline
+  cells and burned as before, floored by the unconditioned merged DEM (not
+  the stage-1/2 conditioned one, whose sticky floors would override it).
+  Mouth and no-dig rules are not applied. New output
+  `{basin}_river_roughness_subgrid.tif`: n = 0.03 under the burned channel
+  (all nodata with `method: modelled`), listed first in the subgrid
+  roughness of rounds 1-2 and rule 13. Diagnostics per node in
+  `visuals/10_calibration/gvf/`. Not yet in the adaptation rules' subgrid
+  rebuilds (`src/adaptation_method_pre.py`).
+- 1248635, standalone solve: 2,299 nodes, level RMSE 0.08 m on the inverted
+  nodes, inverted depth p10/50/90 2.5 / 8.0 / 12.3 m, 2 bound hits, junction
+  mismatch at most 0.25 m. 53 of 182 reaches carry no mean discharge.
+- 20 new unit tests (`tests/unit/test_gvf.py`): hydraulics, uniform and
+  backwater reaches, regularisation, n sweep, Froude cap, confluence,
+  bifurcation, loop, water body, structure, target builder.
+
+# 2026-10-12b: river network QA and a steady round 0 (GVF plan WP0.2-0.7) (- JS)
+
+Prerequisites from `docs/gvf_plan.md` (WP0), mostly found on basin 1248635
+(Rhine-Meuse).
+
+- **WP0.2 Width.** The 30 m widths were not SWORD fill values in `width`:
+  SWORD has a real width (Waal 389 m) and `max_width` = 30, and the
+  width/max_width swap (`fix_width_max_width_order`) put the 30 into
+  `width`. A `max_width` equal to `river_processing.width_qa.max_width_fill_m`
+  (30) no longer triggers the swap; new column `width_source` records where
+  each width came from. 1248635: 13 reaches back to their SWORD width
+  (Waal 389-390, Lek 168-195, Hollandsche IJssel 43-361 m); Mississippi: 4.
+  About 2,160 SWORD reaches worldwide had this pattern.
+- **WP0.3 Canals in discharge routing.** At a bifurcation, an arm whose
+  chain to the next junction contains a SWORD canal (`lakeflag` 2) gets no
+  share when a sibling arm is not a canal (`canal_excluded_arms`;
+  `river_processing.canal_routing`). SWORD's lock flag is not used: it
+  also marks the weir-and-lock complexes on the canalised main rivers.
+  `force_exclude` holds 23261000641 (Amsterdam-Rijnkanaal leaving the Waal
+  at Tiel, not canal-flagged in SWORD). Stored as `zero_discharge_share`
+  (rule 08) and reused by rule 10. 1248635 at RP 1000: Rhine 17,421 m3/s
+  now splits into Waal 10,949, Lek 4,225, IJssel 2,246 (was routed half
+  into the Amsterdam-Rijnkanaal and the Vecht). Routing only: canals stay
+  open in SFINCS.
+- **WP0.4 Outward seeds.** A seed reach fed from upstream reaches inside
+  the network is a branch SWORD routes out of the delta through the
+  crossing (1248635: Drecht). It is no longer a seed: no inflow is injected
+  there (`seed_flows_out`, `outflow_crossing_mask` in rules 10, 13, 14) and
+  the crossing becomes a free-outflow boundary like the IJssel and Vecht
+  exits.
+- **WP0.5 Round 0 runs until steady.** Forcing now covers
+  `steady_state.max_days` (5); after the first `calibration_days`, round 0
+  is continued from its own restart file one `chunk_days` at a time until
+  the centreline water level changes less than 1 cm (median) / 5 cm (p95)
+  over the last 3 h. The excavation uses the end-of-run level (mean of the
+  last two outputs, `round0_level: end_of_run`; `period_max` restores the
+  old maximum over the run). Exit cross-sections at every mouth and outflow
+  boundary give a flow balance against the injected discharge; an unsteady
+  run or an imbalance above `flow_balance_tol` (5%) is logged as a warning
+  (`fail: true` makes it an error). Rounds 1 and 2 are unchanged.
+- **WP0.6 Mouths.** Checked on 1248635: no round-0 weir crosses a mouth
+  channel; the outlets are open. No change.
+- **WP0.7 No digging below a sea bed.** Round 0 no longer excavates
+  centreline cells that are land-use sea or whose elevation is at the
+  GEBCO depth limit (`terrain.gebco_max_depth_m` below mean sea level, which
+  rule 09's running minimum also spreads into channels): there the confined
+  level is a water surface over a sea bed and 0.8 x the rise dug beds
+  around -18 m on 36 reaches of 1248635.
+- Unit tests for all of the above in `tests/unit/` (25 tests).
+
+Rerun scope: every basin from rule 07 (widths) onward; basins without
+these patterns produce the same network and discharges, but round 0 now
+runs until steady and uses the end-of-run level.
+
+# 2026-10-12: discharge accumulation fixed (seed with upstream inflow); unit-test suite (- JS)
+
+`src.river_network.accumulate_discharge` held each seed reach's value fixed
+per iteration and then added that iteration's upstream inflow on top, so a
+seed reach that also has upstream reaches inside the network gained its
+inflow once per iteration (100 iterations). Basin 1248635's Drecht seed
+`23261000015` (245 m3/s at RP 1000) came out at 103,693 m3/s, the total
+calibration inflow at 127,935 instead of 24,487 m3/s, and the bed of the
+reaches around it was dug 25-54 m deep. `bankfull_discharge_acc` (rule 08)
+had the same fault.
+
+- **Now a single pass in topological order**: each reach receives its
+  upstream reaches' discharge (summed at confluences, split by width at
+  bifurcations); a seed adds its own boundary discharge once, on top of its
+  in-network inflow (Drecht: 1,513 + 245 = 1,758 m3/s). A seed with
+  in-network upstream reaches is logged as a warning, since the forcing at
+  that crossing may already include that flow. Directed cycles (none exist
+  in the current networks) are logged and processed last.
+- `n_iterations` is gone, with `river_processing.flow_accumulation.iterations`
+  in `config.yml` and the matching rule params (08, 10, 11b): the result no
+  longer depends on an iteration count (the old scheme also silently
+  stopped at 100 hops).
+- Effect: only 1248635 changes (8 of 182 reaches); the other completed
+  basins have no seed with upstream reaches and are bit-identical. 1248635
+  reruns from rule 08.
+- **New unit-test suite** `tests/unit/` (pytest, synthetic networks only,
+  `testpaths` set in `pyproject.toml` so the analysis scripts in `tests/`
+  are not collected): chain, confluence, width split, zero-width split,
+  bifurcate-then-rejoin, seed with upstream inflow, unreached reaches, a
+  250-reach chain, mass conservation on a random network, directed cycle.
+  CI runs it in a new `unit-tests` job.
+
+# 2026-10-11: memory fixes for large basins on a rotated grid (- JS)
+
+Two out-of-memory failures from the first all-basin run on the rotated
+default (15 GB machine); the six smaller basins completed.
+
+- **Rule 09b, basin 4267691** (`write_roughness_raster`): Manning's n was
+  aggregated in full-width row strips of the target grid. On a rotated grid
+  the axis-aligned source window behind one strip is nearly the whole
+  domain (48,630 x 68,937 land-use pixels, 12.5 GiB). Now aggregated in
+  square tiles (`src.landuse._square_tiles`), whose source window is at
+  most twice the tile's own area at any rotation. Result unchanged
+  (620947: identical to 1e-8); the Mississippi's 1958 x 3125 grid takes
+  103 s at 0.7 GB.
+- **Rule 10, basin 1416812** (`compute_max_inundation`): opening the
+  full-resolution `dep_subgrid.tif` of a rotated model allocates 2-D
+  float64 coordinates (16 bytes per pixel, 5 GB for 317 M pixels) before
+  anything is coarsened. `get_bed_level(max_bytes=...)` now reads the raster
+  block-averaged straight from disk when it would not fit, and counts a
+  rotated raster 5x (`_ROTATED_MEMORY_FACTOR`). For that basin the flood
+  map and its statistics are computed on 30 m pixels (was 20 m unrotated),
+  peak memory 5.5 GB (8.2 GB at 20 m). Basins that fit are untouched.
+- `_source_block_window` takes the block's extent from its four corners
+  (rasterio's `array_bounds` returns south > north for an unrotated
+  south-up block).
+
+Not yet confirmed: basin 4267691 beyond rule 09b, and the adaptation
+measures, which still open the full-resolution `dep_subgrid.tif`.
+
+# 2026-10-09d: river events from GloFAS floods instead of a 24 h wave (- JS)
 
 A scenario's river return period used to become a 24 h half-cosine on the
-mean discharge. Real floods of the main inflow stay above half their height
+mean discharge. Floods of the main inflow stay above half their height
 for 6-9 days (Ebro), 14-35 (Mississippi), 14-38 (Calvert), so river flood
 volume inside the event window was 2-8 times too small.
 

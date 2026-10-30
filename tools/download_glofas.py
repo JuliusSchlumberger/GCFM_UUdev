@@ -1,53 +1,71 @@
-import cdsapi
+"""Download GloFAS v4 consolidated daily river discharge, one netCDF per year.
+
+Needs CDS API credentials (cdsapi); resumable: finished years are skipped.
+Exits non-zero if any year failed.
+"""
+
 import os
+import sys
+from pathlib import Path
 
-# Machine-specific path, read from the GCFM_RAW_DATA_ROOT environment variable.
-# Set it once in PowerShell, then restart your terminal (see
-# CONTRIBUTING.md "Local machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
-OUTPUT_DIR = os.path.join(os.environ["GCFM_RAW_DATA_ROOT"], "GloFAS")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+import cdsapi
 
-dataset = "cems-glofas-historical"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
+from src.io import site_setting  # noqa: E402
 
-years = [str(y) for y in range(1979, 2026)]
-months = [f"{m:02d}" for m in range(1, 13)]
-days = [f"{d:02d}" for d in range(1, 32)]
+DATASET = "cems-glofas-historical"
+YEARS = [str(y) for y in range(1979, 2026)]
+MONTHS = [f"{m:02d}" for m in range(1, 13)]
+DAYS = [f"{d:02d}" for d in range(1, 32)]
 
-client = cdsapi.Client()
 
-for year in years:
-    final_path = os.path.join(OUTPUT_DIR, f"glofas_{year}.nc")
-    tmp_path = final_path + ".part"
+def main() -> None:
+    # raw_data_root is a site setting; see config/site.example.yml.
+    output_dir = os.path.join(site_setting("raw_data_root"), "GloFAS")
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Resume: skip anything already completed
-    if os.path.exists(final_path):
-        print(f"Skipping {year} (already downloaded)")
-        continue
+    client = cdsapi.Client()
+    failed: list[str] = []
 
-    # Clean up any leftover partial file from a previous interrupt
-    if os.path.exists(tmp_path):
-        os.remove(tmp_path)
+    for year in YEARS:
+        final_path = os.path.join(output_dir, f"glofas_{year}.nc")
+        tmp_path = final_path + ".part"
 
-    request = {
-        "system_version": ["version_4_0"],
-        "hydrological_model": ["lisflood"],
-        "product_type": ["consolidated"],
-        "variable": ["river_discharge_in_the_last_24_hours"],
-        "hyear": [year],
-        "hmonth": months,
-        "hday": days,
-        "data_format": "netcdf",
-        "download_format": "unarchived",
-    }
+        if os.path.exists(final_path):
+            print(f"Skipping {year} (already downloaded)")
+            continue
 
-    print(f"Downloading {year} ...")
-    try:
-        client.retrieve(dataset, request).download(tmp_path)
-        os.rename(tmp_path, final_path)  # atomic: only "complete" once renamed
-        print(f"Done: {final_path}")
-    except Exception as e:
-        # Remove the partial file so it's re-attempted next run
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
-        print(f"Failed {year}: {e}")
+
+        request = {
+            "system_version": ["version_4_0"],
+            "hydrological_model": ["lisflood"],
+            "product_type": ["consolidated"],
+            "variable": ["river_discharge_in_the_last_24_hours"],
+            "hyear": [year],
+            "hmonth": MONTHS,
+            "hday": DAYS,
+            "data_format": "netcdf",
+            "download_format": "unarchived",
+        }
+
+        print(f"Downloading {year} ...")
+        try:
+            client.retrieve(DATASET, request).download(tmp_path)
+            os.rename(tmp_path, final_path)  # atomic: only "complete" once renamed
+            print(f"Done: {final_path}")
+        # cdsapi raises a bare Exception for API errors; keep going with the next year.
+        except Exception as e:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            print(f"Failed {year}: {e}")
+            failed.append(year)
+
+    if failed:
+        print(f"{len(failed)} year(s) failed: {', '.join(failed)}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

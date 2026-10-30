@@ -1,7 +1,7 @@
 ## What does this change
 
 <!-- Which pipeline stage(s)/rule(s) does this touch, and why?
-     e.g. "rule 09a (river depth): switch width-depth relation to X because Y" -->
+     e.g. "rule 10 (river depth): switch width-depth relation to X because Y" -->
 
 ## DAG / config impact
 
@@ -18,6 +18,7 @@
       dry-runs cleanly against real data
 - [ ] `python tests/check_code_health.py` passes (syntax + src-import
       resolution — catches broken imports that a dry-run misses)
+- [ ] `pytest` passes (synthetic tests in `tests/unit`; CI runs them)
 - [ ] `pre-commit run --all-files` passes (ruff format/lint, pyright,
       pydocstyle)
 - [ ] No unrelated changes bundled in

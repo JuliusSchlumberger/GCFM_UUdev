@@ -1,42 +1,69 @@
 """I/O utilities for loading the data catalogue and reading spatial datasets."""
 
 import os
-import yaml
+from collections.abc import Iterable
 from pathlib import Path
-import geopandas as gpd
 
-# Machine-specific locations are never committed to config.yml /
-# data_catalogue.yml -- they come from these environment variables instead
-# (see CONTRIBUTING.md "Local machine paths"). Set them once in PowerShell,
-# then restart your terminal / VS Code:
-#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
-#   [Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
-#   [Environment]::SetEnvironmentVariable("GCFM_SFINCS_EXE", "C:\path\to\sfincs.exe", "User")
-LOCAL_PATH_VARS = {
-    "GCFM_RESULTS_DIR": "directory the pipeline outputs are written to",
-    "GCFM_RAW_DATA_ROOT": "root directory of the raw input data (data catalogue root)",
-    "GCFM_SFINCS_EXE": "path to your local SFINCS executable",
+import geopandas as gpd
+import yaml
+
+SITE_FILE = Path(__file__).resolve().parents[2] / "config" / "site.yml"
+SITE_ENV_VARS = {
+    "results_dir": "GCFM_RESULTS_DIR",
+    "raw_data_root": "GCFM_RAW_DATA_ROOT",
+    "sfincs_exe": "GCFM_SFINCS_EXE",
+    "adaptation_data_root": "GCFM_ADAPTATION_DATA_ROOT",
 }
 
 
-def local_path(var: str) -> str:
-    """Return the machine-specific path held by environment variable ``var``."""
-    value = os.environ.get(var)
-    if not value:
-        raise EnvironmentError(
-            f"Environment variable {var} is not set ({LOCAL_PATH_VARS[var]}). "
-            f"Set it once in PowerShell and restart your terminal:\n"
-            f'  [Environment]::SetEnvironmentVariable("{var}", "<your path>", "User")\n'
-            f'See CONTRIBUTING.md "Local machine paths".'
+def site_setting(key: str) -> str:
+    """Return a site setting from its environment variable, else config/site.yml.
+
+    Keys and variables are listed in config/site.example.yml. Empty values and
+    unfilled ``<placeholder>`` values count as unset.
+    """
+    if key not in SITE_ENV_VARS:
+        raise ValueError(
+            f"Unknown site setting {key!r}; valid keys: {', '.join(SITE_ENV_VARS)}"
+        )
+    env_var = SITE_ENV_VARS[key]
+    value = os.environ.get(env_var)
+    if value:
+        return value
+    site = {}
+    if SITE_FILE.exists():
+        with open(SITE_FILE, encoding="utf-8") as f:
+            site = yaml.safe_load(f) or {}
+        unknown = sorted(set(site) - set(SITE_ENV_VARS))
+        if unknown:
+            raise ValueError(
+                f"Unknown key(s) in {SITE_FILE}: {', '.join(unknown)}; "
+                f"valid keys: {', '.join(SITE_ENV_VARS)}"
+            )
+    value = str(site.get(key) or "").strip()
+    if not value or (value.startswith("<") and value.endswith(">")):
+        raise OSError(
+            f"Site setting {key!r} is not set: give it a value in {SITE_FILE} "
+            f"or set the environment variable {env_var}. Create the file with:\n"
+            f"  cp config/site.example.yml config/site.yml"
         )
     return value
 
 
+def require_keys(cfg: dict, keys: Iterable[str], where: str) -> None:
+    """Raise KeyError naming ``where.<key>`` for every key missing from cfg."""
+    missing = [k for k in keys if k not in cfg]
+    if missing:
+        raise KeyError(
+            "missing config key(s): " + ", ".join(f"{where}.{k}" for k in missing)
+        )
+
+
 def load_catalogue(catalogue_path: Path) -> dict:
-    """Load the YAML data catalogue from disk, rooted at GCFM_RAW_DATA_ROOT."""
-    with open(catalogue_path, "r", encoding="utf-8") as f:
+    """Load the YAML data catalogue, rooted at site setting raw_data_root."""
+    with open(catalogue_path, encoding="utf-8") as f:
         catalogue = yaml.safe_load(f)
-    catalogue["meta"]["root"] = local_path("GCFM_RAW_DATA_ROOT")
+    catalogue["meta"]["root"] = site_setting("raw_data_root")
     return catalogue
 
 

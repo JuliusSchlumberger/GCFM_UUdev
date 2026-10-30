@@ -1,10 +1,9 @@
 /src/input_processing/data/
 /delta_model/
-/docs/
 /input/
 /output/
 pyrightconfig.json
-scatchpat_*
+scratchpad_*
 
 # Snakemake
 .snakemake/
@@ -15,6 +14,9 @@ results/
 model_runs/
 /tests/output/
 figs/
+
+# Personal GIS projects
+qgis/
 
 # IDE
 .idea/
@@ -27,3 +29,15 @@ __pycache__/
 
 # Logs
 *.log
+
+# Local baselines (see CLAUDE.md)
+.baseline/
+
+# Site settings (see config/site.example.yml)
+config/site.yml
+
+# Machine-specific agent notes
+CLAUDE.local.md
+
+# profiler dumps
+*.prof
