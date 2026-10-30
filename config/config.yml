@@ -125,6 +125,8 @@ river_processing:
     calibration_max_days: 4         # longer runs fail: raise it or check the bed
     steady_check: {window_hr: 3, tol_m: 0.05}  # warn when centreline cells still rise more than tol_m over the run's last window_hr
     verify_crests: false            # run round 2 (production crests, reports overtopped edges); false: round 1 only
+    depth_scale: 1.0                # sensitivity only: the burned depth below rule 10's surface is multiplied by this (1.0 = the estimated bed)
+    crosssections: false            # true: SFINCS cross-sections (crsfile) across each arm of every bifurcation on the seeds' widest paths, discharge in each round's sfincs_his.nc (diagnostic, src.river_depth_calibration.bifurcation_cross_sections)
     ramp_hr: 6.0                    # half-cosine river ramp, then held to the run end: every crossing from its mean discharge (the flow that holds zsini's river level, src.river_bed mean_level_m) to the calibration discharge. The sea is held at each station's storm tide at the coastal protection RP from the start (zsini of sea and channel cells no lower than it), so only the rivers change. A step to the full (often many-times-bankfull) discharge sends a front that can oscillate for the whole run.
     weir_crest_m: 1000.0            # confinement weir crest (m) for round 1 -- effectively never overtopped
     # ── weir-building params (used by modelled_depth_estimation every round)

@@ -239,3 +239,42 @@ def test_main_path_slope_at_a_bifurcation_follows_the_larger_arm():
     assert s[j] == pytest.approx(1e-4, rel=1e-6)
     assert s[net.reach_nodes["3"][2]] == pytest.approx(1e-3, rel=1e-6)
     assert main_reaches(net, q) == {"1", "2"}
+
+
+def test_forward_network_flags_capped_nodes_only_on_the_steep_reach():
+    q, w = 700.0, 150.0
+    rivers = _reaches(
+        {
+            "1": {"xy": [(0, 0), (10000, 0)], "dn": ["2"], "width": w},
+            "2": {"xy": [(10000, 0), (20000, 0)], "width": w},
+        }
+    )
+    net = build_node_network(rivers, build_downstream_adjacency(rivers), 500.0)
+    x = net.node_x
+    bed = np.where(
+        x <= 10000.0, 20.0 - 1e-2 * x, -80.0 - 1e-5 * (x - 10000.0)
+    )  # steep, then mild
+    mouth = int(net.reach_nodes["2"][-1])
+    level = forward_network(
+        net,
+        bed,
+        np.full(net.n_nodes, w),
+        {"1": q, "2": q},
+        N,
+        {mouth: bed[mouth] + 5.0},
+    )
+    level2, capped = forward_network(
+        net,
+        bed,
+        np.full(net.n_nodes, w),
+        {"1": q, "2": q},
+        N,
+        {mouth: bed[mouth] + 5.0},
+        return_capped=True,
+    )
+    assert np.array_equal(level, level2)  # the flag does not change the solve
+    assert capped.dtype == bool and capped.shape == (net.n_nodes,)
+    steep = np.asarray(net.reach_nodes["1"])[:-1]
+    mild = np.asarray(net.reach_nodes["2"])[1:]
+    assert capped[steep].mean() > 0.5
+    assert not capped[mild].any()

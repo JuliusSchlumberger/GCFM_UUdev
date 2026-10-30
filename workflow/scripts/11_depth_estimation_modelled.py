@@ -117,6 +117,7 @@ from src.river_burn import (
     mean_elevation_on_coarse_grid,
 )
 from src.river_depth_calibration import (
+    bifurcation_cross_sections,
     build_calibration_seed_discharge,
     compute_period_max_zs,
     gather_calibration_round_profile,
@@ -187,6 +188,8 @@ calibration_max_days = float(snakemake.params.calibration_max_days)
 wave_regime_rT = tuple(float(v) for v in snakemake.params.wave_regime_rT)
 steady_check_cfg = dict(snakemake.params.steady_check)
 verify_crests = bool(snakemake.params.verify_crests)
+crosssections = bool(snakemake.params.crosssections)
+depth_scale = float(snakemake.params.depth_scale)
 ramp_hr = float(snakemake.params.ramp_hr)
 weir_crest_m = float(snakemake.params.weir_crest_m)
 weir_par1 = float(snakemake.params.weir_par1)
@@ -897,6 +900,10 @@ rivbed_cell = values_at_points(
 round0_zs = values_at_points(
     river_bed.net, river_bed.level_m, cell_gdf["reach_id"], _cx, _cy
 )
+if depth_scale != 1.0:
+    # Sensitivity runs only: scale the depth below the surface, not the surface.
+    rivbed_cell = round0_zs - depth_scale * (round0_zs - rivbed_cell)
+    log.warning(f"[{round_label}] Bed depth scaled by depth_scale = {depth_scale:g}")
 _missing = ~np.isfinite(rivbed_cell)
 if _missing.any():
     log.warning(
@@ -1255,6 +1262,23 @@ def _steady_check(
 round_label = ROUND_TITLES[1]
 round_root = _start_round(1)
 _create_subgrid(excavated_subgrid_elevation_list, round_label)
+if crosssections:
+    # Discharge through each arm of the seeds' bifurcations (sfincs_his.nc),
+    # against the width-proportional split of accumulate_discharge.
+    _crs = bifurcation_cross_sections(
+        rivers_utm,
+        sorted(
+            {
+                normalize_reach_id(r)
+                for r, s in zip(rivers["reach_id"], rivers["is_seed"])
+                if bool(s)
+            }
+            - {None}
+        ),
+    )
+    sf.cross_sections.set(_crs[["name", "geometry"]], merge=False)
+    _crs.to_file(calib_root / "cross_sections.gpkg", driver="GPKG")
+    log.info(f"[{round_label}] {len(_crs)} bifurcation cross-section(s) set")
 period_max_zs_1, final_zs, final_times_s = _run_calibration_round(
     round_label, round_root
 )

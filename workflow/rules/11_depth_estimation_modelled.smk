@@ -97,6 +97,8 @@ rule modelled_depth_estimation:
         calibration_max_days         = config["river_processing"]["river_depth_modelling"]["calibration_max_days"],
         steady_check                 = config["river_processing"]["river_depth_modelling"]["steady_check"],
         verify_crests                = config["river_processing"]["river_depth_modelling"]["verify_crests"],
+        crosssections                = config["river_processing"]["river_depth_modelling"]["crosssections"],
+        depth_scale                  = config["river_processing"]["river_depth_modelling"]["depth_scale"],
         ramp_hr                      = config["river_processing"]["river_depth_modelling"]["ramp_hr"],
         weir_crest_m                  = config["river_processing"]["river_depth_modelling"]["weir_crest_m"],
         weir_par1                     = config["river_processing"]["river_depth_modelling"]["weir_par1"],
