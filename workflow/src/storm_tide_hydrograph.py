@@ -50,8 +50,17 @@ MSL_WINDOW_HR = 8766  # 1 year
 
 
 def fill_short_gaps(series: pd.Series, max_gap_hr: int = 3) -> pd.Series | None:
-    """Linear fill of gaps up to max_gap_hr; None if longer gaps remain."""
-    filled = series.interpolate(limit=max_gap_hr, limit_area="inside")
+    """Linear fill of gaps up to max_gap_hr; None if longer gaps remain.
+
+    Gaps of up to max_gap_hr at the start or end of the record (e.g. GTSM
+    station 42656's missing last hour, 2024-12-31 23:00) hold the nearest
+    value -- interpolation alone never fills them.
+    """
+    filled = (
+        series.interpolate(limit=max_gap_hr, limit_area="inside")
+        .ffill(limit=max_gap_hr)
+        .bfill(limit=max_gap_hr)
+    )
     return None if filled.isna().any() else filled
 
 

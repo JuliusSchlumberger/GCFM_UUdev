@@ -38,10 +38,10 @@ advance:
 grey_protect_open:
   measures:
     coastal_levee: {elevation: {coastal: max_coastal_waterlevel, river: current_protection, compound: max_coastal_waterlevel},
-                    locations: adaptation_ebro/auto/coastal_protection_weir_PO.geojson,
+                    locations: adaptation_chaophraya/auto/coastal_protection_weir_PO.geojson,
                     merge: false }
     river_levee: {elevation: {coastal: current_protection, river: max_river_waterlevel, compound: max_river_waterlevel},
-                    locations: adaptation_ebro/auto/river_protection_weir_PO.geojson,
+                    locations: adaptation_chaophraya/auto/river_protection_weir_PO.geojson,
                     merge: false }
 
 # -----------------------------------------------------------------------------------------------
@@ -64,10 +64,10 @@ NbS_protect_open:
 protect_closed:
   measures:
     coastal_levee: {elevation: {coastal: max_coastal_waterlevel, river: current_protection, compound: max_coastal_waterlevel},
-                    locations: adaptation_ebro/auto/coastal_protection_weir_PC.geojson,
+                    locations: adaptation_chaophraya/auto/coastal_protection_weir_PC.geojson,
                     merge: false}
     pumps:         {discharge: max_discharge, # same for all flood events
-                    locations: adaptation_ebro/auto/pump_river_mouth.geojson}
+                    locations: adaptation_chaophraya/auto/pump_river_mouth.geojson}
 
 # -----------------------------------------------------------------------------------------------
 # ACCOMMODATE

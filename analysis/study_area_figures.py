@@ -25,6 +25,7 @@ Outputs (all in OUT_DIR = results/2433835/runs/):
   fig_elevation_map.png      standalone elevation panel
   fig_landuse_map.png        standalone land-use panel
   fig_domain_input_data.png  combined elevation | land-use, 1x2
+  fig_elevation_classes.png  elevation only, in 1 m classes (<0 .. >5 m)
   fig_return_period_curves.png  river discharge | coastal water level RP curves, 1x2
   fig_forced_hydrograph.png  built water-level / discharge forcing per scenario, 2x3
 """
@@ -41,7 +42,7 @@ import numpy as np
 import shapely
 import xarray as xr
 from hydromt_sfincs import SfincsModel
-from matplotlib.colors import BoundaryNorm, ListedColormap, TwoSlopeNorm
+from matplotlib.colors import BoundaryNorm, ListedColormap, TwoSlopeNorm, to_hex
 from matplotlib.patches import Patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
@@ -52,7 +53,7 @@ from src.plots import (  # noqa: E402
     read_raster_reprojected_for_plot,
 )
 
-BASIN_ID = "2433835"
+BASIN_ID = "3279946"
 # Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
 # Set it once in PowerShell, then restart your terminal (see
 # CONTRIBUTING.md "Local machine paths"):
@@ -75,6 +76,15 @@ PROTECTION_PATH = DOMAIN_DIR / "protection_levels.json"
 # keep visible contrast; values above VMAX are shown as the colormap's max
 # colour (colorbar extend="max" marks this explicitly).
 ELEV_VMIN, ELEV_VMAX = -10.0, 50.0
+
+# Discrete classes for the domain-input figure: the flood-relevant lowlands
+# sit within a few metres of sea level, which the continuous -10..50 m ramp
+# washes out -- 1 m bins up to 5 m make those differences readable.
+ELEV_CLASS_BOUNDS = [0, 1, 2, 3, 4, 5]
+ELEV_CLASS_LABELS = ["< 0 m", "0–1 m", "1–2 m", "2–3 m", "3–4 m", "4–5 m", "> 5 m"]
+ELEV_CLASS_COLORS = ["#2c7fb8"] + [
+    to_hex(c) for c in plt.get_cmap("YlOrBr")(np.linspace(0.1, 0.95, 6))
+]
 
 MARGIN_FRAC = 0.015  # thin enough that the domain border fills the panel
 
@@ -127,19 +137,26 @@ def _finish_panel(ax, margin):
     ax.grid(True, alpha=0.3, linewidth=0.5)
 
 
-def draw_elevation_panel(ax):
+def draw_elevation_panel(ax, classified=False):
     data, extent = read_raster_reprojected_for_plot(
         str(ELEVATION_PATH), dst_bounds=DOMAIN_BOUNDS
     )
     data = _mask_to_domain(data, extent)
     land, rivers, margin = _panel_context()
 
+    if classified:
+        cmap = ListedColormap(ELEV_CLASS_COLORS)
+        norm = BoundaryNorm(ELEV_CLASS_BOUNDS, ncolors=cmap.N, extend="both")
+    else:
+        cmap = _BATHY_CMAP
+        norm = TwoSlopeNorm(vmin=ELEV_VMIN, vcenter=0.0, vmax=ELEV_VMAX)
+
     if not land.empty:
         land.plot(ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
     im = ax.imshow(
         data,
-        cmap=_BATHY_CMAP,
-        norm=TwoSlopeNorm(vmin=ELEV_VMIN, vcenter=0.0, vmax=ELEV_VMAX),
+        cmap=cmap,
+        norm=norm,
         extent=extent,
         origin="upper",
         aspect="auto",
@@ -285,6 +302,27 @@ for ax, panel in ((ax1, "(a)"), (ax2, "(b)")):
     )
 
 out_path = OUT_DIR / "fig_domain_input_data.png"
+fig.savefig(out_path, dpi=150, bbox_inches="tight")
+plt.close(fig)
+print(f"Wrote {out_path}")
+
+# --------------------------------------------------------- 3b. classified elevation
+fig, ax = plt.subplots(figsize=(8, 7), constrained_layout=True)
+draw_elevation_panel(ax, classified=True)
+ax.set_xlabel("Longitude (°)")
+ax.set_ylabel("Latitude (°)")
+ax.legend(
+    handles=[
+        Patch(color=c, label=label)
+        for c, label in zip(ELEV_CLASS_COLORS, ELEV_CLASS_LABELS)
+    ],
+    title="Elevation",
+    loc="lower right",
+    fontsize=9,
+    framealpha=0.9,
+)
+
+out_path = OUT_DIR / "fig_elevation_classes.png"
 fig.savefig(out_path, dpi=150, bbox_inches="tight")
 plt.close(fig)
 print(f"Wrote {out_path}")

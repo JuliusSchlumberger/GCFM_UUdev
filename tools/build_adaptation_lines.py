@@ -16,7 +16,7 @@ Writes into <out> (relative to GCFM_RAW_DATA_ROOT unless absolute):
     coastal_protection_weir_PC.geojson  protect_closed: coast + mouth closure(s)
     coastal_protection_weir_PO.geojson  grey_protect_open coastal_levee: coast only
     river_protection_weir_PO.geojson    grey_protect_open river_levee: river + estuary banks
-    pump_river_mouth.geojson            pumps: river centreline across each closure, inland -> sea
+    pump_river_mouth.geojson            pumps: lines perpendicular across each closure, inland -> sea
     adaptation_lines.gpkg               everything above + the labelled baseline weir, for QGIS
     adaptation_lines.png                overview + zoom on every mouth
     build_info.json                     source grid, counts, per-mouth report
@@ -172,6 +172,12 @@ def main() -> None:
     parser.add_argument(
         "--basin-dir", help="basin results folder, if not GCFM_RESULTS_DIR/<basin_id>"
     )
+    parser.add_argument(
+        "--pumps-per-mouth",
+        type=int,
+        default=1,
+        help="pump lines spread along each closure (the measure's discharge is split over them)",
+    )
     args = parser.parse_args()
     bid = args.basin_id
 
@@ -232,7 +238,9 @@ def main() -> None:
     )
     log.info(f"Baseline weir labels: {kind_counts}")
     land = protected_land(weir, seaward, valid, transform)
-    closures, pumps, report = mouth_closures(rivers, land, transform)
+    closures, pumps, report = mouth_closures(
+        rivers, land, transform, pumps_per_mouth=args.pumps_per_mouth
+    )
     estuary = estuary_and_seal(weir, closures, report, seaward, valid, transform)
     kinds = relabel_estuary(weir, kinds, estuary, transform)
     weir = weir.assign(kind=kinds)
