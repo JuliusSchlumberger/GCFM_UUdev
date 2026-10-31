@@ -16,6 +16,11 @@ the pipeline works; this file only describes *what changed and why*.
   the river centreline from `pump_upstream_m` upstream. `apply_pumps` already
   splits the discharge over the lines. Rule 12c and the protect_closed runs
   rebuild on every basin; the Ebro's pump line changes shape.
+- **Rule 12c active mask:** read from the skeleton's grid instead of
+  `gis/mask.tif`. hydromt_sfincs writes the GIS copy north-up, while
+  `landuse_on_grid.tif` and the model grid are y-ascending, so the grid check
+  failed and rule 12c never ran (Ebro: same 87,115 active cells; one mouth,
+  closed and sealed with a 600 m closure, 1 pump).
 - **Analysis:** `results_figures.py` adds the urban risk-reduction table PRE vs
   POST and Kendall's tau-b tables (replacing Kendall's W in the bump chart),
   new bump-chart order and adaptation-wheel colours, and drops the basin

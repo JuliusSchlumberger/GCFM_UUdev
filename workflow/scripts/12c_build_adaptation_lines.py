@@ -22,7 +22,6 @@ from src.adaptation_lines import (
 )
 from src.grid import load_grid_def
 from src.log import setup_logging
-from src.raster import read_on_grid
 
 log = setup_logging(snakemake.log[0])
 basin_id = snakemake.wildcards.basin_id
@@ -30,12 +29,22 @@ skeleton_root = Path(snakemake.params.skeleton_root)
 
 with rasterio.open(snakemake.input.landuse_on_grid) as src:
     landuse, transform, crs = src.read(1), src.transform, src.crs
-# gis/mask.tif is written by build_sfincs_skeleton next to its declared sfincs.inp.
-mask = read_on_grid(skeleton_root / "gis" / "mask.tif", landuse.shape, transform)
+
+sf = SfincsModel(root=str(skeleton_root), mode="r")
+# The model's own mask, on the same y-ascending grid as landuse_on_grid
+# (gis/mask.tif holds the same cells, but north-up).
+sf.grid.read()
+mask = sf.grid.data["mask"].values
+if mask.shape != landuse.shape or not sf.grid.data.raster.transform.almost_equals(
+    transform, precision=1e-6
+):
+    raise ValueError(
+        f"skeleton grid {mask.shape} does not match landuse_on_grid {landuse.shape} "
+        "-- expected pixel-identical grids."
+    )
 
 # The weir as the model holds it (and as levee measures merge against):
 # hydromt_sfincs drops rule-10 segments outside the model region.
-sf = SfincsModel(root=str(skeleton_root), mode="r")
 sf.weirs.read()
 weir = gpd.GeoDataFrame(
     geometry=[LineString([c[:2] for c in g.coords]) for g in sf.weirs.data.geometry],

@@ -6,7 +6,7 @@
 
 rule build_adaptation_lines:
     input:
-        # Dependency on the skeleton; the script also reads its gis/mask.tif.
+        # Dependency on the skeleton; the script reads its grid (mask) and weir.
         sfincs_inp      = results_path("{basin_id}/sfincs_skeleton/sfincs.inp"),
         sfincs_weir     = results_path("{basin_id}/sfincs_skeleton/sfincs.weir"),
         sfincs_grid     = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sfincs_grid.json"),
