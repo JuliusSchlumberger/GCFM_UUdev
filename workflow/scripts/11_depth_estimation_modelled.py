@@ -8,12 +8,11 @@ model (regular grid, production subgrid setup) with the production weir
 geometry (src.protection_weir.build_coastal_protection_weir: coast and river
 banks in one water_like boundary). Initial level: river channels at the steady
 level of the mean discharge on round 0's bed (as rule 12a's zsini), sea cells
-at calm_sea_level_m. Forcing: every sea station gets the storm-tide hydrograph
-of the event runs (src.surge.storm_tide_event: average tide + surge shape,
-peaking at its storm tide at the FLOPROS coastal RP) with the peak at
-ramp_hr + T_walled, when the calibration discharge reaches the coast, blended
-in from the calm level over ramp_hr with the half-cosine ramp; every crossing ramped over
-ramp_hr (half-cosine, src.river_forcing.cosine_ramp)
+at calm_sea_level_m. Forcing: every sea station ramped over ramp_hr
+(half-cosine, src.river_forcing.cosine_ramp) from the calm level to its storm
+tide at the FLOPROS coastal RP, then held to the run end, so the peak level
+fills the bays and stands at the dike whenever the river peak arrives; every
+crossing ramped over ramp_hr (half-cosine)
 from its mean discharge to the discharge at the protection RP (bankfull as
 fallback), then held to the run end. Run length: ramp_hr + T_walled +
 calibration_margin_hr, with T_walled the slowest walled travel time at the
@@ -151,7 +150,6 @@ from src.surge import (
     ceil_crest,
     read_calm_sea_level_m,
     storm_tide_at_rp_interpolated,
-    storm_tide_event,
 )
 from src.water_surface import river_cells_at_surface
 
@@ -1035,9 +1033,9 @@ excavated_subgrid_elevation_list = [
 ]
 
 # calibration forcing for rounds 1 and 2: rivers ramped over ramp_hr, then held
-# Sea: each station's storm-tide hydrograph peaking at its storm tide at the
-# FLOPROS coastal RP (linear in RP between COAST-RP's tabulated RPs,
-# MDT-corrected, rounded to 1 cm), set up below once the run length is known. The coast amplifies the boundary level (shoaling, reflection off the
+# Sea: each station's storm tide at the FLOPROS coastal RP (linear in RP
+# between COAST-RP's tabulated RPs, MDT-corrected, rounded to 1 cm), ramped in
+# and held, set up below once the run length is known. The coast amplifies the boundary level (shoaling, reflection off the
 # dike, bays): basin 2433835 reaches ~0.8 m at the dike under a 0.4 m boundary,
 # so coastal crests come from the simulated level at the dike. River and surge
 # both at protection RP is conservative near the mouth.
@@ -1211,22 +1209,19 @@ crossings_utm.to_file(snakemake.output.discharge_points, driver="GPKG")
 
 sf.water_level.create_boundary_points_from_mask(bnd_dist=5000.0)
 if surge_protection_rp_yr is not None:
-    # The event runs' storm-tide wave, peaking when the calibration discharge
-    # reaches the coast, so river and surge maxima coincide (conservative at
-    # the mouth); blended in from the calm level, where the sea starts, with
-    # the rivers' half-cosine ramp.
-    # On a boundary sample (hourly), so the forcing reaches the peak level exactly.
-    surge_peak_hr = float(np.round(ramp_hr + t_walled_hr))
+    # Held at the peak rather than the event's storm-tide wave: a wave touches
+    # its peak for about an hour at the boundary, too short to fill bays and
+    # lagoons to it, and its timing against the river peak rests on T_walled.
+    # Ramped from the calm level, where the sea starts, with the rivers'
+    # half-cosine, so no front is sent in; hourly samples, so the ramp's end
+    # reaches the peak exactly.
     _surge_time_hr = np.arange(0.0, run_hr + 1e-9, 1.0)
-    with xr.open_dataset(surge_forcing_path, decode_times=False) as _sds:
-        _event = storm_tide_event(
-            _sds,
-            _surge_time_hr - surge_peak_hr,
-            coastal_design_peaks,
-            rp_yr=surge_protection_rp_yr,
-        )
     _blend = cosine_ramp(_surge_time_hr, 0.0, ramp_hr)
-    _sea = np.round(calm_sea_level_m + _blend[None, :] * (_event - calm_sea_level_m), 2)
+    _sea = np.round(
+        calm_sea_level_m
+        + _blend[None, :] * (coastal_design_peaks[:, None] - calm_sea_level_m),
+        2,
+    )
     sf.water_level.create(
         timeseries=pd.DataFrame(
             _sea.T,
@@ -1240,9 +1235,9 @@ if surge_protection_rp_yr is not None:
         merge=False,
     )
     log.info(
-        f"Rounds 1-2 coastal forcing: RP {surge_protection_rp_yr:.1f} storm-tide hydrograph at "
-        f"{len(_surge_stations)} station(s), peaks {coastal_design_peaks.min():+.2f}..{coastal_design_peaks.max():+.2f} m "
-        f"at {surge_peak_hr:.1f} h (river arrival), half-cosine blended in from {calm_sea_level_m:+.2f} m over {ramp_hr:g} h"
+        f"Rounds 1-2 coastal forcing: RP {surge_protection_rp_yr:.1f} storm tide at "
+        f"{len(_surge_stations)} station(s), {coastal_design_peaks.min():+.2f}..{coastal_design_peaks.max():+.2f} m, "
+        f"half-cosine ramped from {calm_sea_level_m:+.2f} m over {ramp_hr:g} h, then held to {run_hr:.0f} h"
     )
 else:
     sf.water_level.create_timeseries(shape="constant", offset=calm_sea_level_m)

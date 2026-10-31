@@ -351,18 +351,18 @@ and subgrid set-up, production weir geometry) then runs twice:
 | round | weir | channel | sea boundary | purpose |
 |---|---|---|---|---|
 | 0 | -- | estimated bed | -- | river bed (no SFINCS run) |
-| 1 | every edge at `weir_crest_m` (1000 m) | burned bed | storm-tide hydrograph at the FLOPROS coastal RP | crest per weir edge |
+| 1 | every edge at `weir_crest_m` (1000 m) | burned bed | storm tide at the FLOPROS coastal RP, ramped in and held | crest per weir edge |
 | 2 | production crests | as round 1 | as round 1 | verification: reports overtopped edges, changes nothing; runs only with `verify_crests: true` |
 
-Both SFINCS rounds force the sea with the event runs' storm-tide wave and ramp
-the rivers:
+Both SFINCS rounds ramp the sea and the rivers to their design levels and hold
+them:
 
-- sea: every station gets the storm-tide hydrograph of the event runs
-  (`src.surge.storm_tide_event`: average tide plus the surge shape, peaking at
-  its storm tide at the FLOPROS coastal return period), with the peak at
-  `ramp_hr + T_walled`, when the calibration discharge reaches the coast, so
-  river and surge maxima coincide; it is blended in from the calm level over
-  `ramp_hr` with the rivers' half-cosine weight, and the sea starts calm. The arrival time of the river at the
+- sea: every station from the calm level to its storm tide at the FLOPROS
+  coastal return period over `ramp_hr`, with the rivers' half-cosine weight,
+  then held to the run end; the sea starts calm. The held level fills bays and
+  lagoons and stands at the dike when the river peak arrives, independent of
+  `T_walled`; the event runs' storm-tide wave touches its peak for about an
+  hour at the boundary. The arrival time of the river at the
   mouth is checked separately, on a copy of round 1 with the sea held at the
   storm tide (`analysis/benchmark_peak_travel.py --run`);
 - rivers: each crossing from its reach's mean discharge (the flow that holds the
@@ -573,7 +573,8 @@ return period, the surge peaks `compound.lag_hr` (per basin
 `lag_overrides_hr`, from `analysis/peak_lag.py`) before the river peak
 (positive = river later), so both peaks reach the main mouth together. A
 surge alone peaks right after its blend and half-window. Runs end
-`event_after_peak_hr` after the last design peak, and not before the surge
+`event_after_peak_hr` (per basin `event_after_peak_overrides_hr`) after the
+last design peak, and not before the surge
 window closes. The timeline is set in rule 14, so a new lag reruns the event
 runs only, not the crest calibration.
 
@@ -627,8 +628,7 @@ on rule 11's bed on the river channel cells (`mean_level_m` of the river-bed nod
 table, network ends at rule 10's surface), and dry on land; sea cells outside the
 largest connected sea body that lie below that level start dry at bed level
 (`src.raster.dry_isolated_sea_cells`). Rule 11's calibration rounds start from
-the same river level, raised with the sea to at least the coastal protection
-storm tide. Rule 10's surface itself is the bankfull stage when
+the same river level, with the sea at the calm level. Rule 10's surface itself is the bankfull stage when
 `bed.design_discharge` is `bankfull`, 1-5 m above the mean-flow level on the
 2433835, 2209166 and 3279946 rivers, which the spin-up then had to drain.
 

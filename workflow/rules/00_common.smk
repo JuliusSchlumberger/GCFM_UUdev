@@ -350,6 +350,15 @@ def compound_lag_hr(basin_id):
     """Return a basin's river-vs-surge shift (h) of compound scenarios; > 0 delays the river."""
     return _LAG_OVERRIDES.get(int(basin_id), float(_COMPOUND_CFG["lag_hr"]))
 
+_AFTER_PEAK_OVERRIDES = {
+    int(_b): _h
+    for _b, _h in (config["sfincs"]["boundary_setup"].get("event_after_peak_overrides_hr") or {}).items()
+}
+
+def event_after_peak_hr(basin_id):
+    """Return how long (h) a basin's event runs go on after the last design peak."""
+    return _AFTER_PEAK_OVERRIDES.get(int(basin_id), config["sfincs"]["boundary_setup"]["event_after_peak_hr"])
+
 # The event run starts from the restart at spinup_days on the forcing's own time
 # axis, so the forcing's calm lead-in must last exactly as long: a shorter
 # lead-in cuts off the start of the event window and starts the run from a calm
@@ -483,7 +492,7 @@ def build_sfincs_params():
         river_rp_yr        = lambda wildcards: scenario_params(wildcards.scenario)["river_rp_yr"],
         surge_rp_yr        = lambda wildcards: scenario_params(wildcards.scenario)["surge_rp_yr"],
         compound_lag_hr    = lambda wildcards: compound_lag_hr(wildcards.basin_id),
-        event_after_peak_hr = config["sfincs"]["boundary_setup"]["event_after_peak_hr"],
+        event_after_peak_hr = lambda wildcards: event_after_peak_hr(wildcards.basin_id),
         # Real GloFAS flood event or synthetic wave; changing it only rebuilds scenarios.
         river_event        = config["boundary_forcings"]["river"]["event_hydrograph"],
         # Target global-mean SLR (m) × surge_forcing.nc's dimensionless
