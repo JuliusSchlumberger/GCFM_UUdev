@@ -3,6 +3,7 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+<<<<<<< HEAD
 # 2026-10-31: mouth closure walks upstream; pumps across the closure; analysis scripts (-KL)
 
 - **Mouth closure (rule 12c, `src.adaptation_lines.mouth_closures`):** where
@@ -22,6 +23,57 @@ the pipeline works; this file only describes *what changed and why*.
   comparison of return-period curves. `domain_figures.py` adds a 1 m
   elevation-class map. New `flood_depth_maps.py`: one depth map per event for
   the no-adaptation runs.
+=======
+# 2026-10-31: calibration sea ramped to the storm tide and held (- JS)
+
+- **What changed:** rule 11's rounds 1-2 now ramp every sea station from the
+  calm level to its storm tide at the coastal protection RP over `ramp_hr`
+  (the rivers' half-cosine), then hold it to the run end. Before, they used the
+  event runs' storm-tide hydrograph (tide plus surge shape), peaking at
+  `ramp_hr + T_walled` and blended in over `ramp_hr`. The sea still starts
+  calm; the rivers are unchanged.
+- **Why:** the hydrograph touched each design peak for about one hour at the
+  boundary, too short to fill bays and lagoons to that level or to stand at the
+  dike. It also tied the surge timing to `T_walled`, which is still being
+  benchmarked. On the low-RP, high-tide basins the boundary was mostly a tide
+  swinging 3-4 m below the calm level (1416812 RP 3, 1475442 RP 2).
+- **Effect on the boundary** (current `surge_forcing.nc` and walled travel
+  times, 7 basins; 1248635 skipped, its stored travel time predates the canal
+  fix): the peak level is reached in both. Hours within 1 cm of the peak go
+  from 1 (2433835: 3) to 15-54 h, 71-90 % of the run.
+- **Expected effect on crests:** coastal and lower-river crests rise or stay
+  the same, since round 1 now holds the design storm tide until the river
+  arrives. Not yet run: rerun rule 11 on every basin.
+
+# 2026-10-31: lag-vs-plateau figure for the compound lag (- JS)
+
+- New `analysis/lag_plateau.py` (writes
+  `<results_dir>/figures/analysis/lag_plateau_<coast>_<river>.png/.csv`). At the
+  main mouth, the tide-filtered (signed) river discharge does not peak but
+  plateaus, so the script reports the span within 98% of its maximum and
+  the lag that puts the surge peak at its midpoint, next to the configured
+  lag, with the coastal run's mouth level shifted to both.
+- 100-yr, +0.3 m SLR: Ebro plateau 216-258 h at ~3208 m3/s (inflow peak
+  216 h, 3739 m3/s), midpoint lag -21 h (config -12); Chao Phraya plateau
+  from 293 h at ~1024 m3/s, still on at the end of the filter window
+  (426 h; inflow peak 312 h, 9206 m3/s), midpoint lag <= -47 h (config -41).
+  `compound.lag_overrides_hr` set to `{2433835: -21, 3279946: -41}` (from
+  -12/-41): Ebro's surge peak at the plateau midpoint (237 h), Chao
+  Phraya's at 353 h, inside its plateau. Only compound runs (surge and river
+  RP both set) rerun.
+
+# 2026-10-30g: Chao Phraya event runs last 150 h after the last design peak (- JS)
+
+- New `sfincs.boundary_setup.event_after_peak_overrides_hr` (per basin id, read
+  by `event_after_peak_hr()` in `workflow/rules/00_common.smk`), set to
+  `{3279946: 150}`; other basins keep `event_after_peak_hr: 60`.
+- Why: in `river_100_03SLR` for 3279946 the run ended at 372 h (inflow peak 312 h
+  + 60 h). The Godin-filtered main-mouth discharge was still rising at the
+  last valid filter time (~336 h; 998 -> 1023 m3/s from 288 to 336 h, vs
+  9206 m3/s inflow), so `analysis/peak_lag.py` reported the end of the
+  record as the mouth peak (lag -20 h). CP event runs now end at >= 462 h;
+  rule 14 and later rerun for that basin.
+>>>>>>> main
 
 # 2026-10-30e: CI pins hydromt 1.3.1 (- JS)
 
@@ -31,6 +83,18 @@ the pipeline works; this file only describes *what changed and why*.
   failed (1 of 376). `.github/workflows/ci.yml` now installs `hydromt==1.3.1`,
   the version `environment.yml` pins. Checked by running the suite in a venv built
   from the CI pip list: 1 failed before the pin, 376 passed after.
+
+# 2026-10-30f: Muskingum-Cunge peak-travel test (- JS)
+
+- **`analysis/mc_peak_travel.py`:** routes a river run's inflow down the
+  mainstem with three-point variable-parameter Muskingum-Cunge on compound
+  sections (channel; floodplain from the conditioned DEM, gated by the
+  skeleton's weir crests or open) and compares with the SFINCS mouth section.
+  Ebro `river_100_03SLR` (64 km): MC peak travel 7.8 h (channel), 7.0 h
+  (crests), 14.2 h (open), attenuation <= 1.2 %; SFINCS 7.2 h raw, 12.2 h both
+  Godin-filtered, -13 % to -14 %. The SFINCS rising limb follows MC up to
+  ~3200 m3/s, then stays flat for ~2 days, so the mouth peak hour is poorly
+  defined.
 
 # 2026-10-30d: event timeline set in rule 14 from the compound lag; tide runs on (- JS)
 

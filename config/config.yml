@@ -131,7 +131,7 @@ river_processing:
     verify_crests: false            # run round 2 (production crests, reports overtopped edges); false: round 1 only
     depth_scale: 1.0                # sensitivity only: the burned depth below rule 10's surface is multiplied by this (1.0 = the estimated bed)
     crosssections: false            # true: SFINCS cross-sections (crsfile) across each arm of every bifurcation on the seeds' widest paths, discharge in each round's sfincs_his.nc (diagnostic, src.river_depth_calibration.bifurcation_cross_sections)
-    ramp_hr: 6.0                    # half-cosine river ramp, then held to the run end: every crossing from its mean discharge (the flow that holds zsini's river level, src.river_bed mean_level_m) to the calibration discharge. The sea is held at each station's storm tide at the coastal protection RP from the start (zsini of sea and channel cells no lower than it), so only the rivers change. A step to the full (often many-times-bankfull) discharge sends a front that can oscillate for the whole run.
+    ramp_hr: 6.0                    # half-cosine ramp, then held to the run end: every crossing from its mean discharge (the flow that holds zsini's river level, src.river_bed mean_level_m) to the calibration discharge, and every sea station from the calm level (where the sea starts) to its storm tide at the coastal protection RP. A step to the full (often many-times-bankfull) discharge sends a front that can oscillate for the whole run.
     weir_crest_m: 1000.0            # confinement weir crest (m) for round 1 -- effectively never overtopped
     # ── weir-building params (used by modelled_depth_estimation every round)
     min_component_cells: 30           # discard small isolated land islands or water patches below this cell count on either side -- neither gets a weir ring around it
@@ -268,11 +268,13 @@ sfincs:
     compound:
       lag_hr: 0 # river peak minus surge peak (h) in compound runs with both a surge and a river RP
                 # (> 0 delays the river); the river keeps its place after the restart and the surge moves
-      lag_overrides_hr: {2433835: -12, 3279946: -41}  # per basin id, from analysis/peak_lag.py (placeholders until
-                            # it has run): the shift that makes the river and
-                            # surge peaks reach the main mouth together (coast and river runs of one RP/SLR)
+      lag_overrides_hr: {2433835: -21, 3279946: -41}  # per basin id, from analysis/lag_plateau.py: puts the surge peak
+                            # inside the river's discharge plateau at the main mouth (coast and river runs
+                            # of one RP/SLR); Ebro at its midpoint, Chao Phraya inside it (midpoint <= -47)
     event_after_peak_hr: 60  # event runs go on at least this long after the last design peak (the surge
                              # window may end later); the average tide carries on to the end
+    event_after_peak_overrides_hr: {3279946: 150}  # per basin id: long deltas drain the river flood
+                             # to the mouths more slowly (the CP mouth discharge still rises 60 h after the inflow peak)
     slr_ramp_hr: 24  # the spin-up is shared by all scenarios and has the spin-up scenario's SLR, so a
                         # scenario with another slr_m would otherwise hit the restart as a step at the event
                         # start (a 0.34 m step overtopped ~1670 of 1789 coastal weir segments in basin
