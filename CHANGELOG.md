@@ -3,7 +3,6 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
-<<<<<<< HEAD
 # 2026-10-31: mouth closure walks upstream; pumps across the closure; analysis scripts (-KL)
 
 - **Mouth closure (rule 12c, `src.adaptation_lines.mouth_closures`):** where
@@ -23,7 +22,7 @@ the pipeline works; this file only describes *what changed and why*.
   comparison of return-period curves. `domain_figures.py` adds a 1 m
   elevation-class map. New `flood_depth_maps.py`: one depth map per event for
   the no-adaptation runs.
-=======
+
 # 2026-10-31: calibration sea ramped to the storm tide and held (- JS)
 
 - **What changed:** rule 11's rounds 1-2 now ramp every sea station from the
@@ -73,7 +72,6 @@ the pipeline works; this file only describes *what changed and why*.
   9206 m3/s inflow), so `analysis/peak_lag.py` reported the end of the
   record as the mouth peak (lag -20 h). CP event runs now end at >= 462 h;
   rule 14 and later rerun for that basin.
->>>>>>> main
 
 # 2026-10-30e: CI pins hydromt 1.3.1 (- JS)
 
