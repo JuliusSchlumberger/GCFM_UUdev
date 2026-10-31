@@ -9,16 +9,17 @@ is a living document for a two-person project, not a fixed policy.
 
 Unlike a typical app with independent modules, `workflow/` is one Snakemake
 DAG made of **numbered, ordered pipeline stages** (`workflow/rules/00_*.smk`
-through `16_*.smk`, each with a matching `workflow/scripts/NN_*.py`), sharing
+through `19_*.smk`, each except `00_common.smk` with matching
+`workflow/scripts/NN*_*.py`), sharing
 one config schema (`config/config.yml`) and one shared library
 (`workflow/src/*.py`). There usually isn't a clean "your folder vs. my
 folder" split — plan branches around that:
 
 - **Adding a new pipeline stage** (a new rule number): claim the number
   first (message the other person / open a draft PR early) so we don't both
-  end up writing "rule 17". Insert it in true topological order, not just
+  end up writing "rule 20". Insert it in true topological order, not just
   appended at the end — see the rule docstrings for how existing rules
-  reason about DAG position (e.g. why rule 10 can't run earlier than it
+  reason about DAG position (e.g. why rule 11 can't run earlier than it
   does despite operating on elevation).
 - **Improving an existing rule/script/src function**: normal feature branch,
   scoped to the files that rule actually touches.
@@ -32,21 +33,14 @@ folder" split — plan branches around that:
 ## Branching model
 
 - `main` is always the current, working state of the model. Nobody pushes to
-  `main` directly — all changes land via pull request (PR). The repo is now
-  public, so GitHub branch protection rules are available for free — this
-  needs to be turned on explicitly (it isn't automatic just from making the
-  repo public); until it is, nothing actually blocks a direct push to `main`,
-  so treat the PR-only rule as a personal discipline commitment for now. To
-  enable real enforcement: repo **Settings → Branches → Add branch
-  protection rule**, branch name pattern `main`, enable "Require a pull
-  request before merging" and "Require status checks to pass before merging"
-  (select the CI job(s) from `.github/workflows/ci.yml`). Once set up, a
-  green CI run + checked-off PR checklist becomes an actual merge
-  requirement, not just a convention.
+  `main` directly — all changes land via pull request (PR). GitHub enforces
+  this only with a branch protection rule (repo **Settings → Branches → Add
+  branch protection rule**, pattern `main`, "Require a pull request before
+  merging" and "Require status checks to pass before merging" with the CI
+  job from `.github/workflows/ci.yml`); without one it is a team rule.
 - Create one branch per pipeline stage or task, off the latest `main`:
   `feature/<short-description>` (e.g. `feature/discharge-eva`) for new rules
-  or capabilities, `fix/<short-description>` for bug fixes. `adaptation_
-  modelling` and `improve_base_model` are the two current working branches.
+  or capabilities, `fix/<short-description>` for bug fixes.
 - Keep branches short-lived (days, not weeks). Open a PR early — even as a
   draft — if you want feedback before the work is finished. A long-lived
   branch against a DAG this interconnected accumulates conflicts fast.
@@ -59,16 +53,14 @@ folder" split — plan branches around that:
 ## Step-by-step: branch, work, sync, push, PR
 
 Concrete commands for the whole cycle, from creating your branch through
-opening the PR. `adaptation_modelling` and `improve_base_model` already
-exist as the two working branches for this project — substitute your actual
-branch name below.
+opening the PR. Substitute your branch name for `feature/my-change`.
 
 **1. Create your branch, off the latest `main`:**
 
 ```bash
 git checkout main
 git pull origin main
-git checkout -b adaptation_modelling   # or: git checkout adaptation_modelling, if it already exists
+git checkout -b feature/my-change   # or: git checkout feature/my-change, if it already exists
 ```
 
 **2. Work on it** — edit files, then stage and commit as usual:
@@ -100,19 +92,19 @@ breaks anyone else's copy of the branch).
 **4. Push your branch to GitHub:**
 
 ```bash
-git push -u origin adaptation_modelling
+git push -u origin feature/my-change
 ```
 
 The `-u` is only needed the first time you push this branch — it links your
-local branch to `origin/adaptation_modelling` so plain `git push`/`git pull`
+local branch to `origin/feature/my-change` so plain `git push`/`git pull`
 work afterward without naming the branch each time.
 
 **5. Open the pull request.** After `git push`, the terminal prints a direct
 link, e.g.:
 
 ```
-remote: Create a pull request for 'adaptation_modelling' on GitHub by visiting:
-remote:      https://github.com/JuliusSchlumberger/GCFM_UUdev/pull/new/adaptation_modelling
+remote: Create a pull request for 'feature/my-change' on GitHub by visiting:
+remote:      https://github.com/<owner>/<repo>/pull/new/feature/my-change
 ```
 
 Open that link (or go to the repo on GitHub — it shows a "Compare & pull
@@ -136,8 +128,10 @@ configures how the built model consumes it. Before adding a new key:
 - Add an inline comment explaining *why* the value is what it is or *why*
   it's grouped where it is — matching the existing comment style in the
   file — not just what it does.
+- Every key is required: the code has no defaults, so a new key must be set
+  in the yml before the code reads it.
 - If you rename or move a key, `grep` for the old path across `workflow/`,
-  `tests/`, and this repo's Claude Code memory file (see below) — config
+  `tools/`, `analysis/`, `tests/` and `docs/` — config
   key renames are the easiest thing to half-finish, since a stale reference
   won't fail until that specific code path runs.
 
@@ -147,15 +141,18 @@ configures how the built model consumes it. Before adding a new key:
       target) complete without errors — this catches DAG/config errors but
       **not** broken imports (see below).
 - [ ] If you renamed or deleted anything in `workflow/src/`, verify every
-      `from src.X import Y` across `workflow/scripts/`, `workflow/src/`, and
-      `tests/` still resolves. `ast.parse`/a dry-run will NOT catch this —
-      a broken import only fails the first time that specific script
+      `from src.X import Y` across `workflow/scripts/`, `workflow/src/`,
+      `tools/`, `analysis/` and `tests/` still resolves. `ast.parse`/a
+      dry-run will NOT catch this — a broken import only fails the first time that specific script
       actually executes, which can be well after it's merged. A quick way to
       check: try importing every touched module directly with `workflow/` on
       `sys.path`.
+- [ ] `python tests/check_code_health.py` passes (syntax + `src` import
+      resolution; CI does not run it).
+- [ ] `pytest` passes (synthetic unit tests in `tests/unit`; CI runs them).
 - [ ] Pre-commit hooks pass (`pre-commit run --all-files` — see below).
-      This covers formatting/lint (ruff) and docstring style (pydocstyle,
-      Google style) automatically.
+      This covers formatting/lint (ruff), type checks (pyright) and
+      docstring style (pydocstyle) automatically.
 - [ ] New config entries are documented inline in `config.yml` (see "Config
       changes" above), and new data sources are documented in
       `config/data_catalogue.yml` following the existing entry format.
@@ -168,133 +165,127 @@ configures how the built model consumes it. Before adding a new key:
 - **Type checking**: [`pyright`](https://github.com/microsoft/pyright), via
   pre-commit. Currently informational (`typeCheckingMode = "off"` in
   `pyproject.toml`) — flags obvious issues without blocking on strict typing.
-- **Docstrings**: Google style (`Args:` / `Returns:`), checked by
-  `pydocstyle` where present — see `pyproject.toml`'s `add_ignore` list.
-  Docstrings are **not mandatory on every function** (missing-docstring
-  rules D102/D103 are deliberately ignored); the convention actually in use:
-  - `workflow/src/*.py` (shared library functions): thorough Google-style
-    docstrings, since these are called across multiple rules.
+- **Docstrings**: one imperative summary line (max ~80 characters). Add
+  lines only for what the signature cannot say: units, datums, sign
+  conventions, assumptions, valid ranges, the method or paper implemented,
+  side effects. No `Args:`/`Returns:` sections that repeat the type hints;
+  when a section is needed, use Google style (`pydocstyle` runs with the
+  Google convention; `pyproject.toml`'s `add_ignore` skips missing-docstring
+  and missing-argument checks, so neither is required). No docstrings on
+  private helpers, trivial wrappers or tests unless an assumption is
+  non-obvious.
+  - `workflow/src/*.py` (shared library): public functions get the summary
+    line plus the non-obvious facts above.
   - `workflow/rules/*.smk`: the rule's own triple-quoted docstring explains
     *why* it sits where it does in the DAG, not what the script does
     line-by-line — see almost any existing rule for the pattern.
   - `workflow/scripts/*.py` (pipeline-step scripts): a short module
-    docstring is enough; `workflow/scripts/` is excluded from the
-    pydocstyle pre-commit hook entirely. Inline comments only where the
+    docstring is enough; `workflow/scripts/` is excluded from every
+    pre-commit hook (top-level `exclude` in `.pre-commit-config.yaml`),
+    so ruff and pydocstyle do not check it there. Inline comments only where the
     *why* isn't obvious from the code (matching the project's general
     "don't restate what the code does" convention).
 - Naming: `snake_case` for functions/variables, `PascalCase` for classes,
   descriptive names over abbreviations except where a term is standard in
   the field (e.g. `dem`, `eva`, `gpd`, `amax`, `rp`).
 
-## Environment management (Windows / conda)
+## Environment management (conda)
 
-- The environment is defined in `environment.yml` (conda), env name
-  `hmt_sfincs_dev`. Create it fresh with:
+- The portable environment is `environment.yml` (direct dependencies,
+  major.minor pins). It names the environment `<env>`, for example:
 
   ```bash
-  mamba env create -f environment.yml
+  mamba env create -f environment.yml   # creates env "gcfm"
+  conda activate gcfm
   ```
 
   or update an existing one with `mamba env update -f environment.yml --prune`.
-- **`hydromt-sfincs` needs a separate editable install from source** — the
-  version this project depends on isn't just `pip install`-able from
-  `environment.yml` alone. After creating the environment, clone and install
-  it per [README.md](README.md):
-
-  ```bash
-  git clone https://github.com/Deltares/hydromt_sfincs.git
-  pip install -e hydromt_sfincs
-  ```
-
-  (see also Deltares's own [dev install guide](https://deltares.github.io/hydromt_sfincs/latest/dev_guide/dev_install.html#dev-env)
-  if you need to set up a from-scratch dev environment rather than adding
-  the editable install to `hmt_sfincs_dev`.)
-- If your work needs a new package, install it into `hmt_sfincs_dev`
-  locally, then `git add environment.yml` (even without editing it) and
-  commit. The `sync-environment-yml` pre-commit hook
-  (`tools/sync_environment.py`) automatically regenerates the file from the
-  live environment, strips conda's machine-specific trailing `prefix:` line
-  (always your local absolute install path — must never be committed, since
-  `conda env create` would try to use it as the literal install target on
-  the next machine unless overridden with `-n`/`-p`), and compares it to
-  what's staged. If it's stale, the hook rewrites `environment.yml` and
-  fails the commit (same as the `ruff --fix` hook) — review the diff,
-  `git add environment.yml` again, and re-commit.
-  - This hook only runs when `environment.yml` is already part of the
-    commit — it doesn't fire on unrelated commits, so drift on your machine
-    won't pollute commits that don't touch the environment.
+- `environment.win-64.lock.yml` is the full `conda env export` of the
+  reference Windows environment (exact builds); create from it to reproduce
+  that machine exactly on Windows.
+- `hydromt-sfincs` is pinned to `2.0.0rc2` in the `pip:` section of both
+  files, so the commands above install it; no source clone is needed.
+  `workflow/src/hydromt_sfincs_patch.py` holds a runtime fix for that release
+  (float32 subgrid write buffers), called by the scripts that write a SFINCS
+  model (rules 11, 13a, 17b).
+- If your work needs a new package, add it with a major.minor pin to
+  `environment.yml`, install it into `<env>`, then `git add
+  environment.win-64.lock.yml` (even without editing it) and commit. The
+  `sync-environment-lock` pre-commit hook (`tools/sync_environment.py`)
+  regenerates the lock file from the live environment named in its `name:`
+  line, strips conda's machine-specific trailing `prefix:` line (your local
+  absolute install path, which `conda env create` would otherwise use as the
+  install target on the next machine), and compares it to what's staged. If
+  it's stale, the hook rewrites the lock file and fails the commit (same as
+  the `ruff --fix` hook): review the diff, `git add
+  environment.win-64.lock.yml` again, and re-commit.
+  - This hook only runs when the lock file is already part of the commit, so
+    drift on your machine won't pollute commits that don't touch the
+    environment.
   - It needs `conda` resolvable via `$CONDA_EXE` (set automatically when a
-    conda environment is active) or on `PATH`.
+    conda environment is active), on `PATH`, or in a standard
+    miniforge3/miniconda3/anaconda3 install under your home directory.
   - To run it manually without committing:
     `python tools/sync_environment.py`.
-- Don't pin exact build strings unless there's a known compatibility issue —
-  prefer version-only pins so the environment stays resolvable on a
-  different machine/OS patch level.
+- Don't pin exact build strings in `environment.yml`: version-only pins keep
+  it solvable on other machines and operating systems.
 - The SFINCS executable itself is a separately licensed/downloaded binary,
   not part of the conda environment or this repo. Rules that only
   *assemble* SFINCS input files (`build_sfincs`) don't need it; rules that
   actually *run* the solver (`run_spinup`, `run_event`, the depth
-  calibration, pre-adaptation runs) do — point at your own local copy via
-  `GCFM_SFINCS_EXE` (see "Local machine paths" below).
+  calibration, pre-adaptation runs) do: point `sfincs_exe` at your own local
+  copy (see "Site settings" below).
 
-## Local machine paths (one-time, after cloning)
+## Site settings (one-time, after cloning)
 
-Three settings are inherently specific to your own machine, not something
-the codebase can know for you:
+Three settings are specific to your own machine:
 
-- the results directory — where pipeline outputs get written.
-- the raw-data root — where raw input data lives locally (every
+- the results directory: where pipeline outputs get written.
+- the raw-data root: where raw input data lives locally (every
   `file_path` in `data_catalogue.yml` and every measure file in
   `adaptation_strategies.yml` is relative to it).
-- the SFINCS executable — your local SFINCS binary.
+- the SFINCS executable: your local SFINCS binary.
 
-None of the three is committed anywhere in the repo (no `results_dir` /
-`sfincs_exe` in `config.yml`, no `meta.root` in `data_catalogue.yml` /
-`adaptation_strategies.yml`), so a `git pull` can never reset or conflict
-with your local paths. Instead, set three environment variables once —
-there is no fallback, the pipeline stops with a message naming the missing
-variable if one is unset:
+They live in `config/site.yml`, which is gitignored, so a `git pull` can never
+reset or conflict with your local paths. Create it from the committed
+template and fill in the three keys:
 
-| Variable | Sets | Required for |
-|---|---|---|
-| `GCFM_RESULTS_DIR` | results directory (`config["results_dir"]`) | every Snakemake run |
-| `GCFM_RAW_DATA_ROOT` | raw-data root (`CATALOGUE["meta"]["root"]`) | every Snakemake run |
-| `GCFM_SFINCS_EXE` | SFINCS executable | only rules that run the solver |
-
-They are read in `workflow/src/io.py` (`local_path`, `load_catalogue`) and
-`workflow/rules/00_common.smk`; the standalone scripts in `tools/` and
-`tests/` read the same variables directly.
-
-**PowerShell** (persists across sessions — set once, restart your terminal):
-
-```powershell
-[Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
-[Environment]::SetEnvironmentVariable("GCFM_RAW_DATA_ROOT", "D:\your\raw_data\path", "User")
-[Environment]::SetEnvironmentVariable("GCFM_SFINCS_EXE", "C:\path\to\sfincs.exe", "User")
+```bash
+cp config/site.example.yml config/site.yml
 ```
 
-Or for the current session only (until you close the terminal):
+| Key | Override variable | Sets | Required for |
+|---|---|---|---|
+| `results_dir` | `GCFM_RESULTS_DIR` | results directory (`config["results_dir"]`) | every Snakemake run |
+| `raw_data_root` | `GCFM_RAW_DATA_ROOT` | raw-data root (`CATALOGUE["meta"]["root"]`) | every Snakemake run |
+| `sfincs_exe` | `GCFM_SFINCS_EXE` | SFINCS executable | only rules that run the solver |
 
-```powershell
-$env:GCFM_RESULTS_DIR = "D:\your\results\path"
-$env:GCFM_RAW_DATA_ROOT = "D:\your\raw_data\path"
-$env:GCFM_SFINCS_EXE = "C:\path\to\sfincs.exe"
+All code reads them through `src.io.site_setting` (`workflow/src/io.py`);
+`analysis/` scripts use `_common.site_path`. There is no fallback: the
+pipeline stops with a message naming the missing key and its variable.
+
+An environment variable, when set and non-empty, overrides its key (useful
+for CI or batch jobs):
+
+```bash
+export GCFM_RESULTS_DIR=/data/gcfm/results
 ```
 
-Verify they're picked up with a dry run — the printed input/output paths
+```powershell
+$env:GCFM_RESULTS_DIR = "$HOME\gcfm\results"
+```
+
+Verify they're picked up with a dry run; the printed input/output paths
 should reflect your own directories:
 
-```powershell
+```bash
 snakemake preprocess -n --cores 1
 ```
 
-A terminal (or VS Code window) that was already open when you set the
-persistent variables doesn't see them yet — restart it first.
-
 ## Setting up pre-commit (one-time, after cloning)
 
-`.pre-commit-config.yaml` being in the repo does **nothing by itself** —
-it only takes effect once you've run, from inside `hmt_sfincs_dev`:
+`.pre-commit-config.yaml` being in the repo does **nothing by itself**;
+it only takes effect once you've run, from inside `<env>`:
 
 ```bash
 pre-commit install
@@ -312,29 +303,25 @@ pre-commit run --all-files
 ```
 
 should list every hook (`ruff format`, `ruff check`, `pyright`, `pydocstyle`,
-`sync environment.yml with hmt_sfincs_dev`, etc.) as `Passed`/`Failed`, not
-silently do nothing. You can also make a throwaway commit and check that the
-hooks' output appears before it completes.
+`sync environment.win-64.lock.yml with the project conda env`, etc.) as
+`Passed`/`Failed`, not silently do nothing. You can also make a throwaway
+commit and check that the hooks' output appears before it completes.
 
 **If hooks behave differently between a manual `pre-commit run` and an
 actual `git commit`** (e.g. some hooks silently don't run, or one fails with
 a "Python was not found" / exit-code-9009-style error): check
 `.git/hooks/pre-commit`'s `INSTALL_PYTHON` line — it hardcodes the exact
 interpreter path pre-commit was installed from at `pre-commit install` time.
-If it points at the wrong/an old conda env (this has happened once already
-on this repo — it was pointing at a stale, differently-named env), rerun
-`pre-commit install` from inside `hmt_sfincs_dev` to refresh it.
+If it points at the wrong or an old conda env, rerun `pre-commit install`
+from inside `<env>` to refresh it.
 
-## Reference memory (optional, if you use Claude Code)
+## Documentation
 
-`Reference_memory.txt` at the repo root is a living reference an AI
-assistant maintains across sessions on this project — current pipeline
-structure, config schema, known issues, rationale for non-obvious design
-choices. It's not a substitute for code comments and isn't required reading
-to contribute, but if you're using Claude Code on this repo, keeping it in
-sync with structural changes (new rules, renamed config keys, etc.) means
-the next session — yours or the other person's — doesn't have to
-re-discover context that already got worked out once.
+`docs/` holds the install, data, running and methods pages linked from the
+README. When a change alters a rule, an output, a config key or a modelling
+choice, update the page that describes it in the same pull request.
+`docs/data.md` is generated: edit `config/data_catalogue.yml` and run
+`python tools/make_data_table.py`.
 
 ## Commit messages
 

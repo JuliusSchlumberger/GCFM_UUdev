@@ -1,193 +1,226 @@
+"""Plot flood depth maps per scenario and a depth | attribution comparison.
+
+Scenarios: the SCENARIOS list (coast_100_03SLR, river_100_03SLR,
+compound_100_03SLR). Panels use the EPSG:4326 style of rule 15's
+plot_inundation_check (land polygons + river network), so depth and
+attribution columns share identical panel geometry.
+
+Outputs (all in <results_dir>/2433835/figures/analysis/):
+  90_flood_maps_flood_map_<scenario>.png    one per scenario, depth map alone
+  90_flood_maps_attribution_comparison.png  3 rows (event) x 2 cols (depth | attribution)
 """
-Standalone max flood depth map per flood event, for the no-adaptation baseline run
-(<event>/visuals/max_flood_depth.tif) -- one publication figure per event, in the same
-WGS84 style (land polygons, river network, domain outline) as study_area_figures.py.
 
-Depth is shown in discrete classes on one shared scale, so the events compare directly;
-open sea (the zsini sea mask) is painted over, since depth there is not flooding. The
-flooded land / urban exposure annotation is read from the run's own
-metrics/flood_metrics.csv, so it matches the numbers reported elsewhere.
+from __future__ import (
+    annotations,
+)  # must be the first statement
 
-Outputs: <basin>/runs/fig_flood_maps/fig_flood_map_<event>.png
-"""
-
-import os
 import sys
-from pathlib import Path
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
+from _common import (  # noqa: E402
+    REPO_ROOT,
+    analysis_path,
+    label,
+    script_parser,
+    site_path,
+)
 from matplotlib.colors import BoundaryNorm, ListedColormap
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
-from src.plots import read_raster_reprojected_for_plot  # noqa: E402
+sys.path.insert(0, str(REPO_ROOT / "workflow"))
+from src.plots import draw_depth_map, read_raster_reprojected_for_plot  # noqa: E402
 
-BASIN_ID = "3279946"  # Chao Phraya delta
-# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
-# Set it once in PowerShell, then restart your terminal (see
-# CONTRIBUTING.md "Local machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
-BASIN_ROOT = Path(os.environ["GCFM_RESULTS_DIR"]) / BASIN_ID
-RUNS = BASIN_ROOT / "runs"
-DOMAIN = BASIN_ROOT / "preprocessing_inputs" / "domain"
-OUT_DIR = RUNS / "fig_flood_maps"
+BASIN_ID = "2433835"
 
-EVENTS = {
-    "coast_100_03SLR": "Coastal flood",
-    "river_100_03SLR": "River flood",
-    "compound_100_03SLR": "Compound flood",
-}
+SCENARIOS = ["coast_100_03SLR", "river_100_03SLR", "compound_100_03SLR"]
 
-# depth classes (m); the lowest edge is the pipeline's wet/dry cutoff (hmin)
-DEPTH_BOUNDS = [0.05, 0.5, 1.0, 1.5, 2.0, 3.0]
-DEPTH_COLORS = ["#c6dbef", "#9ecae1", "#6baed6", "#3182bd", "#08519c", "#08306b"]
-LAND_COLOR = "#e0e0e0"
-SEA_COLOR = "#f4f6f8"
-MARGIN_FRAC = 0.015
-
-_domain = gpd.read_file(DOMAIN / f"{BASIN_ID}_domain.gpkg").to_crs("EPSG:4326")
-DOMAIN_POLY = _domain.geometry.union_all()
+ATTR_COLORS = ["#d1c740", "#3277d3", "#d883e9"]
+ATTR_LABELS = ["River", "Coastal", "Compound"]
+ATTR_CMAP = ListedColormap(ATTR_COLORS)
+ATTR_NORM = BoundaryNorm([0.5, 1.5, 2.5, 3.5], ATTR_CMAP.N)
 
 
-def event_subtitle(event):
-    """'coast_100_03SLR' -> '100-year event, 0.3 m sea-level rise'."""
-    _, rp, slr = event.split("_")
-    return f"{rp}-year event, {int(slr[:-3]) / 10:g} m sea-level rise"
-
-
-def plot_event(event, title, land, rivers):
-    left, bottom, right, top = DOMAIN_POLY.bounds
-    bounds = (left, bottom, right, top)
-    depth, extent = read_raster_reprojected_for_plot(
-        str(RUNS / event / "visuals" / "max_flood_depth.tif"), dst_bounds=bounds
-    )
-    sea, sea_extent = read_raster_reprojected_for_plot(
-        str(DOMAIN / f"{BASIN_ID}_zsini_sea_cells_on_grid.tif"), dst_bounds=bounds
-    )
-    metrics = pd.read_csv(RUNS / event / "metrics" / "flood_metrics.csv").iloc[0]
-
-    fig, ax = plt.subplots(figsize=(7.5, 7), facecolor="white", layout="constrained")
-    ax.set_facecolor(SEA_COLOR)
-    land.plot(ax=ax, color=LAND_COLOR, edgecolor="#b0b0b0", linewidth=0.3, zorder=1)
-    # under the depth layer: the network only shows where the channel stays dry
-    rivers.plot(ax=ax, color="#7f9db5", linewidth=0.5, zorder=2)
-
-    cmap = ListedColormap(DEPTH_COLORS)
-    norm = BoundaryNorm(DEPTH_BOUNDS, ncolors=cmap.N, extend="max")
-    im = ax.imshow(
-        depth,
-        cmap=cmap,
-        norm=norm,
-        extent=extent,
-        origin="upper",
-        aspect="auto",
-        interpolation="nearest",
-        zorder=3,
-    )
-    is_sea = sea == 1.0
-    ax.imshow(
-        np.ma.masked_where(~is_sea, is_sea),
-        cmap=ListedColormap([SEA_COLOR]),
-        extent=sea_extent,
-        origin="upper",
-        aspect="auto",
-        interpolation="nearest",
-        zorder=4,
-    )
-    # outline the sea mask so its inland reaches (coastal ponds below sea level,
-    # which the model starts as sea) read as water, not as a gap in the map
-    s_left, s_right, s_bottom, s_top = sea_extent
-    ax.contour(
-        is_sea.astype(float),
-        levels=[0.5],
-        colors="#9aa5b1",
-        linewidths=0.4,
-        extent=(s_left, s_right, s_top, s_bottom),  # row 0 is the top row
-        zorder=4,
-    )
-    gpd.GeoSeries([DOMAIN_POLY], crs="EPSG:4326").boundary.plot(
-        ax=ax, color="#333333", linewidth=1.0, zorder=5
+def _context_paths(basin_root):
+    domain_dir = basin_root / "preprocessing_inputs" / "domain"
+    return (
+        domain_dir / f"{BASIN_ID}_land_polygons.gpkg",
+        domain_dir / f"{BASIN_ID}_river_network_clean.gpkg",
     )
 
-    margin = max(right - left, top - bottom) * MARGIN_FRAC
+
+def draw_depth_panel(ax, scen, basin_root):
+    """Draw a scenario's max depth like plot_inundation_check's left panel."""
+    land_path, river_path = _context_paths(basin_root)
+    tif_path = basin_root / "runs" / scen / "visuals" / "max_flood_depth.tif"
+    wgs_arr, (left, right, bottom, top) = read_raster_reprojected_for_plot(
+        str(tif_path)
+    )
+    margin = max(right - left, top - bottom) * 0.03
+
+    land = gpd.read_file(
+        land_path,
+        bbox=(left - margin, bottom - margin, right + margin, top + margin),
+    )
+    rivers = gpd.read_file(river_path)
+    if not rivers.empty and rivers.crs is not None and rivers.crs.to_epsg() != 4326:
+        rivers = rivers.to_crs("EPSG:4326")
+
+    valid = wgs_arr[~np.isnan(wgs_arr)]
+    vmax = float(np.percentile(valid, 99)) if len(valid) > 0 else 1.0
+    vmax = max(vmax, 0.01)
+    n_flooded = int(np.sum(~np.isnan(wgs_arr)))
+
+    im = draw_depth_map(ax, wgs_arr, (left, right, bottom, top), land, rivers, vmax)
     ax.set_xlim(left - margin, right + margin)
     ax.set_ylim(bottom - margin, top + margin)
     ax.set_aspect("equal")
-    ax.locator_params(nbins=5)
-    ax.tick_params(labelsize=8)
-    ax.set_xlabel("Longitude (°)", fontsize=9)
-    ax.set_ylabel("Latitude (°)", fontsize=9)
-    for spine in ax.spines.values():
-        spine.set_linewidth(0.6)
+    ax.grid(True, alpha=0.3, linewidth=0.5)
+    return im, n_flooded, (left, right, bottom, top)
 
-    cbar = fig.colorbar(
-        im,
-        ax=ax,
-        extend="max",
-        ticks=DEPTH_BOUNDS,
-        format="%g",
-        fraction=0.035,
-        pad=0.02,
-    )
-    cbar.set_label("Max flood depth (m)", fontsize=9)
-    cbar.ax.tick_params(labelsize=8)
-    cbar.outline.set_linewidth(0.6)
 
-    ax.text(
-        0.03,
-        0.97,
-        f"Flooded land  {metrics.flooded_area_km2:,.0f} km² "
-        f"({metrics.flood_extent_pct:.0f}%)\n"
-        f"Urban exposed  {metrics.urban_exposed_km2:,.0f} km²\n"
-        f"Mean depth  {metrics.mean_depth_m:.1f} m",
-        transform=ax.transAxes,
-        ha="left",
-        va="top",
-        fontsize=8,
-        linespacing=1.5,
-        bbox=dict(boxstyle="round,pad=0.5", fc="white", ec="#b0b0b0", lw=0.6),
-        zorder=6,
+def draw_attribution_panel(ax, scen, dst_bounds, basin_root):
+    """Draw a scenario's attribution mask on the same frame as draw_depth_panel."""
+    land_path, river_path = _context_paths(basin_root)
+    tif_path = basin_root / "runs" / scen / "attribution_mask.tif"
+    wgs_arr, (left, right, bottom, top) = read_raster_reprojected_for_plot(
+        str(tif_path), dst_bounds=dst_bounds
     )
-    ax.legend(
-        handles=[
-            Patch(facecolor=LAND_COLOR, edgecolor="#b0b0b0", label="Dry land"),
-            Patch(facecolor=SEA_COLOR, edgecolor="#9aa5b1", label="Sea"),
-        ],
-        loc="lower right",
-        fontsize=8,
-        framealpha=0.9,
-        edgecolor="#b0b0b0",
+    margin = max(right - left, top - bottom) * 0.03
+
+    land = gpd.read_file(
+        land_path,
+        bbox=(left - margin, bottom - margin, right + margin, top + margin),
     )
-    ax.set_title(title, fontsize=11, fontweight="bold", loc="left", pad=18)
-    ax.text(
-        0,
-        1.012,
-        event_subtitle(event),
-        transform=ax.transAxes,
-        fontsize=9,
-        color="#555555",
-        va="bottom",
+    rivers = gpd.read_file(river_path)
+    if not rivers.empty and rivers.crs is not None and rivers.crs.to_epsg() != 4326:
+        rivers = rivers.to_crs("EPSG:4326")
+
+    if not land.empty:
+        land.plot(ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
+    # Class 4 (embanked water, e.g. the river channel) has no colour
+    # slot and would clip to "compound"; masked as in attribution_plot.py.
+    attr_arr = np.nan_to_num(wgs_arr, nan=0)
+    attr_plot = np.ma.masked_where((attr_arr == 0) | (attr_arr == 4), attr_arr)
+    ax.imshow(
+        attr_plot,
+        cmap=ATTR_CMAP,
+        norm=ATTR_NORM,
+        extent=(left, right, bottom, top),
+        origin="upper",
+        aspect="auto",
+        zorder=2,
+    )
+    if not rivers.empty:
+        rivers.plot(ax=ax, color="steelblue", linewidth=0.6, zorder=3)
+    ax.set_xlim(left - margin, right + margin)
+    ax.set_ylim(bottom - margin, top + margin)
+    ax.set_aspect("equal")
+    ax.grid(True, alpha=0.3, linewidth=0.5)
+
+
+def main() -> None:
+    """Run the flood map rendering and write the per-scenario and comparison PNGs."""
+    script_parser(__doc__).parse_args()
+
+    # results_dir is a site setting; see config/site.example.yml.
+    basin_root = site_path("results_dir") / BASIN_ID
+
+    # per-scenario figures
+    for scen in SCENARIOS:
+        fig, ax = plt.subplots(figsize=(8, 7))
+        im, n_flooded, _ = draw_depth_panel(ax, scen, basin_root)
+        cbar = fig.colorbar(im, ax=ax, extend="max", fraction=0.03, pad=0.04)
+        cbar.set_label("Max flood depth (m)")
+        ax.set_xlabel("Longitude (°)")
+        ax.set_ylabel("Latitude (°)")
+        ax.set_title(
+            f"Max flood depth -- {label(scen)}  ({n_flooded:,} flooded pixels)"
+        )
+        ax.legend(
+            handles=[
+                Patch(color="#6baed6", label="Flooded"),
+                Patch(color="#d9d9d9", edgecolor="#aaaaaa", label="Dry / land"),
+                Line2D(
+                    [0], [0], color="steelblue", linewidth=1.5, label="River network"
+                ),
+            ],
+            loc="lower right",
+            framealpha=0.9,
+        )
+        fig.tight_layout()
+        out_path = analysis_path(BASIN_ID, __file__, f"flood_map_{scen}.png")
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Wrote {out_path}")
+
+    # depth | attribution comparison
+    fig, axes = plt.subplots(
+        len(SCENARIOS),
+        2,
+        figsize=(16, 5.5 * len(SCENARIOS)),
+        gridspec_kw={"width_ratios": [1, 1.3]},
     )
 
-    out = OUT_DIR / f"fig_flood_map_{event}.png"
-    fig.savefig(out, dpi=300, bbox_inches="tight", facecolor="white")
+    for i, scen in enumerate(SCENARIOS):
+        ax_depth, ax_attr = axes[i, 0], axes[i, 1]
+
+        im, n_flooded, bounds = draw_depth_panel(ax_depth, scen, basin_root)
+        cbar = fig.colorbar(im, ax=ax_depth, extend="max", fraction=0.03, pad=0.04)
+        cbar.set_label("Max flood depth (m)")
+        if i == len(SCENARIOS) - 1:
+            ax_depth.set_xlabel("Longitude (°)")
+        ax_depth.set_ylabel("Latitude (°)")
+        ax_depth.annotate(
+            label(scen),
+            xy=(-0.16, 0.5),
+            xycoords="axes fraction",
+            fontsize=15,
+            rotation=90,
+            ha="center",
+            va="center",
+        )
+        if i == 0:
+            ax_depth.set_title("Maximum flood depth (m)", size=14)
+        ax_depth.legend(
+            handles=[
+                Patch(color="#6baed6", label="Flooded"),
+                Patch(color="#d9d9d9", edgecolor="#aaaaaa", label="Dry / land"),
+                Line2D(
+                    [0], [0], color="steelblue", linewidth=1.5, label="River network"
+                ),
+            ],
+            loc="lower right",
+            framealpha=0.9,
+            fontsize=10,
+        )
+
+        left, right, bottom, top = bounds
+        draw_attribution_panel(
+            ax_attr, scen, dst_bounds=(left, bottom, right, top), basin_root=basin_root
+        )
+        ax_attr.set_xticks([])
+        ax_attr.set_ylabel("")
+        if i == 0:
+            ax_attr.set_title("Flood source attribution", size=14)
+        ax_attr.legend(
+            handles=[
+                Patch(color=c, label=lab) for c, lab in zip(ATTR_COLORS, ATTR_LABELS)
+            ],
+            loc="lower right",
+            framealpha=0.9,
+            fontsize=10,
+        )
+
+    # fig.suptitle(f"Flood depth and source attribution by event -- basin {BASIN_ID}", fontsize=14)
+    fig.tight_layout()
+    out_path = analysis_path(BASIN_ID, __file__, "attribution_comparison.png")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"Wrote {out}")
+    print(f"Wrote {out_path}")
 
 
 if __name__ == "__main__":
-    OUT_DIR.mkdir(exist_ok=True)
-    left, bottom, right, top = DOMAIN_POLY.bounds
-    margin = max(right - left, top - bottom) * MARGIN_FRAC
-    land = gpd.read_file(
-        DOMAIN / f"{BASIN_ID}_land_polygons.gpkg",
-        bbox=(left - margin, bottom - margin, right + margin, top + margin),
-    )
-    rivers = gpd.read_file(DOMAIN / f"{BASIN_ID}_river_network_clean.gpkg").to_crs(
-        "EPSG:4326"
-    )
-    for event, title in EVENTS.items():
-        plot_event(event, title, land, rivers)
+    main()

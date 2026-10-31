@@ -1,73 +1,35 @@
-"""
-Per-basin land-use source preparation (rule prepare_landuse, 02b), its
-resampling onto the working grids, and roughness aggregation.
+"""Build the per-basin land-use source (rule prepare_landuse), warp it to grids, derive roughness.
 
-THE land-use classification every later rule reads is the per-basin
-{basin}_landuse_source.tif this module builds: one raster, clipped to the
-domain bbox, in WGS84 at the chosen source's own resolution, carrying
-PIPELINE CODES -- the source's own class codes plus 200 for open sea, the
-single sea/land criterion the whole pipeline is built on (sea_mask, both
-land masks, the coastal-protection weir's ocean mask, zsini, the
-water-level boundary).
+{basin}_landuse_source.tif is THE land-use classification every later rule
+reads: WGS84, the source's own resolution, clipped to the domain bbox, in
+pipeline codes -- the source's class codes plus 200 = open sea, the single
+sea/land criterion of the pipeline (sea_mask, land masks, the coastal weir's
+ocean mask, zsini, the water-level boundary). Sources (config landuse.source):
 
-Two sources, selected by config landuse.source:
+  copernicus_lc100  LC100, 100 m, catalogue 'land_use'; already has 200 = open
+                    sea, codes pass through unchanged.
+  esa_worldcover    WorldCover 2021 v200, 10 m, catalogue
+                    'land_use_esa_worldcover'; no sea class (sea, lagoons,
+                    rivers, lakes are all 80), so 200 is derived:
+    1. barrier = the basin's clipped river network (rule 02) buffered to the
+       reaches' SWORD width, minus LC100 open sea (SWORD lines run past the
+       shoreline at the mouths).
+    2. sea = connected components of WorldCover water (80) minus the barrier
+       that touch the window border AND contain an LC100 open-sea pixel (200);
+       the latter guards against inland lakes/rivers reaching the border.
+    3. plus WorldCover nodata where LC100 says sea (beyond the tile footprint).
+  Everything else keeps its WorldCover code: cut-off lagoons and upstream
+  channels stay 80, the 10 m coastline stays land; water genuinely open to the
+  sea (e.g. Lake Pontchartrain) is sea.
 
-  copernicus_lc100  Copernicus Global Land Service LC100, 100 m, catalogue
-                    entry 'land_use'. Already carries 200 = open sea, so
-                    the raster is only windowed to the domain -- codes pass
-                    through unchanged.
+Memory: the sea derivation runs on a coarsened working grid capped at
+MAX_WORKING_PIXELS and is applied back to the fine grid by intersecting with
+the fine water mask (the 10 m coastline survives); every raster is streamed
+in blocks capped at MAX_BLOCK_PIXELS.
 
-  esa_worldcover    ESA WorldCover 2021 v200, 10 m, catalogue entry
-                    'land_use_esa_worldcover'. Has NO sea class: open sea,
-                    lagoons, rivers and lakes are all class 80 ("permanent
-                    water bodies"), so 200 has to be derived -- see
-                    _derive_sea_mask below.
-
-Sea from WorldCover: the sea is the water you reach by swimming in from
-outside the domain, and the rivers are where that stops.
-  1. barrier = the basin's own clipped river network (rule 06) buffered to
-     the reaches' own SWORD width, minus anything LC100 calls open sea
-     (SWORD lines run out past the shoreline at the mouths, and a barrier
-     there would cut a notch into the open sea).
-  2. sea = connected components of WorldCover water (80) MINUS that
-     barrier which (a) touch the domain window's border -- the sea enters
-     the window from outside -- and (b) contain at least one pixel LC100
-     calls open sea (200). (b) is the guard against an inland lake or an
-     upstream river that happens to reach the border: on the Mississippi,
-     38 water bodies touch the border and only 3 hold LC100 sea.
-  3. plus WorldCover nodata where LC100 says sea -- open water beyond the
-     WorldCover tile footprint.
-Everything else keeps its WorldCover code, so lagoons cut off from the sea
-by land stay 80, the river channel upstream of its mouth stays 80, and the
-10 m coastline (beaches, spits, jetties: 10 km2 on basin 2433835 that LC100
-called sea) stays land. Note that water genuinely open to the sea IS sea
-here, including large sea-connected bays and lakes (Lake Pontchartrain).
-
-This replaced a distance-capped variant (2026-09-14) that grew the sea from
-LC100's own sea cells and cut it off beyond sea_fringe_m: that cap sliced
-through physically continuous water, leaving nearshore sea classified as
-inland water -- 47 km2 of it on basin 2433835, and 5,781 km2 on the
-Mississippi, where no distance threshold separates sea from river and marsh
-(raising it to 3.2 km still left 7,407 km2 and started leaking up-river).
-
-MEMORY: at 10 m a delta-sized window is huge -- 2.0 GIGApixels for the
-Mississippi's 466x323 km bbox (25M for the Ebro's 39x41 km). Nothing here
-ever holds a full fine-resolution window, let alone the int32 label array
-connected components would need for it (8.2 GB for the Mississippi):
-  - the sea derivation (connected components + the rasterized river
-    barrier) runs on a COARSENED working grid, capped at
-    MAX_WORKING_PIXELS, and its result is applied back to the fine grid by
-    intersecting with the fine water mask -- so the 10 m coastline
-    survives, only the connectivity geometry is resolved coarsely;
-  - every raster written here is streamed in row blocks capped at
-    MAX_BLOCK_PIXELS.
-Peak memory is therefore set by those two caps, not by the delta's size.
-
-Roughness: Manning's n is a CONTINUOUS quantity, so it is never taken from
-an upscaled class raster. write_roughness_raster converts the land-use
-SOURCE to n at the source's own resolution and AREA-AVERAGES those values
-onto the target grid (aggregate_manning). Class rasters are upscaled by
-mode (most frequent class) instead -- see warp_landuse_to_grid.
+Roughness: Manning's n is continuous, so it is converted at the source
+resolution and area-averaged onto the target grid (aggregate_manning); class
+rasters are upscaled by mode (warp_landuse_to_grid).
 """
 
 from __future__ import annotations
@@ -76,37 +38,36 @@ import logging
 import math
 from pathlib import Path
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
 from affine import Affine
-from rasterio.transform import array_bounds
+from rasterio.features import rasterize
 from rasterio.warp import Resampling, reproject, transform_bounds
 from rasterio.windows import Window, from_bounds
-
-from src.raster import reproject_nan_aware
+from src.geometry import pick_utm_crs
+from src.raster import FLOAT_NODATA, reproject_nan_aware
 
 log = logging.getLogger(__name__)
 
-# THE sea code of this pipeline's own land-use convention (LC100's own
-# "open sea" class; derived for WorldCover, which has no sea class).
-SEA_CODE = 200
-# Wetland/lagoon classes that may be left OUTSIDE the coastal protection
-# when river_depth_modelling.unprotected_ocean_wetlands is on: herbaceous
-# wetland (90) and permanent water bodies (80) in both schemes, plus
-# WorldCover's own mangroves (95), which are intertidal by definition.
+# LC100's "open sea" class; derived for WorldCover, which has no sea class.
+LANDUSE_SEA_CODE = 200
+# Classes that may be left outside the coastal protection when
+# river_depth_modelling.unprotected_ocean_wetlands is on: herbaceous wetland
+# (90), permanent water bodies (80), WorldCover mangroves (95, intertidal).
 OCEAN_WETLAND_CLASSES = (80, 90, 95)
 
-LANDUSE_NODATA = 255  # the per-basin product's nodata, both sources
-ROUGHNESS_NODATA = -9999.0
+LANDUSE_NODATA = 255  # per-basin product's nodata, both sources
+ROUGHNESS_NODATA = FLOAT_NODATA
 
 SOURCES = ("copernicus_lc100", "esa_worldcover")
 
 WORLDCOVER_WATER = 80  # "permanent water bodies" -- sea AND inland water
 WORLDCOVER_NODATA = 0  # "no data" in the tiles; mapped to LANDUSE_NODATA
-# ESA WorldCover v200 classes (10 m). 20-100 share both their code and
-# their meaning with LC100; 10 replaces LC100's 111-126 forest classes and
-# 95 (mangroves) has no LC100 equivalent -- both need a roughness lookup row.
+# ESA WorldCover v200 classes (10 m). 20-100 share code and meaning with
+# LC100; 10 stands for LC100's 111-126 forest classes and 95 (mangroves) has
+# no LC100 equivalent -- both need a roughness lookup row.
 WORLDCOVER_CLASSES = {
     10: "tree_cover",
     20: "shrubland",
@@ -121,11 +82,11 @@ WORLDCOVER_CLASSES = {
     100: "moss_lichen",
 }
 
-# Working grid for the sea morphology: 60M px keeps the int32 label array
-# at ~240 MB (the Mississippi's own 2.0 Gpx window would need 8.2 GB).
+# Sea-morphology working grid: 60M px keeps the int32 label array at ~240 MB
+# (the Mississippi's 2.0 Gpx 10 m window would need 8.2 GB).
 MAX_WORKING_PIXELS = 60_000_000
-# Row-block budget for every streamed read/write below (~20M px: 20 MB as
-# uint8, 80 MB as float32, before the warp's own temporaries).
+# Block budget for every streamed read/write (~20M px: 20 MB as uint8,
+# 80 MB as float32, before the warp's own temporaries).
 MAX_BLOCK_PIXELS = 20_000_000
 
 _GTIFF_CREATION = {
@@ -136,25 +97,15 @@ _GTIFF_CREATION = {
 }
 
 
-# ── small helpers ────────────────────────────────────────────────────────────
-
-
 def _pixel_size_m(transform, lat_deg: float) -> float:
-    """
-    Pixel size in metres of a WGS84 raster, taking the LARGER (N-S) of the
-    two dimensions: a square degree-sized pixel is narrower E-W by
-    cos(latitude) (at 40.7N, a 10 m WorldCover pixel is 9.3 m N-S but 7.0 m
-    E-W). Used to report the working grid's own resolution; the larger of
-    the two is the conservative choice for anything measured in whole
-    pixels.
-    """
+    # Larger of N-S and E-W (E-W shrinks by cos(lat)): conservative for
+    # anything measured in whole pixels.
     ns = float(abs(transform.e)) * 110_574.0
     ew = float(abs(transform.a)) * 111_320.0 * max(math.cos(math.radians(lat_deg)), 0.1)
     return max(ns, ew)
 
 
 def _integer_window(src, wgs84_bounds) -> Window:
-    """Window covering wgs84_bounds, snapped outwards to whole pixels."""
     win = from_bounds(*wgs84_bounds, transform=src.transform)
     return Window(
         col_off=math.floor(win.col_off),
@@ -165,14 +116,28 @@ def _integer_window(src, wgs84_bounds) -> Window:
 
 
 def _row_blocks(height: int, width: int, max_pixels: int = MAX_BLOCK_PIXELS):
-    """Yield (row_off, n_rows) row blocks holding at most max_pixels each."""
     rows = max(1, int(max_pixels // max(width, 1)))
     for row0 in range(0, height, rows):
         yield row0, min(rows, height - row0)
 
 
+def _square_tiles(
+    height: int,
+    width: int,
+    dst_res_m: float,
+    src_res_m: float,
+    max_source_pixels: int = MAX_BLOCK_PIXELS,
+):
+    # The source box read for a tile is at most 2x the tile's area (the factor 2),
+    # leaving room for reprojection between the source and destination CRS.
+    ratio = max(dst_res_m, 1e-9) / max(src_res_m, 1e-9)  # source px per destination px
+    side = max(1, int(math.sqrt(max_source_pixels / 2.0) / max(ratio, 1.0)))
+    for row0 in range(0, height, side):
+        for col0 in range(0, width, side):
+            yield row0, col0, min(side, height - row0), min(side, width - col0)
+
+
 def _read_window(path: str | Path, wgs84_bounds: tuple[float, float, float, float]):
-    """Windowed read of a WGS84 raster; returns (array, transform, nodata)."""
     with rasterio.open(path) as src:
         window = _integer_window(src, wgs84_bounds)
         arr = src.read(1, window=window, boundless=True, fill_value=src.nodata or 0)
@@ -180,10 +145,7 @@ def _read_window(path: str | Path, wgs84_bounds: tuple[float, float, float, floa
 
 
 def _lc100_on_grid(lc100_path, transform, shape) -> np.ndarray:
-    """LC100 nearest-resampled onto an arbitrary WGS84 grid (pure upsampling
-    at 10-60 m, so every fine pixel simply inherits the coarse class it
-    falls in -- no class is invented).
-    """
+    # Nearest: pure upsampling at 10-60 m, so no class is invented.
     out = np.full(shape, LANDUSE_NODATA, dtype=np.uint8)
     with rasterio.open(lc100_path) as lc_src:
         reproject(
@@ -196,9 +158,6 @@ def _lc100_on_grid(lc100_path, transform, shape) -> np.ndarray:
     return out
 
 
-# ── sea derivation (ESA WorldCover) ──────────────────────────────────────────
-
-
 def _river_barrier_mask(
     river_network_path: str | Path,
     transform,
@@ -207,21 +166,8 @@ def _river_barrier_mask(
     width_factor: float,
     min_width_m: float,
 ) -> np.ndarray:
-    """
-    Rasterized river channels, the barrier that stops the sea fill at the
-    river mouths.
-
-    Each reach is buffered to half its own SWORD ``width`` (times
-    ``width_factor``, at least ``min_width_m``) so the strip spans the
-    channel rather than merely tracing its centreline -- an unbuffered line
-    leaves water either side of it and the fill simply walks around it.
-    Buffering happens in a metric CRS, then the result is rasterized onto
-    the working grid.
-
-    Anything LC100 calls open sea is removed from the barrier: SWORD's
-    lines continue past the shoreline at the mouths, and a barrier out
-    there would cut a notch into the open sea.
-    """
+    # Buffered to the channel width: an unbuffered centreline leaves water on
+    # either side and the sea fill walks around it.
     import geopandas as gpd
     from rasterio.features import rasterize
 
@@ -233,7 +179,7 @@ def _river_barrier_mask(
         )
         return np.zeros(shape, dtype=bool)
 
-    rivers_m = rivers.to_crs(rivers.estimate_utm_crs())
+    rivers_m = rivers.to_crs(pick_utm_crs(rivers))
     widths = (
         rivers_m["width"].astype(float).fillna(0.0)
         if "width" in rivers_m.columns
@@ -266,17 +212,36 @@ def _river_barrier_mask(
     return barrier
 
 
+def _fathomdem_on_grid(tile_paths: list[str], transform, shape) -> np.ndarray:
+    # EGM2008 metres (tiles store int32 centimetres); NaN where no tile covers.
+    out = np.full(shape, np.nan, dtype=np.float32)
+    for path in tile_paths:
+        tile = np.full(shape, np.nan, dtype=np.float32)
+        with rasterio.open(path) as src:
+            reproject(
+                source=rasterio.band(src, 1),
+                destination=tile,
+                dst_transform=transform,
+                dst_crs=src.crs,
+                dst_nodata=np.nan,
+                resampling=Resampling.average,
+            )
+        out = np.where(np.isnan(out), tile / 100.0, out)
+    return out
+
+
 def _derive_sea_mask(
     water: np.ndarray,
     nodata_mask: np.ndarray,
     lc100_sea: np.ndarray,
     barrier: np.ndarray,
+    elevation_m: np.ndarray | None = None,
+    sea_max_elevation_m: float = np.inf,
 ) -> tuple[np.ndarray, dict]:
-    """
-    Open-sea mask on the working grid: water components that reach the
-    window border AND hold LC100 sea, with the river barrier removed first.
-    See this module's docstring.
-    """
+    # elevation_m: a water body whose median land-DEM level is above
+    # sea_max_elevation_m is not sea. LC100 calls some wide inland riverbeds
+    # open sea; where such a river reaches the domain border it passes the
+    # border and LC100 tests (basin 1475442: a 6.5 km2 patch at 37 m).
     from scipy import ndimage
 
     labels, n_components = ndimage.label(water & ~barrier)
@@ -286,6 +251,26 @@ def _derive_sea_mask(
     at_border = set(np.unique(labels[border]).tolist()) - {0}
     with_lc100_sea = set(np.unique(labels[lc100_sea]).tolist()) - {0}
     sea_labels = sorted(at_border & with_lc100_sea)
+    dropped_high: dict[int, float] = {}
+    if elevation_m is not None and sea_labels:
+        candidate = np.isin(labels, sea_labels) & np.isfinite(elevation_m)
+        medians = pd.Series(elevation_m[candidate]).groupby(labels[candidate]).median()
+        dropped_high = {
+            int(k): float(v) for k, v in medians.items() if v > sea_max_elevation_m
+        }
+        if dropped_high:
+            sizes = ndimage.sum(
+                np.ones_like(labels, dtype=bool), labels, list(dropped_high)
+            )
+            log.warning(
+                f"_derive_sea_mask: {len(dropped_high)} border water bodies with LC100 open sea "
+                f"lie above {sea_max_elevation_m:g} m (FathomDEM median) and stay inland water: "
+                + ", ".join(
+                    f"{int(n):,} px at {z:.1f} m"
+                    for n, z in zip(sizes, dropped_high.values())
+                )
+            )
+            sea_labels = [k for k in sea_labels if k not in dropped_high]
     if not sea_labels:
         log.warning(
             f"_derive_sea_mask: none of the {n_components:,} water bodies both reaches "
@@ -305,6 +290,7 @@ def _derive_sea_mask(
         "water_bodies": int(n_components),
         "bodies_at_border": len(at_border),
         "bodies_kept_as_sea": len(sea_labels),
+        "bodies_above_sea_max_elevation": len(dropped_high),
     }
     return sea, stats
 
@@ -317,8 +303,9 @@ def _write_worldcover_source(
     river_network_path,
     river_barrier_width_factor,
     river_barrier_min_width_m,
+    fathomdem_tiles,
+    sea_max_elevation_m,
 ) -> tuple[dict, dict]:
-    """Stream the WorldCover-derived per-basin land use to out_path."""
     with rasterio.open(worldcover_path) as wc_src:
         window = _integer_window(wc_src, wgs84_bounds)
         h, w = int(window.height), int(window.width)
@@ -326,7 +313,6 @@ def _write_worldcover_source(
         wc_nodata = wc_src.nodata if wc_src.nodata is not None else WORLDCOVER_NODATA
         lat_mid = 0.5 * (wgs84_bounds[1] + wgs84_bounds[3])
 
-        # 1. coarsened working grid for the morphology only
         factor = max(1, math.ceil(math.sqrt(h * w / MAX_WORKING_PIXELS)))
         ch, cw = math.ceil(h / factor), math.ceil(w / factor)
         transform_coarse = transform_fine * Affine.scale(w / cw, h / ch)
@@ -362,7 +348,7 @@ def _write_worldcover_source(
             )
 
         lc_sea_coarse = (
-            _lc100_on_grid(lc100_path, transform_coarse, (ch, cw)) == SEA_CODE
+            _lc100_on_grid(lc100_path, transform_coarse, (ch, cw)) == LANDUSE_SEA_CODE
         )
         barrier_coarse = (
             _river_barrier_mask(
@@ -376,12 +362,20 @@ def _write_worldcover_source(
             if river_network_path is not None
             else np.zeros((ch, cw), dtype=bool)
         )
+        elevation_coarse = (
+            _fathomdem_on_grid(fathomdem_tiles, transform_coarse, (ch, cw))
+            if fathomdem_tiles
+            else None
+        )
         sea_coarse, stats = _derive_sea_mask(
             wc_coarse == WORLDCOVER_WATER,
             wc_coarse == wc_nodata,
             lc_sea_coarse,
             barrier_coarse,
+            elevation_coarse,
+            sea_max_elevation_m,
         )
+        del elevation_coarse
         del wc_coarse, barrier_coarse
         stats.update(
             working_factor=factor,
@@ -389,7 +383,6 @@ def _write_worldcover_source(
             source_resolution_m=round(px_m_fine, 2),
         )
 
-        # 2. stream the fine raster, applying the coarse sea mask
         meta = {
             "driver": "GTiff",
             "dtype": "uint8",
@@ -423,13 +416,12 @@ def _write_worldcover_source(
 
                 water = blk == WORLDCOVER_WATER
                 nodata_mask = blk == wc_nodata
-                # The fine water mask is what keeps the 10 m coastline: a
-                # pixel is sea only where WorldCover itself says water.
+                # Sea only where WorldCover itself says water: keeps the 10 m coastline.
                 sea = (water & sea_up) | (nodata_mask & lc_sea_up)
 
                 codes = blk.astype(np.uint8, copy=True)
                 codes[nodata_mask & ~sea] = LANDUSE_NODATA
-                codes[sea] = SEA_CODE
+                codes[sea] = LANDUSE_SEA_CODE
                 dst.write(codes, 1, window=Window(0, row0, w, nrows))
 
                 counts["sea_px"] += int(sea.sum())
@@ -438,7 +430,9 @@ def _write_worldcover_source(
                     (~water & ~nodata_mask & lc_sea_up).sum()
                 )
                 counts["nodata_px"] += int((codes == LANDUSE_NODATA).sum())
-            dst.update_tags(landuse_source="esa_worldcover", sea_code=str(SEA_CODE))
+            dst.update_tags(
+                landuse_source="esa_worldcover", sea_code=str(LANDUSE_SEA_CODE)
+            )
     stats.update(counts)
     return meta, stats
 
@@ -452,29 +446,19 @@ def write_landuse_source(
     river_network_path: str | Path | None = None,
     river_barrier_width_factor: float = 1.0,
     river_barrier_min_width_m: float = 30.0,
+    fathomdem_tiles: list[str] | None = None,
+    sea_max_elevation_m: float = np.inf,
 ) -> tuple[dict, dict]:
-    """
-    Write the per-basin land-use raster in pipeline codes for ``wgs84_bounds``.
+    """Write the per-basin land-use raster in pipeline codes; return (meta, stats).
 
-    Args:
-        source:          "copernicus_lc100" or "esa_worldcover".
-        wgs84_bounds:    (lon_min, lat_min, lon_max, lat_max) clip extent.
-        lc100_path:      Global LC100 raster -- the product itself for
-                         "copernicus_lc100", the SEA REFERENCE for
-                         "esa_worldcover" (needed either way).
-        out_path:        Destination GeoTIFF.
-        worldcover_path: WorldCover VRT mosaic (esa_worldcover only).
-        river_network_path: This basin's own clipped river network (rule
-                         get_river_network, 06) -- the barrier that stops
-                         the sea fill at the river mouths (esa_worldcover
-                         only; without it the sea runs up every channel).
-        river_barrier_width_factor, river_barrier_min_width_m:
-                         barrier width per reach = max(width/2 * factor,
-                         min_width_m).
-
-    Returns:
-        (meta, stats): the written raster's GeoTIFF meta and a dict of
-        diagnostics for logging.
+    wgs84_bounds: (lon_min, lat_min, lon_max, lat_max). lc100_path is the
+    product for "copernicus_lc100" and the sea reference for "esa_worldcover"
+    (needed either way). river_network_path (esa_worldcover only, rule
+    get_river_network): barrier stopping the sea fill at the river mouths;
+    without it the sea runs up every channel. Barrier buffer radius per reach
+    = max(width/2 * river_barrier_width_factor, river_barrier_min_width_m).
+    fathomdem_tiles (esa_worldcover only): a water body whose median FathomDEM
+    elevation (EGM2008) exceeds sea_max_elevation_m is never sea.
     """
     if source not in SOURCES:
         raise ValueError(f"landuse.source must be one of {SOURCES}, got {source!r}")
@@ -495,10 +479,12 @@ def write_landuse_source(
             river_network_path,
             river_barrier_width_factor,
             river_barrier_min_width_m,
+            fathomdem_tiles,
+            sea_max_elevation_m,
         )
 
-    # LC100: one window, already in pipeline codes (100 m -- 20M px even for
-    # the largest delta bbox, so no streaming needed).
+    # LC100 is already in pipeline codes; at 100 m even the largest delta bbox
+    # is ~20M px, so no streaming.
     arr, transform, nodata = _read_window(lc100_path, wgs84_bounds)
     codes = arr.astype(np.uint8, copy=True)
     if nodata is not None and int(nodata) != LANDUSE_NODATA:
@@ -517,9 +503,9 @@ def write_landuse_source(
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out_path, "w", **meta) as dst:
         dst.write(codes, 1)
-        dst.update_tags(landuse_source=source, sea_code=str(SEA_CODE))
+        dst.update_tags(landuse_source=source, sea_code=str(LANDUSE_SEA_CODE))
     stats = {
-        "sea_px": int((codes == SEA_CODE).sum()),
+        "sea_px": int((codes == LANDUSE_SEA_CODE).sum()),
         "nodata_px": int((codes == LANDUSE_NODATA).sum()),
         "source_resolution_m": round(
             _pixel_size_m(transform, 0.5 * (wgs84_bounds[1] + wgs84_bounds[3])), 2
@@ -528,15 +514,17 @@ def write_landuse_source(
     return meta, stats
 
 
-# ── resampling onto the working grids ────────────────────────────────────────
-
-
 def _source_block_window(
     src, dst_transform, dst_crs, nrows: int, ncols: int, margin_px: int = 2
 ):
-    """Source window (+margin) covering one destination block's footprint."""
-    left, bottom, right, top = array_bounds(nrows, ncols, dst_transform)
-    wgs = transform_bounds(dst_crs, src.crs, left, bottom, right, top, densify_pts=21)
+    # Corner-based, not rasterio's array_bounds: that one returns south > north
+    # for a SOUTH-UP block (the model grid).
+    xs, ys = zip(
+        *(dst_transform * c for c in [(0, 0), (ncols, 0), (ncols, nrows), (0, nrows)])
+    )
+    wgs = transform_bounds(
+        dst_crs, src.crs, min(xs), min(ys), max(xs), max(ys), densify_pts=21
+    )
     win = _integer_window(src, wgs)
     return Window(
         win.col_off - margin_px,
@@ -549,18 +537,10 @@ def _source_block_window(
 def warp_landuse_to_grid(
     landuse_source_path: str | Path, ref_meta: dict, out_path: str | Path
 ) -> dict:
-    """
-    Resample the land-use source onto ref_meta's grid by MODE (most frequent
-    class), streamed in row blocks.
+    """Resample the land-use source onto ref_meta's grid by mode; return class -> pixel count.
 
-    Mode, not nearest: once the source is finer than the target (ESA
-    WorldCover's 10 m against a ~30 m elevation grid) nearest keeps one
-    arbitrary source pixel per cell and discards the rest. Classes stay
-    categorical either way -- the continuous quantity derived from them,
-    Manning's n, is area-averaged instead (write_roughness_raster).
-
-    Returns:
-        Dict of class -> pixel count in the written raster.
+    Mode, not nearest: with a finer source (WorldCover 10 m vs a ~30 m grid)
+    nearest keeps one arbitrary source pixel per cell.
     """
     meta = {
         "driver": "GTiff",
@@ -580,8 +560,7 @@ def warp_landuse_to_grid(
         rasterio.open(out_path, "w", **meta) as dst,
     ):
         src_nodata = src.nodata if src.nodata is not None else LANDUSE_NODATA
-        # Carry the source's own identity along, so every plot of a derived
-        # raster can name it (src.plots.plot_landuse).
+        # Carry the source identity so plots of derived rasters can name it.
         dst.update_tags(
             **{
                 k: v
@@ -613,18 +592,13 @@ def warp_landuse_to_grid(
     return histogram
 
 
-# ── roughness ────────────────────────────────────────────────────────────────
-
-
 def landuse_to_manning(
     landuse: np.ndarray, lu_to_n: dict[int, float], nodata: int = LANDUSE_NODATA
 ) -> tuple[np.ndarray, set[int]]:
-    """
-    Land-use codes -> Manning's n (float32, NaN where unmapped/nodata).
+    """Map land-use codes to Manning's n; return (n, unmapped_codes).
 
-    Returns:
-        (n, unmapped_codes) -- unmapped codes are NaN in the output, so they
-        neither contribute to nor bias an area average.
+    n is float32, NaN where unmapped/nodata, so those cells do not bias an
+    area average.
     """
     n = np.full(landuse.shape, np.nan, dtype=np.float32)
     for code, value in lu_to_n.items():
@@ -635,7 +609,7 @@ def landuse_to_manning(
 
 
 def read_roughness_lookup(lookup_path: str | Path) -> dict[int, float]:
-    """Land-use code -> Manning's n from the lookup CSV."""
+    """Read the land-use code -> Manning's n lookup CSV."""
     lookup = pd.read_csv(lookup_path)
     return dict(
         zip(
@@ -643,6 +617,52 @@ def read_roughness_lookup(lookup_path: str | Path) -> dict[int, float]:
             lookup["manning_n"].astype(float),
         )
     )
+
+
+def polygon_mask(polys: list, shape: tuple[int, int], transform) -> np.ndarray:
+    """Return the pixels whose centre lies in any of ``polys`` (same CRS as transform)."""
+    if not polys:
+        return np.zeros(shape, dtype=bool)
+    return rasterize(
+        [(p, 1) for p in polys],
+        out_shape=shape,
+        transform=transform,
+        fill=0,
+        dtype=np.uint8,
+    ).astype(bool)
+
+
+def write_channel_landuse(
+    landuse_path: str | Path,
+    polys: list,
+    polys_crs,
+    water_code: int,
+    out_path: str | Path,
+) -> dict[int, int]:
+    """Write landuse_path with every non-sea pixel inside the channel set to water_code.
+
+    polys: the channel (src.river_burn.channel_polygons). Sea (LANDUSE_SEA_CODE)
+    is kept, so the open-sea classification does not change. Returns the
+    pixel count per original class that was converted.
+    """
+    with rasterio.open(landuse_path) as src:
+        lu = src.read(1)
+        profile = src.profile.copy()
+        transform, crs = src.transform, src.crs
+    channel = polygon_mask(
+        list(gpd.GeoSeries(polys, crs=polys_crs).to_crs(crs).geometry),
+        lu.shape,
+        transform,
+    )
+    convert = channel & (lu != LANDUSE_SEA_CODE) & (lu != water_code)
+    if profile.get("nodata") is not None:
+        convert &= lu != profile["nodata"]
+    classes, counts = np.unique(lu[convert], return_counts=True)
+    out = np.where(convert, np.asarray(water_code, dtype=lu.dtype), lu)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(out_path, "w", **profile) as dst:
+        dst.write(out, 1)
+    return {int(c): int(n) for c, n in zip(classes, counts)}
 
 
 def aggregate_manning(
@@ -655,41 +675,22 @@ def aggregate_manning(
     method: str = "area_mean",
     resampling=Resampling.average,
 ) -> np.ndarray:
-    """
-    Area-average Manning's n from a fine grid onto a target grid.
+    """Area-average Manning's n from a fine grid onto a target grid.
 
-    The alternative to upscaling the CLASS raster and reclassifying it:
-    a 70 m cell that is 60% water and 40% built-up gets its dominant class'
-    0.02 that way, against 0.05 here. On basin 2433835, 30% of 70 m cells
-    contain more than one class, and in 43% of those the two differ by more
-    than 0.01.
-
-    Args:
-        method: "area_mean"  -- area-weighted mean of n (default).
-                "conveyance" -- area-weighted HARMONIC mean, i.e. the
-                composite n of parallel strips carrying flow at equal depth
-                (1/n_eff = sum f_i/n_i), matching what hydromt's subgrid
-                tables do per cell. Biased towards the smoothest pixels
-                (half water + half built-up gives 0.033, not 0.060), so it
-                is not the default.
-        resampling: Resampling.average (default) genuinely area-averages,
-                which is only meaningful when the source is FINER than the
-                target. Callers upsampling a coarser source (LC100's 100 m
-                onto a 31 m grid) must pass Resampling.nearest: averaging
-                there blends neighbouring classes into intermediate n along
-                every class boundary, inventing sub-pixel detail the source
-                does not have.
-
-    Returns:
-        float32 array of shape dst_shape, NaN where no valid source pixel
-        contributes.
+    method: "area_mean" (area-weighted mean of n) or "conveyance"
+    (area-weighted harmonic mean, 1/n_eff = sum f_i/n_i: parallel strips at
+    equal depth, as hydromt's subgrid tables do per cell; biased towards the
+    smoothest pixels -- half water + half built-up gives 0.033, not 0.060).
+    resampling: Resampling.average is only meaningful for a source finer than
+    the target; upsampling a coarser source (LC100 100 m onto 31 m) needs
+    Resampling.nearest, else classes blend into invented intermediate n.
+    Returns float32, NaN where no valid source pixel contributes.
     """
     if method not in ("area_mean", "conveyance"):
         raise ValueError(f"method must be 'area_mean' or 'conveyance', got {method!r}")
 
-    # Averaging 1/n and inverting = harmonic mean of n. reproject_nan_aware
-    # weights by valid-pixel coverage, so nodata neither pulls the mean
-    # towards zero nor spreads into cells that do have data.
+    # reproject_nan_aware weights by valid-pixel coverage, so nodata neither
+    # pulls the mean towards zero nor spreads into cells with data.
     field = (
         n_fine
         if method == "area_mean"
@@ -717,31 +718,22 @@ def write_roughness_raster(
     out_path: str | Path,
     method: str = "area_mean",
     refine_to_source: bool = False,
+    channel: tuple[list, object, float] | None = None,
 ) -> tuple[set[int], dict]:
-    """
-    Manning's n area-averaged from the land-use SOURCE at its own (possibly
-    much finer) resolution onto ref_meta's grid -- never reclassified from
-    an already-upscaled class raster. Streamed in row blocks.
+    """Write Manning's n area-averaged from the land-use source onto ref_meta's grid.
 
-    Args:
-        refine_to_source: if True, write on ref_meta's grid SUBDIVIDED by an
-            integer factor so the cells are about the size of the source's
-            own pixels (rule get_roughness, 05c: ~10 m under ESA WorldCover
-            instead of the ~31 m elevation grid, since hydromt samples this
-            raster per SUBGRID pixel -- 7 m at nr_subgrid_pixels=10 -- and
-            averages it by conveyance itself). The factor is 1, i.e. the
-            reference grid unchanged, whenever the source is coarser
-            (LC100's 100 m) -- upsampling a class raster adds no
-            information. Keeping it an exact subdivision of the reference
-            grid preserves CRS and alignment with elevation/subgrid.
-        method: see aggregate_manning.
+    channel: (polygons, their CRS, n): every source pixel whose centre lies in
+    a polygon takes n before the averaging (src.river_burn.channel_polygons and
+    river_processing.channel_manning_n, the n the river bed was fitted with).
 
-    Returns:
-        (unmapped_codes, info) -- codes present in the source but missing
-        from the lookup (NaN in the output), and the grid actually written.
+    refine_to_source: write on ref_meta's grid subdivided by an integer
+    factor to about the source pixel size (~10 m under WorldCover, since
+    hydromt samples this raster per subgrid pixel and averages by conveyance
+    itself); factor 1 when the source is coarser (LC100 100 m). An exact
+    subdivision keeps CRS and alignment with elevation/subgrid.
+    Returns (codes missing from the lookup, NaN in the output; grid info).
     """
     lu_to_n = read_roughness_lookup(lookup_path)
-    # hypot, not abs(a): the reference grid may be rotated (the model grid is).
     ref_res_m = math.hypot(ref_meta["transform"].a, ref_meta["transform"].d)
 
     with rasterio.open(landuse_source_path) as src:
@@ -755,11 +747,8 @@ def write_roughness_raster(
 
         height, width = ref_meta["height"] * factor, ref_meta["width"] * factor
         transform = ref_meta["transform"] * Affine.scale(1 / factor, 1 / factor)
-        # Average only when the source really is finer than the target;
-        # upsampling a coarser source (LC100's 100 m onto a 31 m grid) with
-        # averaging would blend classes into intermediate n along every
-        # boundary, inventing detail LC100 does not have. Nearest there
-        # reproduces the plain class-value reclassification exactly.
+        # Average only for a finer source; for a coarser one nearest reproduces
+        # the plain class-value reclassification (see aggregate_manning).
         target_res_m = ref_res_m / factor
         downsampling = src_res_m <= target_res_m
         resampling = Resampling.average if downsampling else Resampling.nearest
@@ -775,14 +764,22 @@ def write_roughness_raster(
             **_GTIFF_CREATION,
         }
         src_nodata = int(src.nodata) if src.nodata is not None else LANDUSE_NODATA
+        channel_polys, channel_n = [], np.nan
+        if channel is not None:
+            polys, polys_crs, channel_n = channel
+            channel_polys = list(
+                gpd.GeoSeries(polys, crs=polys_crs).to_crs(src.crs).geometry
+            )
 
         unmapped: set[int] = set()
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         with rasterio.open(out_path, "w", **meta) as dst:
-            for row0, nrows in _row_blocks(height, width):
-                block_transform = transform * Affine.translation(0, row0)
+            for row0, col0, nrows, ncols in _square_tiles(
+                height, width, target_res_m, src_res_m
+            ):
+                block_transform = transform * Affine.translation(col0, row0)
                 win = _source_block_window(
-                    src, block_transform, meta["crs"], nrows, width
+                    src, block_transform, meta["crs"], nrows, ncols
                 )
                 lu_block = src.read(
                     1, window=win, boundless=True, fill_value=src_nodata
@@ -790,12 +787,17 @@ def write_roughness_raster(
                 n_fine, missing = landuse_to_manning(
                     lu_block, lu_to_n, nodata=src_nodata
                 )
+                if channel_polys:
+                    in_channel = polygon_mask(
+                        channel_polys, lu_block.shape, src.window_transform(win)
+                    )
+                    n_fine = np.where(in_channel, np.float32(channel_n), n_fine)
                 unmapped |= missing
                 n_block = aggregate_manning(
                     n_fine,
                     src.window_transform(win),
                     src.crs,
-                    (nrows, width),
+                    (nrows, ncols),
                     block_transform,
                     meta["crs"],
                     method=method,
@@ -806,7 +808,7 @@ def write_roughness_raster(
                         np.float32
                     ),
                     1,
-                    window=Window(0, row0, width, nrows),
+                    window=Window(col0, row0, ncols, nrows),
                 )
     info = {
         "resolution_m": round(target_res_m, 2),

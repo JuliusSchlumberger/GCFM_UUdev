@@ -1,33 +1,30 @@
-"""
-adaptation_scaling.py -- Resolve the run-time-derived strategy params that
-rule 00_common.smk's strategy_def_for() leaves as {"from_forcing": ...}
-markers (see adaptation_strategies.yml's own header), using this scenario's
-own baseline run and the basin's skeleton weir:
+"""Resolve {"from_forcing": ...} strategy params from the scenario's baseline run.
 
-  max_coastal_waterlevel  scale x max of the baseline sfincs.bzs (all points, all times)
+Entry point: resolve_forcing_params. Markers are left by strategy_def_for()
+(00_common.smk) and resolved from the baseline run and the skeleton weir:
+
+  max_coastal_water_level  scale x max of the baseline sfincs.bzs (all points, all times)
   max_discharge           scale x max of the baseline sfincs.dis (all sources, all times)
-  max_river_waterlevel    scale x max baseline zsmax in the grid cells along the
+  max_river_water_level    scale x max baseline zsmax in the grid cells along the
                           measure's own `locations` polyline (first zsmax output
-                          step dropped -- it holds the restart start-up shock,
+                          step dropped: it holds the restart start-up shock,
                           e.g. 2.33 m at hour 0 in basin 2433835/coast_500)
-  current_protection      {"current": True, "fill_crest": <m>} -- never scaled;
+  current_protection      {"current": True, "fill_crest": <m>}, never scaled;
                           the levee measure keeps each matched baseline weir
-                          segment's own crest and gives fill_crest (the highest
+                          segment's crest and gives fill_crest (the highest
                           matched crest) to stretches with no baseline levee
 
-A coastal_levee/river_levee `elevation` resolved from max_coastal_waterlevel
-or max_river_waterlevel also gets a sibling `raise_by` param = scale x the
-largest shortfall of today's levee on the measure's polyline (target water
-level - existing crest, over the matched baseline weir segments; target =
-max_coastal_waterlevel everywhere for the coast, each segment's own local
-zsmax for the river). The preprocessing levee raises every existing segment
-by raise_by, so the new crest follows today's profile and is never lowered;
-`elevation` itself stays the scalar design crest that the postprocessing
-levee compares against the max water level, and that new stretches without a
-baseline levee (e.g. a river-mouth closure) get.
+A coastal_levee/river_levee `elevation` resolved from max_coastal_water_level
+or max_river_water_level also gets a sibling `raise_by` = scale x the largest
+shortfall of today's levee on the measure's polyline (target water level -
+existing crest over the matched baseline weir segments; target: the max
+coastal water level everywhere, or each segment's own local river zsmax). The
+preprocessing levee raises every existing segment by raise_by, so the new crest
+keeps today's profile and is never lowered; `elevation` stays the scalar design
+crest that the postprocessing levee compares against the max water level and
+that stretches without a baseline levee (e.g. a river-mouth closure) get.
 
-These can't be resolved in the Snakefile itself: the baseline forcing/map
-files don't exist yet when the DAG is built.
+Not resolvable in the Snakefile: the baseline files do not exist when the DAG is built.
 """
 
 from __future__ import annotations
@@ -40,20 +37,16 @@ import geopandas as gpd
 import numpy as np
 import shapely
 import xarray as xr
-from shapely.geometry import LineString
-
-from src.sfincs_run import parse_sfincs_inp
+from src.sfincs_run import parse_sfincs_inp, read_weir_file
 
 # Same tolerance as merge_weir_preserve_unmatched (src/protection_weir.py):
 # baseline weir segments within this distance of the new polyline are the
 # same physical levee (only reformatting/reprojection drift apart).
 MAX_MATCH_DISTANCE_M = 2.0
-
-# measures whose `elevation` also gets a `raise_by` (see module docstring)
+# Measures whose `elevation` also gets a `raise_by` (module docstring).
 LEVEE_MEASURES = ("coastal_levee", "river_levee")
 
 
-# Peak boundary value
 def _max_of_timeseries_file(path: Path, what: str) -> float:
     """Max over every column but the first (time) of a SFINCS .bzs/.dis file."""
     if not path.exists():
@@ -64,39 +57,32 @@ def _max_of_timeseries_file(path: Path, what: str) -> float:
     return float(data[:, 1:].max())
 
 
-# Parse sfincs weirs
-def read_weir_file(path: str | Path) -> gpd.GeoDataFrame:
-    """ASCII sfincs.weir -> one row per segment, with `elevation` = the
-    segment's highest vertex crest (every segment this repo writes has the
-    same crest on both vertices). No CRS -- the caller sets it.
+def read_polyline(locations: Path | gpd.GeoDataFrame, crs) -> gpd.GeoDataFrame:
+    """Return polyline ``locations`` as single LineStrings in ``crs``, minus empty geometries.
+
+    Empty geometries are rows whose geometry was deleted in QGIS but kept as
+    attributes. Raises ValueError when ``locations`` has no CRS or holds a
+    geometry that is not a (Multi)LineString.
     """
-    lines = [ln for ln in Path(path).read_text().splitlines() if ln.strip()]
-    geoms, crests, i = [], [], 0
-    while i < len(lines):
-        n_pts = int(lines[i + 1].split()[0])
-        pts = np.array(
-            [[float(v) for v in ln.split()] for ln in lines[i + 2 : i + 2 + n_pts]]
-        )
-        geoms.append(LineString(pts[:, :2]))
-        crests.append(float(pts[:, 2].max()))
-        i += 2 + n_pts
-    return gpd.GeoDataFrame({"elevation": crests}, geometry=geoms)
-
-
-# load a measures location
-def _read_polyline(locations: Path, crs) -> shapely.Geometry:
-    gdf = gpd.read_file(locations)
+    if isinstance(locations, gpd.GeoDataFrame):
+        gdf, name = locations, "polyline"
+    else:
+        gdf, name = gpd.read_file(locations), str(locations)
     if gdf.crs is None:
-        raise ValueError(f"{locations} has no CRS")
-    return gdf.to_crs(crs).geometry.union_all()
+        raise ValueError(f"{name} has no CRS")
+    gdf = gdf[~gdf.geometry.is_empty & gdf.geometry.notna()]
+    gdf = gdf.explode(index_parts=True).reset_index(drop=True)
+    if not gdf.geometry.type.eq("LineString").all():
+        raise ValueError("Weirs must be of type LineString.")
+    return gdf[["geometry"]].to_crs(crs)
 
 
-# baseline weir segments lying on a measure's polyline
 def _matched_weir_segments(
     locations: Path, skeleton_weir: Path, crs, where: str
 ) -> tuple[gpd.GeoDataFrame, shapely.Geometry]:
+    """Return the baseline weir segments lying on polyline ``locations``, and the polyline."""
     weir = read_weir_file(skeleton_weir)
-    line = _read_polyline(locations, crs)
+    line = read_polyline(locations, crs).geometry.union_all()
     # Segment MIDPOINT vs the polyline, as merge_weir_preserve_unmatched does --
     # a segment merely touching the polyline at one endpoint is not "on" it.
     midpoints = shapely.line_interpolate_point(
@@ -111,7 +97,6 @@ def _matched_weir_segments(
     return weir[matched].reset_index(drop=True), line
 
 
-# checks how high existing levee is
 def _current_protection(
     locations: Path, skeleton_weir: Path, crs, where: str, log
 ) -> dict:
@@ -131,19 +116,18 @@ def _current_protection(
     return {"current": True, "fill_crest": fill_crest}
 
 
-# peak water level along the river (zsmax)
-def _max_river_waterlevel(
+def _max_river_water_level(
     locations: Path,
     map_nc: Path,
-    dx: float,
+    dx_m: float,
     crs,
     where: str,
     log,
     buffer_cells: int = 1,
 ) -> float:
-    line = _read_polyline(locations, crs)
+    line = read_polyline(locations, crs).geometry.union_all()
     zsmax, x, y = _read_zsmax(map_nc)
-    near = shapely.dwithin(shapely.points(x, y), line, (buffer_cells + 0.5) * dx)
+    near = shapely.dwithin(shapely.points(x, y), line, (buffer_cells + 0.5) * dx_m)
     vals = zsmax[near]
     if not np.isfinite(vals).any():
         raise ValueError(
@@ -158,40 +142,39 @@ def _max_river_waterlevel(
     return float(vals[k])
 
 
-# baseline max water level per grid cell, flattened, with cell centres
 def _read_zsmax(map_nc: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the run's max water level per cell (NaN = never wet) and cell centres, flattened."""
     with xr.open_dataset(map_nc) as ds:
         zsmax = ds["zsmax"]
         tdim = next(d for d in zsmax.dims if "time" in d)
         if zsmax.sizes[tdim] > 1:
             zsmax = zsmax.isel({tdim: slice(1, None)})  # drop restart start-up shock
-        zsmax = zsmax.max(tdim).values  # NaN = never wet
-        x, y = ds["x"].values, ds["y"].values  # cell centres (rotated grid OK)
+        zsmax = zsmax.max(tdim).values
+        x, y = ds["x"].values, ds["y"].values  # cell centres
     return zsmax.ravel(), x.ravel(), y.ravel()
 
 
-# how far today's levee on the polyline falls short of the target water level
 def _levee_shortfall(
     kind: str,
     base: float,
     locations: Path,
     skeleton_weir: Path,
     map_nc: Path,
-    dx: float,
+    dx_m: float,
     crs,
     where: str,
     log,
     buffer_cells: int = 1,
 ) -> float:
-    """Largest (target - existing crest) over the baseline weir segments on
-    `locations`, floored at 0. Target: `base` (the max coastal water level)
-    for every segment, or for the river each segment's own max zsmax in the
-    cells within buffer_cells of it (same window as _max_river_waterlevel);
-    a segment with no wet cell nearby has no target and is skipped.
+    """Return the largest (target - crest) over the baseline levee on ``locations``, floored at 0.
+
+    Target: ``base`` (the max coastal water level) for every segment, or for the
+    river each segment's own max zsmax within ``buffer_cells`` of it (the
+    window of _max_river_water_level); a segment with no wet cell nearby is skipped.
     """
     segs, _ = _matched_weir_segments(locations, skeleton_weir, crs, where)
     crests = segs["elevation"].to_numpy()
-    if kind == "max_coastal_waterlevel":
+    if kind == "max_coastal_water_level":
         target = np.full(len(segs), base)
     else:
         zsmax, x, y = _read_zsmax(map_nc)
@@ -199,7 +182,7 @@ def _levee_shortfall(
         target = np.full(len(segs), np.nan)
         for i, geom in enumerate(segs.geometry.values):
             idx = tree.query(
-                geom, predicate="dwithin", distance=(buffer_cells + 0.5) * dx
+                geom, predicate="dwithin", distance=(buffer_cells + 0.5) * dx_m
             )
             if len(idx) and np.isfinite(zsmax[idx]).any():
                 target[i] = np.nanmax(zsmax[idx])
@@ -209,17 +192,15 @@ def _levee_shortfall(
             f"{where}: no baseline levee segment on {locations} has a target water level"
         )
     k = int(np.nanargmax(short))
-    full = max(float(short[k]), 0.0)
     log.info(
         f"{where}: {int(np.isfinite(short).sum())} baseline levee segments on {locations.name}, "
         f"crest min/median/max {crests.min():.2f}/{np.median(crests):.2f}/{crests.max():.2f} m; "
         f"largest shortfall {short[k]:.3f} m (target {target[k]:.3f} m vs crest {crests[k]:.2f} m), "
         f"{int((short > 0).sum())} segments below target"
     )
-    return full
+    return max(float(short[k]), 0.0)
 
 
-# the entry point. Where the code determines whether it sends water level or max discharge
 def resolve_forcing_params(
     strategy_def: dict,
     *,
@@ -235,7 +216,7 @@ def resolve_forcing_params(
     baseline_sfincs_root = Path(baseline_sfincs_root)
     inp = parse_sfincs_inp(baseline_sfincs_root / "sfincs.inp")
     crs = f"EPSG:{int(float(inp['epsg']))}"
-    dx = float(inp["dx"])
+    dx_m = float(inp["dx"])
     cache: dict[tuple, float] = {}
 
     out = copy.deepcopy(strategy_def)
@@ -259,7 +240,7 @@ def resolve_forcing_params(
 
             key = (kind, str(locations))
             if key not in cache:
-                if kind == "max_coastal_waterlevel":
+                if kind == "max_coastal_water_level":
                     cache[key] = _max_of_timeseries_file(
                         baseline_sfincs_root / "sfincs.bzs", where
                     )
@@ -267,28 +248,22 @@ def resolve_forcing_params(
                     cache[key] = _max_of_timeseries_file(
                         baseline_sfincs_root / "sfincs.dis", where
                     )
-                elif kind == "max_river_waterlevel":
-                    cache[key] = _max_river_waterlevel(
-                        locations, Path(baseline_map_nc), dx, crs, where, log
+                elif kind == "max_river_water_level":
+                    cache[key] = _max_river_water_level(
+                        locations, Path(baseline_map_nc), dx_m, crs, where, log
                     )
                 else:
                     raise ValueError(f"{where}: unknown from_forcing kind {kind!r}")
-            # apply the scale
             base, scale = cache[key], float(value["scale"])
             params[param] = round(
                 scale * base, 4
             )  # 0.4 x 1.02 -> 0.408, not 0.40800000000000003
             log.info(f"{where} = {kind} {base:.3f} x {scale:g} = {params[param]:.3f}")
 
-            # levees: uniform raise of today's levee (see module docstring)
             if (
                 measure in LEVEE_MEASURES
                 and param == "elevation"
-                and kind
-                in (
-                    "max_coastal_waterlevel",
-                    "max_river_waterlevel",
-                )
+                and kind in ("max_coastal_water_level", "max_river_water_level")
             ):
                 rkey = ("raise", kind, str(locations))
                 if rkey not in cache:
@@ -298,7 +273,7 @@ def resolve_forcing_params(
                         locations,
                         Path(skeleton_weir),
                         Path(baseline_map_nc),
-                        dx,
+                        dx_m,
                         crs,
                         where,
                         log,

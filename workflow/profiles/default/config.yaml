@@ -1,0 +1,5 @@
+# Loaded by default (snakemake >= 8); --resources raw_io=N on the command line overrides it.
+# raw_io: concurrent jobs reading large raw inputs. 1 suits a single disk, where
+# parallel readers seek against each other; raise it on a parallel file system.
+resources:
+  raw_io: 1

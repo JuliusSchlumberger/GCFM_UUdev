@@ -1,63 +1,61 @@
-"""
-Check the scale-1 strategy expansion (00_common.smk: strategy_def_for) and
-the run-time resolver (src/adaptation_scaling.py: resolve_forcing_params)
-on an existing results folder, without running Snakemake.
+"""Print the resolved adaptation parameters per strategy and scenario.
 
-Prints, for every strategy x scenario, the concrete crest/discharge values a
-real 18a/18b job would use, plus the resolver's own log lines (matched weir
-segments, where the river maximum sits, ...).
+Runs the strategy expansion (src.adaptation_strategies) and the resolver
+(src.adaptation_scaling.resolve_forcing_params) on an existing results folder
+without Snakemake, printing the crest/discharge values an 18a/18b job would use
+and the resolver's log lines.
 
-Usage (repo root, hmt_sfincs_dev env):
-    python tests/KL_check_adaptation_scaling.py D:/GCFM_UU/results/2433835_V5_bigpoly_manual coast_100 river_100
+Usage (repo root, project env activated):
+    python analysis/check_adaptation_scaling.py <results_dir>/2433835 coast_500 river_500
 """
 
+import argparse
 import logging
-import re
 import sys
 from pathlib import Path
 
 import yaml
+from _common import REPO_ROOT as REPO
+from _common import script_parser
 
-REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "workflow"))
 from src.adaptation_scaling import resolve_forcing_params  # noqa: E402
-
-RAW_DATA_ROOT = "D:/GCFM_UU/raw_data"
+from src.adaptation_strategies import (  # noqa: E402
+    expand_strategies,
+    resolve_locations,
+)
+from src.io import site_setting  # noqa: E402
 
 
 def load_strategy_expansion():
-    """Execute only the strategy block of 00_common.smk against the real
-    config files -> its namespace (STRATEGY_DEFS, strategy_def_for, ...).
-    """
-    src = (REPO / "workflow/rules/00_common.smk").read_text(encoding="utf-8")
-    block = src[
-        src.index("# ---- Adding adaptation wildcard") : src.index(
-            "def adaptation_input_path(rel):"
-        )
-    ]
-    with open(REPO / "config/scenarios.yml") as f:
-        scenario_defs = yaml.safe_load(f)
-    ns = {
-        "_yaml": yaml,
-        "_re": re,
-        "Path": Path,
-        "SCENARIO_DEFS": scenario_defs,
-        "CATALOGUE": {"meta": {"root": RAW_DATA_ROOT}},
-        "config": {
-            "adaptation": {
-                "strategies_file": str(REPO / "config/adaptation_strategies.yml"),
-                "measures_file": str(REPO / "config/measures.yml"),
-            },
-            "scenarios_file": "config/scenarios.yml",
-        },
+    """Load the strategy, measure and scenario configs and expand the strategies."""
+    files = {
+        "strategies_file": "config/adaptation_strategies.yml",
+        "measures_file": "config/measures.yml",
+        "scenarios_file": "config/scenarios.yml",
     }
-    exec(block, ns)
-    return ns
+    strategies_raw, measures_raw, scenario_defs = (
+        yaml.safe_load((REPO / f).read_text(encoding="utf-8")) or {}
+        for f in files.values()
+    )
+    return expand_strategies(strategies_raw, measures_raw, scenario_defs, **files)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Return the command-line parser."""
+    parser = script_parser(__doc__)
+    parser.add_argument(
+        "results", help="basin results folder, <results_dir>/<basin_id>"
+    )
+    parser.add_argument("scenarios", nargs="+", help="scenario name(s)")
+    return parser
 
 
 def main(results, scenarios):
+    """Print the resolved measure parameters for every strategy x scenario."""
     results = Path(results)
-    ns = load_strategy_expansion()
+    adaptation_data_root = site_setting("adaptation_data_root")
+    expansion = load_strategy_expansion()
     logging.basicConfig(
         level=logging.INFO, format="      %(message)s", stream=sys.stdout
     )
@@ -65,15 +63,19 @@ def main(results, scenarios):
 
     for sc in scenarios:
         root = results / "runs" / sc / "sfincs"
-        print(f"\n===== {sc} (event={ns['SCENARIO_DEFS'][sc].get('event')}) =====")
-        for st in ns["STRATEGY_DEFS"]:
+        print(f"\n===== {sc} (event={expansion.scenario_defs[sc].get('event')}) =====")
+        for st in expansion.defs:
             print(f"  {st}")
             resolved = resolve_forcing_params(
-                ns["strategy_def_for"](st, sc),
+                resolve_locations(
+                    expansion.strategy_def_for(st, sc),
+                    results / "adaptation_lines",
+                    results.name,
+                ),
                 baseline_sfincs_root=root,
                 baseline_map_nc=root / "sfincs_map.nc",
                 skeleton_weir=results / "sfincs_skeleton/sfincs.weir",
-                adaptation_root=RAW_DATA_ROOT,
+                adaptation_root=adaptation_data_root,
                 log=log,
             )
             for m, params in resolved["measures"].items():
@@ -83,6 +85,5 @@ def main(results, scenarios):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        sys.exit(__doc__)
-    main(sys.argv[1], sys.argv[2:])
+    args = build_parser().parse_args()
+    main(args.results, args.scenarios)

@@ -1,16 +1,8 @@
-"""
-07a_select_surge_stations.py -- The COAST-RP stations a basin's sea boundary
-is forced at, as a small text file.
+"""Write the COAST-RP stations forcing the sea boundary; run by rule select_surge_stations.
 
-Exactly rule get_boundary_forcings' (07) own selection
-(src.surge.select_surge_stations: expanding search radius around the domain,
-de-duplicated, capped), written out on its own so the expensive GTSM
-extraction (rule extract_gtsm_series) depends on THIS file and nothing
-else. The file is plain JSON with rounded values, so re-running this rule on
-an unchanged domain rewrites identical content, and Snakemake (which
-compares the checksum of small input files, not just their timestamp) does
-not re-trigger the extraction -- only a change in the selected stations
-does.
+Rule 07 reloads these stations (src.surge.load_selected_stations). Rounded JSON, so an
+unchanged domain rewrites identical content and Snakemake's checksum of small
+input files does not re-trigger the GTSM extraction (rule extract_gtsm_series).
 
 Output: surge_stations.json -- {"stations": [{"lon", "lat", "dist_km"}, ...]},
         nearest first.

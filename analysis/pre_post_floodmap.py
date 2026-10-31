@@ -1,52 +1,44 @@
-"""
-Max flood depth of adaptation strategies, modelled (PRE) and postprocessed (POST) side
-by side on the same colour scale, plus a third panel showing where the two agree and
-disagree -- one figure per event and measure, one row per scale in SCALES. PRE is the
-reference (same definitions and scores as pre_post_heatmap.py):
+"""Map PRE and POST max flood depth of each strategy side by side, with agreement.
+
+One figure per event and measure, one row per scale in SCALES: modelled (PRE)
+and postprocessed (POST) depth on the same colour scale, plus a panel of where
+the two agree. PRE is the reference (definitions and scores as in
+pre_post_heatmap.py):
 
     hit                wet in PRE and in POST
     miss               wet in PRE, dry in POST  (flooding POST does not account for)
-    false alarm        dry in PRE, wet in POST  (flooding POST adds that PRE does not have)
+    false alarm        dry in PRE, wet in POST  (flooding POST adds that PRE lacks)
     protected in both  wet in the no-adaptation baseline, dry in PRE and in POST
 
-Dry-in-both is only counted (and coloured) where the no-adaptation baseline floods, as
-in pre_post_heatmap.py; land that floods in none of the three maps stays grey.
+Dry-in-both is only counted (and coloured) where the no-adaptation baseline
+floods; land that floods in none of the three maps stays grey.
+
+Output: <results_dir>/2433835/figures/analysis/90_pre_post_floodmap_<event>_<measure>.png
 """
 
-import os
 import sys
-from pathlib import Path
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
+from _common import REPO_ROOT, analysis_path, script_parser, site_path
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.patches import Patch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflow"))
-from src.plots import read_raster_reprojected_for_plot  # noqa: E402
-
-# this script's own folder (analysis/) is on sys.path when it is run directly
-from pre_post_heatmap import (  # noqa: E402
+from pre_post_heatmap import (
+    BASIN_ID,
     EVENT_TITLES,
     EVENTS,
     MEASURE_LABELS,
     MEASURES,
     THRESHOLD,
+    basin_paths,
     contingency,
     land_mask,
     wet_map,
 )
 
-BASIN_ID = "2433835"
-# Machine-specific path, read from the GCFM_RESULTS_DIR environment variable.
-# Set it once in PowerShell, then restart your terminal (see
-# CONTRIBUTING.md "Local machine paths"):
-#   [Environment]::SetEnvironmentVariable("GCFM_RESULTS_DIR", "D:\your\results\path", "User")
-BASIN_ROOT = Path(os.environ["GCFM_RESULTS_DIR"]) / BASIN_ID
-RUNS = BASIN_ROOT / "runs"
-DOMAIN = BASIN_ROOT / "preprocessing_inputs" / "domain"
-OUT_DIR = RUNS / "fig_flood_maps_pre_post"
+sys.path.insert(0, str(REPO_ROOT / "workflow"))
+from src.plots import read_raster_reprojected_for_plot  # noqa: E402
 
 # one figure row per scale, top to bottom
 SCALES = ["04", "09", "1"]
@@ -56,7 +48,7 @@ SCALE_LABELS = {
     "1": "Full potential",
 }
 VMAX = 3.0  # m, top of the colour scale; deeper cells (e.g. the river channel) saturate
-# map window (left, bottom, right, top) in degrees, cropped to the delta so the
+# map window (left, bottom, right, top) in degrees, cropped to the Ebro delta so the
 # figure fits an A4 page; None = the flood maps' full extent
 ZOOM = (0.57, 40.53, 0.90, 40.82)
 
@@ -65,20 +57,23 @@ PANELS = [("PRE", "Modelled approach"), ("POST", "Post-processed approach")]
 AGREE_COLORS = ["#5b9bd5", "#e66c15", "#e9e769", "#85c97f"]
 
 
-def tif_path(event, method, strategy):
+def tif_path(runs, event, method, strategy):
+    """Return the max flood depth raster of one adapted run."""
     return (
-        RUNS / event / "adaptation" / method.lower() / strategy / "max_flood_depth.tif"
+        runs / event / "adaptation" / method.lower() / strategy / "max_flood_depth.tif"
     )
 
 
-def plot_event_measure(event, event_title, measure, measure_label, land_cells):
-    """One figure: PRE, POST and their agreement for every scale of `measure`."""
+def plot_event_measure(
+    runs, domain_dir, event, event_title, measure, measure_label, land_cells
+):
+    """Write one figure: PRE, POST and their agreement for every scale of `measure`."""
     strategies = [f"{measure}_{s}" for s in SCALES]
     missing = [
         s
         for s in strategies
         for method, _ in PANELS
-        if not tif_path(event, method, s).exists()
+        if not tif_path(runs, event, method, s).exists()
     ]
     if missing:
         print(
@@ -86,36 +81,37 @@ def plot_event_measure(event, event_title, measure, measure_label, land_cells):
         )
         return
 
-    # -------------------------------------------- hits / misses / false alarms (km2)
-    wet_base, _ = wet_map(RUNS / event / "visuals" / "max_flood_depth.tif")
+    baseline_tif = runs / event / "visuals" / "max_flood_depth.tif"
+    wet_base, _ = wet_map(baseline_tif)
     scores = {}
     for strategy in strategies:
-        wet_pre, transform = wet_map(tif_path(event, "PRE", strategy))
-        wet_post, _ = wet_map(tif_path(event, "POST", strategy))
+        wet_pre, transform = wet_map(tif_path(runs, event, "PRE", strategy))
+        wet_post, _ = wet_map(tif_path(runs, event, "POST", strategy))
         c = contingency(wet_pre, wet_post, land_cells & wet_base, transform)
         del wet_pre, wet_post
         scores[strategy] = c
         print(
-            f"{event} {strategy}: hits {c['hits_km2']:.2f} km2, misses {c['misses_km2']:.2f} km2, "
+            f"{event} {strategy}: hits {c['hits_km2']:.2f} km2, "
+            f"misses {c['misses_km2']:.2f} km2, "
             f"false alarms {c['false_alarms_km2']:.2f} km2, "
             f"protected in both {c['protected_both_km2']:.2f} km2 | "
             f"CSI {c['CSI']:.2f}, agree {c['agree']:.2f}, HSS {c['HSS']:.2f}"
         )
 
-    # -------------------------------------------- maps (reprojected for plotting)
+    # maps, reprojected for plotting
     arrays = {}  # (strategy, method) -> depth array
     # strategy -> 1 hit / 2 miss / 3 false alarm / 4 protected in both, rest masked
     agreement = {}
     # baseline first: its bounds (left, bottom, right, top) are reused so all align
     base, (left, right, bottom, top) = read_raster_reprojected_for_plot(
-        str(RUNS / event / "visuals" / "max_flood_depth.tif")
+        str(baseline_tif)
     )
     bounds = (left, bottom, right, top)
     wet_b = base > THRESHOLD
     for strategy in strategies:
         for method, _ in PANELS:
             arr, _ = read_raster_reprojected_for_plot(
-                str(tif_path(event, method, strategy)), dst_bounds=bounds
+                str(tif_path(runs, event, method, strategy)), dst_bounds=bounds
             )
             arrays[strategy, method] = arr
 
@@ -133,8 +129,8 @@ def plot_event_measure(event, event_title, measure, measure_label, land_cells):
         view = (left - margin, bottom - margin, right + margin, top + margin)
     else:
         view = ZOOM
-    land = gpd.read_file(DOMAIN / f"{BASIN_ID}_land_polygons.gpkg", bbox=view)
-    rivers = gpd.read_file(DOMAIN / f"{BASIN_ID}_river_network_clean.gpkg")
+    land = gpd.read_file(domain_dir / f"{BASIN_ID}_land_polygons.gpkg", bbox=view)
+    rivers = gpd.read_file(domain_dir / f"{BASIN_ID}_river_network_clean.gpkg")
     if rivers.crs is not None and rivers.crs.to_epsg() != 4326:
         rivers = rivers.to_crs("EPSG:4326")
 
@@ -151,7 +147,6 @@ def plot_event_measure(event, event_title, measure, measure_label, land_cells):
     )
     for letter, row, strategy in zip("abcdefghij", axes, strategies):
         c = scores[strategy]
-        # panel letter for the row, top-left of its first map
         row[0].text(
             0.03,
             0.97,
@@ -190,10 +185,10 @@ def plot_event_measure(event, event_title, measure, measure_label, land_cells):
             zorder=2,
         )
         row[2].set_title(f"Agreement: {c['agree']:.0%} of cells")
-        for ax in row[:2]:  # blank title: same headroom as the agreement panel, so the
-            ax.set_title(" ")  # rows line up (the top row's real titles are set below)
+        # blank title: same headroom as the agreement panel, so the rows line up
+        for ax in row[:2]:
+            ax.set_title(" ")
         row[0].set_ylabel("Latitude (°)")
-        # scale as a larger row label, left of the latitude axis label
         scale = strategy.rsplit("_", 1)[1]
         row[0].annotate(
             SCALE_LABELS.get(scale, scale),
@@ -207,8 +202,8 @@ def plot_event_measure(event, event_title, measure, measure_label, land_cells):
 
     for ax, (_, title) in zip(axes[0, :2], PANELS):
         ax.set_title(title)
-    # horizontal colorbar hung below the first two columns (inset of the bottom-left
-    # panel, in its axes-fraction units, so ~2.1 wide spans both depth columns)
+    # horizontal colorbar below the first two columns: an inset of the bottom-left
+    # panel in its axes-fraction units, so ~2.1 wide spans both depth columns
     cax = axes[-1, 0].inset_axes([0.3, -0.5, 1.5, 0.05])
     fig.colorbar(
         im, cax=cax, orientation="horizontal", extend="max", label="Max flood depth (m)"
@@ -238,29 +233,47 @@ def plot_event_measure(event, event_title, measure, measure_label, land_cells):
         ax.set_ylim(view[1], view[3])
         ax.set_aspect("equal")
         ax.locator_params(nbins=4)
-        ax.label_outer()  # tick labels on the outer panels only (shared axes)
+        ax.label_outer()
     for ax in axes[-1]:
         ax.set_xlabel("Longitude (°)")
     fig.suptitle(f"{event_title}: {measure_label}")
 
-    # lay out without them, freeze that layout, then count them back in so the tight
-    # crop at save keeps them
+    # lay out without them, freeze that layout, then count them back in so the
+    # tight crop at save keeps them
     fig.canvas.draw()
     fig.set_layout_engine("none")
     for artist in below:
         artist.set_in_layout(True)
 
-    out = OUT_DIR / f"fig_flood_map_pre_post_{event}_{measure}.png"
+    out = analysis_path(BASIN_ID, __file__, f"{event}_{measure}.png")
     fig.savefig(out, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"Wrote {out}")
 
 
-if __name__ == "__main__":
-    OUT_DIR.mkdir(exist_ok=True)
+def main() -> None:
+    """Write one PRE | POST | agreement figure per event and measure."""
+    script_parser(__doc__).parse_args()
+
+    # results_dir is a site setting; see config/site.example.yml.
+    basin_root = site_path("results_dir") / BASIN_ID
+    paths = basin_paths(basin_root)
+    runs = paths["runs"]
+    domain_dir = basin_root / "preprocessing_inputs" / "domain"
+
     land_cells = None  # one grid for every run
     for event, event_title in zip(EVENTS, EVENT_TITLES):
         for measure, measure_label in zip(MEASURES, MEASURE_LABELS):
+            first = tif_path(runs, event, "PRE", f"{measure}_{SCALES[0]}")
+            if land_cells is None and first.exists():
+                land_cells = land_mask(first, paths["dep_subgrid"], paths["sea_mask"])
             if land_cells is None:
-                land_cells = land_mask(tif_path(event, "PRE", f"{measure}_{SCALES[0]}"))
-            plot_event_measure(event, event_title, measure, measure_label, land_cells)
+                print(f"{event} {measure}: no PRE map {first.name} -- skipped")
+                continue
+            plot_event_measure(
+                runs, domain_dir, event, event_title, measure, measure_label, land_cells
+            )
+
+
+if __name__ == "__main__":
+    main()

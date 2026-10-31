@@ -1,22 +1,8 @@
-"""
-river_depth_calibration.py -- SFINCS-based river channel depth calibration
-(rule modelled_depth_estimation).
+"""Helpers for rule modelled_depth_estimation's SFINCS crest calibration.
 
-Design: run a minimal SFINCS model with the river network (and coast)
-confined by artificially high (1000 m) walls, forced with a steady
-discharge equal to the basin's protection-level return period (bankfull as
-a fallback). On the *un-excavated* elevation_conditioned.tif, confining the
-design discharge to channel width forces water to pile up above natural
-ground level; a fraction of that rise becomes channel excavation
-(river_processing.river_depth_modelling.excavation_fraction):
-
-    rise   = period_max_water_level - DEM_at_cell
-    rivdph = excavation_fraction * max(rise, 0)
-
-A second confined run on the excavated channel then gives the water level
-the production weir crests are set to, and a third run verifies them --
-see 10_depth_estimation_modelled.py's own module docstring for the full
-three-round design.
+The river bed comes from src.river_bed; a confined SFINCS run on that channel
+at the steady protection-level RP discharge sets the weir crests, a second
+verifies them (see 11_depth_estimation_modelled.py).
 """
 
 from __future__ import annotations
@@ -27,9 +13,12 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-
-from src.river_forcing import interpolate_discharge_at_rp, snap_crossings_to_reaches
+from shapely.geometry import LineString
+from src.geometry import pick_utm_crs
+from src.gvf_target import orient_downstream
+from src.river_forcing import interpolate_discharge_at_rp, seed_discharge_by_reach
 from src.river_network import (
+    build_downstream_adjacency,
     compute_seed_path_offsets,
     normalize_reach_id,
     trace_widest_path,
@@ -42,85 +31,40 @@ def build_calibration_seed_discharge(
     river_ds,
     protection_rp_yr: float | None,
 ) -> dict[str, float]:
-    """
-    Per-crossing steady calibration discharge -- protection-level RP
-    (log-RP interpolated from discharge_rp_table) when available, bankfull
-    discharge as the fallback -- snapped to seed reach IDs.
+    """Return the steady calibration discharge per seed reach ({reach_id: m3/s}).
 
-    Reuses src.river_forcing.snap_crossings_to_reaches unmodified: builds a
-    crossings GeoDataFrame with the same 'bankfull_q'/'inside_reach_id'
-    columns that function expects (holding calibration-discharge values,
-    not literal bankfull, despite the column name), rather than duplicating
-    its keep-largest-per-reach dedup logic.
-
-    Args:
-        river_ds: Opened river_forcing.nc (xr.Dataset).
-        protection_rp_yr: Basin's assigned riverine protection-level return
-            period (years), or None to use bankfull discharge everywhere
-            (no valid RP assigned by rule get_protection_levels).
-
-    Returns:
-        Dict {reach_id_str: calibration_discharge} -- same shape as
-        accumulate_discharge's seed_q argument (src.river_network).
+    Protection-level RP discharge (log-RP interpolated from
+    discharge_rp_table), or bankfull discharge when protection_rp_yr is None.
+    The 'bankfull_discharge_m3s' column passed to snap_crossings_to_reaches holds this
+    calibration discharge, not literal bankfull.
     """
     active = river_ds["has_glofas"].values.astype(bool)
-    bankfull_q = river_ds["bankfull_discharge"].values[active]
+    bankfull_discharge_m3s = river_ds["bankfull_discharge_m3s"].values[active]
 
     if protection_rp_yr is not None and "discharge_rp_table" in river_ds:
         table = river_ds["discharge_rp_table"].values[active]
-        table_rps = river_ds["return_period"].values
-        calibration_q = interpolate_discharge_at_rp(table, table_rps, protection_rp_yr)
+        rps_yr = river_ds["rp_yr"].values
+        calibration_q = interpolate_discharge_at_rp(table, rps_yr, protection_rp_yr)
         log.info(
             f"Calibration discharge: protection level RP={protection_rp_yr:.1f} yr "
             f"(log-RP interpolated from discharge_rp_table)"
         )
     else:
-        calibration_q = bankfull_q
-        log.info("Calibration discharge: bankfull_discharge (no protection level RP)")
+        calibration_q = bankfull_discharge_m3s
+        log.info(
+            "Calibration discharge: bankfull_discharge_m3s (no protection level RP)"
+        )
 
-    inside_ids = (
-        river_ds["inside_reach_id"].values[active]
-        if "inside_reach_id" in river_ds
-        else np.full(active.sum(), "", dtype=object)
-    )
-    crossings = gpd.GeoDataFrame(
-        {"bankfull_q": calibration_q, "inside_reach_id": inside_ids},
-        geometry=gpd.points_from_xy(
-            river_ds["longitude"].values[active], river_ds["latitude"].values[active]
-        ),
-        crs="EPSG:4326",
-    )
-    return snap_crossings_to_reaches(crossings)
+    return seed_discharge_by_reach(river_ds, calibration_q, active)
 
 
 def compute_period_max_zs(zs: np.ndarray) -> np.ndarray:
-    """
-    Per-point maximum simulated water level over the ENTIRE calibration run.
+    """Return per point the maximum water level over the whole run (zs: n_time x n_points).
 
-    A fixed-duration steady-discharge run has no reason to "converge" to a
-    flat window in the strict sense check_convergence tests for -- a
-    persistent, non-damping oscillation at a discharge-injection (seed)
-    cell never satisfies a flatness/trend tolerance no matter how long the
-    run is extended. The calibration only needs the worst-case (peak)
-    forced water level at each cell to size channel depth/crest against,
-    and the maximum over the whole run captures that directly, oscillation
-    or not, without any tolerance/extension logic. Callers wanting a
-    shorter, trailing-window peak instead of the whole run should slice
-    `zs`/`times_s` themselves before calling this.
-
-    Uses nan-aware np.nanmax, not a plain np.max: SFINCS's own map output
-    carries NaN at a cell for any timestep it's still dry (e.g. universally
-    at t=0, before the steady discharge has propagated into the channel
-    yet) -- a plain np.max over an axis containing even one NaN returns NaN
-    for that whole reduction.
-
-    Args:
-        zs: (n_time, n_points) water level array.
-
-    Returns:
-        (n_points,) array of each point's own maximum water level over the
-        full time series. NaN only for a point that was NaN at every single
-        timestep (never wetted at all during the run).
+    A persistent oscillation at a seed cell never meets a flatness tolerance,
+    but the peak is what the crests are sized against.
+    nanmax because SFINCS map output is NaN while a cell is dry (e.g. at t=0);
+    NaN only for a point never wetted. Slice zs for a trailing-window peak.
     """
     return np.nanmax(zs, axis=0)
 
@@ -131,76 +75,151 @@ def gather_calibration_round_profile(
     seed: str,
     n_rounds: int,
 ) -> tuple[list[str], dict[int, pd.DataFrame]]:
-    """
-    Round-by-round per-cell calibration state along one seed-to-mouth path,
-    read directly from each round's own calibration_state.csv
-    (10_depth_estimation_modelled.py's own real per-cell ground truth --
-    dem, rivdph, weir_crest, zs (period-maximum water level)) rather
-    than reconstructed from sfincs_map.nc. rivdph is the excavation that
-    round actually ran with; weir_crest is NaN while the model was still
-    confined by its 1000 m walls (round 0), otherwise the production crest
-    derived from the confined, excavated round's own water level.
+    """Return per-round calibration state along one seed's widest path.
 
-    Args:
-        calib_root: Basin's own preprocessing_inputs/depth_crest_calibration
-            directory (round{i}/calibration_state.csv must exist for i in
-            0..n_rounds).
-        rivers_utm: River network (any CRS accepted; only 'reach_id',
-            'rch_id_dn', 'width' are used, via trace_widest_path/
-            compute_seed_path_offsets -- reprojection to a metric CRS for
-            the offset calculation happens internally there).
-        seed:       Seed reach_id (normalized string) to trace from.
-        n_rounds:   Number of rounds after round 0 (rounds 0..n_rounds are
-            read).
+    Reads round{i}/calibration_state.csv under calib_root for i in
+    0..n_rounds (dem_m, river_depth_m, weir_crest_m, zs_m). zs_m is the period-max
+    water level, except in round 0: the river-bed level. weir_crest_m is NaN
+    in round 0. rivers_utm may be in any CRS. The state's along_m runs along
+    each reach line as stored; a line that runs upstream (none on rule 02's
+    network) is flipped, so the path runs downstream throughout.
 
     Returns:
-        (path_rids, profiles_by_round) -- path_rids is the ordered list of
-        reach_id strings from trace_widest_path; profiles_by_round maps
-        round_idx -> DataFrame of that round's own calibration_state.csv
-        rows restricted to path_rids, with an added 'along_path_m' column
-        (cumulative along-path distance, via compute_seed_path_offsets +
-        each cell's own along_m), sorted by along_path_m.
+        (path_rids, {round_idx: rows on the path with 'along_path_m', sorted}).
     """
-    path_rids = trace_widest_path(rivers_utm, seed)
-    offsets = compute_seed_path_offsets(rivers_utm, path_rids)
+    path_reach_ids = trace_widest_path(rivers_utm, seed)
+    offsets = compute_seed_path_offsets(rivers_utm, path_reach_ids)
+    rivers_m = (
+        rivers_utm.to_crs(pick_utm_crs(rivers_utm))
+        if rivers_utm.crs.is_geographic
+        else rivers_utm
+    )
+    _, flipped = orient_downstream(rivers_m, build_downstream_adjacency(rivers_m))
+    # Same lengths as compute_seed_path_offsets.
+    lengths = {
+        normalize_reach_id(r): float(g.length)
+        for r, g in zip(rivers_m["reach_id"], rivers_m.geometry)
+    }
 
     profiles: dict[int, pd.DataFrame] = {}
     for round_idx in range(n_rounds + 1):
         csv_path = calib_root / f"round{round_idx}" / "calibration_state.csv"
         df = pd.read_csv(csv_path)
         df["reach_id"] = df["reach_id"].apply(normalize_reach_id)
-        on_path = df[df["reach_id"].isin(path_rids)].copy()
-        on_path["along_path_m"] = on_path["reach_id"].map(offsets) + on_path["along_m"]
+        on_path = df[df["reach_id"].isin(path_reach_ids)].copy()
+        along = on_path["along_m"].to_numpy(dtype=float)
+        flip = on_path["reach_id"].isin(flipped).to_numpy()
+        reach_len = on_path["reach_id"].map(lengths).to_numpy(dtype=float)
+        along = np.where(flip, reach_len - along, along)
+        on_path["along_path_m"] = on_path["reach_id"].map(offsets).to_numpy() + along
         profiles[round_idx] = on_path.sort_values("along_path_m").reset_index(drop=True)
-    return path_rids, profiles
+    return path_reach_ids, profiles
 
 
-def compute_excavation_depth(
-    period_max_zs: np.ndarray, dem_at_cell: np.ndarray, excavation_fraction: float
-) -> np.ndarray:
+def bifurcation_cross_sections(
+    rivers: gpd.GeoDataFrame,
+    seeds: list[str],
+    offset_m: float = 500.0,
+    margin_m: float = 150.0,
+) -> gpd.GeoDataFrame:
+    """Return a SFINCS cross-section line across each arm of every bifurcation on the seeds' paths.
+
+    Paths are the widest-arm paths from each seed (trace_widest_path). Each
+    line is perpendicular to the arm at offset_m along it from the junction
+    (at most a third of the arm) and spans its SWORD width plus margin_m on
+    each side. rivers must be in a projected CRS. Columns: name
+    (bif_<parent>_<arm>), parent_reach, arm_reach, width_m, geometry.
     """
-    Channel excavation depth from a confined, UN-excavated calibration run.
-    Confining the design discharge to channel width, with no channel yet
-    excavated, forces water to pile up ABOVE natural ground level (the
-    "rise"); ``excavation_fraction`` of that rise becomes excavation depth.
-    The rest is left to the riverbank weir, whose crest is measured
-    afterwards from a second confined run on the excavated channel rather
-    than derived from this rise.
+    adjacency = build_downstream_adjacency(rivers)
+    oriented, _ = orient_downstream(rivers, adjacency)
+    line_of = dict(zip(oriented["reach_id"].map(normalize_reach_id), oriented.geometry))
+    width_of = dict(
+        zip(
+            rivers["reach_id"].map(normalize_reach_id),
+            pd.to_numeric(rivers["width"], errors="coerce"),
+        )
+    )
+    rows, seen = [], set()
+    for seed in seeds:
+        for parent in trace_widest_path(rivers, seed):
+            arms = adjacency.get(parent, [])
+            if len(arms) < 2 or parent in seen:
+                continue
+            seen.add(parent)
+            for arm in arms:
+                line = line_of.get(arm)
+                if line is None or line.is_empty:
+                    continue
+                d = min(offset_m, line.length / 3.0)
+                p = line.interpolate(d)
+                q = line.interpolate(min(d + 1.0, line.length))
+                dx, dy = q.x - p.x, q.y - p.y
+                norm = float(np.hypot(dx, dy)) or 1.0
+                w = float(width_of.get(arm, np.nan))
+                half = (w if np.isfinite(w) else 0.0) / 2.0 + margin_m
+                nx, ny = -dy / norm * half, dx / norm * half
+                rows.append(
+                    {
+                        "name": f"bif_{parent}_{arm}",
+                        "parent_reach": parent,
+                        "arm_reach": arm,
+                        "width_m": w,
+                        "geometry": LineString(
+                            [(p.x - nx, p.y - ny), (p.x + nx, p.y + ny)]
+                        ),
+                    }
+                )
+    return gpd.GeoDataFrame(
+        rows,
+        columns=["name", "parent_reach", "arm_reach", "width_m", "geometry"],
+        crs=rivers.crs,
+    )
 
-    The rise is clipped at 0: with subgrid, a cell's water level can sit
-    below its own coarse DEM value (SFINCS's subgrid bed is the lowest
-    sub-pixel, not the cell mean), which must not turn into a negative
-    excavation (a raised bed).
 
-    Args:
-        period_max_zs: Per-cell period-max water level (m), same reference
-            datum as the DEM.
-        dem_at_cell: Per-cell DEM elevation (m) at the same cells.
-        excavation_fraction: Fraction of the rise excavated.
+def mouth_sections(
+    surface_nodes: gpd.GeoDataFrame,
+    upstream_m: float = 1000.0,
+    margin_m: float = 150.0,
+) -> gpd.GeoDataFrame:
+    """Return a cross-section line at every river mouth, upstream_m up its reach.
 
-    Returns:
-        Per-cell excavation depth (m), >= 0 (NaN where period_max_zs is
-        NaN, i.e. never wetted).
+    surface_nodes: rule 10's node table (src.water_surface.read_water_surface:
+    reach_id, chainage_m, width_m, is_mouth, point geometry), in a projected
+    CRS. Per mouth node, the node of the same reach nearest upstream_m upstream
+    (at most the reach start) carries a line perpendicular to the reach,
+    spanning its width plus margin_m on each side. Columns: name
+    (mouth_<reach>), reach_id, node_id, width_m, x, y (the section centre,
+    for an observation point), geometry.
     """
-    rise = period_max_zs - dem_at_cell
-    return excavation_fraction * np.maximum(rise, 0.0)
+    rows = []
+    for _, mouth in surface_nodes[surface_nodes["is_mouth"].astype(bool)].iterrows():
+        reach = surface_nodes[
+            surface_nodes["reach_id"] == mouth["reach_id"]
+        ].sort_values("chainage_m")
+        target = float(mouth["chainage_m"]) - upstream_m
+        k = int(np.argmin(np.abs(reach["chainage_m"].to_numpy(float) - target)))
+        node = reach.iloc[k]
+        nb = reach.iloc[[max(k - 1, 0), min(k + 1, len(reach) - 1)]]
+        dx = nb.geometry.x.iloc[1] - nb.geometry.x.iloc[0]
+        dy = nb.geometry.y.iloc[1] - nb.geometry.y.iloc[0]
+        norm = float(np.hypot(dx, dy)) or 1.0
+        w = float(node["width_m"]) if np.isfinite(float(node["width_m"])) else 0.0
+        half = w / 2.0 + margin_m
+        nx, ny = -dy / norm * half, dx / norm * half
+        px, py = node.geometry.x, node.geometry.y
+        rows.append(
+            {
+                "name": f"mouth_{mouth['reach_id']}",
+                "reach_id": mouth["reach_id"],
+                "node_id": node["node_id"],
+                "width_m": w,
+                "x": px,
+                "y": py,
+                "geometry": LineString([(px - nx, py - ny), (px + nx, py + ny)]),
+            }
+        )
+    return gpd.GeoDataFrame(
+        rows,
+        columns=["name", "reach_id", "node_id", "width_m", "x", "y", "geometry"],
+        crs=surface_nodes.crs,
+    )

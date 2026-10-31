@@ -1,18 +1,10 @@
-"""Fast, data-free sanity checks for the workflow codebase.
+"""Check workflow scripts/src, tests/ and analysis/ for syntax and src imports.
 
-Checks every Python file under workflow/scripts, workflow/src and tests for:
-  1. Syntax errors (ast.parse).
-  2. Broken `from src.X import Y` references (X not importable, or Y not an
-     attribute of X). This matters because neither ast.parse nor
-     `snakemake -n` catch broken imports -- a bad import only surfaces the
-     first time that specific script actually executes.
-
-Deliberately does NOT attempt a `snakemake -n` dry-run: that requires every
-data_catalogue.yml-referenced raw file to exist on disk, which is not
-available in CI or on a fresh clone.
+Catches broken `from src.X import Y` (X not importable, Y missing), which
+neither ast.parse nor `snakemake -n` reports. No dry-run: that needs every
+catalogued raw file on disk. Exit code 0 if all checks pass, 1 otherwise.
 
 Usage: python tests/check_code_health.py
-Exit code 0 if all checks pass, 1 otherwise.
 """
 
 import ast
@@ -26,6 +18,7 @@ sys.path.insert(0, str(REPO_ROOT / "workflow"))
 
 
 def check_syntax(files: list[str]) -> list[str]:
+    """Return one message per file that does not parse."""
     errors = []
     for f in files:
         with open(f, encoding="utf-8") as fh:
@@ -37,6 +30,7 @@ def check_syntax(files: list[str]) -> list[str]:
 
 
 def check_src_imports(files: list[str]) -> list[str]:
+    """Return one message per unresolvable `from src... import name`."""
     errors = []
     module_cache: dict[str, object] = {}
     for f in files:
@@ -68,10 +62,12 @@ def check_src_imports(files: list[str]) -> list[str]:
 
 
 def main() -> int:
+    """Run both checks and return the exit code."""
     files = (
         glob.glob(str(REPO_ROOT / "workflow/scripts/*.py"))
         + glob.glob(str(REPO_ROOT / "workflow/src/*.py"))
         + glob.glob(str(REPO_ROOT / "tests/*.py"))
+        + glob.glob(str(REPO_ROOT / "analysis/*.py"))
     )
 
     errors = check_syntax(files) + check_src_imports(files)

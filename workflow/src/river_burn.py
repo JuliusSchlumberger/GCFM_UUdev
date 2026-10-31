@@ -1,37 +1,21 @@
-"""
-river_burn.py — Burns a per-cell river-bed anchor profile (zbed_anchors,
-built directly in-memory by rule modelled_depth_estimation -- never a
-standalone file)
-directly into a channel-only DEM at fine resolution, instead of
-hydromt_sfincs's own per-tile burn_river_rect, which produces a wavy,
-non-monotonic burned bed when re-run on an already-burned raster.
+"""Burn a per-cell river-bed profile into a channel-only DEM; build channel masks.
 
-Output covers only the buffered river-channel network (NaN elsewhere),
-cropped to the river network's own bounding box rather than the whole basin
-domain — meant to be fed to hydromt_sfincs as a higher-priority
-elevation_list entry ahead of elevation_merged/elevation_conditioned (which
-remains the fallback for everywhere else: ocean, floodplain, gaps).
-
-Processes each reach independently, using ONLY that reach's own
-zbed_anchors points projected onto that reach's own full centerline
-geometry — unlike burn_river_rect, which clips the centerline per subgrid
-tile but matches it against the GLOBAL, un-clipped zbed_anchors (no distance
-cutoff), causing spurious cross-tile contamination in the burned bed level.
-
-Also provides build_channel_mask_regular(): a much lighter sibling that
-just rasterizes each reach's own buffered channel polygon directly onto an
-arbitrary target grid (e.g. the SFINCS model grid, not the DEM working
-grid) — no elevation interpolation, zbed_anchors, or natural-DEM reference
-needed, since this only ever produces a boolean "is this cell part of the
-channel" mask (used by the coastal protection weir, src/protection_weir.py).
+zbed_anchors come from rule modelled_depth_estimation. Used instead of
+hydromt_sfincs's burn_river_rect, which gives a wavy, non-monotonic bed when
+re-run on a burned raster and matches each tile's clipped centreline against
+all anchors (cross-tile contamination); here each reach uses only its own
+anchors on its own full centreline. Output is NaN outside the channel buffers,
+for use as a higher-priority elevation_list entry ahead of
+elevation_merged/elevation_conditioned. build_channel_mask_regular feeds the
+coastal protection weir (src/protection_weir.py).
 """
 
 from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 import geopandas as gpd
 import numpy as np
@@ -42,29 +26,21 @@ from rasterio.enums import Resampling
 from rasterio.features import geometry_mask
 from rasterio.features import rasterize as rio_rasterize
 from rasterio.transform import from_origin
-from rasterio.windows import Window, transform as window_transform
-from scipy.interpolate import interp1d
-
+from rasterio.windows import Window
+from rasterio.windows import transform as window_transform
 from src.grid import cell_size_m
 from src.raster import reproject_nan_aware
 from src.river_network import (
-    _as_linestring,
     _BOUNDARY_BLEND_EPS_M,
+    _as_linestring,
     _junction_value,
     build_downstream_adjacency,
+    clamped_profile,
+    line_window_cells,
     normalize_reach_id,
 )
 
 log = logging.getLogger(__name__)
-
-
-def _windows_intersect(a: Window, b: Window) -> bool:
-    return not (
-        a.col_off + a.width <= b.col_off
-        or b.col_off + b.width <= a.col_off
-        or a.row_off + a.height <= b.row_off
-        or b.row_off + b.height <= a.row_off
-    )
 
 
 def burn_river_channel(
@@ -79,87 +55,40 @@ def burn_river_channel(
     out_shape: tuple[int, int] | None = None,
     channel_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, object, float, dict]:
-    """
-    Burn zbed_anchors' rivbed profile into a channel-only DEM.
+    """Burn zbed_anchors' rivbed profile into a channel-only DEM.
 
     Args:
-        rivers:         river_network_depth_estimated.gpkg (any CRS) — needs
-                        'reach_id', width_column, geometry.
-        zbed_anchors:   Per-pixel/per-cell bed anchor points (any CRS) --
-                        needs 'reach_id', 'rivbed', geometry. Built directly
-                        by rule modelled_depth_estimation (per-cell,
-                        from its own calibrated depth) -- not a separate
-                        rule's own output.
-        natural_dem_path: Path to the basin's own conditioned/merged DEM
-                        (elevation_conditioned.tif or elevation_merged.tif --
-                        FathomDEM merged with GEBCO bathymetry, already
-                        GOCO06s-referenced, matching zbed_anchors' own
-                        rivbed values). Used both as this function's own
-                        along-channel terrain reference and as the floor
-                        below (burned bed is never raised ABOVE it). Must be
-                        the merged/conditioned DEM, not raw FathomDEM: raw
-                        FathomDEM alone doesn't see riverbed/bathymetry, so
-                        it can't distinguish a genuinely deep, GEBCO-informed
-                        stretch (e.g. near a river mouth straddling the
-                        FathomDEM/GEBCO merge boundary) from ordinary land,
-                        which can let a shallower, single-anchor-interpolated
-                        burn overwrite real bathymetry with a shallower
-                        value.
-        utm_crs:        target CRS for the output raster (the basin's own
-                        working UTM CRS).
-        resolution_m:   output pixel size (m) -- ignored (derived from
-                        out_transform instead) when out_transform/out_shape
-                        are given.
-        width_column:   channel width column in `rivers` (always 'width').
-        margin_m:       buffer (m) added around the river network's own
-                        bounds before fetching FathomDEM tiles, so buffers
-                        near the network's own extent edge still get real
-                        DEM coverage -- ignored when out_transform/out_shape
-                        are given (the caller's grid already has whatever
-                        extent it needs).
-        out_transform, out_shape: Optional externally-supplied target grid
-                        (e.g. the shared SFINCS grid, rule 08c's
-                        {basin_id}_sfincs_grid.json) -- when BOTH given,
-                        burns directly onto this exact grid instead of
-                        self-computing a native-resolution one from the
-                        river network's own bounds. The algorithm itself is
-                        resolution-agnostic (only evaluates each reach's own
-                        along-channel profile at whatever pixel centers it's
-                        given). Rule modelled_depth_estimation passes
-                        the model's own subgrid pixel grid, so the burn
-                        needs no resampling when HydroMT builds the subgrid
-                        tables from it. Must supply both or neither.
-        channel_mask:   Optional boolean array, shape == out_shape, ONLY
-                        valid together with out_transform/out_shape (raises
-                        otherwise). When given, each reach's own buffer
-                        polygon is no longer independently rasterized to
-                        decide which pixels to burn -- the corresponding
-                        window of channel_mask is used directly instead, so
-                        the burned/excavated cells are EXACTLY channel_mask's
-                        cells, not a second, independently-computed polygon
-                        rasterization that merely tends to agree with it.
-                        Callers should build channel_mask via
-                        build_channel_mask_regular() with the SAME rivers/
-                        width_column/out_shape/out_transform, so calibration's
-                        own confinement corridor, this excavation, and
-                        production's weir corridor are all provably the same
-                        set of cells (see 11b_burn_river_dem.py).
+        rivers: Needs 'reach_id', width_column, geometry (any CRS).
+        zbed_anchors: Per-cell bed anchors with 'reach_id', 'rivbed' (any CRS).
+        natural_dem_path: Conditioned/merged DEM (FathomDEM + GEBCO, GOCO06s,
+            same datum as rivbed). Terrain reference and floor: the burned bed
+            is never above it. Not raw FathomDEM, which has no bathymetry and
+            would let a shallower interpolated burn overwrite real GEBCO depths
+            near a mouth.
+        resolution_m: Output pixel size (m); ignored when out_transform is given.
+        margin_m: Buffer (m) around the network bounds; ignored when
+            out_transform is given.
+        out_transform, out_shape: Target grid (rule modelled_depth_estimation
+            passes the subgrid pixel grid, so HydroMT needs no resampling).
+            Give both or neither.
+        channel_mask: Boolean, shape out_shape; requires out_transform. When
+            given, the burned cells are exactly its cells, not a per-reach
+            polygon rasterization. Build it with build_channel_mask_regular on
+            the same inputs so the calibration corridor, the excavation and the
+            weir corridor are the same cells (rules modelled_depth_estimation
+            and build_sfincs_skeleton).
 
-    Each reach's own interpolation is extended with one synthetic anchor at
-    along=0 and/or along=length, valued from its immediate upstream/
-    downstream neighbour's own nearest-anchor rivbed (averaged across
-    multiple neighbours at a confluence/bifurcation) -- both reaches sharing
-    a junction then interpolate through the same boundary value rather than
-    independently clamping to their own nearest anchor, without reaching
-    any further than direct neighbours.
+    Each reach's interpolation gets a synthetic anchor at along=0 and/or
+    along=length from its direct neighbours' nearest anchors (averaged at a
+    confluence/bifurcation), so both reaches at a junction pass through the
+    same value.
 
     Returns:
-        (burned_arr, transform, terrain, stats) — burned_arr is float32, NaN
-        outside every reach's own channel buffer; terrain is the natural DEM
-        on the same grid (float32, bilinear, NaN where it has no data), the
-        elevation of every pixel the burn leaves untouched (see
-        mean_elevation_on_coarse_grid); stats is a dict with
-        'n_reaches_burned', 'n_reaches_skipped', 'n_pixels_burned'.
+        (burned_arr, transform, terrain, stats): burned_arr float32, NaN outside
+        every channel buffer; terrain is the natural DEM on the same grid
+        (float32, bilinear, NaN where no data), the elevation of every pixel the
+        burn leaves untouched; stats is a dict with 'n_reaches_burned',
+        'n_reaches_skipped', 'n_pixels_burned', 'n_boundaries_blended'.
     """
     if (out_transform is None) != (out_shape is None):
         raise ValueError(
@@ -184,17 +113,11 @@ def burn_river_channel(
         _reach_id=[normalize_reach_id(x) for x in zbed_proj["reach_id"]]
     )
 
-    # ── output grid: either the externally-supplied one (verbatim), or
-    # self-computed from the river network's own bounds + margin, snapped to
-    # a resolution_m lattice ──────────────────────────────────────────────────
     if out_transform is not None:
         height_px, width_px = out_shape
         resolution_m = cell_size_m(out_transform)
-        # Corner-based bounds (not rasterio.transform.array_bounds, which
-        # assumes a north-up/negative-e transform) -- an externally-supplied
-        # transform, e.g. a live SFINCS model's own grid, can have a
-        # POSITIVE y-scale, which array_bounds would silently mislabel
-        # min/max for.
+        # Corner-based bounds: array_bounds assumes north-up and mislabels
+        # min/max for a SFINCS grid with a positive y-scale.
         corners = [(0, 0), (width_px, 0), (0, height_px), (width_px, height_px)]
         xs, ys = zip(*(out_transform * c for c in corners))
         xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
@@ -218,10 +141,7 @@ def burn_river_channel(
             f"(river network bounds + {margin_m:.0f} m margin)"
         )
 
-    # ── natural (conditioned/merged) DEM, cropped to the burn grid -- this
-    # function's own along-channel terrain reference AND the floor below.
-    # Already GOCO06s-referenced, matching zbed_anchors' own rivbed values,
-    # so no separate geoid correction is needed here ───────────────────────
+    # Natural DEM is already GOCO06s, the datum of rivbed: no geoid correction.
     with rasterio.open(natural_dem_path) as src:
         natural_arr = src.read(1).astype(np.float32)
         natural_nodata = src.nodata
@@ -242,18 +162,15 @@ def burn_river_channel(
         f"Natural DEM (river-network extent): {(~np.isnan(terrain)).sum():,} valid px"
     )
 
-    # ── precompute each reach's own (line, along, rivbed_vals), and topology ──
-    # Done for every reach with valid geometry + zbed points (not just ones
-    # that will actually be burned below, e.g. zero-width reaches) so a
-    # burnable reach can still borrow a boundary value from a neighbour that
-    # itself won't be burned.
+    # Every reach with geometry and anchors, including unburnable ones, so a
+    # burnable reach can borrow a junction value from such a neighbour.
     reach_data: dict[str, tuple[object, np.ndarray, np.ndarray]] = {}
     for row in rivers_proj.itertuples(index=False):
-        rid = normalize_reach_id(row.reach_id)
+        reach_id = normalize_reach_id(row.reach_id)
         line = _as_linestring(row.geometry)
-        if rid is None or line is None or line.length == 0:
+        if reach_id is None or line is None or line.length == 0:
             continue
-        zbed_reach = zbed_proj[zbed_proj["_reach_id"] == rid]
+        zbed_reach = zbed_proj[zbed_proj["_reach_id"] == reach_id]
         if len(zbed_reach) == 0:
             continue
         zbed_points = shapely.points(
@@ -262,47 +179,43 @@ def burn_river_channel(
         along = shapely.line_locate_point(line, zbed_points)
         rivbed_vals = zbed_reach["rivbed"].to_numpy(dtype=float)
         order = np.argsort(along)
-        reach_data[rid] = (line, along[order], rivbed_vals[order])
+        reach_data[reach_id] = (line, along[order], rivbed_vals[order])
 
     downstream_adj = build_downstream_adjacency(rivers_proj)
-    upstream_adj: dict[str, list[str]] = {rid: [] for rid in downstream_adj}
-    for rid, dns in downstream_adj.items():
+    upstream_adj: dict[str, list[str]] = {reach_id: [] for reach_id in downstream_adj}
+    for reach_id, dns in downstream_adj.items():
         for dn in dns:
-            upstream_adj.setdefault(dn, []).append(rid)
+            upstream_adj.setdefault(dn, []).append(reach_id)
 
-    # ── burn, one reach at a time ─────────────────────────────────────────────
     output = np.full((height_px, width_px), np.nan, dtype=np.float32)
-    full_window = Window(0, 0, width_px, height_px)
-    inv_out_transform = ~out_transform
     n_reaches_burned = 0
     n_reaches_skipped = 0
     n_pixels_burned = 0
     n_boundaries_blended = 0
 
     for row in rivers_proj.itertuples(index=False):
-        rid = normalize_reach_id(row.reach_id)
-        width = getattr(row, width_column, np.nan)
-        if rid is None or pd.isna(width) or width <= 0 or rid not in reach_data:
+        reach_id = normalize_reach_id(row.reach_id)
+        width_m = getattr(row, width_column, np.nan)
+        if (
+            reach_id is None
+            or pd.isna(width_m)
+            or width_m <= 0
+            or reach_id not in reach_data
+        ):
             n_reaches_skipped += 1
             continue
-        line, along, rivbed_vals = reach_data[rid]
+        line, along, rivbed_vals = reach_data[reach_id]
 
-        # Borrow a shared junction value from each immediate neighbour (never
-        # reaching further than one hop) so this reach's interpolation
-        # passes through the SAME value at each junction as whatever's on
-        # the other side of it, instead of independently clamping to its
-        # own nearest anchor -- see this function's docstring and
-        # _junction_value's. At a confluence/bifurcation (multiple
-        # neighbours), average across the junction values with each.
+        # Junction values from direct neighbours only, averaged over several.
         up_vals = [
             v
-            for u in upstream_adj.get(rid, [])
-            if (v := _junction_value(reach_data, u, rid)) is not None
+            for u in upstream_adj.get(reach_id, [])
+            if (v := _junction_value(reach_data, u, reach_id)) is not None
         ]
         dn_vals = [
             v
-            for d in downstream_adj.get(rid, [])
-            if (v := _junction_value(reach_data, rid, d)) is not None
+            for d in downstream_adj.get(reach_id, [])
+            if (v := _junction_value(reach_data, reach_id, d)) is not None
         ]
         up_val = float(np.mean(up_vals)) if up_vals else None
         dn_val = float(np.mean(dn_vals)) if dn_vals else None
@@ -317,105 +230,30 @@ def burn_river_channel(
             n_boundaries_blended += 1
         along, rivbed_vals = np.asarray(ext_along), np.asarray(ext_rivbed)
 
-        if len(along) == 1:
-            _const = rivbed_vals[0]
-
-            def interp(x, _v=_const):
-                return np.full(np.shape(x), _v, dtype=float)
-        else:
-            # Clamp to the first/last anchor value beyond the sampled range
-            # (now including any borrowed boundary value above), rather than
-            # linearly extrapolating -- pixels near a reach's start/end
-            # routinely fall just outside the range its own zbed_anchors
-            # points span (anchors are sampled along the centerline, but the
-            # buffered channel polygon extends slightly past the line's own
-            # endpoints), and extrapolating the local slope out to those
-            # pixels can overshoot significantly.
-            interp = interp1d(
-                along,
-                rivbed_vals,
-                kind="linear",
-                bounds_error=False,
-                fill_value=(rivbed_vals[0], rivbed_vals[-1]),
-            )
-
+        interp = clamped_profile(along, rivbed_vals)
         buf_poly = _flush_capped_buffer(
-            line, float(width), clip_start=bool(getattr(row, "is_seed", False))
+            line, float(width_m), clip_start=bool(getattr(row, "is_seed", False))
         )
-        # Corner-based window (not rasterio.windows.from_bounds, which
-        # assumes a north-up/negative-e transform and raises "Bounds and
-        # transform are inconsistent" against a positive-y-scale transform,
-        # e.g. a live SFINCS model's own grid).
-        bminx, bminy, bmaxx, bmaxy = buf_poly.bounds
-        corners = [(bminx, bminy), (bmaxx, bminy), (bminx, bmaxy), (bmaxx, bmaxy)]
-        cols_corners, rows_corners = zip(*(inv_out_transform * c for c in corners))
-        col_off = int(np.floor(min(cols_corners)))
-        row_off = int(np.floor(min(rows_corners)))
-        col_stop = int(np.ceil(max(cols_corners)))
-        row_stop = int(np.ceil(max(rows_corners)))
-        window = Window(col_off, row_off, col_stop - col_off, row_stop - row_off)
-        if not _windows_intersect(window, full_window):
+        # all_touched=True as in build_channel_mask_regular; the default
+        # (centre inside) would narrow the footprint vs the weir corridor.
+        cells = line_window_cells(
+            buf_poly, line, out_transform, (height_px, width_px), channel_mask
+        )
+        if cells is None:
             n_reaches_skipped += 1
             continue
-        window = window.intersection(full_window)
-        if window.width <= 0 or window.height <= 0:
-            n_reaches_skipped += 1
-            continue
-
-        win_transform = window_transform(window, out_transform)
-        win_shape = (int(window.height), int(window.width))
-        if channel_mask is not None:
-            # Slice the externally-supplied, shared mask directly -- the
-            # burned/excavated cells are then EXACTLY channel_mask's cells
-            # within this reach's own window, not a second, independently-
-            # rasterized buf_poly that merely tends to agree with it (see
-            # this function's channel_mask docstring).
-            inside = channel_mask[
-                window.row_off : window.row_off + win_shape[0],
-                window.col_off : window.col_off + win_shape[1],
-            ]
-        else:
-            # all_touched=True: matches build_channel_mask_regular's
-            # convention for this SAME buf_poly elsewhere in this file --
-            # geometry_mask defaults to
-            # False (a pixel only counts if its centre falls inside the
-            # polygon), which would narrow the excavated footprint relative
-            # to the channel_mask/weir corridor built from the identical
-            # buf_poly.
-            inside = geometry_mask(
-                [buf_poly],
-                out_shape=win_shape,
-                transform=win_transform,
-                invert=True,
-                all_touched=True,
-            )
-        if not inside.any():
-            n_reaches_skipped += 1
-            continue
-
-        rows_idx, cols_idx = np.where(inside)
-        xs, ys = rasterio.transform.xy(win_transform, rows_idx, cols_idx)
-        pts = shapely.points(np.asarray(xs), np.asarray(ys))
-        pts_along = shapely.line_locate_point(line, pts)
+        rows_idx, cols_idx, pts_along = cells
         rivbed_at_pts = np.asarray(interp(pts_along), dtype=float)
 
-        row_off, col_off = int(window.row_off), int(window.col_off)
-        terrain_win = terrain[
-            row_off : row_off + win_shape[0], col_off : col_off + win_shape[1]
-        ]
-        output_win = output[
-            row_off : row_off + win_shape[0], col_off : col_off + win_shape[1]
-        ]
-
-        terrain_at_pts = terrain_win[rows_idx, cols_idx]
+        terrain_at_pts = terrain[rows_idx, cols_idx]
         has_terrain = np.isfinite(terrain_at_pts)
         burned_vals = np.where(
             has_terrain, np.minimum(terrain_at_pts, rivbed_at_pts), rivbed_at_pts
         )
-        output_win[rows_idx, cols_idx] = burned_vals
+        output[rows_idx, cols_idx] = burned_vals
 
         n_reaches_burned += 1
-        n_pixels_burned += int(inside.sum())
+        n_pixels_burned += len(rows_idx)
 
     stats = {
         "n_reaches_burned": n_reaches_burned,
@@ -437,20 +275,13 @@ def mean_elevation_on_coarse_grid(
     nr_subgrid_pixels: int,
     chunk_rows: int = 256,
 ) -> np.ndarray:
-    """Main-grid elevation of the channel cells: per coarse cell, the MEAN
-    of its own nr_subgrid_pixels x nr_subgrid_pixels subgrid pixels with the
-    burn in place (burned_fine where it has a value, terrain_fine elsewhere).
+    """Return per coarse cell the mean of its subgrid pixels with the burn in place.
 
-    A channel narrower than a cell therefore lowers that cell only in
-    proportion to the area it occupies, instead of setting the whole cell to
-    bed level. Both inputs must be on the subgrid pixel grid of the coarse
-    grid (coarse transform subdivided by nr_subgrid_pixels, same origin), so
-    pixel block (r, c) is exactly coarse cell (r, c).
-
-    Returns:
-        float32 array on the coarse grid, NaN for every cell that holds no
-        burned pixel (those keep their own background elevation) or no valid
-        pixel at all.
+    Burned pixels take burned_fine, others terrain_fine, so a channel narrower
+    than a cell lowers it only in proportion to its area. Both inputs must be on
+    the coarse grid's subgrid pixel grid (same origin, nr_subgrid_pixels per
+    cell side). float32; NaN for cells with no burned pixel (they keep their
+    background elevation) or no valid pixel.
     """
     n = int(nr_subgrid_pixels)
     if burned_fine.shape != terrain_fine.shape:
@@ -489,18 +320,12 @@ def constrain_to_coarse_channel_mask(
     channel_mask_coarse: np.ndarray,
     coarse_transform,
 ) -> np.ndarray:
-    """Null out any fine-resolution burned pixel whose own parent coarse
-    cell falls outside channel_mask_coarse.
+    """Null fine burned pixels whose parent coarse cell is outside channel_mask_coarse.
 
-    burn_river_channel()'s fine-resolution call (no channel_mask given)
-    independently rasterizes each reach's own buf_poly in its own per-reach
-    window. Since the fine burn is layered onto HydroMT's elevation_list at
-    higher priority than the background, any fine pixel that lands in a
-    coarse cell channel_mask doesn't cover becomes a deep, unprotected
-    pocket -- the weir's own crest floor there is never raised, since
-    crest_surface is only elevated within channel_mask. Guarantees the
-    excavated footprint is always a SUBSET of the coarse weir-protection
-    corridor.
+    The fine burn ranks above the background in elevation_list, and the weir
+    crest is raised only within channel_mask, so a fine pixel outside it would
+    be a deep, unprotected pocket. Keeps the excavated footprint a subset of
+    the weir corridor.
     """
     mask_on_native = (
         reproject_nan_aware(
@@ -517,23 +342,27 @@ def constrain_to_coarse_channel_mask(
     return np.where(mask_on_native, burned_arr, np.nan)
 
 
-def _channel_buffer_polygons(rivers: gpd.GeoDataFrame, width_column: str) -> list:
-    """Each reach's own line.buffer(width/2) polygon -- the same channel
-    geometry burn_river_channel() rasterizes, without any of the elevation-
-    interpolation machinery. Skips reaches with missing/non-positive width
-    or degenerate geometry, same as burn_river_channel().
+def channel_polygons(rivers: gpd.GeoDataFrame, width_column: str = "width") -> list:
+    """Return each reach's channel: its centreline buffered by width / 2, in the rivers' CRS.
+
+    The one definition of the channel: rule 11 burns the bed into it, and the
+    channel land use and Manning n (rules 09, 09, 09) are set inside it.
+    Reaches without a positive width are skipped. Raises ValueError for a
+    geographic CRS, where width / 2 would be read as degrees.
     """
+    if rivers.crs is not None and rivers.crs.is_geographic:
+        raise ValueError(f"channel_polygons needs a metric CRS, got {rivers.crs}")
     polys = []
     for row in rivers.itertuples(index=False):
-        width = getattr(row, width_column, np.nan)
-        if pd.isna(width) or width <= 0:
+        width_m = getattr(row, width_column, np.nan)
+        if pd.isna(width_m) or width_m <= 0:
             continue
         line = _as_linestring(row.geometry)
         if line is None or line.length == 0:
             continue
         polys.append(
             _flush_capped_buffer(
-                line, float(width), clip_start=bool(getattr(row, "is_seed", False))
+                line, float(width_m), clip_start=bool(getattr(row, "is_seed", False))
             )
         )
     return polys
@@ -545,18 +374,13 @@ def build_channel_mask_regular(
     out_shape: tuple[int, int],
     out_transform,
 ) -> np.ndarray:
+    """Rasterize every reach's channel buffer directly onto a target (SFINCS) grid.
+
+    all_touched=True: a channel narrower than one cell still registers, unlike
+    nearest-neighbour resampling of a fine mask, which drops narrow reaches
+    and pinches the channel shut.
     """
-    Boolean river-channel mask built DIRECTLY at an arbitrary target
-    resolution (the SFINCS model grid, typically far coarser than the DEM
-    working grid burn_river_channel() operates at) -- NOT by burning at fine
-    resolution and resampling down afterward. `all_touched=True` means a
-    channel narrower than one destination cell still registers wherever it
-    crosses that cell, avoiding the gaps that plain nearest-neighbour
-    resampling of a fine-resolution channel mask onto a coarse grid would
-    otherwise introduce (dropping narrow reaches entirely, pinching the
-    channel shut).
-    """
-    polys = _channel_buffer_polygons(rivers, width_column)
+    polys = channel_polygons(rivers, width_column)
     if not polys:
         return np.zeros(out_shape, dtype=bool)
     return rio_rasterize(
@@ -574,41 +398,21 @@ def build_centerline_cells_regular(
     out_shape: tuple[int, int],
     out_transform,
 ) -> gpd.GeoDataFrame:
-    """
-    Every grid cell each reach's own RAW centerline (not a buffered
-    channel polygon) actually touches, at an arbitrary target resolution
-    (typically the SFINCS model grid) -- the per-cell counterpart of
-    build_channel_mask_regular's per-reach buffer, used to give every cell
-    along the centerline its own calibrated depth/crest instead of one
-    value for the whole reach (see 10_depth_estimation_modelled.py's own
-    per-cell calibration).
+    """Return every grid cell each reach's raw centreline touches (all_touched=True).
 
-    Reuses the same per-reach window + geometry_mask + rasterio.transform.xy
-    + line_locate_point pattern already used identically in
-    burn_river_channel, but
-    rasterizes the bare LineString itself (all_touched=True) rather than a
-    buffered polygon -- "every cell the line touches", not "every cell
-    within half the channel width".
-
-    A cell shared by two reaches (a junction) legitimately gets one row
-    per reach -- rows are keyed (reach_id, row, col), not a global cell id,
-    matching how zbed_anchors/crest anchors are grouped by reach_id
-    everywhere else in this module.
-
-    Returns:
-        GeoDataFrame with columns 'reach_id', 'row', 'col', 'along_m'
-        (distance from the reach's own centerline start), 'x', 'y',
-        geometry (Point at the cell center, in `rivers`' own CRS), sorted
-        by (reach_id, along_m). Reaches with missing/degenerate geometry
-        are skipped (no row).
+    Cells for the per-cell depth/crest calibration in
+    11_depth_estimation_modelled.py. A junction cell gets one row per reach
+    (keyed reach_id, row, col). Columns 'reach_id', 'row', 'col', 'along_m'
+    (from the reach's start), 'x', 'y', geometry (cell centre, CRS of
+    `rivers`), sorted by (reach_id, along_m); degenerate reaches are skipped.
     """
     inv_transform = ~out_transform
     records: list[dict] = []
 
     for row in rivers.itertuples(index=False):
-        rid = normalize_reach_id(row.reach_id)
+        reach_id = normalize_reach_id(row.reach_id)
         line = _as_linestring(row.geometry)
-        if rid is None or line is None or line.length == 0:
+        if reach_id is None or line is None or line.length == 0:
             continue
 
         bminx, bminy, bmaxx, bmaxy = line.bounds
@@ -644,7 +448,7 @@ def build_centerline_cells_regular(
         for i in order:
             records.append(
                 {
-                    "reach_id": rid,
+                    "reach_id": reach_id,
                     "row": row_off_i + int(rows_idx[i]),
                     "col": col_off_i + int(cols_idx[i]),
                     "along_m": float(along[i]),
@@ -670,12 +474,6 @@ def build_centerline_cells_regular(
 def _half_plane_beyond(
     origin: tuple, away_point: tuple, size: float
 ) -> shapely.Polygon:
-    """
-    Large rectangle covering the half-plane on `away_point`'s side of the
-    line through `origin` perpendicular to (away_point - origin) -- used by
-    _flush_capped_buffer() to clip a round buffer end-cap back to a flat
-    cut exactly at `origin`.
-    """
     d = np.array(away_point) - np.array(origin)
     d = d / np.hypot(*d)
     n = np.array([-d[1], d[0]])
@@ -691,41 +489,19 @@ def _half_plane_beyond(
 
 def _flush_capped_buffer(
     line: shapely.LineString,
-    width: float,
+    width_m: float,
     clip_start: bool = False,
     clip_end: bool = False,
 ) -> shapely.Polygon:
-    """
-    line.buffer(width/2), with the round end-cap at the start and/or end
-    replaced by a flat cut exactly at that endpoint, perpendicular to the
-    line's own local tangent there.
-
-    Every reach's buffered channel footprint (channel_mask, the burn
-    excavation corridor, the weir smoothing corridor) is built via a plain
-    line.buffer(width/2), which defaults to a ROUND end cap at both ends --
-    fine at an internal junction (a neighbouring reach's own buffer already
-    overlaps and covers the join regardless of angle), but wrong at a
-    network SEED (no upstream neighbour): the round cap bulges out in an
-    arc beyond the line's own true start vertex, enclosing extra channel
-    cells that are never sampled by build_centerline_cells_regular (which
-    only follows the raw LINE, not the buffer) and so are invisible to
-    per-cell calibration tracking, yet still sit inside the same confined
-    pocket as the actual discharge-injection cell.
-
-    Only clip_start/clip_end=True gets this treatment (typically
-    clip_start for a reach with is_seed=True) -- every other reach keeps
-    its plain round-capped buffer unchanged.
-
-    Degenerate first/last segments (a duplicate leading/trailing
-    coordinate) safely fall back to the unclipped round cap for that end,
-    rather than raising on a zero-length tangent.
-    """
-    buf = line.buffer(width / 2.0)
+    # Flat cut at a seed: the round cap would enclose cells that
+    # build_centerline_cells_regular never samples, inside the same confined
+    # pocket as the injection cell. A degenerate end segment keeps its round cap.
+    buf = line.buffer(width_m / 2.0)
     if not clip_start and not clip_end:
         return buf
     coords = list(line.coords)
     minx, miny, maxx, maxy = buf.bounds
-    big = (maxx - minx) + (maxy - miny) + width  # safely larger than buf's own extent
+    big = (maxx - minx) + (maxy - miny) + width_m  # safely larger than buf's own extent
     if clip_start and len(coords) >= 2 and coords[0] != coords[1]:
         buf = buf.intersection(_half_plane_beyond(coords[0], coords[1], big))
     if clip_end and len(coords) >= 2 and coords[-1] != coords[-2]:
@@ -739,53 +515,24 @@ def snap_points_to_centerline_cells(
     reach_ids: Sequence[str | None] | None = None,
     resolution_m: float | None = None,
 ) -> gpd.GeoDataFrame:
-    """
-    Snap each point in `points` onto the nearest cell the river network's own
-    RAW centerline actually passes through (centerline_cells, from
-    build_centerline_cells_regular) -- not just channel_mask (the buffered
-    corridor half a channel-width wide), the exact cell(s) the reach
-    LineString itself intersects.
+    """Snap points to the nearest cell their reach's raw centreline passes through.
 
-    Motivation: neither hydromt_sfincs's discharge_points.create() nor this
-    codebase's own point-wrangling (geometry.snap_points_into_region, which
-    only nudges a point back inside the model's own active region) ever
-    checks that a discharge/source point's resolved grid cell actually sits
-    on the modelled channel. A point can be geometrically exact (e.g. a
-    domain-entry point computed directly from the reach's own geometry) and
-    still resolve to a neighbouring floodplain cell once rasterized onto a
-    coarse grid -- injecting a large constant discharge there has nowhere
-    near enough conveyance and can produce an unrealistic local water-level
-    pileup (observed: basin 4267691's round-0 calibration, max water level
-    369 m at one location).
+    Neither hydromt_sfincs nor geometry.snap_points_into_region checks that a
+    discharge point lands on the channel; one resolving to a floodplain cell
+    lacks conveyance and can pile water up (basin 4267691 round 0: 369 m max
+    water level).
 
     Args:
-        points:           Point geometry, same CRS as centerline_cells.
-        centerline_cells: Output of build_centerline_cells_regular -- must
-                           have 'reach_id', 'row', 'col', 'x', 'y', geometry.
-        reach_ids:        Optional, one entry per `points` row (e.g.
-                           river_forcing.nc's own inside_reach_id, None where
-                           unresolved) -- restricts the nearest-cell search
-                           to that point's own reach first, which matters at
-                           a confluence/bifurcation where a DIFFERENT
-                           reach's cell could otherwise be geometrically
-                           closer than the correct reach's own cell. Falls
-                           back to searching every reach's cells when a
-                           point's reach_id is None, or has no rows in
-                           centerline_cells at all (e.g. a reach entirely
-                           outside the active grid).
-        resolution_m:     Grid cell size (m), used only to size the
-                           "snapped suspiciously far" warning threshold
-                           below. Skipped (no warning possible) if omitted.
+        points: Same CRS as centerline_cells.
+        centerline_cells: From build_centerline_cells_regular.
+        reach_ids: One per point (e.g. inside_reach_id, None if unresolved);
+            searches that reach's cells first, so another reach's cell at a
+            confluence cannot win. Falls back to all cells when None or absent.
+        resolution_m: Cell size (m); enables the warning for snaps > 3 cells.
 
     Returns:
-        Copy of `points` with:
-          - geometry replaced by the resolved cell's own center point (the
-            exact coordinate build_centerline_cells_regular already used,
-            so it is guaranteed consistent with channel_mask/calibration
-            cell tracking elsewhere, not a fresh approximation)
-          - new 'row'/'col' columns (the resolved cell's grid indices)
-          - new 'snap_distance_m' column (distance from the original point
-            to the resolved cell center), for diagnostics/logging
+        Copy of `points` with geometry at the cell centre used by
+        build_centerline_cells_regular, plus 'row', 'col', 'snap_distance_m'.
     """
     if centerline_cells.empty:
         raise ValueError("centerline_cells is empty -- cannot snap any points to it")
@@ -793,8 +540,8 @@ def snap_points_to_centerline_cells(
     all_xy = centerline_cells[["x", "y"]].to_numpy()
     all_rowcol = centerline_cells[["row", "col"]].to_numpy()
     by_reach: dict[str, np.ndarray] = {
-        rid: idx.to_numpy()
-        for rid, idx in centerline_cells.groupby("reach_id").groups.items()
+        reach_id: idx.to_numpy()
+        for reach_id, idx in centerline_cells.groupby("reach_id").groups.items()
     }
     if reach_ids is None:
         reach_ids = [None] * len(points)
@@ -803,9 +550,11 @@ def snap_points_to_centerline_cells(
     snapped_rowcol = np.empty((len(points), 2), dtype=int)
     snap_dist_m = np.empty(len(points), dtype=float)
 
-    for i, (pt, rid) in enumerate(zip(points.geometry, reach_ids)):
-        norm_rid = normalize_reach_id(rid) if rid is not None else None
-        candidate_idx = by_reach.get(norm_rid) if norm_rid is not None else None
+    for i, (pt, reach_id) in enumerate(zip(points.geometry, reach_ids)):
+        norm_reach_id = normalize_reach_id(reach_id) if reach_id is not None else None
+        candidate_idx = (
+            by_reach.get(norm_reach_id) if norm_reach_id is not None else None
+        )
         if candidate_idx is None or len(candidate_idx) == 0:
             candidate_idx = np.arange(len(centerline_cells))
 
@@ -823,9 +572,7 @@ def snap_points_to_centerline_cells(
     out["col"] = snapped_rowcol[:, 1]
     out["snap_distance_m"] = snap_dist_m
 
-    # A large snap distance usually means the reach_id lookup missed (wrong
-    # or unresolved reach) rather than a genuinely distant channel -- worth
-    # surfacing rather than silently accepting.
+    # A large snap distance usually means a wrong or unresolved reach_id.
     if resolution_m and (snap_dist_m > 3 * resolution_m).any():
         n_far = int((snap_dist_m > 3 * resolution_m).sum())
         log.warning(

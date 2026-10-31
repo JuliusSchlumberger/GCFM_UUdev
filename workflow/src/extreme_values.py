@@ -1,48 +1,15 @@
-"""Extreme-value analysis for GloFAS river discharge.
+"""Estimate GloFAS return-period discharges per cell and bias-correct against GRDC.
 
-Provides per-cell estimation of return-period discharges using pyextremes:
+Bankfull RP (bankfull_rp_yr, 1.5 yr): Block Maxima / GEV on annual maxima. Flood RP
+(preview_rp_yr, 100 yr): Peaks-Over-Threshold / GPD with autocorrelation-based
+declustering and iterative threshold search. Trend: Mann-Kendall + Sen's
+slope on annual maxima. Parameters come from config boundary_forcings.river.eva.
 
-* RP=bankfull (default 2 yr) via Block Maxima / GEV on annual maxima.
-* RP=flood (default 100 yr) via Peaks-Over-Threshold / GPD with
-  autocorrelation-based declustering and iterative threshold search.
-* Mann-Kendall + Sen's-slope trend test on the annual-maxima series.
-
-All EVA parameters are read from a plain dict (``eva_cfg``) matching the
-``boundary_forcings.eva`` section of the project config YAML, including the
-optional knobs ``min_years_high_confidence`` (default 40.0),
-``peaks_per_year_min`` (default 1.0), ``threshold_min_pct`` (default 50.0),
-and ``deseasonalize_for_decorr``
-(default True) — see ``analyse_cell`` / ``_search_threshold`` for how each is
-used and what it defaults to when absent from the YAML.
-
-Bias correction against GRDC gauges
-------------------------------------
-GloFAS is a reanalysis and carries unquantified structural uncertainty.
-Where an observed gauge exists on the main stem near the delta apex (e.g.
-GRDC — Global Runoff Data Centre) and the overlapping record with GloFAS is
-long enough (``boundary_forcings.bias_correction.min_overlap_days``),
-``bias_correct_discharge`` applies empirical quantile mapping over the
-overlapping period: empirical CDFs of GloFAS and the gauge are built from
-the overlap sample, and the full GloFAS record is remapped to match the
-gauge's distribution. Values outside the overlap's quantile range (in
-particular the upper, flood-relevant tail) are linearly extrapolated using
-the outermost quantile-pair slope rather than clamped, so the correction
-does not flatten flood peaks that exceed anything seen in the overlap.
-Where no gauge is found within
-``boundary_forcings.river.bias_correction.grdc_search_radius_km``, or the overlap is too
-short, "GloFAS-as-truth" remains the documented limitation (logged by the
-caller, not an error).
-
-Public API
-----------
-EVAResult              – dataclass holding all outputs for one grid-cell run.
-analyse_cell(times, values, eva_cfg, label) -> EVAResult
-plot_cell_diagnostics(times, values, eva_cfg, output_path, label) -> EVAResult
-empirical_quantile_map(source_overlap, target_overlap, source_full, n_quantiles=200) -> np.ndarray
-compute_grdc_correlation(glofas_times, glofas_values, grdc_times, grdc_values, min_overlap_days, label, tail_percentile=90.0) -> dict | None
-bias_correct_discharge(glofas_times, glofas_values, grdc_times, grdc_values, cfg, label) -> tuple[np.ndarray, dict | None]
-plot_bias_correction(glofas_times, glofas_values, diagnostics, output_path, label) -> None
-plot_grdc_overview(domain_poly, river_gdf, crossings_gdf, grdc_stations, highlight_crossing_idx, highlight_station_id, diagnostics, output_path, label) -> None
+GRDC bias correction: where a gauge overlaps GloFAS long enough
+(min_overlap_days), empirical quantile mapping remaps the full GloFAS record
+to the gauge distribution; values beyond the overlap's range are linearly
+extrapolated, not clamped, so flood peaks are not flattened. Without a gauge
+or overlap, GloFAS is taken as truth (logged by the caller, not an error).
 """
 
 from __future__ import annotations
@@ -53,56 +20,38 @@ import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pyextremes import EVA
-import pymannkendall as mk
-
-import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pymannkendall as mk
+from pyextremes import EVA
 from scipy import stats
-from shapely.geometry import Polygon
-
-from src.plots import map_background, save_figure
+from src.io import require_keys
+from src.plots import save_figure
 
 log = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="lmoments3")
-# NoDataBlockWarning fires for every empty annual block when errors='coerce' is
-# used in get_extremes("BM", ...).  We request that behaviour deliberately, so
-# the warning is expected and carries no new information.
+# Empty annual blocks are expected with errors='coerce' in get_extremes("BM").
 warnings.filterwarnings("ignore", message=".*blocks contained no data.*")
 
-# ── Prevent multiprocessing worker-process spawning on Windows ────────────────
-# On Windows, Python uses the "spawn" start method for new processes.  Libraries
-# like pyextremes / lmoments3 may internally launch worker pools for bootstrap
-# CI computation; when those workers start, they try to re-import the calling
-# script (__main__), which fails inside a Snakemake execution because 'snakemake'
-# is only injected into the parent process.
-#
-# To avoid this we (a) limit BLAS / OpenMP threading to 1 (prevents many
-# thread-based pools) and (b) run our own sequential scipy bootstrap rather
-# than pyextremes' alpha-based bootstrap, which is what spawns the pool.
+# Windows "spawn" workers (pyextremes/lmoments3 bootstrap pools) re-import
+# __main__, which fails under Snakemake ('snakemake' exists only in the
+# parent). Hence single-threaded BLAS/OpenMP and our own sequential bootstrap.
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
-
-
-# ── result container ──────────────────────────────────────────────────────────
 
 
 @dataclass
 class EVAResult:
     """Outcome of extreme-value analysis for a single GloFAS cell."""
 
-    # headline return levels
     q_rp2: float = np.nan
     q_rp100: float = np.nan
     q_rp2_ci: tuple[float, float] = (np.nan, np.nan)
     q_rp100_ci: tuple[float, float] = (np.nan, np.nan)
 
-    # discharge at an arbitrary requested return period (e.g. an existing
-    # flood-protection design standard), from the POT/GPD fit -- see
-    # analyse_cell's protection_rp argument. NaN unless requested.
+    # POT/GPD discharge at analyse_cell's protection_rp_yr; NaN unless requested.
     q_protection: float = np.nan
 
     # POT diagnostics
@@ -129,22 +78,44 @@ class EVAResult:
     n_valid_days: int = 0
     record_years: float = np.nan
     ok: bool = False
+    # Set when the record is unusable by design (too short); the cell is skipped.
+    skip_reason: str = ""
     messages: list[str] = field(default_factory=list)
 
 
-# ── config helpers ────────────────────────────────────────────────────────────
+class EVAFitError(Exception):
+    """An EVA fit failed for a reason other than a documented skip."""
 
 
-def _c(cfg: dict, key: str, default):
-    """Safe dict access with a typed default."""
-    return cfg.get(key, default)
+# Numeric failures of a GEV/GPD fit; anything else (ImportError, ...) propagates.
+_FIT_ERRORS = (ValueError, RuntimeError, ArithmeticError)
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+_BIAS_KEYS = ("enabled", "min_overlap_days", "tail_percentile")
+_THRESHOLD_KEYS = (
+    "threshold_start_pct",
+    "threshold_step_pct",
+    "threshold_max_pct",
+    "threshold_min_pct",
+    "threshold_max_iter",
+    "peaks_per_year_min",
+    "peaks_per_year_max",
+)
+_EVA_KEYS = (
+    "min_days",
+    "n_boot",
+    "min_years_high_confidence",
+    "fit_method",
+    "bankfull_rp_yr",
+    "preview_rp_yr",
+    "ci_alpha",
+    "decorr_cut",
+    "decorr_max",
+    "deseasonalize_for_decorr",
+) + _THRESHOLD_KEYS
 
 
 def _to_series(times: np.ndarray, values: np.ndarray) -> pd.Series:
-    """Build a clean, datetime-indexed, NaN-free, sorted discharge series."""
     s = pd.Series(
         np.asarray(values, dtype=float),
         index=pd.to_datetime(np.asarray(times)),
@@ -153,26 +124,12 @@ def _to_series(times: np.ndarray, values: np.ndarray) -> pd.Series:
     return s.dropna()
 
 
-# ── GRDC bias correction ──────────────────────────────────────────────────────
-
-
 def _overlap_series(
     glofas_times: np.ndarray,
     glofas_values: np.ndarray,
     grdc_times: np.ndarray,
     grdc_values: np.ndarray,
 ) -> tuple[pd.Series, pd.Series]:
-    """Align a GloFAS cell series and a GRDC station series to shared dates.
-
-    Both inputs are passed through ``_to_series`` (dedup'd, sorted,
-    NaN-dropped), then restricted to the intersection of their valid-data
-    dates.
-
-    Returns:
-        (glofas_overlap, grdc_overlap), two pd.Series sharing the same
-        DatetimeIndex, sorted ascending. May be empty if the records do not
-        overlap.
-    """
     g = _to_series(glofas_times, glofas_values)
     r = _to_series(grdc_times, grdc_values)
     common_idx = g.index.intersection(r.index)
@@ -185,35 +142,12 @@ def empirical_quantile_map(
     source_full: np.ndarray,
     n_quantiles: int = 200,
 ) -> np.ndarray:
-    """Bias-correct ``source_full`` via empirical quantile mapping.
+    """Bias-correct source_full by empirical quantile mapping on the overlap sample.
 
-    Empirical quantiles of ``source_overlap`` and ``target_overlap`` (paired
-    by date, same length) are built at ``n_quantiles`` evenly spaced
-    probability levels. ``source_full`` (the entire source record, a
-    superset of ``source_overlap``) is then mapped through this quantile
-    pairing via ``np.interp``.
-
-    ``np.interp`` clamps out-of-range inputs to the boundary output value,
-    which would flatten exactly the flood-relevant upper tail when
-    ``source_full`` contains values beyond the overlap sample's maximum (or
-    minimum). Instead, values outside ``[src_q[0], src_q[-1]]`` are linearly
-    extrapolated using the slope of the outermost quantile-pair segment on
-    the corresponding side. A degenerate (zero-width) outermost segment
-    falls back to an additive offset carried from that boundary.
-
-    The result is floored at zero (discharge non-negativity).
-
-    Args:
-        source_overlap: Source (GloFAS) values during the overlap period.
-        target_overlap: Target (GRDC) values during the overlap period,
-            paired by date with ``source_overlap`` (same length/order).
-        source_full: Full-record source values to be corrected (superset of
-            ``source_overlap``).
-        n_quantiles: Number of evenly spaced probability levels used to build
-            the empirical quantile pairing.
-
-    Returns:
-        np.ndarray, same shape as ``source_full``.
+    Quantiles at n_quantiles evenly spaced levels. Values outside the overlap
+    range are linearly extrapolated with the outermost quantile-pair slope
+    (np.interp would clamp and flatten the flood tail); a zero-width outer
+    segment falls back to an additive offset. Floored at zero.
     """
     source_full = np.asarray(source_full, dtype=float)
     probs = np.linspace(0.0, 1.0, n_quantiles)
@@ -254,38 +188,13 @@ def compute_grdc_correlation(
     label: str = "",
     tail_percentile: float = 90.0,
 ) -> dict | None:
-    """Tail-focused GloFAS-vs-GRDC overlap correlation diagnostics.
+    """Compute tail-focused GloFAS-vs-GRDC correlation on the overlap; None if too short.
 
-    Unlike ``bias_correct_discharge``, this is independent of
-    ``boundary_forcings.bias_correction.enabled`` — it is the basis for the
-    EQM fit in ``bias_correct_discharge``, and is also used directly by the
-    standalone GRDC-inspection test, which reports the raw correlation
-    regardless of whether the correction itself is applied.
-
-    The headline ``correlation_raw`` is restricted to overlap days where GRDC
-    discharge is at or above ``tail_percentile`` of its own overlap
-    distribution — this pipeline only cares about GloFAS/GRDC agreement at
-    flood-relevant high flows, and an all-days Pearson r is dominated by the
-    many low/moderate-flow days, which would otherwise mask a poor fit in the
-    tail (or vice versa). The all-days correlation is still computed and
-    returned as ``correlation_full_raw`` for reference/plotting context.
-
-    Args:
-        glofas_times, glofas_values: Full-record GloFAS cell series.
-        grdc_times, grdc_values: Full-record GRDC station series (e.g. from
-            ``river_forcing.load_grdc_series``, with -999 already mapped to NaN).
-        min_overlap_days: Minimum overlapping valid days required; below this,
-            ``None`` is returned.
-        label: Identifier used in log messages.
-        tail_percentile: Percentile (0-100) of the GRDC overlap distribution
-            used as the tail threshold for the headline correlation.
-
-    Returns:
-        ``None`` if the overlap is shorter than ``min_overlap_days``, else a
-        dict with ``grdc_overlap_days``, ``correlation_raw`` (tail-focused),
-        ``correlation_full_raw`` (all-days, for reference), ``tail_percentile``,
-        ``tail_threshold``, ``tail_n_days``, ``tail_mask``, ``glofas_overlap``,
-        ``grdc_overlap``, ``glofas_overlap_times``.
+    Called by bias_correct_discharge, so only when the correction is enabled.
+    correlation_raw uses only days with GRDC >= its tail_percentile (0-100) of
+    the overlap, since an all-days Pearson r is dominated by low flows;
+    correlation_full_raw is all days. GRDC series must have -999 already
+    mapped to NaN.
     """
     tag = f"[{label}] " if label else ""
     g_overlap, r_overlap = _overlap_series(
@@ -337,36 +246,20 @@ def bias_correct_discharge(
     cfg: dict,
     label: str = "",
 ) -> tuple[np.ndarray, dict | None]:
-    """Bias-correct a GloFAS cell series against a matched GRDC station.
+    """Bias-correct a GloFAS cell series against a GRDC station; return (values, diagnostics).
 
-    Args:
-        glofas_times, glofas_values: Full-record GloFAS cell series.
-        grdc_times, grdc_values: Full-record GRDC station series (e.g. from
-            ``river_forcing.load_grdc_series``, with -999 already mapped to NaN).
-        cfg: ``boundary_forcings.bias_correction`` config dict
-            (keys: ``enabled``, ``min_overlap_days``, ``tail_percentile``).
-        label: Identifier used in log messages.
-
-    Returns:
-        (corrected_values, diagnostics):
-          corrected_values: np.ndarray, same shape as ``glofas_values``.
-              Equal to ``glofas_values`` unchanged if correction is skipped
-              (disabled, or overlap below ``min_overlap_days``).
-          diagnostics: ``None`` if skipped, else a dict with the keys from
-              ``compute_grdc_correlation`` (``correlation_raw``/
-              ``correlation_corrected`` are tail-focused, see that function's
-              docstring) plus ``correlation_full_corrected`` (all-days, for
-              reference) and ``corrected_overlap`` — consumed by
-              ``plot_bias_correction`` and by the caller when populating
-              ``river_forcing.nc`` provenance variables.
+    cfg: boundary_forcings.river.bias_correction (enabled, min_overlap_days,
+    tail_percentile). Skipped (input returned, diagnostics None) when disabled
+    or the overlap is below min_overlap_days.
     """
+    require_keys(cfg, _BIAS_KEYS, "boundary_forcings.river.bias_correction")
     glofas_values = np.asarray(glofas_values, dtype=float)
 
-    if not bool(_c(cfg, "enabled", True)):
+    if not bool(cfg["enabled"]):
         return glofas_values, None
 
-    min_overlap_days = int(_c(cfg, "min_overlap_days", 730))
-    tail_percentile = float(_c(cfg, "tail_percentile", 90.0))
+    min_overlap_days = int(cfg["min_overlap_days"])
+    tail_percentile = float(cfg["tail_percentile"])
     diagnostics = compute_grdc_correlation(
         glofas_times,
         glofas_values,
@@ -385,10 +278,12 @@ def bias_correct_discharge(
         source_full=glofas_values,
     )
 
-    g_full_series = _to_series(glofas_times, glofas_values)
-    overlap_index = pd.DatetimeIndex(diagnostics["glofas_overlap_times"])
-    corrected_overlap = (
-        pd.Series(corrected_full, index=g_full_series.index).loc[overlap_index].values
+    # The mapping is pointwise, so the overlap is corrected directly rather than
+    # re-indexed out of the full series (which may hold NaN or duplicate days).
+    corrected_overlap = empirical_quantile_map(
+        source_overlap=diagnostics["glofas_overlap"],
+        target_overlap=diagnostics["grdc_overlap"],
+        source_full=diagnostics["glofas_overlap"],
     )
     grdc_overlap = diagnostics["grdc_overlap"]
     tail_mask = diagnostics["tail_mask"]
@@ -415,24 +310,14 @@ def bias_correct_discharge(
 
 
 def _deseasonalize_for_decorr(s: pd.Series) -> pd.Series:
-    """Day-of-year climatology anomaly — for decorrelation estimation only.
-
-    Subtracts the mean discharge per day-of-year (computed from the series
-    itself) before the autocorrelation-based decorrelation window is estimated.
-    Monsoonal/seasonal persistence otherwise inflates the autocorrelation and
-    yields spuriously long decorrelation windows (and thus declustering radii
-    ``r``) that reflect the season cycle rather than true event-independence.
-
-    NOTE: returns an anomaly series used *solely* to estimate ``r`` via
-    ``estimate_decorrelation_days`` — the original (seasonal) series ``s`` is
-    still what POT extraction and all fitting operate on.
-    """
+    # Used only to estimate the declustering radius r: seasonal persistence
+    # would otherwise inflate the autocorrelation. POT and fits use the raw series.
     climatology = s.groupby(s.index.dayofyear).transform("mean")
     return s - climatology
 
 
 def estimate_decorrelation_days(series: pd.Series, cutoff: float, max_lag: int) -> int:
-    """Lag (days) at which autocorrelation first drops below ``cutoff``."""
+    """Return the lag (days) at which autocorrelation first drops below cutoff."""
     x = series.values.astype(float)
     x = x - x.mean()
     denom = float(np.dot(x, x))
@@ -445,24 +330,16 @@ def estimate_decorrelation_days(series: pd.Series, cutoff: float, max_lag: int) 
     return upper
 
 
-def _rv(eva_instance, rp: float) -> float:
-    """Extract a scalar return value from a pyextremes EVA instance.
-
-    pyextremes may return a plain float or a 3-tuple (value, lower, upper)
-    depending on the installed version; this helper handles both.
-    """
-    result = eva_instance.get_return_value(rp)
+def _rv(eva_instance, rp_yr: float) -> float:
+    # pyextremes returns a float or (value, lower, upper) depending on version.
+    result = eva_instance.get_return_value(rp_yr)
     if isinstance(result, (tuple, list, np.ndarray)) and len(result) >= 1:
         return float(result[0])
     return float(result)
 
 
-# Standard return-period list stored per crossing in river_forcing.nc
-# (discharge_rp_table) -- 5-yr steps from 5 to 1000 yr, then 1000-yr steps to
-# 10000 yr, plus the sub-5yr bankfull-adjacent points (1, 1.5, 2 yr). Fixed,
-# not configurable: this is a reference table meant to be interpolated at an
-# arbitrary requested return period (see build_design_discharge_matrix in
-# river_forcing.py), not a set of independently tunable knobs.
+# Return periods of river_forcing.nc's discharge_rp_table, interpolated at
+# any requested RP (river_forcing.build_design_discharge_matrix); fixed, not config.
 STANDARD_RETURN_PERIODS_YR: np.ndarray = np.array(
     sorted(
         set(
@@ -479,61 +356,37 @@ def gpd_return_value_table(
     scale: float,
     shape: float,
     peaks_per_year: float,
-    return_periods: np.ndarray = STANDARD_RETURN_PERIODS_YR,
+    rps_yr: np.ndarray = STANDARD_RETURN_PERIODS_YR,
 ) -> np.ndarray:
-    """Discharge at every return period in ``return_periods`` from an
-    already-fitted GPD, no re-fitting.
+    """Return discharge (m³/s) at each return period (yr) from an already-fitted GPD.
 
-    Args:
-        threshold:      POT threshold (m³/s) -- pot_threshold.
-        scale:          Fitted GPD scale parameter -- pot_scale.
-        shape:          Fitted GPD shape parameter (c) -- pot_shape.
-        peaks_per_year: Declustered peaks per year at that threshold --
-                        pot_peaks_per_year.
-        return_periods: Return periods (years) to evaluate, default
-                        STANDARD_RETURN_PERIODS_YR.
-
-    Returns:
-        np.ndarray, same shape as ``return_periods`` -- all-NaN if any of
-        threshold/scale/shape/peaks_per_year isn't finite.
+    shape is scipy's c; peaks_per_year is the declustered rate at threshold.
+    All-NaN if any parameter is not finite.
     """
-    return_periods = np.asarray(return_periods, dtype=float)
+    rps_yr = np.asarray(rps_yr, dtype=float)
     inputs = (threshold, scale, shape, peaks_per_year)
     if not all(np.isfinite(v) for v in inputs):
-        return np.full(return_periods.shape, np.nan)
-    p = np.clip(1.0 - 1.0 / (peaks_per_year * return_periods), 0.0, None)
+        return np.full(rps_yr.shape, np.nan)
+    p = np.clip(1.0 - 1.0 / (peaks_per_year * rps_yr), 0.0, None)
     return threshold + stats.genpareto.ppf(p, shape, scale=scale)
 
 
-# ── sequential bootstrap CIs (no multiprocessing — safe on Windows/Snakemake) ─
+# Sequential bootstrap CIs: no worker processes (safe on Windows/Snakemake).
 
 
 def _gev_boot_ci(
     amax: np.ndarray,
-    rp: float,
+    rp_yr: float,
     alpha: float,
-    n_boot: int = 200,
+    n_boot: int,
     c0: float | None = None,
     loc0: float | None = None,
     scale0: float | None = None,
 ) -> tuple[float, float]:
-    """Bootstrap CI for GEV return level using scipy MLE — no worker processes.
-
-    ``c0``/``loc0``/``scale0`` (the point-estimate fit's parameters) seed the
-    optimizer for every resample — bootstrap samples are draws from the same
-    series, so they sit close to that optimum and converge in far fewer
-    iterations than scipy's generic default starting guess (profiled as the
-    dominant cost of analyse_cell). The fitting method is unchanged (still MLE
-    on each resample), so estimates match the unseeded version within tolerance.
-
-    Known estimator inconsistency: the point estimate (``q_rp2`` in
-    ``analyse_cell``) is fit via ``fit_method`` (L-moments by default), while
-    this CI is built from repeated scipy MLE refits. We deliberately do NOT
-    switch the point estimate to MLE — for short hydrological records,
-    L-moments is generally the more robust/less biased point estimator — so a
-    minor mismatch between "where the point estimate sits" and "where the
-    bootstrap distribution is centered" is accepted as a known, minor wart.
-    """
+    # c0/loc0/scale0 (point-estimate fit) warm-start each MLE refit; the fit
+    # was profiled as analyse_cell's dominant cost. Known inconsistency: the
+    # point estimate uses fit_method (L-moments, more robust for short records)
+    # while this CI uses scipy MLE refits; accepted deliberately.
     rng = np.random.default_rng(42)
     boot: list[float] = []
     fit_args = (c0,) if c0 is not None and np.isfinite(c0) else ()
@@ -548,11 +401,11 @@ def _gev_boot_ci(
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 c, loc, scale = stats.genextreme.fit(sample, *fit_args, **fit_kwargs)
-            rl = float(stats.genextreme.ppf(1.0 - 1.0 / rp, c, loc=loc, scale=scale))
+            rl = float(stats.genextreme.ppf(1.0 - 1.0 / rp_yr, c, loc=loc, scale=scale))
             if np.isfinite(rl) and rl > 0:
                 boot.append(rl)
-        except Exception:
-            pass
+        except _FIT_ERRORS:
+            continue
     if len(boot) < 20:
         return np.nan, np.nan
     lo_p = (1.0 - alpha) / 2.0 * 100.0
@@ -564,22 +417,13 @@ def _gpd_boot_ci(
     exceedances: np.ndarray,
     threshold: float,
     ppy: float,
-    rp: float,
+    rp_yr: float,
     alpha: float,
-    n_boot: int = 200,
+    n_boot: int,
     c0: float | None = None,
     scale0: float | None = None,
 ) -> tuple[float, float]:
-    """Bootstrap CI for GPD return level using scipy MLE — no worker processes.
-
-    See ``_gev_boot_ci`` — ``c0``/``scale0`` warm-start the optimizer from the
-    point-estimate fit's parameters to cut convergence iterations per resample.
-
-    Same known estimator inconsistency as ``_gev_boot_ci``: the point estimate
-    (``q_rp100``) comes from an L-moments (``fit_method``) fit, this CI from
-    repeated scipy MLE refits — retained deliberately because L-moments is the
-    more robust point estimator for short records.
-    """
+    # Warm start and L-moments-vs-MLE caveat as in _gev_boot_ci.
     rng = np.random.default_rng(42)
     boot: list[float] = []
     fit_args = (c0,) if c0 is not None and np.isfinite(c0) else ()
@@ -594,12 +438,12 @@ def _gpd_boot_ci(
                 c, _, scale = stats.genpareto.fit(
                     sample, *fit_args, floc=0, **fit_kwargs
                 )
-            p = max(0.0, 1.0 - 1.0 / (ppy * rp))
+            p = max(0.0, 1.0 - 1.0 / (ppy * rp_yr))
             rl = float(threshold + stats.genpareto.ppf(p, c, scale=scale))
             if np.isfinite(rl) and rl > 0:
                 boot.append(rl)
-        except Exception:
-            pass
+        except _FIT_ERRORS:
+            continue
     if len(boot) < 20:
         return np.nan, np.nan
     lo_p = (1.0 - alpha) / 2.0 * 100.0
@@ -614,39 +458,20 @@ def _search_threshold(
     cfg: dict,
     tag: str,
 ):
-    """Iterate thresholds until peaks/year falls in the acceptance band.
-
-    Targets a peaks-per-year (ppy) band of [ppy_min, ppy_max].  The search
-    starts at ``threshold_start_pct`` and moves the percentile in the direction
-    that brings ppy toward the band each iteration:
-
-    * ppy > ppy_max → raise threshold (fewer peaks, ppy falls)
-    * ppy < ppy_min → lower threshold (more peaks, ppy rises)
-
-    The bidirectional logic is necessary: a purely upward search could never
-    recover when the starting percentile already yields ppy < ppy_min, because
-    raising the threshold only makes ppy smaller.  ``threshold_min_pct``
-    (default 50.0) caps how far down the threshold may go.
-
-    Returns (fitted EVA instance, (threshold, peaks_per_year, status)) or
-    (last_eva, last_tuple) flagged with the specific rejection reason
-    ('reject: ppy<min' or 'reject: ppy>max') if no iteration met the
-    criterion, so it's visible (e.g. in the diagnostic plot title) whether
-    the threshold search ran out of room lowering the threshold (too few
-    independent peaks even at a low percentile -- typical of slow,
-    large-basin rivers) or raising it (too many peaks even at a high
-    percentile).
-    """
-    thr_start = float(_c(cfg, "threshold_start_pct", 90.0))
-    thr_step = float(_c(cfg, "threshold_step_pct", 1.0))
-    thr_max = float(_c(cfg, "threshold_max_pct", 99.5))
-    thr_min = float(_c(cfg, "threshold_min_pct", 50.0))
-    max_iter = int(_c(cfg, "threshold_max_iter", 30))
-    ppy_min = float(_c(cfg, "peaks_per_year_min", 1.0))
-    ppy_max = float(_c(cfg, "peaks_per_year_max", 5.0))
+    # Bidirectional search from threshold_start_pct: raise the percentile while
+    # ppy > ppy_max, lower it (down to threshold_min_pct) while ppy < ppy_min.
+    # Raises EVAFitError if the band is never reached ('reject: ppy<min', too
+    # few peaks, typical of slow large rivers, or 'reject: ppy>max').
+    thr_start = float(cfg["threshold_start_pct"])
+    thr_step = float(cfg["threshold_step_pct"])
+    thr_max = float(cfg["threshold_max_pct"])
+    thr_min = float(cfg["threshold_min_pct"])
+    max_iter = int(cfg["threshold_max_iter"])
+    ppy_min = float(cfg["peaks_per_year_min"])
+    ppy_max = float(cfg["peaks_per_year_max"])
 
     pct = float(np.clip(thr_start, thr_min, thr_max))
-    last_eva = last_choice = None
+    last_choice = None
 
     for it in range(1, max_iter + 1):
         thr = float(np.percentile(s.values, pct))
@@ -666,12 +491,11 @@ def _search_threshold(
             f"pct={pct:.1f} thr={thr:.2f} peaks/yr={ppy:.2f} "
             f"(target [{ppy_min:.1f}, {ppy_max:.1f}]) → {status}"
         )
-        last_eva, last_choice = eva, (thr, ppy, status)
+        last_choice = (thr, ppy, status)
 
         if status == "good":
             return eva, last_choice
 
-        # Step toward the band; stop if we have hit the corresponding bound.
         if ppy > ppy_max:
             next_pct = pct + thr_step
             if next_pct > thr_max:
@@ -682,15 +506,12 @@ def _search_threshold(
                 break
         pct = next_pct
 
-    log.warning(
-        f"{tag}threshold search exhausted {max_iter} iters without reaching "
-        f"the [{ppy_min:.1f}, {ppy_max:.1f}] peaks/yr band; "
-        f"using last attempt (flagged reject)"
+    raise EVAFitError(
+        f"{tag}POT threshold search ended without reaching the "
+        f"[{ppy_min:.1f}, {ppy_max:.1f}] peaks/yr band "
+        f"(last: pct={pct:.1f} peaks/yr={last_choice[1]:.2f} → {last_choice[2]}); "
+        f"adjust threshold_min_pct/threshold_max_pct or peaks_per_year_min/max"
     )
-    return last_eva, last_choice
-
-
-# ── full pipeline entry point ─────────────────────────────────────────────────
 
 
 def analyse_cell(
@@ -698,50 +519,36 @@ def analyse_cell(
     values: np.ndarray,
     eva_cfg: dict,
     label: str = "",
-    protection_rp: float | None = None,
+    protection_rp_yr: float | None = None,
 ) -> EVAResult:
-    """Run the full EVA pipeline on one cell's daily discharge series.
+    """Run the full EVA on one cell's daily discharge series (may contain NaN).
 
-    Args:
-        times:         Daily time coordinate array (numpy datetime64 or numeric).
-        values:        Discharge values aligned with ``times`` (may contain NaN).
-        eva_cfg:       Plain dict from config["boundary_forcings"]["river"]["eva"].
-        label:         Optional identifier used in log messages.
-        protection_rp: If given, also evaluate the POT/GPD fit at this return
-                       period (yr) and store it as ``res.q_protection`` --
-                       reuses the already-fitted GPD model, no extra fitting.
-                       No pipeline rule passes it since the discharge-side
-                       protection correction was removed (2026-10-08b);
-                       NaN if the POT/GPD fit itself failed.
-
-    Returns:
-        EVAResult. On failure of either model, NaN fields remain and ``ok``
-        is False — a bad cell never aborts a whole domain.
+    eva_cfg: config["boundary_forcings"]["river"]["eva"]. values are already
+    bias-corrected by the caller where a GRDC match exists. protection_rp_yr
+    (yr): also evaluate the fitted POT/GPD there into q_protection (no pipeline
+    rule passes it). A record that is too short sets skip_reason; a numeric
+    fit failure leaves NaN fields and ok False (eva_active_flags decides).
+    Raises EVAFitError if the POT threshold search does not reach the band.
     """
-    # NOTE — this function is bias-correction agnostic: if a GRDC gauge match
-    # was found, the caller (07_get_boundary_forcings.py) already replaced
-    # ``values`` with the bias-corrected series via bias_correct_discharge()
-    # before calling analyse_cell. See the module docstring for details.
+    require_keys(eva_cfg, _EVA_KEYS, "boundary_forcings.river.eva")
     res = EVAResult()
     s = _to_series(times, values)
     res.n_valid_days = int(s.size)
     tag = f"[{label}] " if label else ""
 
-    # ≈25 yr hard floor: RP100 (100-yr return level) extrapolates far beyond a
-    # short record's range — GloFAS v4 reanalysis runs from 1979 (~45 yr at most
-    # locations), so this is achievable while still leaving headroom above the
-    # bare statistical minimum.
-    min_days = int(_c(eva_cfg, "min_days", 9131))
-    # Soft confidence threshold (yr): below this, EVA still runs but the result
-    # is flagged as reduced-confidence rather than skipped outright.
-    min_years_hc = float(_c(eva_cfg, "min_years_high_confidence", 40.0))
-    fit_method = str(_c(eva_cfg, "fit_method", "Lmoments"))
-    rp_bf = float(_c(eva_cfg, "rp_bf", 2.0))
-    rp_fl = float(_c(eva_cfg, "rp_fl", 100.0))
-    ci_alpha = float(_c(eva_cfg, "ci_alpha", 0.95))
-    decorr_cut = float(_c(eva_cfg, "decorr_cut", 1.0 / np.e))
-    decorr_max = int(_c(eva_cfg, "decorr_max", 30))
-    deseasonalize = bool(_c(eva_cfg, "deseasonalize_for_decorr", True))
+    # ≈25 yr hard floor: RP100 extrapolates far beyond a short record; GloFAS v4
+    # reanalysis runs from 1979 (~45 yr at most locations).
+    min_days = int(eva_cfg["min_days"])
+    # Below this record length (yr) results are flagged reduced-confidence, not skipped.
+    min_years_hc = float(eva_cfg["min_years_high_confidence"])
+    fit_method = str(eva_cfg["fit_method"])
+    bankfull_rp_yr = float(eva_cfg["bankfull_rp_yr"])
+    preview_rp_yr = float(eva_cfg["preview_rp_yr"])
+    ci_alpha = float(eva_cfg["ci_alpha"])
+    n_boot = int(eva_cfg["n_boot"])
+    decorr_cut = float(eva_cfg["decorr_cut"])
+    decorr_max = int(eva_cfg["decorr_max"])
+    deseasonalize = bool(eva_cfg["deseasonalize_for_decorr"])
 
     if s.size < min_days:
         msg = (
@@ -750,12 +557,14 @@ def analyse_cell(
         )
         log.warning(msg)
         res.messages.append(msg)
+        res.skip_reason = "record too short"
         return res
 
     record_years = (s.index[-1] - s.index[0]).days / 365.2425
     res.record_years = record_years
     if record_years <= 0:
         res.messages.append(f"{tag}degenerate time span; skipping")
+        res.skip_reason = "degenerate time span"
         return res
 
     if record_years < min_years_hc:
@@ -767,37 +576,23 @@ def analyse_cell(
         log.info(msg)
         res.messages.append(msg)
 
-    # ── AMAX / GEV → RP=rp_bf (bankfull) + trend ────────────────────────────
-    #
-    # Deliberate dual-estimator design: BM/GEV here for RP2, POT/GPD below for
-    # RP100.
-    #   * The bankfull ≈ 1.5-2 yr recurrence convention (Leopold & Wolman,
-    #     geomorphology literature) is *defined* on the annual-maximum series,
-    #     so RP2 must be derived from block maxima to honour that definition.
-    #   * RP100 sits far enough into the tail that POT/GPD's use of all
-    #     over-threshold peaks (not just one value per year) gives a much
-    #     better-constrained tail fit than AMAX/GEV would for the same record.
-    # Because the two return levels come from two different estimators fit to
-    # different extracted samples, comparing them head-to-head (e.g.
-    # "RP100 < RP2 ⇒ reject") would be an apples-to-oranges check, not a valid
-    # sanity test — see the per-fit sanity checks below instead.
+    # AMAX/GEV for bankfull (bankfull_rp_yr), POT/GPD for flood (preview_rp_yr). The bankfull
+    # ≈ 1.5-2 yr convention (Leopold & Wolman) is defined on annual maxima;
+    # RP100 is better constrained by all over-threshold peaks. The two come
+    # from different estimators, so RP100 < RP2 is not a valid sanity check.
     try:
         eva_bm = EVA(data=s)
-        # errors='coerce': skip empty blocks (e.g. years with gaps in GloFAS data)
+        # errors='coerce': skip empty blocks (years with gaps in GloFAS data)
         eva_bm.get_extremes("BM", block_size="365.2425D", errors="coerce")
         res.amax_n_blocks = int(len(eva_bm.extremes))
         eva_bm.fit_model(fit_method)
-        # Call without alpha — prevents pyextremes from spawning worker processes.
-        # CI is computed separately via a sequential scipy bootstrap below.
-        # _rv() handles the version-dependent return type (scalar or 3-tuple).
-        res.q_rp2 = _rv(eva_bm, rp_bf)
+        # No alpha: it makes pyextremes spawn worker processes.
+        res.q_rp2 = _rv(eva_bm, bankfull_rp_yr)
         gev_params = eva_bm.model.fit_parameters
         res.gev_shape = float(gev_params.get("c", np.nan))
 
-        # Per-fit sanity check (advisory — appends a message, does not flip `ok`):
-        # |shape| > 0.5 indicates a heavy-tailed/Frechet or strongly bounded
-        # Weibull-type fit that is implausible for river discharge and usually
-        # signals a poorly conditioned fit (short record, odd AMAX sample, …).
+        # Advisory: |c| > 0.5 is implausible for river discharge and usually
+        # signals a poorly conditioned fit.
         if np.isfinite(res.gev_shape) and abs(res.gev_shape) > 0.5:
             res.messages.append(
                 f"{tag}GEV shape c={res.gev_shape:.3f} outside plausible "
@@ -805,31 +600,25 @@ def analyse_cell(
             )
 
         amax = eva_bm.extremes.values.astype(float)
-        # Caveat: this CI reflects sampling variability of the AMAX series only
-        # — it is conditional on the chosen block definition and propagates
-        # neither POT-threshold nor declustering-window uncertainty (those only
-        # affect q_rp100_ci below, which carries the same caveat).
+        # CI reflects AMAX sampling variability only, conditional on the block definition.
         res.q_rp2_ci = _gev_boot_ci(
             amax,
-            rp_bf,
+            bankfull_rp_yr,
             ci_alpha,
+            n_boot,
             c0=gev_params.get("c"),
             loc0=gev_params.get("loc"),
             scale0=gev_params.get("scale"),
         )
+        if not np.all(np.isfinite(res.q_rp2_ci)):
+            res.messages.append(
+                f"{tag}GEV bootstrap CI undefined (too few valid refits)"
+            )
 
-        # Mann-Kendall + Sen's slope on the AMAX series — intentionally left
-        # as-is (no FDR/multiple-comparisons correction):
-        #   * Each delta has only 1-6 boundary-forcing locations, so there is
-        #     no multiple-comparisons problem at this scale.
-        #   * Annual maxima from consecutive years are close to independent,
-        #     which is what MK's test assumes — so the test is appropriate here
-        #     even though MK is often misapplied to serially-correlated daily data.
-        # A significant trend means fitting a *stationary* GEV/GPD introduces
-        # bias (the historical record no longer represents the current/future
-        # regime). The trend flag is therefore meant to feed a downstream HUMAN
-        # decision (detrend the series / pick a more recent reference period /
-        # move to a non-stationary fit) — not to be acted on automatically here.
+        # Mann-Kendall on AMAX without FDR correction: 1-6 locations per delta,
+        # and annual maxima are near-independent as MK assumes. A trend biases
+        # the stationary fit; the flag informs a human decision, not an
+        # automatic correction.
         if len(amax) >= 4:
             mkr = mk.original_test(amax)
             res.trend = str(mkr.trend)
@@ -837,25 +626,16 @@ def analyse_cell(
             res.sen_slope = float(mkr.slope)
         else:
             res.messages.append(f"{tag}too few AMAX blocks for trend test")
-    except Exception as e:
+    except _FIT_ERRORS as e:
         msg = f"{tag}AMAX/GEV fit failed: {e}"
         log.warning(msg)
         res.messages.append(msg)
 
-    # ── POT / GPD → RP=rp_fl (flood) ────────────────────────────────────────
     try:
-        # The declustering window stays data-driven and per-location (it must
-        # NOT be a fixed constant across deltas — flood-wave duration scales
-        # with catchment size and flow regime, so a one-size-fits-all window
-        # would over- or under-decluster depending on the basin).
-        #
-        # Optionally estimate it from a deseasonalized anomaly series: raw
-        # daily discharge in monsoonal/seasonal regimes has long-range
-        # autocorrelation from the seasonal cycle itself (not from individual
-        # flood events persisting), which would otherwise inflate the 1/e
-        # crossing lag and produce spuriously long decorrelation windows. The
-        # deseasonalized series is used ONLY to pick `r_days` — POT extraction
-        # and all fitting below still operate on the original series `s`.
+        # Declustering window is data-driven per location: flood-wave duration
+        # scales with catchment size and regime. Optionally estimated on the
+        # deseasonalized series, whose 1/e lag is not inflated by the seasonal
+        # cycle; POT and fitting still use the original series.
         decorr_series = _deseasonalize_for_decorr(s) if deseasonalize else s
         decorr = estimate_decorrelation_days(decorr_series, decorr_cut, decorr_max)
         res.pot_decorr_days = float(decorr)
@@ -876,33 +656,33 @@ def analyse_cell(
             res.pot_threshold_status = status
 
             eva_pot.fit_model(fit_method)
-            res.q_rp100 = _rv(eva_pot, rp_fl)
-            if protection_rp is not None:
-                res.q_protection = _rv(eva_pot, protection_rp)
+            res.q_rp100 = _rv(eva_pot, preview_rp_yr)
             gpd_params = eva_pot.model.fit_parameters
-            # pyextremes picks between "genpareto" and "expon" candidate
-            # distributions by AIC (see EVA.fit_model). "expon" has no shape
-            # parameter at all -- it IS the GPD with shape fixed at 0 (the
-            # c -> 0 limit of the GPD family) -- so a missing "c" key means
-            # shape=0 was selected as the better fit, not that fitting failed.
+            # pyextremes picks "genpareto" or "expon" by AIC; "expon" is the GPD
+            # with c = 0, so a missing "c" means shape 0, not a failed fit.
             res.pot_shape = float(gpd_params.get("c", 0.0))
-            # Saved alongside pot_threshold/pot_shape/pot_peaks_per_year so a
-            # downstream consumer can compute the discharge for an arbitrary
-            # return period later without re-fitting -- see gpd_return_value_table.
+            # Kept for gpd_return_value_table (any RP without refitting).
             res.pot_scale = float(gpd_params.get("scale", np.nan))
+            if protection_rp_yr is not None:
+                # Same formula as discharge_rp_table, not pyextremes' own.
+                res.q_protection = float(
+                    gpd_return_value_table(
+                        res.pot_threshold,
+                        res.pot_scale,
+                        res.pot_shape,
+                        res.pot_peaks_per_year,
+                        np.array([protection_rp_yr], dtype=float),
+                    )[0]
+                )
 
-            # Per-fit sanity check (advisory): |shape| > 0.5 is implausible for
-            # river-discharge tails and usually signals a poorly conditioned
-            # POT fit (too few peaks, badly chosen threshold, …).
+            # Advisory: |c| > 0.5 is implausible for river-discharge tails.
             if np.isfinite(res.pot_shape) and abs(res.pot_shape) > 0.5:
                 res.messages.append(
                     f"{tag}GPD shape c={res.pot_shape:.3f} outside plausible "
                     f"range (|c| > 0.5) — flood fit may be poorly constrained"
                 )
 
-            # pyextremes' POT `.extremes` are ABSOLUTE peak values (not
-            # already-thresholded exceedances) — subtract the threshold to get
-            # the exceedances a floc=0 GPD must be fit to.
+            # POT .extremes are absolute peaks; a floc=0 GPD needs exceedances.
             exceedances = eva_pot.extremes.values.astype(float) - res.pot_threshold
             neg_mask = exceedances < 0
             if neg_mask.any():
@@ -912,19 +692,21 @@ def analyse_cell(
                 )
                 exceedances = exceedances[~neg_mask]
 
-            # Caveat (see also q_rp2_ci above): this CI is conditional on the
-            # chosen POT threshold AND declustering window `r_days` — neither
-            # source of uncertainty is propagated into the bootstrap, which
-            # only resamples the already-extracted exceedances.
+            # CI is conditional on the chosen threshold and r_days (not propagated).
             res.q_rp100_ci = _gpd_boot_ci(
                 exceedances,
                 res.pot_threshold,
                 ppy,
-                rp_fl,
+                preview_rp_yr,
                 ci_alpha,
+                n_boot,
                 c0=gpd_params.get("c"),
                 scale0=gpd_params.get("scale"),
             )
+            if not np.all(np.isfinite(res.q_rp100_ci)):
+                res.messages.append(
+                    f"{tag}GPD bootstrap CI undefined (too few valid refits)"
+                )
             try:
                 res.pot_ks_pvalue = float(eva_pot.test_ks().pvalue)
                 if res.pot_ks_pvalue < 0.05:
@@ -932,23 +714,43 @@ def analyse_cell(
                         f"{tag}KS test p={res.pot_ks_pvalue:.3f} < 0.05 — "
                         f"GPD fit does not pass goodness-of-fit at α=0.05"
                     )
-            except Exception:
-                pass
-    except Exception as e:
+            except _FIT_ERRORS as e:
+                res.messages.append(f"{tag}KS goodness-of-fit test failed: {e}")
+    except _FIT_ERRORS as e:
         msg = f"{tag}POT/GPD fit failed: {e}"
         log.warning(msg)
         res.messages.append(msg)
 
-    # `ok` reflects only "did both estimators converge to a finite value" — we
-    # deliberately do NOT cross-compare q_rp100 vs q_rp2 (see the comment above
-    # the AMAX/GEV block for why that check was apples-to-oranges). The
-    # per-fit sanity messages above (shape parameters, KS p-value) are advisory
-    # only and do not affect `ok`.
+    # ok = both estimators finite; advisory messages do not affect it.
     res.ok = np.isfinite(res.q_rp2) and np.isfinite(res.q_rp100)
     return res
 
 
-# ── diagnostic plot ───────────────────────────────────────────────────────────
+def eva_active_flags(evas: list[tuple[str, EVAResult]]) -> list[bool]:
+    """Return per-crossing active flags for (label, EVAResult) pairs.
+
+    A documented skip (skip_reason, e.g. record too short) leaves the crossing
+    inactive with a warning. Raises EVAFitError naming every crossing whose
+    fit failed otherwise, or if EVAs were run and none is usable.
+    """
+    failed = [(label, r) for label, r in evas if not r.ok and not r.skip_reason]
+    if failed:
+        details = "\n".join(
+            f"  {label}: q_rp2={r.q_rp2:.4g} q_rp100={r.q_rp100:.4g}; "
+            + ("; ".join(r.messages) or "no message")
+            for label, r in failed
+        )
+        raise EVAFitError(f"EVA failed for {len(failed)} crossing(s):\n{details}")
+    for label, r in evas:
+        if not r.ok:
+            log.warning(f"  {label}: EVA skipped ({r.skip_reason}) — crossing inactive")
+    flags = [bool(r.ok) for _, r in evas]
+    if evas and not any(flags):
+        raise EVAFitError(
+            f"None of {len(evas)} crossing(s) with a GloFAS cell has a usable EVA: "
+            + ", ".join(f"{label} ({r.skip_reason})" for label, r in evas)
+        )
+    return flags
 
 
 def plot_cell_diagnostics(
@@ -964,9 +766,9 @@ def plot_cell_diagnostics(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fit_method = str(_c(eva_cfg, "fit_method", "Lmoments"))
-    rp_bf = float(_c(eva_cfg, "rp_bf", 2.0))
-    rp_fl = float(_c(eva_cfg, "rp_fl", 100.0))
+    fit_method = str(eva_cfg["fit_method"])
+    bankfull_rp_yr = float(eva_cfg["bankfull_rp_yr"])
+    preview_rp_yr = float(eva_cfg["preview_rp_yr"])
 
     res = analyse_cell(times, values, eva_cfg, label=label)
     s = _to_series(times, values)
@@ -974,7 +776,7 @@ def plot_cell_diagnostics(
     fig, axes = plt.subplots(2, 2, figsize=(14, 11))
     fig.suptitle(f"GloFAS EVA diagnostics — {label}", fontsize=13, y=0.98)
 
-    # POT (RP=rp_fl)
+    # POT (RP=preview_rp_yr)
     try:
         if np.isfinite(res.pot_threshold):
             eva_pot = EVA(data=s)
@@ -982,10 +784,8 @@ def plot_cell_diagnostics(
                 "POT", threshold=res.pot_threshold, r=f"{int(res.pot_r_days)}D"
             )
             eva_pot.fit_model(fit_method)
-            # top-left: discharge timeseries with extracted peaks
             eva_pot.plot_extremes(ax=axes[0, 0], show_clusters=True)
             axes[0, 0].set_title(f"POT extremes & clusters (r={int(res.pot_r_days)}d)")
-            # top-right: GPD return-value curve
             eva_pot.plot_return_values(
                 return_period=np.logspace(np.log10(1.1), np.log10(500), 100),
                 ax=axes[0, 1],
@@ -994,36 +794,28 @@ def plot_cell_diagnostics(
                 f"POT/GPD  thr={res.pot_threshold:.1f}  r={int(res.pot_r_days)}d  "
                 f"{res.pot_peaks_per_year:.1f} pk/yr  [{res.pot_threshold_status}]"
             )
-            axes[0, 1].axvline(rp_fl, ls=":", c="k", lw=1)
-    except Exception as e:
+            axes[0, 1].axvline(preview_rp_yr, ls=":", c="k", lw=1)
+    except _FIT_ERRORS as e:
         axes[0, 0].text(0.5, 0.5, f"POT plot failed:\n{e}", ha="center", va="center")
 
-    # AMAX (RP=rp_bf)
+    # AMAX (RP=bankfull_rp_yr)
     try:
         if res.amax_n_blocks:
             eva_bm = EVA(data=s)
             eva_bm.get_extremes("BM", block_size="365.2425D", errors="coerce")
             eva_bm.fit_model(fit_method)
-            # bottom-left: GEV return-value curve
             eva_bm.plot_return_values(
                 return_period=np.logspace(np.log10(1.01), np.log10(100), 100),
                 ax=axes[1, 0],
             )
             axes[1, 0].set_title(f"AMAX/GEV  ({res.amax_n_blocks} blocks)")
-            axes[1, 0].axvline(rp_bf, ls=":", c="k", lw=1)
-            # bottom-right: annual-maxima boxplots by decade
+            axes[1, 0].axvline(bankfull_rp_yr, ls=":", c="k", lw=1)
             _plot_decade_trend(axes[1, 1], eva_bm.extremes, res)
-    except Exception as e:
+    except _FIT_ERRORS as e:
         axes[1, 0].text(0.5, 0.5, f"AMAX plot failed:\n{e}", ha="center", va="center")
 
-    # pyextremes's plot_extremes() (top-left) calls fig.autofmt_xdate()
-    # internally, which assumes every subplot shares ONE date x-axis and
-    # hides tick labels/xlabel on every row except the last -- but this
-    # figure's four axes each have their OWN independent x-axis (time,
-    # return period x2, decade), not a shared date axis, so that call
-    # incorrectly hides both top-row axes' tick numbers (their xlabel text
-    # gets set again by each panel's own plotting call afterwards, which is
-    # why only the tick NUMBERS were missing, not the axis labels).
+    # pyextremes' plot_extremes() calls fig.autofmt_xdate(), which assumes a
+    # shared date axis and hides top-row tick labels; these axes are independent.
     axes[0, 0].set_xlabel("date-time")
     for row_ax in (axes[0, 0], axes[0, 1]):
         row_ax.xaxis.set_tick_params(labelbottom=True)
@@ -1069,8 +861,6 @@ def _plot_decade_trend(ax, amax: pd.Series, res: EVAResult) -> None:
     )
 
 
-# ── GRDC diagnostic plot panels (shared by plot_bias_correction and plot_grdc_overview) ──
-
 _SEASON_MAP = {
     12: "DJF",
     1: "DJF",
@@ -1103,11 +893,6 @@ def _plot_raw_scatter(
     tail_percentile: float,
     lims: tuple[float, float],
 ) -> None:
-    """
-    GloFAS-vs-GRDC scatter with 1:1 line; tail days (>= tail_percentile of
-    GRDC) highlighted, with both the tail-focused (headline) and all-days
-    Pearson r in the title.
-    """
     ax.scatter(
         g_ov[~tail_mask],
         r_ov[~tail_mask],
@@ -1142,7 +927,6 @@ def _plot_seasonal_scatter(
     t_ov: pd.DatetimeIndex,
     lims: tuple[float, float],
 ) -> None:
-    """GloFAS-vs-GRDC scatter coloured by season, with per-season Pearson r in the legend."""
     seasons = pd.Series(t_ov.month).map(_SEASON_MAP).values
     for s_name, s_color in _SEASON_COLORS.items():
         m = seasons == s_name
@@ -1165,7 +949,6 @@ def _plot_seasonal_scatter(
 def _plot_overlap_timeseries(
     ax, t_ov: pd.DatetimeIndex, g_ov: np.ndarray, r_ov: np.ndarray, r_tail: float
 ) -> None:
-    """Overlap-period time series of GloFAS raw and GRDC, on twin y-axes."""
     ax.plot(t_ov, g_ov, color="tab:blue", lw=0.7, label="GloFAS raw")
     ax.set_xlabel("Date")
     ax.set_ylabel("GloFAS raw (m³ s⁻¹)", color="tab:blue")
@@ -1181,7 +964,43 @@ def _plot_overlap_timeseries(
     ax2.legend(loc="upper right", fontsize=8)
 
 
-# ── GRDC bias-correction diagnostic plot ──────────────────────────────────────
+def write_bias_diagnostics(path: str | Path, cells: list[dict]) -> None:
+    """Write bias-correction diagnostics of GloFAS cells to one .npz.
+
+    cells: one dict per corrected cell with 'label', 'i_lat', 'i_lon' (indices
+    into glofas_clip.nc) and 'diagnostics' (bias_correct_discharge's dict).
+    None values are stored as NaN.
+    """
+    arrays = {"labels": np.array([c["label"] for c in cells], dtype=str)}
+    for k, c in enumerate(cells):
+        arrays[f"{k}__i_lat"] = np.asarray(c["i_lat"])
+        arrays[f"{k}__i_lon"] = np.asarray(c["i_lon"])
+        for key, value in c["diagnostics"].items():
+            arrays[f"{k}__diag__{key}"] = np.asarray(np.nan if value is None else value)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, **arrays)
+
+
+def read_bias_diagnostics(path: str | Path) -> list[dict]:
+    """Return the cells written by write_bias_diagnostics."""
+    with np.load(path, allow_pickle=False) as npz:
+        data = {k: npz[k] for k in npz.files}
+    cells = []
+    for k, label in enumerate(data["labels"]):
+        prefix = f"{k}__diag__"
+        cells.append(
+            {
+                "label": str(label),
+                "i_lat": int(data[f"{k}__i_lat"]),
+                "i_lon": int(data[f"{k}__i_lon"]),
+                "diagnostics": {
+                    key[len(prefix) :]: (v.item() if v.ndim == 0 else v)
+                    for key, v in data.items()
+                    if key.startswith(prefix)
+                },
+            }
+        )
+    return cells
 
 
 def plot_bias_correction(
@@ -1193,28 +1012,8 @@ def plot_bias_correction(
 ) -> None:
     """Render the 2x3 GRDC bias-correction diagnostic figure.
 
-    Panels:
-        (0,0) raw GloFAS-vs-GRDC scatter with 1:1 line, tail days (>= the
-              configured GRDC tail percentile) highlighted, and both the
-              tail-focused (headline) and all-days Pearson r in the title.
-        (0,1) same scatter, points coloured by season (DJF/MAM/JJA/SON).
-        (0,2) overlap-period time series of GloFAS raw and GRDC, on twin
-              y-axes so both series remain visible regardless of scale.
-        (1,0) empirical CDFs of GloFAS raw, GRDC, and GloFAS corrected
-              (log-x to emphasise the flood-relevant upper tail).
-        (1,1) corrected-GloFAS-vs-GRDC scatter (mirrors (0,0)), tail days
-              highlighted, tail-focused and all-days Pearson r after
-              correction.
-        (1,2) full-record time series of raw vs corrected GloFAS, with GRDC
-              overlaid on its observation window.
-
-    Args:
-        glofas_times, glofas_values: Full-record raw GloFAS cell series (the
-            same series passed into ``bias_correct_discharge``).
-        diagnostics: Non-``None`` dict returned by ``bias_correct_discharge``,
-            with a ``grdc_station_id`` key added by the caller.
-        output_path: PNG output path.
-        label: Identifier for the figure title and log message.
+    diagnostics: non-None result of bias_correct_discharge, plus a
+    grdc_station_id key added by the caller.
     """
     import matplotlib
 
@@ -1249,7 +1048,7 @@ def plot_bias_correction(
     _plot_seasonal_scatter(axes[0, 1], g_ov, r_ov, t_ov, lims)
     _plot_overlap_timeseries(axes[0, 2], t_ov, g_ov, r_ov, r_raw)
 
-    # (1,0) empirical CDFs (log-x for upper-tail emphasis)
+    # Log-x to emphasise the flood-relevant upper tail.
     ax = axes[1, 0]
     for data, lbl, color in (
         (g_ov, "GloFAS raw", "tab:blue"),
@@ -1265,7 +1064,6 @@ def plot_bias_correction(
     ax.legend(loc="lower right", fontsize=8)
     ax.set_xscale("log")
 
-    # (1,1) corrected scatter (mirrors (0,0))
     ax = axes[1, 1]
     ax.scatter(
         c_ov[~tail_mask],
@@ -1293,7 +1091,6 @@ def plot_bias_correction(
     )
     ax.legend(loc="upper left", fontsize=8)
 
-    # (1,2) full-record time series: raw vs corrected, GRDC overlay
     ax = axes[1, 2]
     corrected_full = empirical_quantile_map(
         source_overlap=g_ov,
@@ -1323,166 +1120,3 @@ def plot_bias_correction(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     save_figure(fig, output_path, dpi=130)
     log.info(f"Wrote bias-correction diagnostic plot: {output_path}")
-
-
-# ── GRDC station/correlation overview plot (standalone inspection) ────────────
-
-
-def plot_grdc_overview(
-    domain_poly: Polygon,
-    land_polygons_path: str,
-    river_gdf: gpd.GeoDataFrame,
-    crossings_gdf: gpd.GeoDataFrame,
-    grdc_stations: gpd.GeoDataFrame,
-    highlight_crossing_idx: int,
-    highlight_station_id: int,
-    diagnostics: dict,
-    output_path: str | Path,
-    label: str = "",
-) -> None:
-    """Render a 2x2 GRDC-vs-GloFAS correlation overview figure.
-
-    Unlike ``plot_bias_correction``, this does not require the bias
-    correction itself to have been applied — ``diagnostics`` is the dict
-    returned by ``compute_grdc_correlation`` (raw overlap only), so this plot
-    can be produced regardless of ``boundary_forcings.bias_correction.enabled``.
-
-    Panels:
-        (0,0) domain map: model domain outline, river network, all
-              crossing/boundary-forcing points (active vs inactive), and
-              GRDC stations in view, with the current crossing/station pair
-              highlighted.
-        (0,1) raw GloFAS-vs-GRDC scatter with 1:1 line, tail days (>= the
-              configured GRDC tail percentile) highlighted, and both the
-              tail-focused (headline) and all-days Pearson r in the title.
-        (1,0) same scatter, points coloured by season (DJF/MAM/JJA/SON), with
-              per-season r in the legend.
-        (1,1) overlap-period time series of GloFAS raw and GRDC, on twin
-              y-axes.
-
-    Args:
-        domain_poly: Model domain polygon (WGS84).
-        land_polygons_path: Path to the land mask geopackage (land use != 200)
-            used as a map background (see ``src.plots.map_background``).
-        river_gdf: River network GeoDataFrame (WGS84).
-        crossings_gdf: One row per river crossing, with a ``has_glofas`` bool
-            column and point geometry (WGS84).
-        grdc_stations: GRDC station table from ``river_forcing.load_grdc_stations``.
-        highlight_crossing_idx: Row index into ``crossings_gdf`` for the
-            crossing being inspected.
-        highlight_station_id: GRDC station ``id`` matched to that crossing.
-        diagnostics: Dict returned by ``compute_grdc_correlation``.
-        output_path: PNG output path.
-        label: Identifier for the figure title and log message.
-    """
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    g_ov = np.asarray(diagnostics["glofas_overlap"], dtype=float)
-    r_ov = np.asarray(diagnostics["grdc_overlap"], dtype=float)
-    t_ov = pd.to_datetime(diagnostics["glofas_overlap_times"])
-    tail_mask = diagnostics["tail_mask"]
-    tail_pct = diagnostics["tail_percentile"]
-    r_raw = diagnostics["correlation_raw"]
-    r_raw_full = diagnostics["correlation_full_raw"]
-    n_overlap = diagnostics["grdc_overlap_days"]
-
-    fig, axes = plt.subplots(2, 2, figsize=(13, 11))
-    fig.suptitle(
-        f"GRDC-GloFAS correlation — {label}  (station {highlight_station_id}, {n_overlap} d overlap)",
-        fontsize=13,
-        y=0.98,
-    )
-
-    # (0,0) domain map
-    ax = axes[0, 0]
-    station_pt = grdc_stations.loc[
-        grdc_stations["id"] == highlight_station_id, "geometry"
-    ].iloc[0]
-    crossing_pt = crossings_gdf.geometry.iloc[highlight_crossing_idx]
-
-    map_background(ax, domain_poly, land_polygons_path, margin_frac=0.15)
-    bx, by = domain_poly.exterior.xy
-    ax.plot(bx, by, color="black", linewidth=2, zorder=2, label="Model domain")
-
-    # Widen the view if the matched GRDC station falls outside the domain bbox.
-    xlim = (min(ax.get_xlim()[0], station_pt.x), max(ax.get_xlim()[1], station_pt.x))
-    ylim = (min(ax.get_ylim()[0], station_pt.y), max(ax.get_ylim()[1], station_pt.y))
-    ax.set_xlim(xlim)
-    ax.set_ylim(ylim)
-    map_bounds = (xlim[0], ylim[0], xlim[1], ylim[1])
-
-    river_gdf.plot(ax=ax, color="steelblue", linewidth=0.8, zorder=1)
-
-    if not crossings_gdf.empty:
-        active = crossings_gdf["has_glofas"].astype(bool)
-        if active.any():
-            crossings_gdf[active].plot(
-                ax=ax,
-                color="limegreen",
-                markersize=40,
-                zorder=3,
-                label="Crossing (active)",
-            )
-        if (~active).any():
-            crossings_gdf[~active].plot(
-                ax=ax,
-                color="grey",
-                markersize=40,
-                marker="x",
-                zorder=3,
-                label="Crossing (inactive)",
-            )
-
-    grdc_in_view = grdc_stations.cx[
-        map_bounds[0] : map_bounds[2], map_bounds[1] : map_bounds[3]
-    ]
-    if not grdc_in_view.empty:
-        grdc_in_view.plot(
-            ax=ax,
-            color="purple",
-            markersize=70,
-            marker="*",
-            zorder=3,
-            alpha=0.7,
-            label="GRDC station",
-        )
-
-    ax.scatter(
-        [crossing_pt.x],
-        [crossing_pt.y],
-        s=180,
-        facecolors="none",
-        edgecolors="red",
-        linewidths=2,
-        zorder=4,
-        label="This crossing",
-    )
-    ax.scatter(
-        [station_pt.x],
-        [station_pt.y],
-        s=180,
-        facecolors="none",
-        edgecolors="orange",
-        linewidths=2,
-        zorder=4,
-        label="Matched GRDC station",
-    )
-
-    ax.set_title("Domain context")
-    ax.legend(loc="best", fontsize=7)
-
-    lims = (0.0, float(max(g_ov.max(), r_ov.max())) * 1.05)
-    _plot_raw_scatter(
-        axes[0, 1], g_ov, r_ov, r_raw, r_raw_full, tail_mask, tail_pct, lims
-    )
-    _plot_seasonal_scatter(axes[1, 0], g_ov, r_ov, t_ov, lims)
-    _plot_overlap_timeseries(axes[1, 1], t_ov, g_ov, r_ov, r_raw)
-
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    save_figure(fig, output_path, dpi=130)
-    log.info(f"Wrote GRDC overview plot: {output_path}")

@@ -1,35 +1,22 @@
-"""
-sfincs_restart.py -- Read/patch/write a SFINCS binary restart (.rst) file.
+"""Read and patch the water level in a SFINCS binary restart (.rst) file.
 
-SFINCS restart files are NOT documented or parsed anywhere else in this
-codebase (src.sfincs_run explicitly treats "rstfile" as an opaque forwarded
-path) -- this module is the first place that actually opens one. The format
-was reverse-engineered and empirically validated against this repo's own
-basin 2433835 (confirmed byte-exact round-trip, and record[1] cross-checked
-against mod.grid.mask via sfincs.ind's own active-cell ordering: zero
-mismatches across all 263,907 grid cells, and zs-zb >= 0 everywhere with
-~46% of cells exactly dry -- the correct physical signature for a water-level
-restart state) before being trusted here.
+The format is undocumented; this layout was reverse-engineered and validated on
+basin 2433835 (byte-exact round-trip; zs matches mod.grid.mask in sfincs.ind
+order on all 263,907 cells, zs-zb >= 0 everywhere, ~46% of cells dry).
 
-File layout: classic Fortran unformatted sequential access -- a sequence of
-records, each `[int32 length][length bytes of data][int32 length]` (the two
-length markers must match). This basin's restart has 4 records:
-    0: 1 int32   (unidentified header/flag -- preserved untouched)
-    1: N float32 (zs, water surface elevation -- one value per ACTIVE cell,
-                  in the same order as sfincs.ind's own active-cell list)
-    2: ~2N float32 (unidentified -- likely flux/velocity state -- preserved untouched)
-    3: small float32 array (unidentified -- preserved untouched)
-Only record 1 (zs) is ever modified here; every other record is copied
-through byte-for-byte, so whatever physics they represent is left exactly
-as the spin-up run computed it.
+Fortran unformatted sequential records, each `[int32 length][data][int32 length]`
+(both length markers must match):
+    0: 1 int32   (unidentified header/flag)
+    1: N float32 (zs, water surface elevation, one value per ACTIVE cell,
+                  in sfincs.ind's active-cell order)
+    2: ~2N float32 (unidentified, likely flux/velocity state)
+    3: small float32 array (unidentified)
+Only record 1 (zs) is modified; every other record is copied byte-for-byte.
 
-sfincs.ind pairs with this: a header int32 (active-cell count) followed by
-that many int32 1-based FORTRAN (column-major) flat indices into the
-model's own (nmax, mmax) grid -- i.e. `np.unravel_index(ind - 1,
-(nmax, mmax), order="F")` gives each active cell's (row, col), in the SAME
-order as zs's own entries. This is what lets a zone polygon (rasterized
-onto mod.grid.mask, which is confirmed identical to this same (nmax, mmax)
-grid) be mapped onto specific zs entries.
+sfincs.ind: a header int32 (active-cell count) followed by that many int32
+1-based FORTRAN (column-major) flat indices into the (nmax, mmax) grid:
+`np.unravel_index(ind - 1, (nmax, mmax), order="F")` gives each active cell's
+(row, col), in zs order. mod.grid.mask has the same (nmax, mmax) grid.
 """
 
 from __future__ import annotations
@@ -102,28 +89,14 @@ def patch_restart_zs(
     active_cell_mask: np.ndarray,
     dz: np.ndarray | float,
 ) -> int:
-    """
-    Write a copy of src_rst_path with zs shifted by `dz` at active cells
-    where `active_cell_mask` is True, everything else byte-identical.
+    """Write a copy of `src_rst_path` with zs shifted by `dz` where the mask is True.
 
-    Args:
-        src_rst_path      : source restart file (e.g. the basin's own
-                             spin-up restart -- never modified in place).
-        dst_rst_path       : output path for the patched copy.
-        ind_path           : this basin's own sfincs.ind (defines active-cell
-                             order/positions -- must match src_rst_path's own
-                             grid, i.e. the SAME basin/skeleton).
-        grid_shape          : (nmax, mmax) of the coarse SFINCS grid --
-                             must match mod.grid.mask.shape.
-        active_cell_mask    : (nmax, mmax) boolean array (e.g. a rasterized
-                             zone polygon on mod.grid.mask's own grid) --
-                             True where zs should be shifted.
-        dz                  : scalar or (nmax, mmax) array, meters added to
-                             zs at the selected cells (e.g. a negative
-                             `-lowering` to follow a DEM lowering downward).
-
-    Returns:
-        Number of active cells actually patched.
+    Everything else is byte-identical; `src_rst_path` is never modified in place.
+    `ind_path` must belong to the same basin/skeleton grid as `src_rst_path`;
+    `grid_shape` is (nmax, mmax) of the coarse SFINCS grid (= mod.grid.mask.shape).
+    `active_cell_mask` is an (nmax, mmax) bool array, True where zs is shifted.
+    `dz` is a scalar or (nmax, mmax) array in metres added to zs (negative to
+    follow a DEM lowering). Returns the number of active cells patched.
     """
     ind0 = read_ind(ind_path)  # 0-based flat index, Fortran order, per active cell
     nmax, mmax = grid_shape

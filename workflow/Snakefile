@@ -1,56 +1,41 @@
-# Snakefile
+# Snakemake entry point: includes every rule and defines the named targets.
 
 from snakemake.utils import min_version
 min_version("7.0")
 
-# ---- Configuration ----
 configfile: "./config/config.yml"
 
-# ---- Shared setup (catalogue helpers, wildcard constraints, etc.) ----
 include: "rules/00_common.smk"
 
-# ---- Rules ----
-# Included in true DAG/topological order -- see each rule's own docstring
-# for its actual predecessors/successors. Rule enforce_river_monotonicity
-# (09, conditioning) depends only on rule 08's cleaned network
-# (topology/width, no depth), so it runs before rule
-# modelled_depth_estimation (10) and produces the conditioned elevation it
-# consumes. Rule 10 writes river_network_depth_estimated.gpkg and the
-# burned river channel (river_burned_subgrid.tif on the subgrid pixel grid,
-# river_burned_dem_sfincs_grid.tif on the main grid), burning its own
-# channel directly (never hydromt's own gdf_zb/burn_river_rect).
-include: "rules/01_separate_deltas.smk"
-include: "rules/02_modeldomain.smk"
-# 06 (the river-network CLIP) before 02b/03: the clipped network is the
-# barrier rule prepare_landuse uses to stop its sea fill at the river
-# mouths, while that rule's own plot (rule plot_river_network, same file)
-# needs rule 03's land mask and therefore runs after it -- see
-# 06_river_network.smk's own module comment.
-include: "rules/06_river_network.smk"
-include: "rules/02b_prepare_landuse.smk"
-include: "rules/03_land_polygons.smk"
-include: "rules/04_protection_levels.smk"
-include: "rules/05_static_terrain_data.smk"
+# Rules, numbered in the order they run; 07a-c (storm tide) feed 07d (boundary
+# forcings), 12b/12c and 13b branch off 12 and 13.
+include: "rules/01_domain.smk"
+include: "rules/02_river_network.smk"
+include: "rules/03_protection_levels.smk"
+include: "rules/04_sfincs_grid.smk"
+include: "rules/05_landuse_source.smk"
+include: "rules/06_elevation.smk"
 include: "rules/07a_storm_tide_hydrographs.smk"
-include: "rules/07_boundary_forcings.smk"
+include: "rules/07d_boundary_forcings.smk"
 include: "rules/08_clean_river_network.smk"
-include: "rules/08c_build_sfincs_grid.smk"
-include: "rules/09_condition_elevation.smk"
-include: "rules/09b_grid_align_landuse.smk"
-include: "rules/10_depth_estimation_modelled.smk"
-include: "rules/11_testing.smk"
-include: "rules/13_build_sfincs_skeleton.smk"
-include: "rules/13_build_sfincs.smk"
-include: "rules/14_run_spinup.smk"
-include: "rules/15_sanity_checks.smk"
-include: "rules/16_run_event.smk"
-include: "rules/17_flood_metrics.smk"
-include: "rules/18a_adapt_pre.smk"
-include: "rules/18b_adapt_post.smk"
-include: "rules/18c_attribution_mask.smk"
-include: "rules/19_adapt_compare.smk"
+include: "rules/09_land_surface.smk"
+include: "rules/10_river_surface.smk"
+include: "rules/11_depth_estimation_modelled.smk"
+include: "rules/12a_build_sfincs_skeleton.smk"
+include: "rules/12b_land_bed_level.smk"
+include: "rules/12c_build_adaptation_lines.smk"
+include: "rules/13a_run_spinup.smk"
+include: "rules/13b_sanity_checks.smk"
+include: "rules/14_build_sfincs.smk"
+include: "rules/15_run_event.smk"
+include: "rules/16_flood_metrics.smk"
+include: "rules/17a_attribution_mask.smk"
+include: "rules/17b_adapt_pre.smk"
+include: "rules/17c_adapt_post.smk"
+include: "rules/18_adapt_compare.smk"
+include: "rules/19_analysis_figures.smk"
 
-# ── Shared output lists (used by named targets and rule all) ─────────────────
+# ── Output lists for the named targets ──
 
 _PREPROCESS_OUTPUTS = [
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"), basin_id=BASINS),
@@ -59,111 +44,98 @@ _PREPROCESS_OUTPUTS = [
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_source.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_polygons.gpkg"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/04_protection_levels.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_merged.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/05a_elevation.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sea_mask.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/05b_landuse.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/05b_sea_mask.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/05c_roughness.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/06_river_network.png"), basin_id=BASINS),
     *(expand(results_path("{basin_id}/preprocessing_inputs/forcing/storm_tide_hydrographs.nc"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/preprocessing_inputs/visuals/07c_storm_tide_hydrographs.png"), basin_id=BASINS)
+      + (expand(analysis_figure_path("07_forcing_storm_tide_shapes.png"), basin_id=BASINS) if ANALYSIS else [])
       if config["boundary_forcings"]["surge"]["hydrograph"]["enabled"] else []),
     expand(results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/forcing/glofas_clip.nc"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_locations.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_timeseries.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_forcing_eva.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_bias_correction"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/07_surge_correction.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/08_river_clean.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/08_river_discharge.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_sfincs_grid.json"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/09_condition_elevation.png"), basin_id=BASINS),
-    # Rule modelled_depth_estimation (10): river_network_depth_estimated.gpkg,
-    # the burned river channel on the subgrid pixel grid and its main-grid
-    # mean, and the calibrated coastal protection weir.
+    # Rule modelled_depth_estimation (11)
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_subgrid.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"), basin_id=BASINS),
     expand(results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/river_depth.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/water_level_timeseries.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/max_inundation.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/10_calibration/flood_animation.mp4"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/11_upstream_boundary_check.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/11b_bifurcation_calibration_options"), basin_id=BASINS),
+    expand(figure_path("30_calib_crest_profile.png"), basin_id=BASINS),
+    expand(figure_path("20_forcing_timeseries__calib_r{r}.png"), basin_id=BASINS, r=CALIB_ROUNDS),
+    expand(figure_path("40_run_max_flood_depth__calib_r{r}.png"), basin_id=BASINS, r=CALIB_ROUNDS),
+    *(expand(analysis_figure_path("{name}"), basin_id=BASINS, name=[
+        "03_protection_levels.png",
+        "06_datum_geoid_offset.png", "06_datum_mdt_ocean.png",
+        "06_datum_fathomdem_correction.png", "06_datum_gebco_correction.png",
+        "07_forcing_locations.png", "07_forcing_river_eva.png",
+        "07_forcing_bias_correction", "07_forcing_surge_correction.png",
+        "08_river_network_clean.png", "08_river_discharge.png",
+        "10_river_surface.png",
+        "11_calib_river_depth_network.png", "11_calib_river_forward_check.png",
+        "11_calib_crest_gap.png", "11_calib_dike_position_wetlands.png",
+      ] + [f"11_calib_water_level__calib_r{r}.png" for r in CALIB_ROUNDS]
+        + [f"11_calib_flood_progression__calib_r{r}.mp4" for r in CALIB_ROUNDS])
+      if ANALYSIS else []),
 ]
 
-# Basin-level (no {scenario} wildcard): the SFINCS skeleton (grid/
-# elevation/mask/weir/roughness/subgrid/observation points -- rule
-# build_sfincs_skeleton) and the spin-up built on top of it (rule
-# run_spinup, fixed RP=1 river + calm sea, plus its own sanity_checks) are both genuinely
-# scenario-independent now -- changing a scenario's own RP never
-# invalidates either of these, so they're expanded over basin_id only,
-# never once per scenario. See 13_build_sfincs_skeleton.smk/14_run_spinup.smk's
-# own module comments for the full rationale.
+# Basin-level, scenario-independent: skeleton, spin-up (run_spinup, mean river
+# discharge + calm sea) and its sanity checks.
 _BUILD_OUTPUTS_BASIN = [
     expand(results_path("{basin_id}/sfincs_skeleton/sfincs.inp"), basin_id=BASINS),
     expand(results_path("{basin_id}/sfincs_skeleton/sfincs.weir"), basin_id=BASINS),
     expand(results_path("{basin_id}/sfincs_skeleton/{basin_id}_coastal_protection_weir.gpkg"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/01_grid.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/02_elevation.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/03_mask.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/04_roughness.png"), basin_id=BASINS),
-    expand(results_path("{basin_id}/preprocessing_inputs/visuals/sfincs_build/07_coastal_protection_weir.png"), basin_id=BASINS),
     expand(results_path("{basin_id}/sfincs_skeleton/sfincs_subgrid.nc"), basin_id=BASINS),
+    expand(figure_path("{name}"), basin_id=BASINS, name=[
+        "10_build_grid.png", "11_build_elevation.png", "12_build_mask.png",
+        "13_build_roughness.png", "14_build_zsini.png", "15_build_coastal_weir.png",
+    ]),
     *(expand(results_path("{basin_id}/spin_up/" + RST_FNAME), basin_id=BASINS)
       + expand(results_path("{basin_id}/spin_up/sfincs_map.nc"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/spin_up/validation_spinup.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/spin_up/validation_max_inundation.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/spin_up/01_inundation_ratio.png"), basin_id=BASINS)
-      + expand(results_path("{basin_id}/spin_up/02_flood_animation.mp4"), basin_id=BASINS)
+      + expand(figure_path("20_forcing_timeseries__spinup.png"), basin_id=BASINS)
+      + expand(figure_path("40_run_max_flood_depth__spinup.png"), basin_id=BASINS)
+      + (expand(analysis_figure_path("{name}"), basin_id=BASINS, name=[
+          "13_spinup_water_level.png", "13_spinup_inundation_ratio.png", "13_spinup_flood_progression.mp4",
+        ]) if ANALYSIS else [])
       if config["sfincs"]["spinup"]["enabled"] else []),
 ]
 
-# Per-scenario: build_sfincs's own forcing-only output, plus run_event and
-# compute_flood_metrics, both of which still need one copy per scenario
-# (each scenario's own design RP genuinely drives a different event run).
+# Per-scenario: build_sfincs, run_event, compute_flood_metrics.
 _BUILD_OUTPUTS_SCENARIO = [
     expand(results_path("{basin_id}/runs/{scenario}/sfincs/sfincs.inp"), basin_id=BASINS, scenario=SCENARIOS),
-    *(expand(results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand(results_path("{basin_id}/runs/{scenario}/visuals/01_inundation_ratio.png"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand(results_path("{basin_id}/runs/{scenario}/visuals/02_flood_animation.mp4"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand(results_path("{basin_id}/runs/{scenario}/visuals/flood_timeseries.csv"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand (results_path("{basin_id}/runs/{scenario}/visuals/max_flood_depth.tif"), basin_id=BASINS, scenario=SCENARIOS)
-      + expand (results_path("{basin_id}/runs/{scenario}/metrics/flood_metrics.csv"), basin_id=BASINS, scenario=SCENARIOS)
-      if config["sfincs"]["spinup"]["enabled"] else []),
+    expand(results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"), basin_id=BASINS, scenario=SCENARIOS),
+    expand(figure_path("20_forcing_timeseries__{scenario}.png"), basin_id=BASINS, scenario=SCENARIOS),
+    expand(figure_path("40_run_max_flood_depth__{scenario}.png"), basin_id=BASINS, scenario=SCENARIOS),
+    *((expand(analysis_figure_path("15_run_inundation_ratio__{scenario}.png"), basin_id=BASINS, scenario=SCENARIOS)
+       + expand(figure_path("50_run_flood_progression__{scenario}.mp4"), basin_id=BASINS, scenario=SCENARIOS)
+       + expand(results_path("{basin_id}/runs/{scenario}/visuals/flood_timeseries.csv"), basin_id=BASINS, scenario=SCENARIOS))
+      if ANALYSIS else []),
+    expand(results_path("{basin_id}/runs/{scenario}/visuals/max_flood_depth.tif"), basin_id=BASINS, scenario=SCENARIOS),
+    expand(results_path("{basin_id}/runs/{scenario}/metrics/flood_metrics.csv"), basin_id=BASINS, scenario=SCENARIOS),
 ]
 
 _BUILD_OUTPUTS = _BUILD_OUTPUTS_BASIN + _BUILD_OUTPUTS_SCENARIO
 
 
-# Explicitly lists every output of adapt_run_event_pre/adapt_flood_metrics_pre/
-# adapt_metrics_post (not just one representative file per rule) -- Snakemake
-# would build all of a rule's declared outputs together regardless, but this
-# matches _BUILD_OUTPUTS_SCENARIO's own convention just above: every result
-# file individually named and directly targetable, not implicitly produced
-# as a side effect of requesting some other file from the same rule.
+# Every adaptation output is listed so each is directly targetable.
 _ADAPT_OUTPUTS = []
 if "pre" in METHODS:
     _ADAPT_OUTPUTS += (
         expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
-        + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/01_inundation_ratio.png"),
+        + expand(figure_path("20_forcing_timeseries__{scenario}__pre_{strategy}.png"),
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
-        + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/02_flood_animation.mp4"),
+        + expand(figure_path("40_run_max_flood_depth__{scenario}__pre_{strategy}.png"),
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
-        + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_timeseries.csv"),
+        + expand(figure_path("62_adapt_inundation_ratio__{scenario}__pre_{strategy}.png"),
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+        + ((expand(figure_path("63_adapt_flood_progression__{scenario}__pre_{strategy}.mp4"),
+                   basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+            + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_timeseries.csv"),
+                   basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES))
+           if ANALYSIS else [])
         + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/max_flood_depth.tif"),
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
         + expand(results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_metrics.csv"),
@@ -175,34 +147,39 @@ if "post" in METHODS:
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
         + expand(results_path("{basin_id}/runs/{scenario}/adaptation/post/{strategy}/flood_metrics.csv"),
                basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
+        + expand(figure_path("{name}__{scenario}__post_{strategy}.png"),
+               name=["40_run_max_flood_depth", "62_adapt_inundation_ratio"],
+               basin_id=BASINS, scenario=SCENARIOS, strategy=STRATEGIES)
     )
 if {"pre", "post"} <= set(METHODS):
     _ADAPT_OUTPUTS += expand(
         results_path("{basin_id}/runs/metrics_comparison.csv"),
         basin_id=BASINS)
+# Adaptation runs restart from the spin-up (restart file, spin-up map).
+if STRATEGIES and not config["sfincs"]["spinup"]["enabled"]:
+    raise ValueError(
+        "adaptation (target_strategies) needs the spin-up: set "
+        "sfincs.spinup.enabled: true in the config, or run without target_strategies"
+    )
 
 
 rule adapt:
     """
-    Run adaptation strategies against already-built baseline scenario runs
-    (rule `build` must already have completed for the same basin/scenario).
-    Opt-in: requires --config target_strategies=[...] (no default strategy
-    set). target_method defaults to both 'pre' and 'post'.
+    Run adaptation strategies against built baseline scenario runs.
+
+    Requires rule `build` for the same basin/scenario and --config
+    target_strategies=[...] (no default); target_method defaults to pre and post.
 
     Usage:  snakemake adapt --cores N --config target_strategies="['advance_1']"
     """
     input: _ADAPT_OUTPUTS
 
 
-# ── Named partial-pipeline targets ───────────────────────────────────────────
+# ── Named partial-pipeline targets ──
 
 rule preprocess:
     """
-    Run only the preprocessing pipeline (rules 01–12):
-    basin separation, domain, land polygons, protection levels, terrain &
-    bathymetry, land use, roughness, river network, boundary forcings,
-    network cleaning, river conditioning, depth and dike-crest calibration,
-    and the upstream-boundary validation check.
+    Run only the preprocessing pipeline (rules 01–11).
 
     Usage:  snakemake preprocess --cores N
     """
@@ -211,22 +188,20 @@ rule preprocess:
 
 rule build:
     """
-    Run the SFINCS model build, spin-up, spin-up sanity checks, and the main
-    flood-event simulation with its own sanity checks (rules
-    build_sfincs_skeleton, build_sfincs, run_spinup, sanity_checks,
-    run_event, compute_flood_metrics). Preprocessing outputs must already
-    exist.
+    Build and run SFINCS: skeleton, forcing, spin-up, event runs and metrics.
 
-    build_sfincs_skeleton and run_spinup/sanity_checks run ONCE per basin
-    (not once per scenario) -- they're entirely independent of any
-    scenario's own design RP, see 13_build_sfincs_skeleton.smk/
-    14_run_spinup.smk's own module comments.
+    Preprocessing outputs must exist. Skeleton and spin-up run once per basin.
 
     Usage:  snakemake build --cores N
     """
     input: _BUILD_OUTPUTS
 
 
-# ---- Default target ----
 rule all:
+    """
+    Run preprocess + build; the target of a bare `snakemake`.
+
+    Usage:  snakemake --cores N
+    """
+    default_target: True
     input: _PREPROCESS_OUTPUTS + _BUILD_OUTPUTS

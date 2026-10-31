@@ -1,12 +1,9 @@
-"""Existing flood-protection-standard identification (FLOPROS x WRI geounits).
+"""Identify the existing flood protection standard of a delta (FLOPROS x WRI geounits).
 
-Identifies the dominant (largest-area) administrative unit's design flood
-protection return period inside a delta polygon, separately for riverine and
-coastal hazards, so that the boundary-forcings rule can subtract the
-corresponding discharge/water-level from the forcing timeseries -- water
-below an already-existing protection standard never reaches the model
-domain in practice, and that standard is not represented in the DEM or any
-other input this pipeline otherwise uses.
+Returns the dominant (largest-area) geounit's riverine and coastal design
+return periods. Rule 07 turns the coastal one into the coastal protection
+crest; rule 11 calibrates the riverbank weirs at the riverine one's
+discharge. Nothing is subtracted from the forcing.
 """
 
 from __future__ import annotations
@@ -15,7 +12,7 @@ import logging
 
 import numpy as np
 import pandas as pd
-import shapely.vectorized
+import shapely
 import xarray as xr
 from shapely.geometry import Polygon
 
@@ -23,13 +20,11 @@ log = logging.getLogger(__name__)
 
 
 def load_flopros_table(path: str) -> pd.DataFrame:
-    """
-    Load the FLOPROS-x-geogunit_107 protection-standard table.
+    """Load the FLOPROS-x-geogunit_107 protection-standard table.
 
-    Returns a DataFrame indexed by geounit id (FID_Aque, matching the
-    wri_geogunit_107 raster's pixel values) with 'Riverine'/'Coastal'
-    columns (design return period, years; NaN where no formal standard is
-    known for that hazard in that unit -- the common case, not an error).
+    Indexed by geounit id (FID_Aque, matching the wri_geogunit_107 raster's
+    pixel values); 'Riverine'/'Coastal' are design return periods (years),
+    NaN where no formal standard is known (the common case, not an error).
     """
     df = pd.read_excel(path, usecols=["FID_Aque", "ISO", "Riverine", "Coastal"])
     df = df.set_index("FID_Aque")
@@ -37,11 +32,7 @@ def load_flopros_table(path: str) -> pd.DataFrame:
 
 
 def load_geogunit_iso_lookup(path: str) -> pd.Series:
-    """
-    Load the geounit-id -> ISO3 lookup (two unnamed columns: index, ISO).
-
-    Returns a Series indexed by geounit id, values = ISO3 country code.
-    """
+    """Load the geounit-id -> ISO3 lookup (two unnamed columns: index, ISO)."""
     df = pd.read_excel(path, header=None, names=["geounit_id", "ISO"])
     return df.set_index("geounit_id")["ISO"]
 
@@ -50,19 +41,9 @@ def _dominant_geounit_pixel_counts(
     delta_polygon_wgs84: Polygon,
     geogunit_raster_path: str,
 ) -> tuple[dict[int, int], int]:
-    """
-    Count pixels per geounit id inside ``delta_polygon_wgs84``, via a small
-    windowed read of the global geounit raster clipped to the polygon's own
-    bbox (never loads the full global array -- xarray's netCDF backend only
-    reads the sliced window from disk).
-
-    Returns (counts_by_geounit_id, n_valid_pixels). Both empty/zero if the
-    polygon's window contains no valid (non-fill-value) pixels.
-    """
     lon_min, lat_min, lon_max, lat_max = delta_polygon_wgs84.bounds
     with xr.open_dataset(geogunit_raster_path) as ds:
-        # lat/lon are both ascending in wri_geogunit_107 -- a plain slice()
-        # works without the descending-coordinate handling load_mdt() needs.
+        # lat/lon are both ascending in wri_geogunit_107, so a plain slice() works.
         sel = ds["Geogunits"].sel(
             lat=slice(lat_min, lat_max), lon=slice(lon_min, lon_max)
         )
@@ -74,9 +55,8 @@ def _dominant_geounit_pixel_counts(
         return {}, 0
 
     lon_grid, lat_grid = np.meshgrid(lon_vals, lat_vals)
-    # xarray CF-decodes the raster's _FillValue (-9999) to NaN on read, so
-    # np.isfinite already excludes fill-value pixels -- no separate nodata check needed.
-    inside = shapely.vectorized.contains(delta_polygon_wgs84, lon_grid, lat_grid)
+    # xarray CF-decodes the raster's _FillValue (-9999) to NaN, so isfinite excludes fill pixels.
+    inside = shapely.contains_xy(delta_polygon_wgs84, lon_grid, lat_grid)
     valid = inside & np.isfinite(arr)
 
     if not valid.any():
@@ -92,17 +72,13 @@ def _resolve_rp(
     default_rp_yr: float,
     max_rp_yr: float,
 ) -> tuple[float, str]:
-    """
-    Apply the missing-value fallback chain (own hazard -> other hazard ->
-    default) and clamp to max_rp_yr. Returns (resolved_rp, source_label).
-    """
     if pd.notna(own_value):
-        rp, source = float(own_value), "flopros"
+        rp_yr, source = float(own_value), "flopros"
     elif pd.notna(other_value):
-        rp, source = float(other_value), "flopros_other_hazard_fallback"
+        rp_yr, source = float(other_value), "flopros_other_hazard_fallback"
     else:
-        rp, source = float(default_rp_yr), "default"
-    return min(rp, float(max_rp_yr)), source
+        rp_yr, source = float(default_rp_yr), "default"
+    return min(rp_yr, float(max_rp_yr)), source
 
 
 def identify_dominant_protection(
@@ -113,26 +89,13 @@ def identify_dominant_protection(
     default_rp_yr: float = 2.0,
     max_rp_yr: float = 1000.0,
 ) -> dict:
-    """
-    Identify the dominant (largest pixel count) protection geounit inside
-    ``delta_polygon_wgs84`` and resolve its riverine/coastal design return
-    periods, applying the missing-value fallback chain and RP cap.
+    """Resolve riverine/coastal design return periods of the dominant geounit in a delta.
 
-    Args:
-        delta_polygon_wgs84: Delta polygon (EPSG:4326), e.g. from rule
-                              split_delta_polygons's delta_polygon.gpkg.
-        geogunit_raster_path: Path to the wri_geogunit_107 raster.
-        flopros_df:           Output of load_flopros_table().
-        iso_lookup:           Output of load_geogunit_iso_lookup().
-        default_rp_yr:        Assumed protection RP when neither hazard has
-                               a FLOPROS value for the dominant unit.
-        max_rp_yr:            Cap applied to the resolved RP for both
-                               hazards.
-
-    Returns:
-        Flat dict (JSON-serialisable) with the dominant geounit id/ISO,
-        pixel counts, and resolved 'riverine_rp_yr'/'coastal_rp_yr' (always
-        populated) plus the raw FLOPROS values and fallback source labels.
+    Dominant = largest pixel count inside the polygon (EPSG:4326). A missing
+    FLOPROS value falls back to the other hazard's, then to default_rp_yr;
+    both are capped at max_rp_yr. With no valid pixels, both use default_rp_yr.
+    Returns a flat JSON-serialisable dict; 'river_protection_rp_yr'/'surge_protection_rp_yr'
+    are always populated.
     """
     counts, n_valid = _dominant_geounit_pixel_counts(
         delta_polygon_wgs84, geogunit_raster_path
@@ -149,12 +112,12 @@ def identify_dominant_protection(
             "pixel_count": 0,
             "pixel_fraction": 0.0,
             "n_geounits_in_delta": 0,
-            "riverine_rp_raw": None,
-            "coastal_rp_raw": None,
-            "riverine_rp_yr": float(default_rp_yr),
-            "coastal_rp_yr": float(default_rp_yr),
-            "riverine_source": "default",
-            "coastal_source": "default",
+            "river_protection_rp_raw_yr": None,
+            "surge_protection_rp_raw_yr": None,
+            "river_protection_rp_yr": float(default_rp_yr),
+            "surge_protection_rp_yr": float(default_rp_yr),
+            "river_protection_source": "default",
+            "surge_protection_source": "default",
         }
 
     dominant_id = max(counts, key=counts.get)
@@ -170,10 +133,10 @@ def identify_dominant_protection(
         float(row["Coastal"]) if row is not None and pd.notna(row["Coastal"]) else None
     )
 
-    riverine_rp, riverine_source = _resolve_rp(
+    river_protection_rp_yr, river_protection_source = _resolve_rp(
         riverine_raw, coastal_raw, default_rp_yr, max_rp_yr
     )
-    coastal_rp, coastal_source = _resolve_rp(
+    surge_protection_rp_yr, surge_protection_source = _resolve_rp(
         coastal_raw, riverine_raw, default_rp_yr, max_rp_yr
     )
 
@@ -184,8 +147,8 @@ def identify_dominant_protection(
         f"identify_dominant_protection: dominant geounit {dominant_id} ({dominant_iso}), "
         f"{dominant_count}/{n_valid} px ({100 * dominant_count / n_valid:.1f}%) of "
         f"{len(counts)} geounit(s) in delta polygon -- "
-        f"riverine RP={riverine_rp:.1f} yr ({riverine_source}), "
-        f"coastal RP={coastal_rp:.1f} yr ({coastal_source})"
+        f"riverine RP={river_protection_rp_yr:.1f} yr ({river_protection_source}), "
+        f"coastal RP={surge_protection_rp_yr:.1f} yr ({surge_protection_source})"
     )
 
     return {
@@ -194,10 +157,10 @@ def identify_dominant_protection(
         "pixel_count": int(dominant_count),
         "pixel_fraction": float(dominant_count / n_valid),
         "n_geounits_in_delta": len(counts),
-        "riverine_rp_raw": riverine_raw,
-        "coastal_rp_raw": coastal_raw,
-        "riverine_rp_yr": riverine_rp,
-        "coastal_rp_yr": coastal_rp,
-        "riverine_source": riverine_source,
-        "coastal_source": coastal_source,
+        "river_protection_rp_raw_yr": riverine_raw,
+        "surge_protection_rp_raw_yr": coastal_raw,
+        "river_protection_rp_yr": river_protection_rp_yr,
+        "surge_protection_rp_yr": surge_protection_rp_yr,
+        "river_protection_source": river_protection_source,
+        "surge_protection_source": surge_protection_source,
     }
