@@ -189,3 +189,25 @@ def walled_travel_time(
                 / 3600.0
             )
     return out
+
+
+def settle_time_hr(
+    walled: pd.DataFrame,
+    q_m3s: np.ndarray,
+    width_m: np.ndarray,
+    slope_floor: float = 1e-5,
+) -> float:
+    """Return the diffusive settling time L^2 / D (h) of a walled profile.
+
+    D = Q / (2 W S) is the hydraulic diffusivity of a wide Manning channel
+    (Hayami), median over the profile's nodes, with S the walled water-surface
+    slope floored at ``slope_floor`` (a flat surface gives D -> infinity
+    otherwise); L is the profile length. A level change at the boundaries
+    reaches equilibrium over the reach after a few L^2 / D.
+    """
+    x = walled["dist_from_mouth_m"].to_numpy(float)
+    eta = walled["level_m"].to_numpy(float)
+    slope = np.maximum(np.abs(np.gradient(eta, x)), slope_floor)
+    diffusivity = np.asarray(q_m3s, float) / (2.0 * np.asarray(width_m, float) * slope)
+    length_m = float(x.max() - x.min())
+    return length_m**2 / float(np.nanmedian(diffusivity)) / 3600.0

@@ -96,6 +96,7 @@ rule modelled_depth_estimation:
         wave_regime_rT               = config["river_processing"]["river_depth_modelling"]["wave_regime_rT"],
         calibration_max_days         = config["river_processing"]["river_depth_modelling"]["calibration_max_days"],
         steady_check                 = config["river_processing"]["river_depth_modelling"]["steady_check"],
+        run_length                   = config["river_processing"]["river_depth_modelling"]["run_length"],
         verify_crests                = config["river_processing"]["river_depth_modelling"]["verify_crests"],
         crosssections                = config["river_processing"]["river_depth_modelling"]["crosssections"],
         depth_scale                  = config["river_processing"]["river_depth_modelling"]["depth_scale"],

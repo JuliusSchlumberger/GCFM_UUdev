@@ -1,18 +1,18 @@
-"""Phase 1.9: flood volume and extent of the default scenario with the burned river depth scaled.
+"""Phase 1.9: flood volume and extent of event scenarios with the burned river depth scaled.
 
 `run`: for each scale, copies the basin's preprocessing_inputs (rules 01-10
 and the old rule-11 outputs) to a scratch results root
-(<results_dir>/../scratch_phase1/depth_<scale>/), then runs Snakemake there
+(GCFM_PLAN_SCRATCH, default <results_dir>/../scratch_phase1; depth_<scale>/), then runs Snakemake there
 (GCFM_RESULTS_DIR) with river_depth_modelling.depth_scale = scale (a
 --configfile overlay) and --forcerun modelled_depth_estimation, so rule 11
-(burn and calibration) and the build (skeleton, spin-up, event run, metrics)
-run on the scaled bed. Production results are not touched.
+(burn and calibration) and the build (skeleton, spin-up, event runs of
+--scenarios, metrics) run on the scaled bed. Production results are not touched.
 `compare`: flooded area and volume of each scale relative to the baseline
 run in <results_dir>.
 
 Writes phase1_depth_sensitivity_summary.csv to <results_dir>/figures/analysis/.
 
-Usage: python analysis/phase1_depth_sensitivity.py run|compare [basin_id] [--scales 0.7 1.3] [--cores 14]
+Usage: python analysis/phase1_depth_sensitivity.py run|compare [basin_id] [--scales 0.7 1.3] [--scenarios default] [--cores 14]
 """
 
 import os
@@ -27,10 +27,14 @@ from _phase1 import write_summary
 
 
 def scratch_root(scale: float) -> Path:
-    return site_path("results_dir").parent / "scratch_phase1" / f"depth_{scale:g}"
+    base = (
+        os.environ.get("GCFM_PLAN_SCRATCH")
+        or site_path("results_dir").parent / "scratch_phase1"
+    )
+    return Path(base) / f"depth_{scale:g}"
 
 
-def run(basin_id: str, scale: float, cores: int) -> int:
+def run(basin_id: str, scale: float, scenarios: list[str], cores: int) -> int:
     root = scratch_root(scale)
     src = site_path("results_dir") / basin_id / "preprocessing_inputs"
     dst = root / basin_id / "preprocessing_inputs"
@@ -54,7 +58,7 @@ def run(basin_id: str, scale: float, cores: int) -> int:
         "modelled_depth_estimation",
         "--config",
         f"target_basins=[{basin_id}]",
-        "target_scenarios=['default']",
+        f"target_scenarios={scenarios!r}",
     ]
     with open(root / f"snakemake_{basin_id}.log", "w") as log:
         return subprocess.run(
@@ -62,19 +66,20 @@ def run(basin_id: str, scale: float, cores: int) -> int:
         ).returncode
 
 
-def metrics(results_root: Path, basin_id: str) -> dict:
-    p = results_root / basin_id / "runs" / "default" / "metrics" / "flood_metrics.csv"
+def metrics(results_root: Path, basin_id: str, scenario: str) -> dict:
+    p = results_root / basin_id / "runs" / scenario / "metrics" / "flood_metrics.csv"
     return pd.read_csv(p).iloc[0].to_dict() if p.exists() else {}
 
 
-def compare(basin_id: str, scales: list[float]) -> list[dict]:
-    base = metrics(site_path("results_dir"), basin_id)
+def compare(basin_id: str, scales: list[float], scenario: str) -> list[dict]:
+    base = metrics(site_path("results_dir"), basin_id, scenario)
     rows = []
     for scale in [1.0, *scales]:
-        m = base if scale == 1.0 else metrics(scratch_root(scale), basin_id)
+        m = base if scale == 1.0 else metrics(scratch_root(scale), basin_id, scenario)
         rows.append(
             {
                 "basin_id": basin_id,
+                "scenario": scenario,
                 "depth_scale": scale,
                 "flooded_area_km2": m.get("flooded_area_km2"),
                 "volume_m3": m.get("volume_m3"),
@@ -96,11 +101,14 @@ def main() -> int:
     parser.add_argument("action", choices=["run", "compare"])
     parser.add_argument("basin_id", nargs="?", default="2433835")
     parser.add_argument("--scales", type=float, nargs="+", default=[0.7, 1.3])
+    parser.add_argument("--scenarios", nargs="+", default=["default"])
     parser.add_argument("--cores", type=int, default=14)
     args = parser.parse_args()
     if args.action == "run":
-        return max(run(args.basin_id, s, args.cores) for s in args.scales)
-    rows = compare(args.basin_id, args.scales)
+        return max(
+            run(args.basin_id, s, args.scenarios, args.cores) for s in args.scales
+        )
+    rows = [r for sc in args.scenarios for r in compare(args.basin_id, args.scales, sc)]
     print(
         write_summary(rows, analysis_path(None, __file__, "summary.csv")).to_string(
             index=False

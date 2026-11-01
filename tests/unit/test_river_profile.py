@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 from src.gvf_solver import normal_depth
-from src.river_profile import G_MS2, walled_travel_time
+from src.river_profile import G_MS2, settle_time_hr, walled_travel_time
 
 SLOPE, WIDTH_M, Q_M3S, N = 1e-4, 200.0, 500.0, 0.03
 SPACING_M, N_NODES = 500.0, 101
@@ -66,3 +66,22 @@ def test_wave_time_takes_gravity_speed_only_where_friction_is_slower_than_the_fo
         assert set(t["regime"]) == {regime}
         np.testing.assert_allclose(t["friction_rT"], r_t, rtol=0.05)
         np.testing.assert_allclose(t["t_wave_hr"], t[f"t_{speed}_hr"])
+
+
+def test_settle_time_matches_hayami_diffusivity_at_normal_depth():
+    prof, _ = _uniform_channel()
+    q = np.full(N_NODES, Q_M3S)
+    walled = walled_travel_time(prof, q, 0.0, N, forcing_hr=6.0)
+    length_m = prof["dist_from_mouth_m"].iloc[0]
+    expected_hr = length_m**2 / (Q_M3S / (2.0 * WIDTH_M * SLOPE)) / 3600.0
+    t = settle_time_hr(walled, q, prof["width_m"].to_numpy())
+    assert np.isclose(t, expected_hr, rtol=0.05)
+
+
+def test_settle_time_floors_a_flat_surface():
+    prof, _ = _uniform_channel()
+    q = np.full(N_NODES, Q_M3S)
+    flat = walled_travel_time(prof, q, 0.0, N, forcing_hr=6.0).assign(level_m=1.0)
+    t = settle_time_hr(flat, q, prof["width_m"].to_numpy(), slope_floor=1e-5)
+    length_m = prof["dist_from_mouth_m"].iloc[0]
+    assert np.isclose(t, length_m**2 / (Q_M3S / (2.0 * WIDTH_M * 1e-5)) / 3600.0)

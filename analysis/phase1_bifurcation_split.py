@@ -137,7 +137,7 @@ def main() -> int:
     parser = script_parser(__doc__)
     parser.add_argument("action", choices=["run", "compare"])
     parser.add_argument("basin_ids", nargs="*", default=PHASE1_BASINS)
-    parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument("--threads", type=int, default=14)
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"

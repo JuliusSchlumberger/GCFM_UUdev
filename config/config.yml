@@ -122,8 +122,13 @@ river_processing:
     wave_regime_rT: [0.3, 3.0]      # r * ramp_hr with r = g n^2 u / h^(4/3): below the first, inertial (gravity speed; wide, deep,
                                     # slow reaches, 1248635 Meuse ~0.15); from the first, kinematic (above the second frictional,
                                     # in between a transition taking the slower, kinematic speed; 1248635 Waal/Lek ~12)
-    calibration_max_days: 4         # longer runs fail: raise it or check the bed
-    steady_check: {window_hr: 3, tol_m: 0.05}  # warn when centreline cells still rise more than tol_m over the run's last window_hr
+    run_length:                     # walled: ramp_hr + T_walled + margin; settle: T_walled replaced by max(T_walled,
+      method: settle                # settle_factor x L^2/D), D = Q / (2 W S) the median hydraulic diffusivity on each
+      settle_factor: 1.75           # crossing's mainstem, S its walled surface slope floored at settle_slope_floor
+      settle_slope_floor: 1.0e-5    # (src.river_profile.settle_time_hr)
+    calibration_max_days: 10        # longer runs fail: raise it or check the bed
+    steady_check: {window_hr: 12, tol_m: 0.05, fail: false}  # centreline cells whose window_hr mean rose more than tol_m over the run's last
+                                    # window_hr: a warning, or an error with fail: true; numbers in round{i}/steady_check.csv
     verify_crests: false            # run round 2 (production crests, reports overtopped edges); false: round 1 only
     depth_scale: 1.0                # sensitivity only: the burned depth below rule 10's surface is multiplied by this (1.0 = the estimated bed)
     crosssections: false            # true: SFINCS cross-sections (crsfile) across each arm of every bifurcation on the seeds' widest paths, discharge in each round's sfincs_his.nc (diagnostic, src.river_depth_calibration.bifurcation_cross_sections)
