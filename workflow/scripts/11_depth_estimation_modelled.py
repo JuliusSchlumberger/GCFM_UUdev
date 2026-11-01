@@ -19,9 +19,11 @@ calibration_margin_hr, with T_walled the slowest walled travel time at the
 calibration discharge (src.river_profile.walled_travel_time): per node the
 gravity speed where friction acts slower than the ramp (r ramp_hr below
 wave_regime_rT[0], r = g n^2 u / h^(4/3)), else the kinematic 5/3 u,
-from a crossing to its network end on round 0's bed, so the full discharge
-reaches the coast and the levels settle before the run ends (checked per
-round: steady_check).
+from a crossing to its network end on round 0's bed. run_length.method
+settle replaces T_walled by max(T_walled, settle_factor x L^2/D), the
+diffusive settling time of the walled profile (src.river_profile.settle_time_hr):
+the wave front arrives after T_walled, the levels behind it settle on L^2/D
+(checked per round: steady_check).
 
 Round 1 -- confined, excavated. With no overbank relief the held discharge and
 storm tide give the highest level reached, including coastal amplification

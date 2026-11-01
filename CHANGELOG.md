@@ -3,6 +3,34 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-02: calibration run length from the diffusive settling time (- JS)
+
+- **What changed:** rule 11's calibration run length is now
+  `ramp_hr + max(T_walled, settle_factor x L^2/D) + calibration_margin_hr`
+  (`run_length.method: settle`, `settle_factor: 1.75`). Before, it was
+  `ramp_hr + T_walled + margin` (method `walled`, still available).
+  - L^2/D is the diffusive settling time of the walled profile, with
+    D = Q/(2 W S) (`src.river_profile.settle_time_hr`).
+  - `steady_check` compares 12 h mean levels (`window_hr: 12`, was 3) and
+    writes `round{i}/steady_check.csv` with the time each cell took to settle.
+- **Why:** T_walled is when the wave front reaches the coast, not when the
+  levels behind it stop rising. In 362 h test runs, Chao Phraya's river-bed
+  nodes settled at 177/203 h (p50/p90). The 59 h walled run stopped 1.87 m
+  (median) and 5.18 m (p90) below the steady levels, and the crests were set
+  from those levels. Ebro settles at 24 h. The factor 1.75 is set by Chao Phraya;
+  Ebro alone would need 0.67. Single-hour snapshots flagged the ±0.5-2 m hourly
+  noise on Chao Phraya's steep upstream reach as rising, hence the 12 h means.
+- **Effect** (scenarios 100_03SLR, plan results root; `analysis/phase6_report.md`):
+  - Ebro: unchanged (crests identical, coast flooding identical, river +2 %).
+    The run length goes from 25 to 65 h.
+  - Chao Phraya: the run length goes from 59 to 219 h; rule 11 takes 98.5 min
+    instead of 33.4 min. Crest median rises from 6.7 to 9.1 m. Flooded area
+    falls by 8 % for coast (2037 to 1866 km²) and by 34 % for river (2366 to
+    1553 km²). The 1D-2D gap median rises from 0.56 to 3.43 m: the steady 2D
+    channel stands well above the 1D GVF profile.
+  - The main-mouth discharge plateau now closes (315-391 h). Its midpoint lag of
+    -40.7 h matches the configured -41 h.
+
 # 2026-10-31: calibration sea ramped to the storm tide and held (- JS)
 
 - **What changed:** rule 11's rounds 1-2 now ramp every sea station from the
