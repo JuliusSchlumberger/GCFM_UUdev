@@ -60,7 +60,7 @@ def diagonal_only_cells(channel: np.ndarray) -> np.ndarray:
     return channel & ~orth & diag
 
 
-def cell_gaps(basin_id: str, cfg: dict):
+def cell_gaps(basin_id: str, cfg: dict, q_scale: float = 1.0):
     """Return the round-1 centreline cells with gap_m, and the grid, bed, rivers, q_calib and sea level."""
     from src.grid import load_grid_def
     from src.gvf_solver import forward_network
@@ -88,7 +88,7 @@ def cell_gaps(basin_id: str, cfg: dict):
         net,
         bed.bed_m,
         bed.width_m,
-        {r: q_calib.get(r, 0.0) for r in net.reach_ids},
+        {r: q_scale * q_calib.get(r, 0.0) for r in net.reach_ids},
         float(cfg["river_processing"]["channel_manning_n"]),
         ends,
     )

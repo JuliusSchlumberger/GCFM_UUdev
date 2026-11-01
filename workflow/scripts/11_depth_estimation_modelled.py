@@ -195,6 +195,8 @@ run_length_cfg = dict(snakemake.params.run_length)
 verify_crests = bool(snakemake.params.verify_crests)
 crosssections = bool(snakemake.params.crosssections)
 depth_scale = float(snakemake.params.depth_scale)
+calibration_q_scale = float(snakemake.params.calibration_q_scale)
+calibration_sfincs_settings = dict(snakemake.params.calibration_sfincs_settings or {})
 ramp_hr = float(snakemake.params.ramp_hr)
 weir_crest_m = float(snakemake.params.weir_crest_m)
 weir_par1 = float(snakemake.params.weir_par1)
@@ -1210,6 +1212,9 @@ if not np.isfinite(run_hr) or run_hr > calibration_max_days * 24.0:
 tstop = tref + timedelta(hours=run_hr)
 trstout_s = int(run_hr * 3600)
 sf.config.update({"tstop": tstop, "dtmaxout": trstout_s, "trstout": trstout_s})
+if calibration_sfincs_settings:
+    sf.config.update(calibration_sfincs_settings)
+    log.warning(f"Calibration SFINCS settings overridden: {calibration_sfincs_settings}")
 
 calib_times = pd.date_range(tref, tstop, periods=int(run_hr) + 1)
 _ramp_frac = cosine_ramp(np.linspace(0.0, run_hr, len(calib_times)), 0.0, ramp_hr)[
@@ -1217,6 +1222,9 @@ _ramp_frac = cosine_ramp(np.linspace(0.0, run_hr, len(calib_times)), 0.0, ramp_h
 ]
 _start_q = np.where(np.isfinite(crossing_q_start), crossing_q_start, 0.0)
 dis_values = _start_q[None, :] + (crossing_q[None, :] - _start_q[None, :]) * _ramp_frac
+if calibration_q_scale != 1.0:
+    dis_values = dis_values * calibration_q_scale
+    log.warning(f"Calibration discharge scaled by calibration_q_scale = {calibration_q_scale:g}")
 dis_df = pd.DataFrame(
     dis_values, index=calib_times, columns=crossings_gdf["index"].to_numpy()
 )
