@@ -60,7 +60,8 @@ def diagonal_only_cells(channel: np.ndarray) -> np.ndarray:
     return channel & ~orth & diag
 
 
-def gap_basin(basin_id: str, cfg: dict, tag: str) -> dict:
+def cell_gaps(basin_id: str, cfg: dict):
+    """Return the round-1 centreline cells with gap_m, and the grid, bed, rivers, q_calib and sea level."""
     from src.grid import load_grid_def
     from src.gvf_solver import forward_network
     from src.river_bed import values_at_points
@@ -68,8 +69,6 @@ def gap_basin(basin_id: str, cfg: dict, tag: str) -> dict:
 
     p = basin_paths(basin_id)
     grid = load_grid_def(p["sfincs_grid"])
-    dx = float(np.hypot(grid["transform"].a, grid["transform"].d))
-    rotation = float(grid.get("rotation", 0.0))
     bed, rivers, _, _ = round0(basin_id, cfg)
     net = bed.net
     depth_net = gpd.read_file(p["rivers_depth"])
@@ -103,6 +102,16 @@ def gap_basin(basin_id: str, cfg: dict, tag: str) -> dict:
         net, level_1d, cells["reach_id"], cells["x"].to_numpy(), cells["y"].to_numpy()
     )
     cells["gap_m"] = cells["zs_end_m"] - cells["level_1d_m"]
+    return cells, grid, bed, rivers, q_calib, sea
+
+
+def gap_basin(basin_id: str, cfg: dict, tag: str) -> dict:
+    from src.river_network import normalize_reach_id
+
+    p = basin_paths(basin_id)
+    cells, grid, _bed, rivers, q_calib, sea = cell_gaps(basin_id, cfg)
+    dx = float(np.hypot(grid["transform"].a, grid["transform"].d))
+    rotation = float(grid.get("rotation", 0.0))
 
     with rasterio.open(p["burned_dem_grid"]) as src:
         burned = src.read(1).astype(float)
