@@ -3,6 +3,15 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-02: observed surge-river peak timing (- JS)
+
+- **What changed:** new `analysis/phase7_lag_cooccurrence.py`. It pairs GTSM surge peaks with GloFAS discharge peaks (1979-2024) within ±7 days and compares the lag with the configured compound lag. Diagnostic only; no config or rule change.
+- **Why:** to see whether the configured lags describe observed events or a design worst case.
+- **Result:**
+  - Chao Phraya: surge peaks fall in Nov-Mar and river peaks in Aug-Oct, with no pair in 46 years.
+  - Ebro: 20 % of surge peaks are followed by a river peak, median +89 h later, beyond the hydrograph's 95 % half-width of 14 h.
+  - The configured lags (-21, -41 h) are therefore the aligned worst case (`analysis/phase7_report.md`).
+
 # 2026-11-02: calibration run length from the diffusive settling time (- JS)
 
 - **What changed:** rule 11's calibration run length is now
