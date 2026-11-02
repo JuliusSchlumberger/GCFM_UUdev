@@ -209,6 +209,7 @@ min_component_cells = int(snakemake.params.min_component_cells)
 nr_subgrid_pixels = int(snakemake.params.nr_subgrid_pixels)
 nr_levels = int(snakemake.params.nr_levels)
 nrmax = int(snakemake.params.nrmax)
+advection = int(snakemake.params.advection)
 active_mask_enabled = snakemake.params.active_mask_enabled
 active_mask_elevation_buffer_m = float(snakemake.params.active_mask_elevation_buffer_m)
 outflow_buffer_m = float(snakemake.params.outflow_buffer_m)
@@ -343,6 +344,7 @@ sf.config.update(
         "dtmapout": 3600,
         "dtrstout": 0,
         "zsini": -9999.0,
+        "advection": advection,
     }
 )
 

@@ -112,6 +112,7 @@ rule modelled_depth_estimation:
         nr_subgrid_pixels  = config["sfincs"]["subgrid"]["nr_subgrid_pixels"],
         nr_levels          = config["sfincs"]["subgrid"]["nr_levels"],
         nrmax              = config["sfincs"]["subgrid"]["nrmax"],
+        advection          = config["sfincs"]["advection"],
     threads: rule_threads("modelled_depth_estimation")
     log:
         "logs/{basin_id}/11_depth_estimation_modelled.log"

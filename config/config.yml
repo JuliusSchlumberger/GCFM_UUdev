@@ -297,6 +297,10 @@ sfincs:
       elevation_buffer_m: 20.0  # active-cell elevation ceiling = river_elevation_max.json's own
                                  # river_elevation_max_m (rule river_surface, 10, max conditioned centerline
                                  # elevation, always attained at a seed reach) + this buffer
+  advection: 0                   # SFINCS momentum advection (0 off, 1 on); rules 11 and 12a, so calibration
+                                 # and events match. On, steady channel levels stand up to 7 m above a 1D GVF
+                                 # profile along deep sub-cell trenches (Chao Phraya); off, the gap median is
+                                 # 0.19 m (Ebro) and 0.25 m (Chao Phraya)
   subgrid:                       # always built -- the model relies on it for channels narrower than a cell
     nr_subgrid_pixels: 10        # subgrid pixels per grid cell (must be multiple of 2)
     nr_levels: 20                 # water-level bins for subgrid tables; memory scales linearly with this (default: 20)
