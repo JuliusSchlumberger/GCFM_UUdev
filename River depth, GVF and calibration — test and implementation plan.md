@@ -108,7 +108,13 @@ Decision rule:
 - 2.0 shows slope excess rising with path ratio: the grid; remedies in order of cost are quadtree refinement of the corridor (hydromt\_sfincs has the components, the binary supports it), a burn that widens channels under 3 cells with conserved area, last an n correction per reach.
 - Neither: the cause is in the real geometry (meander resolution, width smoothing, the split); return to 1.5 and 2.0 before changing anything.
 
-Gate to close: the 1.7 gap rerun after the remedy gives a median within ±0.2 m on both basins, on steady runs.
+Gate to close: the 1.7 gap rerun after the remedy gives a median within ±0.2 m on Ebro, on steady runs. Chao Phraya is judged per component, because 2.0 on the steady run (`analysis/phase2_gap_slope.py`) splits its 3.4 m median gap into three parts:
+
+- **Split.** A trough down to −3 m on the main path at 150–220 km, where SFINCS carries less discharge than the width shares give the 1D (Phase 5).
+- **Local jump.** A +10 m step at 230–255 km, possibly the Chai Nat barrage in the DEM. Check the DEM and the burned bed against the structure location before any remedy.
+- **Steady upstream growth.** About 0.02 m/km on the other branch, the same signature as Ebro, closed by the Ebro remedy.
+
+2.0 found no correlation of slope excess with path ratio (Spearman −0.03, 90 reaches), so the grid staircase is ruled out and 2b runs only if 2a is inconclusive.
 
 ## Phase 3 — Rule 10: SWOT levels from SWORD as surface source, one fit, period-matched discharge
 
@@ -129,7 +135,15 @@ Risk: `wse_obs_mad` and `_range` are the spread over passes; on tidal reaches th
 
 ## Phase 4 — Rule 11: channel capacity, and the sea inversion if the bed matters
 
-Goal: make the bed consistent with the surface it is hung from, report what the channel can carry, and only then decide whether the floored nodes are worth a sea inversion. Conditional: the sea inversion (steps 3–5) runs only if Chao Phraya's depth sensitivity (Phase 1.9, delivered with the next handoff) moves flood volume by 5 % or more for ±30 % depth. Ebro's answer was 1–3 %. Expected effort: small for 1–2, medium for 3–5.
+Goal: make the bed consistent with the surface it is hung from, report what the channel can carry, and only then decide whether the floored nodes are worth a sea inversion. Conditional: the sea inversion (steps 3–5) runs only if the depth sensitivity (Phase 1.9) moves flood volume or extent by 5 % or more for ±30 % depth.
+
+The sensitivity is not small. On the 100-year, 0.3 m SLR scenarios after 6.1:
+
+- Ebro `river_100_03SLR` loses 41 % of its flooded area at depth × 1.3 and 4 % at × 0.7.
+- Ebro `coast_100_03SLR` is insensitive (±0 % area, ±6 % volume).
+- The earlier 1–3 % was the `default` scenario.
+
+Expected effort: small for 1–2, medium for 3–5.
 
 Steps:
 
@@ -145,7 +159,12 @@ Gate to flip `design_discharge` to `period_median`: forward check passes on both
 
 ## Phase 5 — Bifurcation split: a targeted fix
 
-Goal: fix the one bifurcation where the width rule reverses the dominant arm (Chao Phraya 44306300275: SFINCS 0.57 / 0.43 against width 0.37 / 0.63) without disturbing the three that are within 0.03 (Phase 1.5). Downgraded from a solver rewrite to a bounded change; last in the sequence. Expected effort: small.
+Goal: route discharge through the bifurcations with hydraulic shares instead of width shares. On the steady Chao Phraya round 1 after 6.1, Phase 1.5 (`analysis/phase1_bifurcation_split.py`) shows all four bifurcations off by 0.12–0.32 in share, and two reversed:
+
+- 44306300125: SFINCS 0.48 / 0.52 against width 0.80 / 0.20.
+- 44306300275: SFINCS 0.62 / 0.38 against width 0.37 / 0.63.
+
+The earlier "one reversed, three within 0.03" came from the unconverged 59 h run. The hydraulic split is therefore the main route, and `split_override` remains a fallback per bifurcation only. The split changes the discharge per reach that the bed (Phases 3–4) is hung with, so it comes first in the bed chain. Expected effort: medium.
 
 Method:
 
@@ -162,7 +181,16 @@ Goal: crests from a converged run forced by the event a levee is designed agains
 
 **6.1 Run length and a hard convergence gate.** In rule 11 l.1131–1171: for each inflow's main stem, D = Q\_prot / (2 W S) with the reach-median width and the fitted slope (floored at 1e-5 for this purpose only), t\_settle = L² / D over the path to the boundary-check influence end (276 km on Chao Phraya, 56 km on Ebro). `run_hr = ceil(ramp_hr + max(T_walled, 3 · t_settle) + calibration_margin_hr)`. Raise `calibration_max_days` to 10; the ValueError stays. `_steady_check` (l.1235–1250) gets `steady_check.fail` in config and writes its cell count and max rise into `calibration_state.csv`; today it only warns. `flood_wave_travel_time_methods.md` l.205–210 already proposes this rule; implement it there and in the script. Ebro is the regression check (it converges at 20 h and should not change). The r·T regime switch stays only as the T\_river lower bound for Phase 7.
 
-**6.2 Two runs instead of one.** Split round 1 into:
+**6.1 as implemented.**
+
+- **Rule:** `run_length: {method: settle, settle_factor: 1.75}`; t_settle = L²/D on the walled profile (`src.river_profile.settle_time_hr`).
+- **Steady check:** compares 12 h mean levels (`steady_check.window_hr: 12`).
+- **Measured settling (p90 of the profile nodes):** Ebro 24 h (0.67 × L²/D), Chao Phraya 203 h (1.72 × L²/D). The factor is set by Chao Phraya.
+- **Result:** the 59 h walled run had stopped 1.87 m (median) below steady. See `analysis/phase6_report.md`.
+
+**6.2 as run: comparison only, no flip.** 6.1 already measures settling, so the timing run reduces to the 6.1 round 1. 6.2 is the crest run below, held sea against hydrograph sea, on both basins, plus the GESLA check. `calibration_sea` stays `held`.
+
+**6.2 as originally specified (two runs instead of one).** Split round 1 into:
 
 - a river-timing run: sea held at the calm level, rivers ramped to Q\_prot and held, length from 6.1; it gives T\_river from the SFINCS levels themselves (half-rise time per centreline cell) and the convergence check, and closes B32;
 - a crest run: restart from the timing run's end, rivers held at Q\_prot, sea forced with `surge.build_design_surge_matrix` at the FLOPROS coastal RP (average tide plus the surge shape scaled to the COAST-RP level, the same call rule 14 makes), over the full ±60 h window; crest = water-side `zs_max` as now, through `build_coastal_protection_weir` with the same `freeboard` and `uv_zmin` floor.
@@ -198,7 +226,7 @@ Goal: turn the checks into `analysis: true` rules that run on every basin and wr
 | 3 | Forward check | Rule 11 node table | Median ±0.25 m, 95 % ±0.75 m | Phase 1.3 |
 | 4 | Storm-tide boundary against gauges | GESLA v4.1 (on disk, to catalogue) | No systematic bias above 0.3 m at the stations used | Phase 6.2 |
 | 5 | Lag against reanalysis co-occurrence | GloFAS, GTSM hourly | Modelled T\_river within the observed lag interquartile range | Phase 7 |
-| 6 | Calibration convergence | `calibration_state.csv` max rise | Below 5 cm over the last 3 h | Phase 6.1 |
+| 6 | Calibration convergence | `round{i}/steady_check.csv` | 12 h mean level within 5 cm of the end level on 95 % of centreline cells | Phase 6.1 |
 | 7 | Depth sensitivity | Default scenario with beds ±30 % | Reported, no pass/fail: flood volume and extent change | Phase 1.9 |
 
 Item 7 decides how much Phases 3–5 are worth: if ±30 % depth moves flood volume by less than 10 %, bed work drops in priority and the effort goes to crests and run length.
@@ -213,7 +241,20 @@ Documentation: one methods paragraph per flipped default, written at the time of
 
 Rows top to bottom: diagnostics, calibration, bed chain, scenario timing. Phases 0 and 1 are done. Phase 6.1 now comes first, because every Chao Phraya number depends on a converged run; Phase 2's re-analysis and Ebro sweep go with it; Phase 5 waits for Phase 2's remedy because the SFINCS shares may change with it; Phase 6.2 waits for 6.1 and that remedy; Phase 4's sea inversion waits for Chao Phraya's depth sensitivity.
 
-Suggested handoff sequence, one Claude Code task each: P6.1 + P2.0 + P2a + Chao Phraya 1.0/1.9 (next, drafted below) → P3 → P4.1–4.2 (and 4.3–4.5 only if Chao Phraya's sensitivity says so) → P2b if still needed → P6.2 → P7 → P5 → P8. Ebro proves each step in minutes; the Chao Phraya reruns in 6.1, 1.9 and 6.2 are the only steps above an hour each.
+**Order as run.** 6.1, 2.0, 1.5 and 1.9 are done.
+
+> 2a → 7 and the Phase 8 constants (alongside the runs) → 5 → 3 → 4 (one Chao Phraya bundle) → 6.2 comparison → 8 suite and docs
+
+2b runs only if 2a is inconclusive.
+
+**Cost rule.** A Chao Phraya rule 11 takes 1.7 h and its two event runs 3.7 h.
+
+- Each step is proven on Ebro.
+- Chao Phraya is checked with rule-11 diagnostics: forward check, gap, crests, split.
+- Chao Phraya event runs happen once per bundle.
+- Phase 7, the constants move and the GESLA screen need no SFINCS and run while the machine is busy.
+
+Original suggested handoff sequence, one Claude Code task each: P6.1 + P2.0 + P2a + Chao Phraya 1.0/1.9 (next, drafted below) → P3 → P4.1–4.2 (and 4.3–4.5 only if Chao Phraya's sensitivity says so) → P2b if still needed → P6.2 → P7 → P5 → P8. Ebro proves each step in minutes; the Chao Phraya reruns in 6.1, 1.9 and 6.2 are the only steps above an hour each.
 
 ## Next handoff: Phase 6.1 + Phase 2.0/2a + Chao Phraya sensitivity
 
