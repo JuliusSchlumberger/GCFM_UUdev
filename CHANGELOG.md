@@ -3,6 +3,16 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-03: SFINCS advection off by default (- JS)
+
+- **What changed:** new key `sfincs.advection` (default 0), set by rules 11 and 12a. Spin-up, events and adaptation inherit it from the skeleton. Before, nothing set it and SFINCS's default of 1 applied.
+- **Why:** with advection on, steady channel levels stood well above the 1D GVF profile. Of the settings tested in the Ebro sweep (`analysis/phase2_ebro_sweep.py`), only advection off closes the gap:
+  - Ebro median 0.76 → 0.19 m.
+  - Steady Chao Phraya median 3.43 → 0.25 m.
+  - The Chao Phraya central-branch constriction (+7 m) disappears, and with it the backwater into the narrow arms.
+- **Check against an exact answer:** a synthetic trench at normal depth (`analysis/phase2_advection_channel.py`) settles at the same level with advection on or off when aligned with the grid. With advection on it stands +2.3 m too high on a 45° staircase and +8.7 m on a meander at 3000 m³/s; with advection off, +0.8 and +1.1 m. The added head comes from the cell path turning, not from physics.
+- New pytest marker `needs_sfincs` for tests that run the SFINCS binary; off by default.
+
 # 2026-11-02: 1D-2D gap per reach and branch (- JS)
 
 - **What changed:** new `analysis/phase2_gap_slope.py`. Per reach it computes the slope excess (SFINCS minus 1D level against distance to the sea), the path ratio and the width in cells. It plots the gap per centreline cell on a map, and the gap and levels along the network as one line per reach, with each cell's distance taken from its own reach's nodes. Diagnostic only.

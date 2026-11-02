@@ -114,9 +114,42 @@ Gate to close: the 1.7 gap rerun after the remedy gives a median within ±0.2 m 
 - **Backwater into the narrow arms.** The constriction raises the junction at 280 km by 7 m. The two narrow arms (025 to the west branch, 565 to the middle branch) are 54–63 m wide in SWORD, with SWOT width p50 of 2–24 m. They carry 1.9–2.0 times their 1D discharge and stand 6–7 m high along their whole length. The bifurcation shares of 1.5 at 031 and 125 are this backwater, not a property of the arms.
 - **Separate inflow.** The eastern branch (44306200…) takes no part in the split. It stands +1 m above the 1D with slope excess about 0, the same signature as Ebro, and the Ebro remedy closes it.
 
-Find the cause of the constriction on reaches 185 and 195 (subgrid face tables against the trench depth) before Phase 5 uses any SFINCS share.
+2.0 found no correlation of slope excess with path ratio (Spearman −0.03, 90 reaches). The path ratio of a whole reach does not see where the cell path turns, which is what 2b then isolates.
 
-2.0 found no correlation of slope excess with path ratio (Spearman −0.03, 90 reaches), so the grid staircase is ruled out and 2b runs only if 2a is inconclusive.
+**2a as run.** Advection off closes the gap; no other setting does.
+- Ebro median: 0.76 → 0.19 m (p95 1.13 → 0.28 m).
+- Steady Chao Phraya median: 3.43 → 0.25 m (p5–p95 −0.44 to +0.83 m).
+- The constriction on reaches 185 and 195 disappears (slope excess 0.63 → −0.02 m/km). The narrow arms fall from +6 m to +0.1–0.35 m, and the eastern inflow from +1.06 to +0.71 m.
+- The other settings:
+  - roughness, whole grid or corridor: 0.43–0.45 m
+  - half the calibration discharge: 0.43 m
+  - `nuvisc` 0: 0.50 m
+  - `nr_levels` 50 and `huthresh` 0.05: unchanged
+
+`sfincs.advection: 0` is the pipeline default (rules 11 and 12a; spin-up, events and adaptation inherit it from the skeleton).
+
+**2b as built: synthetic trench** (`analysis/phase2_advection_channel.py`; tests in `tests/unit/test_advection_channel.py`, the SFINCS run under the `needs_sfincs` marker). It runs because 2a needs a physical reading. The 1D GVF also leaves out the velocity head, so agreeing with it does not by itself show that advection is the artefact.
+
+Setup:
+- A rectangular trench, 100 m wide, n 0.03, bed slope 1e-4, with walls 25 m high and 20 km long. It runs on the pipeline's grid and subgrid settings (100 m cells, 10 px, 20 levels).
+- Constant inflow and a downstream level held at normal depth, so the exact steady answer is normal depth everywhere, with uniform velocity and no physical advection effect.
+- Layouts: aligned with a grid row, at 45°, and a sine meander (amplitude 1.5 km, wavelength 6 km).
+- Q 3000 m³/s (h 14.9 m, Fr 0.17, like Chao Phraya's central branch) and 500 m³/s, advection 0 and 1, `alpha` 0.5 and 0.25.
+
+Median level error at the stable `alpha`:
+
+| Layout | Q 3000, advection 0 | Q 3000, advection 1 | Q 500, advection 0 | Q 500, advection 1 |
+| --- | --- | --- | --- | --- |
+| aligned | +0.38 m | +0.39 m | +0.14 m | +0.14 m |
+| 45° | +0.76 m | +2.33 m | +0.51 m | +0.80 m |
+| meander | +1.11 m | +8.70 m | +0.68 m | +2.23 m |
+
+Findings:
+- Advection adds head only where the cell path turns, and the added head grows with the discharge. That is the expected signature of momentum lost at each staircase corner. It is not a physical velocity head, which is zero in uniform flow.
+- On the meander it reaches the size of the Chao Phraya excess.
+- With advection off, a residual of 0.4–1.1 m at 3000 m³/s remains that grows with the turning, the same order as the gaps left on Ebro and Chao Phraya.
+
+`alpha` 0.5 with advection off went unstable in 2 of its 6 runs (aligned at 3000 m³/s, 45° at 500 m³/s). There the level oscillated and stood up to 14 m too high. With advection on, 0.5 never went unstable. The real calibration runs with advection off stay quiet: no wet cell changes by more than 0.01 m per hour over the last 12 h on either basin. `alpha` stays at 0.5, and the hourly level change of the final run hours is the check to watch.
 
 ## Phase 3 — Rule 10: SWOT levels from SWORD as surface source, one fit, period-matched discharge
 
