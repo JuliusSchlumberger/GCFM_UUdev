@@ -1,10 +1,10 @@
-"""Phase 2.0: 1D-2D slope excess per reach against path ratio and width, and the gap along the main paths.
+"""Phase 2.0: 1D-2D slope excess per reach against path ratio and width, and the gap along the network.
 
 Per round-1 centreline cell, gap = SFINCS end level - steady 1D level, as in
 phase1_gvf_gap.py. Per reach:
 
   slope excess (m/km): least-squares slope of the gap against the cell's
-  distance to the sea (nearest river-bed node); positive when the gap grows
+  distance to the sea (nearest node of its own reach); positive when the gap grows
   upstream, i.e. SFINCS's surface is steeper than the 1D surface;
   path ratio: Manhattan length of the consecutive centreline cells
   (sum of |d row| + |d col|, times dx) over the reach's centreline length; 1
@@ -120,50 +120,73 @@ def plot_scatter(
 
 
 def plot_along(cells: pd.DataFrame, basin_id: str, tag: str, path) -> None:
-    main = cells[cells["main_path"]]
-    fig, ax = plt.subplots(figsize=(11, 4.5))
-    ax.scatter(
-        cells["dist_to_sea_km"],
-        cells["gap_m"],
-        s=2,
-        color="0.75",
-        label="all centreline cells",
+    # One line per reach: a binned median across reaches mixes parallel branches.
+    lim = max(1.0, float(np.nanpercentile(np.abs(cells["gap_m"]), 99)))
+    norm = matplotlib.colors.TwoSlopeNorm(vcenter=0.0, vmin=-lim, vmax=lim)
+    fig = plt.figure(figsize=(16, 9))
+    ax_map = fig.add_subplot(1, 3, 1)
+    ax_gap = fig.add_subplot(2, 3, (2, 3))
+    ax_lvl = fig.add_subplot(2, 3, (5, 6), sharex=ax_gap)
+    sc = ax_map.scatter(
+        cells["x"], cells["y"], c=cells["gap_m"], s=1.5, cmap="RdBu_r", norm=norm
     )
-    ax.scatter(
-        main["dist_to_sea_km"], main["gap_m"], s=3, color="tab:blue", label="main paths"
+    ax_map.set_aspect("equal")
+    ax_map.set_xticks([])
+    ax_map.set_yticks([])
+    ax_map.set_title("gap per centreline cell", fontsize=9)
+    fig.colorbar(sc, ax=ax_map, shrink=0.6, label="SFINCS - 1D level (m)")
+    cmap = plt.get_cmap("RdBu_r")
+    for _rid, c in cells.groupby("reach_id", sort=True):
+        c = c.sort_values("dist_to_sea_km")
+        color = cmap(norm(float(np.nanmedian(c["gap_m"]))))
+        lw = 1.4 if c["main_path"].any() else 0.6
+        ax_gap.plot(c["dist_to_sea_km"], c["gap_m"], color=color, lw=lw)
+        ax_lvl.plot(c["dist_to_sea_km"], c["zs_end_m"], color="tab:blue", lw=lw)
+        ax_lvl.plot(c["dist_to_sea_km"], c["level_1d_m"], color="tab:orange", lw=lw)
+        ax_lvl.plot(c["dist_to_sea_km"], c["dem_m"], color="0.6", lw=0.5)
+    ax_gap.axhline(0, color="k", lw=0.8)
+    ax_gap.set_ylabel("SFINCS - 1D level (m)")
+    ax_gap.set_title(
+        "one line per reach, coloured by its median gap (thick: a crossing's main path)",
+        fontsize=9,
     )
-    if len(main):
-        bins = np.linspace(0, main["dist_to_sea_km"].max(), 30)
-        mid = 0.5 * (bins[1:] + bins[:-1])
-        med = main.groupby(pd.cut(main["dist_to_sea_km"], bins), observed=False)[
-            "gap_m"
-        ].median()
-        ax.plot(
-            mid,
-            med.to_numpy(),
-            color="tab:red",
-            lw=2,
-            label="main paths, binned median",
-        )
-    ax.axhline(0, color="k", lw=0.8)
-    ax.set_xlabel("distance to the sea (km)")
-    ax.set_ylabel("SFINCS round-1 end level - 1D level (m)")
-    ax.set_title(
+    ax_lvl.plot([], [], color="tab:blue", label="SFINCS round-1 end level")
+    ax_lvl.plot([], [], color="tab:orange", label="1D GVF level")
+    ax_lvl.plot([], [], color="0.6", label="DEM at the centreline cell")
+    ax_lvl.set_xlabel("distance to the sea along the reach's own nodes (km)")
+    ax_lvl.set_ylabel("level (m)")
+    ax_lvl.legend(fontsize=8)
+    for ax in (ax_gap, ax_lvl):
+        ax.grid(alpha=0.3)
+    fig.suptitle(
         f"phase2 2.0 1D-2D gap along the network | {basin_id} | {tag}", fontsize=10
     )
-    ax.legend(fontsize=8)
-    ax.grid(alpha=0.3)
     fig.tight_layout()
     fig.savefig(path, dpi=120)
     plt.close(fig)
 
 
+def own_reach_nodes(cells: pd.DataFrame, nodes: pd.DataFrame) -> pd.DataFrame:
+    """Return distance to the sea (km) and main_path per cell from the nearest node of its own reach."""
+    from src.river_network import normalize_reach_id
+
+    nodes = nodes.assign(reach_id=nodes["reach_id"].map(normalize_reach_id))
+    out = pd.DataFrame(index=cells.index, columns=["dist_to_sea_km", "main_path"])
+    fallback = cKDTree(nodes[["x", "y"]].to_numpy())
+    for rid, idx in cells.groupby("reach_id").groups.items():
+        n = nodes[nodes["reach_id"] == rid]
+        tree = cKDTree(n[["x", "y"]].to_numpy()) if len(n) else fallback
+        n = n if len(n) else nodes
+        _, k = tree.query(cells.loc[idx, ["x", "y"]].to_numpy())
+        out.loc[idx, "dist_to_sea_km"] = n["dist_to_sea_m"].to_numpy()[k] / 1000.0
+        out.loc[idx, "main_path"] = n["main_path"].astype(bool).to_numpy()[k]
+    return out.astype({"dist_to_sea_km": float, "main_path": bool})
+
+
 def slope_basin(basin_id: str, cfg: dict, tag: str) -> dict:
     cells, grid, _bed, rivers, q_calib, _sea = cell_gaps(basin_id, cfg)
     nodes = pd.read_csv(basin_paths(basin_id)["node_table"])
-    _, k = cKDTree(nodes[["x", "y"]].to_numpy()).query(cells[["x", "y"]].to_numpy())
-    cells["dist_to_sea_km"] = nodes["dist_to_sea_m"].to_numpy()[k] / 1000.0
-    cells["main_path"] = nodes["main_path"].astype(bool).to_numpy()[k]
+    cells[["dist_to_sea_km", "main_path"]] = own_reach_nodes(cells, nodes)
 
     t = reach_table(cells, rivers, grid, q_calib)
     t.to_csv(

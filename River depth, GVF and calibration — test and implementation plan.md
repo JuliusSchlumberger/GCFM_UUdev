@@ -108,11 +108,13 @@ Decision rule:
 - 2.0 shows slope excess rising with path ratio: the grid; remedies in order of cost are quadtree refinement of the corridor (hydromt\_sfincs has the components, the binary supports it), a burn that widens channels under 3 cells with conserved area, last an n correction per reach.
 - Neither: the cause is in the real geometry (meander resolution, width smoothing, the split); return to 1.5 and 2.0 before changing anything.
 
-Gate to close: the 1.7 gap rerun after the remedy gives a median within ±0.2 m on Ebro, on steady runs. Chao Phraya is judged per component, because 2.0 on the steady run (`analysis/phase2_gap_slope.py`) splits its 3.4 m median gap into three parts:
+Gate to close: the 1.7 gap rerun after the remedy gives a median within ±0.2 m on Ebro, on steady runs. Chao Phraya is judged per branch. 2.0 on the steady run (`analysis/phase2_gap_slope.py`, one line per reach) shows that its 3.4 m median gap follows the discharge each branch gets in SFINCS relative to the width share the 1D gives it:
 
-- **Split.** A trough down to −3 m on the main path at 150–220 km, where SFINCS carries less discharge than the width shares give the 1D (Phase 5).
-- **Local jump.** A +10 m step at 230–255 km, possibly the Chai Nat barrage in the DEM. Check the DEM and the burned bed against the structure location before any remedy.
-- **Steady upstream growth.** About 0.02 m/km on the other branch, the same signature as Ebro, closed by the Ebro remedy.
+- **Constriction.** The central branch (arm 44306300135, 258 m) gets 0.47 of its 1D discharge. Below 222 km it stands 2 m under the 1D. Over 222–255 km its SFINCS surface drops 15 m against 3 m in the 1D: slope excess is 0.3–0.6 m/km on reaches 185 and 195 and about 0 elsewhere. The burned bed is continuous there, with no structure in the DEM. This trench is the deepest in the network (subgrid bed down to −11.5 m, depth 16–23 m).
+- **Backwater into the narrow arms.** The constriction raises the junction at 280 km by 7 m. The two narrow arms (025 to the west branch, 565 to the middle branch) are 54–63 m wide in SWORD, with SWOT width p50 of 2–24 m. They carry 1.9–2.0 times their 1D discharge and stand 6–7 m high along their whole length. The bifurcation shares of 1.5 at 031 and 125 are this backwater, not a property of the arms.
+- **Separate inflow.** The eastern branch (44306200…) takes no part in the split. It stands +1 m above the 1D with slope excess about 0, the same signature as Ebro, and the Ebro remedy closes it.
+
+Find the cause of the constriction on reaches 185 and 195 (subgrid face tables against the trench depth) before Phase 5 uses any SFINCS share.
 
 2.0 found no correlation of slope excess with path ratio (Spearman −0.03, 90 reaches), so the grid staircase is ruled out and 2b runs only if 2a is inconclusive.
 

@@ -3,6 +3,14 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-02: 1D-2D gap per reach and branch (- JS)
+
+- **What changed:** new `analysis/phase2_gap_slope.py`. Per reach it computes the slope excess (SFINCS minus 1D level against distance to the sea), the path ratio and the width in cells. It plots the gap per centreline cell on a map, and the gap and levels along the network as one line per reach, with each cell's distance taken from its own reach's nodes. Diagnostic only.
+- **Why:** to test whether the grid staircase causes the steady 1D-2D gap.
+- **Result:**
+  - No staircase: slope excess does not correlate with path ratio (Spearman −0.05 on Chao Phraya).
+  - On Chao Phraya the gap follows the discharge each branch gets in SFINCS relative to its width share. A constriction on the central branch at 222-255 km raises the junction at 280 km by 7 m. The narrow western and middle arms carry 1.9-2.0 times their 1D discharge and stand 6-7 m high. The separate eastern inflow stands +1 m, like Ebro.
+
 # 2026-11-02: observed surge-river peak timing (- JS)
 
 - **What changed:** new `analysis/phase7_lag_cooccurrence.py`. It pairs GTSM surge peaks with GloFAS discharge peaks (1979-2024) within ±7 days and compares the lag with the configured compound lag. Diagnostic only; no config or rule change.
