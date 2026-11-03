@@ -3,15 +3,23 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
-# 2026-11-03: SFINCS advection off by default (- JS)
+# 2026-11-03: SFINCS advection off, time-step factor 0.25 (- JS)
 
-- **What changed:** new key `sfincs.advection` (default 0), set by rules 11 and 12a. Spin-up, events and adaptation inherit it from the skeleton. Before, nothing set it and SFINCS's default of 1 applied.
+- **What changed:** new keys `sfincs.advection` (default 0) and `sfincs.alpha` (default 0.25), set by rules 11 and 12a. Spin-up, events and adaptation inherit both from the skeleton. Before, nothing set them and SFINCS's defaults applied (advection 1, alpha 0.5).
+- **Why alpha 0.25:** with advection off and alpha 0.5, the Ebro `river_100_03SLR` event went unstable above about 2500 m³/s. The level at the inflow cell swung 5-9 m per hour up to 54 m, and the backwater raised the upper gorge to a flat 24 m. At alpha 0.25 the inflow level rises smoothly to 16.7 m (largest hourly step 0.19 m). Moving the inflow 1.6 km into the domain changes nothing at alpha 0.25 and does not cure the swings at 0.5. The synthetic trench is stable at 0.25 and reaches normal depth within 0.01 m. Events take about twice as long.
 - **Why:** with advection on, steady channel levels stood well above the 1D GVF profile. Of the settings tested in the Ebro sweep (`analysis/phase2_ebro_sweep.py`), only advection off closes the gap:
   - Ebro median 0.76 → 0.19 m.
   - Steady Chao Phraya median 3.43 → 0.25 m.
   - The Chao Phraya central-branch constriction (+7 m) disappears, and with it the backwater into the narrow arms.
 - **Check against an exact answer:** a synthetic trench at normal depth (`analysis/phase2_advection_channel.py`) settles at the same level with advection on or off when aligned with the grid. With advection on it stands +2.3 m too high on a 45° staircase and +8.7 m on a meander at 3000 m³/s; with advection off, +0.8 and +1.1 m. The added head comes from the cell path turning, not from physics.
 - New pytest marker `needs_sfincs` for tests that run the SFINCS binary; off by default.
+- **Results moved** (100-year, 0.3 m SLR, against advection 1 / alpha 0.5; `analysis/phase2_report.md`):
+  - Calibrated crests, median: Ebro 4.27 → 3.73 m, Chao Phraya 11.15 → 9.58 m.
+  - Ebro coast: unchanged (area 260.4 km², volume −0.1 %).
+  - Ebro river: area 173.1 → 178.6 km² (+3.2 %), volume −10.1 %. Max depth 26.8 → 11.4 m; the old maximum was a pile-up at the inflow.
+  - Chao Phraya coast: area 1866 → 1937 km² (+3.8 %), volume +1.0 %.
+  - Chao Phraya river: area 1553 → 1099 km² (−29.3 %), volume −28.6 %; the advection backwater no longer floods the upper delta.
+  - Main-path gap at the upstream 20 %: Ebro 0.97 → 0.24 m, Chao Phraya 6.59 → 0.07 m.
 
 # 2026-11-02: 1D-2D gap per reach and branch (- JS)
 

@@ -149,7 +149,19 @@ Findings:
 - On the meander it reaches the size of the Chao Phraya excess.
 - With advection off, a residual of 0.4–1.1 m at 3000 m³/s remains that grows with the turning, the same order as the gaps left on Ebro and Chao Phraya.
 
-`alpha` 0.5 with advection off went unstable in 2 of its 6 runs (aligned at 3000 m³/s, 45° at 500 m³/s). There the level oscillated and stood up to 14 m too high. With advection on, 0.5 never went unstable. The real calibration runs with advection off stay quiet: no wet cell changes by more than 0.01 m per hour over the last 12 h on either basin. `alpha` stays at 0.5, and the hourly level change of the final run hours is the check to watch.
+`alpha` 0.5 with advection off went unstable in 2 of its 6 runs (aligned at 3000 m³/s, 45° at 500 m³/s). There the level oscillated and stood up to 14 m too high. With advection on, 0.5 never went unstable. The real calibration runs with advection off stay quiet: no wet cell changes by more than 0.01 m per hour over the last 12 h on either basin.
+
+**Events need `alpha` 0.25.** The first full rerun with advection off at `alpha` 0.5 went unstable in the Ebro `river_100_03SLR` event above about 2500 m³/s:
+
+- The inflow cell, a closed nook at the domain tip draining through a 3-cell trench, swung 5-9 m per hour up to 54 m.
+- The backwater stood the upper gorge at a flat 24 m, against 15 m when stable.
+
+Four scratch reruns of that event (inflow at the tip or moved 1.6 km in, `alpha` 0.5 or 0.25) put the cause on `alpha`:
+
+- At 0.25 both inflow positions give the same smooth profile, with the largest hourly step at the inflow 0.19 m.
+- At 0.5 moving the inflow does not cure the swings.
+
+`sfincs.alpha` is now 0.25 for rules 11 and 12a. The hourly level change in event runs is the check to keep watching; Phase 8 should make it a standing check.
 
 ## Phase 3 — Rule 10: SWOT levels from SWORD as surface source, one fit, period-matched discharge
 
@@ -276,7 +288,7 @@ Documentation: one methods paragraph per flipped default, written at the time of
 
 Rows top to bottom: diagnostics, calibration, bed chain, scenario timing. Phases 0 and 1 are done. Phase 6.1 now comes first, because every Chao Phraya number depends on a converged run; Phase 2's re-analysis and Ebro sweep go with it; Phase 5 waits for Phase 2's remedy because the SFINCS shares may change with it; Phase 6.2 waits for 6.1 and that remedy; Phase 4's sea inversion waits for Chao Phraya's depth sensitivity.
 
-**Order as run.** 6.1, 2.0, 1.5 and 1.9 are done.
+**Order as run.** 6.1, 2.0, 1.5 and 1.9 are done. Phase 2 is closed (`analysis/phase2_report.md`): advection 0 and `alpha` 0.25 for calibration and events. Phase 7 is done. Before Phase 5, rerun 1.5 on the new round 1.
 
 > 2a → 7 and the Phase 8 constants (alongside the runs) → 5 → 3 → 4 (one Chao Phraya bundle) → 6.2 comparison → 8 suite and docs
 

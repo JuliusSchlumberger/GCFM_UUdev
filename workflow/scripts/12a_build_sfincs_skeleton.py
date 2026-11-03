@@ -99,6 +99,7 @@ nr_subgrid_pixels = snakemake.params.nr_subgrid_pixels
 nr_levels = snakemake.params.nr_levels
 nrmax = snakemake.params.nrmax
 advection = int(snakemake.params.advection)
+alpha = float(snakemake.params.alpha)
 active_mask_enabled = snakemake.params.active_mask_enabled
 active_mask_elevation_buffer_m = float(snakemake.params.active_mask_elevation_buffer_m)
 outflow_buffer_m = snakemake.params.outflow_buffer_m
@@ -418,8 +419,9 @@ log.info(
 # copied after sf.write() once the mask files can be compared, and built only
 # if the masks differ.
 sf.config.set("sbgfile", "sfincs_subgrid.nc")
-# Spin-up, event and adaptation runs inherit it from the skeleton's sfincs.inp.
+# Spin-up, event and adaptation runs inherit both from the skeleton's sfincs.inp.
 sf.config.set("advection", advection)
+sf.config.set("alpha", alpha)
 
 
 def _create_subgrid() -> None:

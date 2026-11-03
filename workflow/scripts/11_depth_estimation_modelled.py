@@ -210,6 +210,7 @@ nr_subgrid_pixels = int(snakemake.params.nr_subgrid_pixels)
 nr_levels = int(snakemake.params.nr_levels)
 nrmax = int(snakemake.params.nrmax)
 advection = int(snakemake.params.advection)
+alpha = float(snakemake.params.alpha)
 active_mask_enabled = snakemake.params.active_mask_enabled
 active_mask_elevation_buffer_m = float(snakemake.params.active_mask_elevation_buffer_m)
 outflow_buffer_m = float(snakemake.params.outflow_buffer_m)
@@ -345,6 +346,7 @@ sf.config.update(
         "dtrstout": 0,
         "zsini": -9999.0,
         "advection": advection,
+        "alpha": alpha,
     }
 )
 

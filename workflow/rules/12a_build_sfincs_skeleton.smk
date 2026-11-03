@@ -63,6 +63,7 @@ rule build_sfincs_skeleton:
         nr_levels          = config["sfincs"]["subgrid"]["nr_levels"],
         nrmax              = config["sfincs"]["subgrid"]["nrmax"],
         advection          = config["sfincs"]["advection"],
+        alpha              = config["sfincs"]["alpha"],
         inputs_dir        = lambda wildcards: results_path(f"{wildcards.basin_id}/preprocessing_inputs"),
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         active_mask_enabled        = config["sfincs"]["grid"]["active_mask"]["enabled"],
