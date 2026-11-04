@@ -105,6 +105,7 @@ def round0(basin_id: str, cfg: dict, **bed_overrides):
         manning_n=rp["channel_manning_n"],
         surface_cfg=rp["water_surface"],
         cfg=bed_cfg,
+        share_override=rp["split_override"],
     )
     return bed, rivers, q_design, q_mean
 

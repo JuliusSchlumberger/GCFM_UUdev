@@ -402,6 +402,7 @@ def estimate_river_bed_from_files(
     manning_n: float,
     surface_cfg: dict,
     cfg: dict,
+    share_override: dict[str, dict[str, float]] | None = None,
 ) -> tuple[RiverBed, np.ndarray, dict[str, float], np.ndarray]:
     """Run :func:`estimate_river_bed` on a basin's rule 08-10 outputs (rule 11 round 0).
 
@@ -443,9 +444,19 @@ def estimate_river_bed_from_files(
             rds, rds["mean_discharge_m3s"].values[active], active
         )
     adjacency = build_downstream_adjacency(rivers)
-    q_design = accumulate_discharge(rivers, seed_q, adjacency, excluded_arms=excluded)
+    q_design = accumulate_discharge(
+        rivers,
+        seed_q,
+        adjacency,
+        excluded_arms=excluded,
+        share_override=share_override,
+    )
     q_mean = accumulate_discharge(
-        rivers, seed_q_mean, adjacency, excluded_arms=excluded
+        rivers,
+        seed_q_mean,
+        adjacency,
+        excluded_arms=excluded,
+        share_override=share_override,
     )
     reach_ids = rivers["reach_id"].map(normalize_reach_id)
 

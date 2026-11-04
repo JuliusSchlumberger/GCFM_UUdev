@@ -4,7 +4,7 @@
 (GCFM_PHASE1_SCRATCH, default <results_dir>/../scratch_phase1/<basin>/round1_crs),
 adds cross-section lines across each arm of every bifurcation on the seeds'
 widest paths (src.river_depth_calibration.bifurcation_cross_sections, the
-helper behind river_depth_modelling.crosssections) as sfincs.crs + crsfile,
+helper behind rule 11's bifurcation_check) as sfincs.crs + crsfile,
 and reruns SFINCS there. The production round-1 folder is not touched.
 `compare`: end-of-run discharge through each arm (sfincs_his.nc
 crosssection_discharge, absolute value) as a share of its bifurcation, against

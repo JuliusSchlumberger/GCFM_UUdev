@@ -3,6 +3,20 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-04: rule 11 checks the discharge split at bifurcations (- JS)
+
+**Bifurcation check.** Rule 11's round 1 now always sets SFINCS cross-sections across each arm of every bifurcation on the seeds' widest paths. This replaces the `crosssections` diagnostic key with `river_depth_modelling.bifurcation_check`.
+- It compares SFINCS's end-of-run share per arm with the share the calibration discharge was routed with, and writes `round1/bifurcation_split.csv`.
+- It stops when the two differ by more than `max_share_error: 0.05`.
+- The fix is to correct the river network there, or to set the new `river_processing.split_override`. That key holds `{reach: {arm: share}}` and is applied in rule 08, the river bed and rule 11's routing.
+
+**Why.** On the steady Chao Phraya round 1 with advection off (analysis/phase5_report.md), three of the four bifurcations match the width share to within 0.02; under advection 1 two were reversed. The fourth, 44306300275, is off by 0.18: SFINCS gives 0.55 / 0.45, the width rule 0.37 / 0.63.
+- Its two arms form a 60 km loop whose SWORD alignment at the junction sends the flow straight into the narrow arm.
+- That reach is listed in `bifurcation_check.accepted` until the network is revised (TODO B37).
+- The planned hydraulic split was dropped. The round-0 bed is hung below the observed surface at whatever share an arm gets, so the 1D model accepts any split.
+
+**Results unchanged.** The override is empty and the check only reads output, so round 0's node table is byte-identical on 2433835 and 3279946.
+
 # 2026-11-04: river-bed solver constants in config (- JS)
 
 - `river_processing.river_depth_modelling.bed` gains four keys that were hard-coded in `src/river_bed.py` and `src/gvf_solver.py`, all at their old values:

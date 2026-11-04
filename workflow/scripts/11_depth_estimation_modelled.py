@@ -122,6 +122,7 @@ from src.river_burn import (
 )
 from src.river_depth_calibration import (
     bifurcation_cross_sections,
+    bifurcation_split_table,
     build_calibration_seed_discharge,
     compute_period_max_zs,
     gather_calibration_round_profile,
@@ -193,7 +194,8 @@ wave_regime_rT = tuple(float(v) for v in snakemake.params.wave_regime_rT)
 steady_check_cfg = dict(snakemake.params.steady_check)
 run_length_cfg = dict(snakemake.params.run_length)
 verify_crests = bool(snakemake.params.verify_crests)
-crosssections = bool(snakemake.params.crosssections)
+bifurcation_check_cfg = dict(snakemake.params.bifurcation_check)
+split_override = dict(snakemake.params.split_override or {})
 depth_scale = float(snakemake.params.depth_scale)
 calibration_q_scale = float(snakemake.params.calibration_q_scale)
 calibration_sfincs_settings = dict(snakemake.params.calibration_sfincs_settings or {})
@@ -257,7 +259,13 @@ _excluded_arms = (
     else set()
 )
 adjacency = build_downstream_adjacency(rivers)
-q_calib = accumulate_discharge(rivers, seed_q, adjacency, excluded_arms=_excluded_arms)
+q_calib = accumulate_discharge(
+    rivers,
+    seed_q,
+    adjacency,
+    excluded_arms=_excluded_arms,
+    share_override=split_override,
+)
 rivers["q_calib"] = q_calib
 log.info(
     f"Calibration discharge: {int((q_calib > 0).sum())}/{len(rivers)} reach(es) "
@@ -895,6 +903,7 @@ river_bed, q_design, _seed_q, q_mean = estimate_river_bed_from_files(
     manning_n=channel_manning_n,
     surface_cfg=water_surface_cfg,
     cfg=bed_cfg,
+    share_override=split_override,
 )
 rivers["q_design_m3s"] = q_design
 rivers["q_mean_m3s"] = q_mean
@@ -1218,7 +1227,9 @@ trstout_s = int(run_hr * 3600)
 sf.config.update({"tstop": tstop, "dtmaxout": trstout_s, "trstout": trstout_s})
 if calibration_sfincs_settings:
     sf.config.update(calibration_sfincs_settings)
-    log.warning(f"Calibration SFINCS settings overridden: {calibration_sfincs_settings}")
+    log.warning(
+        f"Calibration SFINCS settings overridden: {calibration_sfincs_settings}"
+    )
 
 calib_times = pd.date_range(tref, tstop, periods=int(run_hr) + 1)
 _ramp_frac = cosine_ramp(np.linspace(0.0, run_hr, len(calib_times)), 0.0, ramp_hr)[
@@ -1228,7 +1239,9 @@ _start_q = np.where(np.isfinite(crossing_q_start), crossing_q_start, 0.0)
 dis_values = _start_q[None, :] + (crossing_q[None, :] - _start_q[None, :]) * _ramp_frac
 if calibration_q_scale != 1.0:
     dis_values = dis_values * calibration_q_scale
-    log.warning(f"Calibration discharge scaled by calibration_q_scale = {calibration_q_scale:g}")
+    log.warning(
+        f"Calibration discharge scaled by calibration_q_scale = {calibration_q_scale:g}"
+    )
 dis_df = pd.DataFrame(
     dis_values, index=calib_times, columns=crossings_gdf["index"].to_numpy()
 )
@@ -1344,27 +1357,73 @@ def _steady_check(
 round_label = ROUND_TITLES[1]
 round_root = _start_round(1)
 _create_subgrid(excavated_subgrid_elevation_list, round_label)
-if crosssections:
-    # Discharge through each arm of the seeds' bifurcations (sfincs_his.nc),
-    # against the width-proportional split of accumulate_discharge.
-    _crs = bifurcation_cross_sections(
-        rivers_utm,
-        sorted(
-            {
-                normalize_reach_id(r)
-                for r, s in zip(rivers["reach_id"], rivers["is_seed"])
-                if bool(s)
-            }
-            - {None}
-        ),
-    )
-    sf.cross_sections.set(_crs[["name", "geometry"]], merge=False)
-    _crs.to_file(calib_root / "cross_sections.gpkg", driver="GPKG")
-    log.info(f"[{round_label}] {len(_crs)} bifurcation cross-section(s) set")
+# Discharge through each arm of the seeds' bifurcations (sfincs_his.nc),
+# against the share accumulate_discharge routed q_calib with.
+_bif_crs = bifurcation_cross_sections(
+    rivers_utm,
+    sorted(
+        {
+            normalize_reach_id(r)
+            for r, s in zip(rivers["reach_id"], rivers["is_seed"])
+            if bool(s)
+        }
+        - {None}
+    ),
+)
+if not _bif_crs.empty:
+    sf.cross_sections.set(_bif_crs[["name", "geometry"]], merge=False)
+    _bif_crs.to_file(calib_root / "cross_sections.gpkg", driver="GPKG")
+log.info(f"[{round_label}] {len(_bif_crs)} bifurcation cross-section(s) set")
 period_max_zs_1, final_zs, final_times_s = _run_calibration_round(
     round_label, round_root
 )
 _steady_check(round_label, final_zs, final_times_s)
+
+
+def _bifurcation_check(round_label: str, round_root: Path) -> None:
+    if _bif_crs.empty:
+        return
+    with xr.open_dataset(round_root / "sfincs_his.nc", decode_times=False) as his:
+        q_end = np.abs(np.asarray(his["crosssection_discharge"].values, float)[-1])
+        names = [
+            str(n).strip()
+            for n in np.asarray(his["crosssection_name"].values).astype(str)
+        ]
+    split = bifurcation_split_table(
+        _bif_crs,
+        dict(zip(names, q_end)),
+        dict(zip(rivers["reach_id"].map(normalize_reach_id), q_calib)),
+    )
+    split.to_csv(round_root / "bifurcation_split.csv", index=False, float_format="%.4g")
+    max_err = float(bifurcation_check_cfg["max_share_error"])
+    accepted = {
+        normalize_reach_id(r) for r in bifurcation_check_cfg.get("accepted") or []
+    }
+    worst = split.groupby("parent_reach")["abs_error"].max()
+    for parent, err in worst.items():
+        arms = split[split["parent_reach"] == parent]
+        log.info(
+            f"[{round_label}] Bifurcation {parent}: SFINCS / routed share "
+            + ", ".join(
+                f"{a} {s:.2f}/{r:.2f}"
+                for a, s, r in zip(
+                    arms["arm_reach"], arms["share_sfincs"], arms["share_routed"]
+                )
+            )
+            + f" (|error| {err:.2f}{', accepted' if parent in accepted else ''})"
+        )
+    failed = [p for p, e in worst.items() if e > max_err and p not in accepted]
+    if failed:
+        raise RuntimeError(
+            f"[{round_label}] SFINCS splits the discharge at bifurcation(s) {failed} more than "
+            f"{max_err:g} away from the routed share (round1/bifurcation_split.csv). Fix the river "
+            "network there (arm alignment at the junction, widths), or set "
+            "river_processing.split_override for that reach, or list it in "
+            "river_depth_modelling.bifurcation_check.accepted"
+        )
+
+
+_bifurcation_check(round_label, round_root)
 zs_field_1 = _read_period_max_zs_field(round_root)
 
 # Production weir, exported as-is; round 2 verifies exactly this weir.
