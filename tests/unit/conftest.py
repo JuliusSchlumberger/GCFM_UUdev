@@ -67,4 +67,8 @@ def bed_cfg() -> dict:
         "width_smoothing_m": 5000.0,
         "bathymetry_handover_m": 5000.0,
         "q_min_m3s": 1.0,
+        "bathymetry_margin_m": 0.1,
+        "froude_cap": 0.95,
+        "gvf_max_step_m": 50.0,
+        "forward_bands_m": [0.5, 1.0],
     }

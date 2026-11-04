@@ -288,7 +288,7 @@ Documentation: one methods paragraph per flipped default, written at the time of
 
 Rows top to bottom: diagnostics, calibration, bed chain, scenario timing. Phases 0 and 1 are done. Phase 6.1 now comes first, because every Chao Phraya number depends on a converged run; Phase 2's re-analysis and Ebro sweep go with it; Phase 5 waits for Phase 2's remedy because the SFINCS shares may change with it; Phase 6.2 waits for 6.1 and that remedy; Phase 4's sea inversion waits for Chao Phraya's depth sensitivity.
 
-**Order as run.** 6.1, 2.0, 1.5 and 1.9 are done. Phase 2 is closed (`analysis/phase2_report.md`): advection 0 and `alpha` 0.25 for calibration and events. Phase 7 is done. Before Phase 5, rerun 1.5 on the new round 1.
+**Order as run.** 6.1, 2.0, 1.5 and 1.9 are done. Phase 2 is closed (`analysis/phase2_report.md`): advection 0 and `alpha` 0.25 for calibration and events. Phase 7 is done. The Phase 8 constants are in config (`bathymetry_margin_m`, `froude_cap`, `gvf_max_step_m`, `forward_bands_m`; `h_dry_m` and the burn `margin_m` stay in code because the pipeline never reaches them). Before Phase 5, rerun 1.5 on the new round 1.
 
 > 2a → 7 and the Phase 8 constants (alongside the runs) → 5 → 3 → 4 (one Chao Phraya bundle) → 6.2 comparison → 8 suite and docs
 

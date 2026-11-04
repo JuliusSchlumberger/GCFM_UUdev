@@ -171,6 +171,7 @@ def forward_network(
     n: float,
     end_levels: dict[int, float],
     froude_cap: float = 0.95,
+    max_step_m: float = 50.0,
     return_capped: bool = False,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Return the steady water level per node of ``net`` (src.gvf_target.GvfNetwork).
@@ -214,6 +215,7 @@ def forward_network(
                 n,
                 eta_r[k + 1],
                 froude_cap=froude_cap,
+                max_step_m=max_step_m,
             )
             eta_r[k] = seg.eta[0]
             cap_r[k] = bool(seg.capped[0])

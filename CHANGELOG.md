@@ -3,6 +3,20 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-04: river-bed solver constants in config (- JS)
+
+- `river_processing.river_depth_modelling.bed` gains four keys that were hard-coded in `src/river_bed.py` and `src/gvf_solver.py`, all at their old values:
+  - `bathymetry_margin_m: 0.1`
+  - `froude_cap: 0.95`
+  - `gvf_max_step_m: 50`
+  - `forward_bands_m: [0.5, 1.0]`
+- `gvf_solver.forward_network` passes `max_step_m` through to the reach integration.
+- Results unchanged: rule 11's round-0 node table and forward-check summary are byte-identical before and after on 2433835 and 3279946.
+- Two constants from the plan's list stay in code because the pipeline never reaches them:
+  - `h_dry_m` only acts on reaches without discharge, which `forward_network` does not integrate;
+  - `burn_river_channel`'s `margin_m` is ignored when a target grid is given, and rule 11 always gives one.
+- Rule 11's `bed` params changed, so Snakemake reruns rule 11 on its next run.
+
 # 2026-11-03: SFINCS advection off, time-step factor 0.25 (- JS)
 
 - **What changed:** new keys `sfincs.advection` (default 0) and `sfincs.alpha` (default 0.25), set by rules 11 and 12a. Spin-up, events and adaptation inherit both from the skeleton. Before, nothing set them and SFINCS's defaults applied (advection 1, alpha 0.5).

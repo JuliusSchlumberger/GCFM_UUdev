@@ -64,8 +64,11 @@ CFG_KEYS = (
     "width_smoothing_m",
     "bathymetry_handover_m",
     "q_min_m3s",
+    "bathymetry_margin_m",
+    "froude_cap",
+    "gvf_max_step_m",
+    "forward_bands_m",
 )
-FORWARD_BANDS_M = (0.5, 1.0)  # forward-check deviation bands reported
 _ROW_CHUNK = 500
 
 
@@ -89,6 +92,7 @@ class RiverBed:
     forward_level_m: np.ndarray
     mean_level_m: np.ndarray
     sea_level_m: float
+    forward_bands_m: tuple[float, ...]
 
     @property
     def informative(self) -> np.ndarray:
@@ -311,7 +315,7 @@ def estimate_river_bed(
     bathy = (
         (node_class == NODE_WATER_BODY)
         & np.isfinite(dem)
-        & (dem < gebco_shallow_m - 0.1)
+        & (dem < gebco_shallow_m - float(cfg["bathymetry_margin_m"]))
     )
     handover = float(cfg["bathymetry_handover_m"])
     if bathy.any():
@@ -338,7 +342,11 @@ def estimate_river_bed(
         for r in net.reach_ids
         if not net.downstream[r]
     }
-    forward = forward_network(net, bed, width, reach_q_net, manning_n, ends)
+    gvf = {
+        "froude_cap": float(cfg["froude_cap"]),
+        "max_step_m": float(cfg["gvf_max_step_m"]),
+    }
+    forward = forward_network(net, bed, width, reach_q_net, manning_n, ends, **gvf)
     mean_level = (
         forward_network(
             net,
@@ -347,6 +355,7 @@ def estimate_river_bed(
             {r: float(reach_q_mean.get(r, 0.0)) for r in net.reach_ids},
             manning_n,
             ends,
+            **gvf,
         )
         if reach_q_mean is not None
         else np.full(n, np.nan)
@@ -369,6 +378,7 @@ def estimate_river_bed(
         forward_level_m=forward,
         mean_level_m=mean_level,
         sea_level_m=float(sea_level_m),
+        forward_bands_m=tuple(float(b) for b in cfg["forward_bands_m"]),
     )
     _log_summary(result)
     return result
@@ -480,7 +490,7 @@ def forward_deviation_summary(rb: RiverBed) -> dict[str, float]:
         out[f"{k}_nodes"] = float(m.sum())
         for name, q in (("p5", 5), ("median", 50), ("p95", 95)):
             out[f"{k}_{name}_m"] = float(np.percentile(d, q)) if d.size else np.nan
-        for band in FORWARD_BANDS_M:
+        for band in rb.forward_bands_m:
             out[f"{k}_within_{band:g}m"] = (
                 float(np.mean(np.abs(d) <= band)) if d.size else np.nan
             )
@@ -501,7 +511,8 @@ def _log_summary(rb: RiverBed) -> None:
     )
     for k, name in (("river", "all river nodes"), ("main", "largest-Q paths")):
         bands = ", ".join(
-            f"{fwd[f'{k}_within_{b:g}m']:.0%} within {b:g} m" for b in FORWARD_BANDS_M
+            f"{fwd[f'{k}_within_{b:g}m']:.0%} within {b:g} m"
+            for b in rb.forward_bands_m
         )
         log.info(
             f"River bed forward check (steady GVF on the bed at the design discharge minus the surface), "

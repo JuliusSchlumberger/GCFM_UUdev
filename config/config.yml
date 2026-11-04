@@ -114,6 +114,10 @@ river_processing:
       width_smoothing_m: 5000       # running median then mean of SWORD node widths along the network, across reach boundaries; raw node widths give +-5 m bed jumps (4267691: 172 steps > 3 m)
       bathymetry_handover_m: 5000   # river bed blends linearly into GEBCO bathymetry (wide sea-class nodes) over this distance
       q_min_m3s: 1.0                # at or below: depth from the width-depth fit of the other nodes
+      bathymetry_margin_m: 0.1      # a water-body node is GEBCO bathymetry where the DEM lies this far below GEBCO's shallowest clamp
+      froude_cap: 0.95              # GVF forward solve: depth held where the Froude number would exceed this (src.gvf_solver)
+      gvf_max_step_m: 50            # GVF forward solve: largest RK4 substep along the channel
+      forward_bands_m: [0.5, 1.0]   # forward check: share of nodes within each |GVF level - surface| band (log and summary)
     # Rounds 1-2 run ramp_hr + T_walled + calibration_margin_hr: T_walled is the slowest
     # walled (no overtopping) travel time at the calibration discharge from a forcing point to
     # its network end (src.river_profile.walled_travel_time): per node the gravity speed
