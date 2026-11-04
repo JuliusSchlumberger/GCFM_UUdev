@@ -10,6 +10,7 @@ from src.river_bed import (
     forward_deviation_summary,
     manning_depth,
     node_widths,
+    period_median_discharge,
     values_at_points,
 )
 from src.water_surface import build_water_surface, surface_table
@@ -226,3 +227,15 @@ def test_values_at_points_interpolate_along_the_reach(water_surface_cfg, bed_cfg
         0.5, abs=0.15
     )
     assert np.isnan(out[2])
+
+
+def test_period_median_uses_only_days_from_period_start():
+    import xarray as xr
+
+    day = np.arange(19000, 20000)  # days since 1970-01-01
+    q = np.where(day >= 19539, 300.0, 1000.0)[None, :].repeat(2, axis=0)
+    q[1] *= 2.0
+    ds = xr.Dataset({"discharge_daily": (("crossing", "day"), q)}, coords={"day": day})
+    assert period_median_discharge(ds, "2023-07-01").tolist() == [300.0, 600.0]
+    with pytest.raises(ValueError, match="period_start"):
+        period_median_discharge(ds, "2030-01-01")

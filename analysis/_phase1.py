@@ -69,12 +69,13 @@ def calm_sea_level_m(basin_id: str) -> float:
         return float(read_calm_sea_level_m(ds))
 
 
-def round0(basin_id: str, cfg: dict, **bed_overrides):
+def round0(basin_id: str, cfg: dict, water_surface=None, **bed_overrides):
     """Re-run rule 11's round 0 on the stored rule 08-10 outputs; return (bed, rivers, q_design, q_mean).
 
     bed_overrides replace keys of river_depth_modelling.bed (e.g.
     design_discharge="mean", slope_floor=5e-6). Same call as rule 11
-    (src.river_bed.estimate_river_bed_from_files), on the stored water surface.
+    (src.river_bed.estimate_river_bed_from_files), on the stored water surface
+    or on the rule-10 table at ``water_surface``.
     """
     import geopandas as gpd
     from src.domain import load_domain
@@ -96,7 +97,7 @@ def round0(basin_id: str, cfg: dict, **bed_overrides):
     bed, q_design, _seeds, q_mean = estimate_river_bed_from_files(
         rivers,
         p["river_forcing"],
-        p["water_surface"],
+        water_surface or p["water_surface"],
         sword,
         wgs84_bounds,
         crs,

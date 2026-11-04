@@ -68,6 +68,7 @@ CFG_KEYS = (
     "froude_cap",
     "gvf_max_step_m",
     "forward_bands_m",
+    "period_start",
 )
 _ROW_CHUNK = 500
 
@@ -390,6 +391,23 @@ DESIGN_DISCHARGE_VAR = {
 }
 
 
+def period_median_discharge(river_ds, period_start: str) -> np.ndarray:
+    """Return per crossing the median daily discharge from ``period_start`` to the series end.
+
+    river_ds: river_forcing.nc (``discharge_daily`` on ``day``, days since
+    1970-01-01). With ``period_start`` the start of the SWOT record, this is
+    the discharge the SWOT median surface corresponds to.
+    """
+    start_day = (pd.Timestamp(period_start) - pd.Timestamp("1970-01-01")).days
+    in_period = river_ds["day"].values >= start_day
+    if not in_period.any():
+        raise ValueError(
+            f"period_median: discharge_daily ends before period_start {period_start}"
+        )
+    q = river_ds["discharge_daily"].values[:, in_period].astype(float)
+    return np.nanmedian(q, axis=1)
+
+
 def estimate_river_bed_from_files(
     rivers: gpd.GeoDataFrame,
     river_forcing_path,
@@ -420,9 +438,10 @@ def estimate_river_bed_from_files(
     from src.water_surface import read_water_surface
 
     design = str(cfg["design_discharge"])
-    if design not in DESIGN_DISCHARGE_VAR:
+    if design not in (*DESIGN_DISCHARGE_VAR, "period_median"):
         raise ValueError(
-            f"river_depth_modelling.bed.design_discharge must be one of {sorted(DESIGN_DISCHARGE_VAR)}, got {design!r}"
+            "river_depth_modelling.bed.design_discharge must be one of "
+            f"{sorted(DESIGN_DISCHARGE_VAR) + ['period_median']}, got {design!r}"
         )
     excluded = (
         {
@@ -438,7 +457,11 @@ def estimate_river_bed_from_files(
             rds, rivers
         )
         seed_q = seed_discharge_by_reach(
-            rds, rds[DESIGN_DISCHARGE_VAR[design]].values[active], active
+            rds,
+            period_median_discharge(rds, str(cfg["period_start"]))[active]
+            if design == "period_median"
+            else rds[DESIGN_DISCHARGE_VAR[design]].values[active],
+            active,
         )
         seed_q_mean = seed_discharge_by_reach(
             rds, rds["mean_discharge_m3s"].values[active], active

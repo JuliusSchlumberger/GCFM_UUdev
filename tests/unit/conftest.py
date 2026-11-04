@@ -55,6 +55,11 @@ def water_surface_cfg() -> dict:
         "structure_min_drop_m": 0.2,
         "use_sword_obstructions": True,
         "structures": [],
+        "surface_source": "fathom",
+        "swot_min_obs": 10,
+        "swot_max_mad_m": 3.0,
+        "surface_fit": "two_scale",
+        "single_smoothing_m": 20000,
     }
 
 
@@ -71,4 +76,5 @@ def bed_cfg() -> dict:
         "froude_cap": 0.95,
         "gvf_max_step_m": 50.0,
         "forward_bands_m": [0.5, 1.0],
+        "period_start": "2023-07-01",
     }

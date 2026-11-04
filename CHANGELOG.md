@@ -3,6 +3,26 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-04: SWOT surface source, single fit and period-median discharge as options (- JS)
+
+**New rule-10 options** under `river_processing.water_surface`; the defaults are unchanged:
+- `surface_source: fathom | sword_swot`, with `swot_min_obs: 10` and `swot_max_mad_m: 3.0`;
+- `surface_fit: two_scale | single`, with `single_smoothing_m: 20000`.
+
+With `sword_swot`, the fit starts from SWORD v17c's SWOT node levels (`wse_obs_p50` + rule 06's EGM2008 → GOCO06s offset), via `sword.read_swot_node_levels`. The node table gains `level_source_m` and `level_source`. Rule 10 takes the SWORD regions, the geoid offset and the domain as new inputs.
+
+**New design discharge:** `design_discharge: period_median`, the GloFAS daily median from `period_start: 2023-07-01` to the series end (`river_bed.period_median_discharge`).
+
+**Why the defaults stay** (analysis/phase3_report.md):
+- Ebro's 1 m offset from SWOT is in FathomDEM's raw medians on the incised upper reaches: +1.7 m in the gorge, +0.9 m on reach 051.
+- On the Chao Phraya main stem, FathomDEM stands 2–5 m above SWOT over 130 km.
+- Even so, no SWOT option halves the share of nodes on the slope floor (Ebro 0.29 → 0.26–0.43, Chao Phraya 0.25 → 0.36–0.40).
+- The forward check passes on both basins only with the SWOT single fit and the period-median discharge: median 0.02 / 0.17 m at 40 km.
+- That combination goes to Phase 4.
+- The 0.5 m spread threshold proposed in the plan would reject 65 % of Ebro's SWOT nodes and 99 % of Chao Phraya's.
+
+**Results unchanged:** the defaults are the old behaviour, and 397 unit tests pass.
+
 # 2026-11-04: rule 11 checks the discharge split at bifurcations (- JS)
 
 **Bifurcation check.** Rule 11's round 1 now always sets SFINCS cross-sections across each arm of every bifurcation on the seeds' widest paths. This replaces the `crosssections` diagnostic key with `river_depth_modelling.bifurcation_check`.
