@@ -100,8 +100,9 @@ spin-up restart and the spin-up map.
   `accommodate` and `retreat` need none;
 - nothing extra for `locations: auto/<name>` (`grey_protect_open`,
   `protect_closed`): rule `build_adaptation_lines` (12c) derives these lines from
-  the basin's skeleton into `<results_dir>/{basin_id}/adaptation_lines/`, and
-  reruns with the skeleton. Review `figures/60_adapt_lines.png`. The rule fails if
+  the basin's skeleton into `<adaptation_data_root>/{basin_id}/`, next to the
+  hand-drawn files (`<results_dir>/{basin_id}/adaptation_lines/` when
+  `adaptation_data_root` is not set), and reruns with the skeleton. Review `figures/60_adapt_lines.png`. The rule fails if
   a mouth closure does not seal its river; `--keep-incomplete` keeps the figure
   for inspection;
 - an `event` key on each scenario;

@@ -3,6 +3,54 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-03: NbS pre runs: retention inlet snapped onto the levee; metrics on baseline land (-KL)
+
+- **Retention inlet (`adaptation_method_pre.apply_water_retention`):** the
+  inlet trace lies 2-80 m (mostly 15-30 m) beside the river levee, beyond
+  `apply_river_levee`'s 2 m match, so no levee segment was lowered: a 2.57 m
+  weir was added next to the 2.82-4.02 m levee, which still held the river
+  back. The existing levee segments whose midpoint lies within the new
+  `inlet_snap_distance` (default 100 m) of the trace are now lowered by
+  `inlet_sill_below_crest` instead (Ebro: 31 segments on both banks, 3.1 km,
+  for the 2.7 km trace, which follows both banks; crest 2.82-4.50 ->
+  2.62-4.30 m). Raises when no levee is near the zone or the trace.
+- **Pre metrics on baseline land (`16_flood_metrics.py`, rule
+  `adapt_flood_metrics_pre`):** land `nbs_land_reclamation` reclaims from the
+  sea counted as land, and it floods: `NbS_protect_open_1` grew the land area
+  from 353 to 443 km2 and added ~103 km2 / 0.078 km3 of flooding on the new
+  foreshore (coast and compound). Metrics of every `pre` run are now masked to
+  the skeleton's `land_bed_level.nc`; the `water_retention` zone stays
+  excluded as before. The written `max_flood_depth.tif` is unchanged.
+- **Results:** not yet rerun; `NbS_protect_open` `pre` needs `adapt_apply_pre`
+  onwards for the inlet, every other `pre` strategy only
+  `adapt_flood_metrics_pre`.
+
+# 2026-11-03: lagoon storage behind the advance barrier in post-processing (-KL)
+
+- **Why:** the PRE advance run models the lagoon between the offshore barrier
+  and the coast, which holds river water the pumps cannot discharge and coastal
+  water overtopping the barrier before either reaches land. POST sent all of it
+  onto land.
+- **What changed:** new measure `lagoon_storage` (`config/measures.yml`,
+  postprocessing only; unscaled `locations`, `width` [m], `depth` [m]), added to
+  `advance` after `pumps` with `{basin_id}/coastline_for_lagoon.geojson`,
+  2000 m and 0.1 m (measured barrier-to-coast distance in the Ebro: mean
+  2.1 km, median 1.7 km). `adaptation_method_post.apply_lagoon_storage` takes
+  coastline length x width x depth off the class 1-3 flooding that
+  `offshore_barrier` and `pumps` leave, as one uniform layer, so river and
+  overtopping water share one storage. The PRE function returns the model
+  unchanged (the barrier's weir already encloses the lagoon). `docs/methods.md`
+  describes it; `docs/data.md` regenerated (also adds the missing
+  `water_retention_inlet.geojson` row).
+- **Results (Ebro, 50.1 km coastline -> 10.0 Mm3; class 1-3 volume left after
+  POST, Mm3):** `coast_100_03SLR` `_04`/`_09` (barrier overtopped) 262.2 ->
+  252.2; `river_100_03SLR` `_04` 63.0 -> 53.0, `_09` 36.9 -> 26.9;
+  `compound_100_03SLR` `_04` 271.6 -> 261.6, `_09` 126.2 -> 116.1. `_1`
+  unchanged at 0 (barrier holds, pumps match the peak discharge). At `_04` the
+  unpumped river volume (~920 Mm3) is far above what the open-mouth flood map
+  holds, so the lagoon there reduces the map's capped volume, not the real
+  excess.
+
 # 2026-10-31: mouth closure walks upstream; pumps across the closure; analysis scripts (-KL)
 
 - **Mouth closure (rule 12c, `src.adaptation_lines.mouth_closures`):** where
@@ -21,6 +69,12 @@ the pipeline works; this file only describes *what changed and why*.
   `landuse_on_grid.tif` and the model grid are y-ascending, so the grid check
   failed and rule 12c never ran (Ebro: same 87,115 active cells; one mouth,
   closed and sealed with a 600 m closure, 1 pump).
+- **Rule 12c output folder:** the `auto/<name>` lines, `adaptation_lines.gpkg`
+  and `build_info.json` now go to `<adaptation_data_root>/{basin_id}/`, next to
+  the basin's hand-drawn measure files, instead of
+  `<results_dir>/{basin_id}/adaptation_lines/` (still used when
+  `adaptation_data_root` is not set, so preprocess/build do not require it).
+  `figures/60_adapt_lines.png` stays under results.
 - **Analysis:** `results_figures.py` adds the urban risk-reduction table PRE vs
   POST and Kendall's tau-b tables (replacing Kendall's W in the bump chart),
   new bump-chart order and adaptation-wheel colours, and drops the basin

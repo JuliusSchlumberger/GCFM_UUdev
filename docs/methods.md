@@ -651,8 +651,9 @@ never reduced by it.
 ## Adaptation
 
 Strategies (`config/adaptation_strategies.yml`) combine measures
-(`config/measures.yml`: `offshore_barrier`, `pumps`, `nbs_land_reclamation`,
-`water_retention`, `river_levee`, `coastal_levee`, `urban_raising`, `retreat`).
+(`config/measures.yml`: `offshore_barrier`, `pumps`, `lagoon_storage`,
+`nbs_land_reclamation`, `water_retention`, `river_levee`, `coastal_levee`,
+`urban_raising`, `retreat`).
 Families (`advance`, `grey_protect_open`, `NbS_protect_open`, `protect_closed`,
 `accommodate`, `retreat`) are written at scale 1 and expanded over `scales`
 (0.4, 0.9, 1.0) into `<family>_04`, `_09`, `_1`; only parameters flagged
@@ -684,6 +685,20 @@ connected to the open sea.
 |---|---|---|
 | `pre` | 17b | edits a copy of the skeleton (weirs, drainage structures, subgrid), reuses the basin spin-up restart and reruns SFINCS (rules `adapt_build_forcing_pre`, `adapt_run_event_pre`, `adapt_flood_metrics_pre`) |
 | `post` | 17c | chains each measure on the baseline `max_flood_depth.tif` without SFINCS |
+
+`lagoon_storage` (advance) only acts in `post`; in `pre` the offshore barrier's
+weir encloses the lagoon itself. The lagoon is the coastline (`locations`) x
+`width` (coast-to-barrier distance) x `depth`, and it takes river water the
+pumps cannot discharge and coastal water overtopping the barrier alike: listed
+after `offshore_barrier` and `pumps`, it removes its volume as a uniform layer
+from the class 1-3 flooding they leave.
+
+`water_retention` in `pre` lets river water in through its `inlet`: the
+existing levee segments within `inlet_snap_distance` (100 m) of the inlet trace
+are lowered by `inlet_sill_below_crest`. `pre` flood metrics cover the baseline
+land only (the skeleton's `land_bed_level.nc`), and a `water_retention` zone is
+left out: land `nbs_land_reclamation` reclaims from the sea and water stored in
+the zone count as neither flooded nor land area. The flood map itself keeps them.
 
 Rule 17a classifies the baseline flood map by dominant source: 1 river,
 2 coastal, 3 compound, from the river and coastal counterpart scenarios, and

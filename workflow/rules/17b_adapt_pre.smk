@@ -106,6 +106,8 @@ rule adapt_flood_metrics_pre:
         sfincs_map_nc = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),
         landuse       = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/retreat_landuse.tif"),
         land_bed_level = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/land_bed_level.nc"),
+        # Baseline land footprint: the metrics leave out land reclaimed from the sea.
+        baseline_land_bed_level = results_path("{basin_id}/sfincs_skeleton/land_bed_level.nc"),
         **map_figure_inputs(),
         delta_polygon = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
     output:

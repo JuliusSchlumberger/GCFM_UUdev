@@ -18,10 +18,13 @@ Everything is written under `<results_dir>/{basin_id}/`:
 | `runs/{scenario}/sfincs/` | event run (`sfincs_map.nc`) |
 | `runs/{scenario}/visuals/` | maximum flood depth (`max_flood_depth.tif`) and flood time series |
 | `runs/{scenario}/metrics/flood_metrics.csv` | flood-risk metrics (flooded shares of the land and urban area, depths) |
-| `adaptation_lines/` | levee, mouth-closure and pump lines derived from the skeleton for `auto/` strategy locations |
 | `runs/{scenario}/adaptation/{pre,post}/{strategy}/` | adapted runs and their flood metrics |
 | `runs/metrics_comparison.csv` | all strategies and scenarios side by side |
 | `figures/` | every figure of the basin: model build, boundary forcing and max flood depth per run, flood animation per scenario, crest profile, adaptation; diagnostics in `figures/analysis/` with `analysis: true` ([running.md](docs/running.md#figures)) |
+
+The levee, mouth-closure and pump lines derived from the skeleton for `auto/`
+strategy locations go to `<adaptation_data_root>/{basin_id}/`, next to the
+hand-drawn measure files.
 
 ## Quick start
 

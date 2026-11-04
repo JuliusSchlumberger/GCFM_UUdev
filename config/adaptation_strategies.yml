@@ -7,8 +7,8 @@
 # Relative `locations` paths below resolve against adaptation_data_root in
 # config/site.yml (see config/site.example.yml), with `{basin_id}` replaced by
 # the basin id, so each basin needs its own files; `auto/<name>` is the basin's
-# <name>.geojson built by rule build_adaptation_lines into
-# <results_dir>/{basin_id}/adaptation_lines/.
+# <name>.geojson built by rule build_adaptation_lines into the same
+# <adaptation_data_root>/{basin_id}/ folder.
 
 # Each block is a strategy FAMILY written at scale 1. The workflow generates
 # <family>_04/_09/_1 from `scales` (x0.4, x0.9, x1.0 on params flagged scale: true
@@ -31,7 +31,9 @@ advance:
                       locations: "{basin_id}/offshore_island.geojson" }
     pumps: {discharge: {coastal: max_discharge, river: max_discharge, compound: max_discharge},
             locations: "{basin_id}/advance_pumps.geojson" }
-
+    lagoon_storage: {locations: "{basin_id}/coastline_for_lagoon.geojson",
+                     width: 2000, # m, assumed coast-to-barrier distance
+                     depth: 0.1 } # m stored over the lagoon
 
 # -----------------------------------------------------------------------------------------------
 # GREY PROTECT-OPEN

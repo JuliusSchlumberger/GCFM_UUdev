@@ -18,7 +18,7 @@ source by hand. — marks a field the catalogue does not record.
 | dataset | description | version | source / citation | licence | file_path | how to obtain |
 |---|---|---|---|---|---|---|
 | `coastal_bathymetry` | Global terrain model for ocean and land providing elevation in meters on a 15 arc-second interval grid. | — | GEBCO Compilation Group (2026) GEBCO 2026 Grid. Available at https://www.gebco.net/data-products/gridded-bathymetry-data. Published 23 April 2026 by the Nippon Foundation-GEBCO Seabed 2030 Project. Base grid: SRTM15+ V2.8 (Tozer et al. 2019) augmented with regional multibeam compilations from the four Seabed 2030 Regional Centers. | — | `gebco_2026_geotiff/` | manual download from the source |
-| `delta_polygons` | Dataset of manually drawn polygons representing the delta areas globally based on earth-observation data. | — | Edmonds, D.A., Caldwell, R.L., Brondizio, E.S. et al. Coastal flooding will disproportionately impact people on river deltas. Nat Commun 11, 4741 (2020). https://doi.org/10.1038/s41467-020-18531-4 | — | `DeltaWebs/modified/9_polygons.gpkg` | manual download from the source |
+| `delta_polygons` | Dataset of manually drawn polygons representing the delta areas globally based on earth-observation data. | — | Edmonds, D.A., Caldwell, R.L., Brondizio, E.S. et al. Coastal flooding will disproportionately impact people on river deltas. Nat Commun 11, 4741 (2020). https://doi.org/10.1038/s41467-020-18531-4 | — | `DeltaWebs/modified/9_polygons_KL.gpkg` | manual download from the source |
 | `egm2008_geoid` | EGM2008 Earth Gravitational Model (degree/order 2190). | — | Pavlis et al. (2012), The development and evaluation of the EGM2008. J. Geophys. Res. 117, B04406. | — | `ICGM/EGM2008.gfc` | manual download from the source |
 | `fathomdem` | Global terrain elevation model covering 60°S–80°N at ~30 m (1 arcsecond) resolution, produced by removing surface artifacts (buildings, veg… | — | Uhe, P., Lucas, C., Hawker, L., Brine, M., Wilkinson, H., Cooper, A., Saoulis, A.A., Savage, J., & Sampson, C. (2025). FathomDEM: an improved global terrain map using a hybrid vision transformer model. Environmental Research Letters, 20, 034002. https://doi.org/10.1088/1748-9326/ada972 . Data: Zenodo record 14523356 (https://doi.org/10.5281/zenodo.14523356), restricted access via share-link token — see tools/download_fathomdem.py. | — | `FathomDEM/` | `tools/download_fathomdem.py` |
 | `goco06s` | GOCO06s combined gravity field model (satellite-only, degree/order 300). | — | Kvas et al. (2021), GOCO06s — A satellite-only gravity field model. Earth System Science Data 13(1), 99–118. | — | `ICGM/GOCO06s.gfc` | manual download from the source |
@@ -49,11 +49,13 @@ an `adapt` job needs them; the others are drawn per basin.
 
 | file_path | strategy / measure | how to obtain |
 |---|---|---|
-| `auto/coastal_protection_weir_PC` | `protect_closed/coastal_levee` | built by rule `build_adaptation_lines` into `<results_dir>/{basin_id}/adaptation_lines/<name>.geojson` |
-| `auto/coastal_protection_weir_PO` | `grey_protect_open/coastal_levee` | built by rule `build_adaptation_lines` into `<results_dir>/{basin_id}/adaptation_lines/<name>.geojson` |
-| `auto/pump_river_mouth` | `protect_closed/pumps` | built by rule `build_adaptation_lines` into `<results_dir>/{basin_id}/adaptation_lines/<name>.geojson` |
-| `auto/river_protection_weir_PO` | `grey_protect_open/river_levee` | built by rule `build_adaptation_lines` into `<results_dir>/{basin_id}/adaptation_lines/<name>.geojson` |
+| `auto/coastal_protection_weir_PC` | `protect_closed/coastal_levee` | built by rule `build_adaptation_lines` into `<adaptation_data_root>/{basin_id}/<name>.geojson` |
+| `auto/coastal_protection_weir_PO` | `grey_protect_open/coastal_levee` | built by rule `build_adaptation_lines` into `<adaptation_data_root>/{basin_id}/<name>.geojson` |
+| `auto/pump_river_mouth` | `protect_closed/pumps` | built by rule `build_adaptation_lines` into `<adaptation_data_root>/{basin_id}/<name>.geojson` |
+| `auto/river_protection_weir_PO` | `grey_protect_open/river_levee` | built by rule `build_adaptation_lines` into `<adaptation_data_root>/{basin_id}/<name>.geojson` |
 | `{basin_id}/advance_pumps.geojson` | `advance/pumps` | project-specific; obtain from the project team |
+| `{basin_id}/coastline_for_lagoon.geojson` | `advance/lagoon_storage` | project-specific; obtain from the project team |
 | `{basin_id}/land_reclamation.geojson` | `NbS_protect_open/nbs_land_reclamation` | project-specific; obtain from the project team |
 | `{basin_id}/offshore_island.geojson` | `advance/offshore_barrier` | project-specific; obtain from the project team |
 | `{basin_id}/water_retention_area_river.geojson` | `NbS_protect_open/water_retention` | project-specific; obtain from the project team |
+| `{basin_id}/water_retention_inlet.geojson` | `NbS_protect_open/water_retention` | project-specific; obtain from the project team |

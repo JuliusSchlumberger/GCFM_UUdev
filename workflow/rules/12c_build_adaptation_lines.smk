@@ -3,6 +3,9 @@
 # Strategies reference them as `locations: auto/<name>`
 # (config/adaptation_strategies.yml), which makes them inputs of the adapt
 # rules; nothing else requests them. figures/60_adapt_lines.png is for review.
+# The lines go to the basin's folder under adaptation_data_root (see
+# adaptation_lines_dir), next to its hand-made measure files.
+_LINES_DIR = adaptation_lines_dir("{basin_id}")
 
 rule build_adaptation_lines:
     input:
@@ -13,11 +16,10 @@ rule build_adaptation_lines:
         landuse_on_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_on_grid.tif"),
         river_network   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
     output:
-        **{name: results_path(f"{{basin_id}}/adaptation_lines/{name}.geojson")
-           for name in ADAPTATION_LINE_NAMES},
-        gpkg       = results_path("{basin_id}/adaptation_lines/adaptation_lines.gpkg"),
+        **{name: f"{_LINES_DIR}/{name}.geojson" for name in ADAPTATION_LINE_NAMES},
+        gpkg       = f"{_LINES_DIR}/adaptation_lines.gpkg",
         plot       = figure_path("60_adapt_lines.png"),
-        build_info = results_path("{basin_id}/adaptation_lines/build_info.json"),
+        build_info = f"{_LINES_DIR}/build_info.json",
     params:
         skeleton_root = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         # Same settings as rule 11's weir builder, so the labels match its weir.

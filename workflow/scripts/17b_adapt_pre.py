@@ -67,6 +67,7 @@ COMPONENT_FILEKEY = {
 COMPONENT_OF_MEASURE = {
     "offshore_barrier": ("weirs",),
     "pumps": ("drainage_structures",),
+    "lagoon_storage": (),  # postprocessing only
     "nbs_land_reclamation": ("subgrid",),
     "water_retention": ("subgrid", "weirs"),
     "river_levee": ("weirs",),

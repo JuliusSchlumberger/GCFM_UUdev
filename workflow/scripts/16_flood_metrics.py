@@ -6,6 +6,7 @@ max flood depth map.
 
 from pathlib import Path
 import pandas as pd
+import xarray as xr
 
 from src.domain import load_domain
 from src.plots import plot_max_inundation_map
@@ -44,6 +45,17 @@ plot_max_inundation_map(
     basin_id=snakemake.wildcards.basin_id,
     run_label=snakemake.params.run_label,
 )
+
+# An adapted run's metrics cover the baseline land only: land reclaimed from the
+# sea (nbs_land_reclamation) is low foreshore that floods by design, not new
+# land at risk. baseline_land_bed_level is only set by rule adapt_flood_metrics_pre.
+baseline_land_path = getattr(snakemake.input, "baseline_land_bed_level", None)
+if baseline_land_path is not None:
+    on_baseline_land = read_land_bed_level(baseline_land_path).notnull()
+    # Same skeleton grid; "exact" fails loudly instead of silently mis-aligning.
+    xr.align(on_baseline_land, da_dep, join="exact")
+    da_hmax = da_hmax.where(on_baseline_land)
+    da_dep = da_dep.where(on_baseline_land)
 
 # A water_retention zone is excluded from the risk metrics: water stored there
 # is the measure working, not flood risk. strategy_def is only set by rule

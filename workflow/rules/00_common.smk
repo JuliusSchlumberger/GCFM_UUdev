@@ -383,7 +383,8 @@ def adaptation_data_root():
     """Return the root of the strategies' measure files (site setting adaptation_data_root).
 
     Called only by adapt jobs, so the other targets do not require the setting.
-    `auto/<name>` lines are built per basin by rule build_adaptation_lines instead.
+    `auto/<name>` lines are built per basin by rule build_adaptation_lines
+    (see adaptation_lines_dir).
     """
     return site_setting("adaptation_data_root")
 
@@ -405,8 +406,17 @@ strategy_def_for = _STRATEGY_EXPANSION.strategy_def_for
 
 
 def adaptation_lines_dir(basin_id):
-    """Return the folder rule build_adaptation_lines writes a basin's lines to."""
-    return results_path(f"{basin_id}/adaptation_lines")
+    """Return the folder rule build_adaptation_lines writes a basin's lines to.
+
+    <adaptation_data_root>/<basin_id>, next to the basin's other measure files.
+    Rule outputs are resolved at parse time for every target, so without the
+    setting it is <results_dir>/<basin_id>/adaptation_lines instead.
+    """
+    try:
+        root = Path(adaptation_data_root()).as_posix()
+    except OSError:
+        return results_path(f"{basin_id}/adaptation_lines")
+    return f"{root}/{basin_id}"
 
 def strategy_measure_input_paths(strategy, basin_id):
     """Return the files a strategy's measures reference in a basin, for rule inputs."""

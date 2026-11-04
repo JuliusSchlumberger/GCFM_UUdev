@@ -29,6 +29,21 @@ adaptation_measures:
         max: null # path, data source name, or GeoDataFrame with the pump locations
         required_for: [preprocessing]
 
+  lagoon_storage: # postprocessing only: preprocessing models the lagoon behind the offshore barrier itself
+    params:
+      locations:
+        min: null
+        max: null # path, data source name, or GeoDataFrame with the coastline (polyline) the lagoon lies along
+        required_for: [postprocessing]
+      width: # coast-to-barrier distance [m]
+        min: 0
+        max: 20000 # 20km
+        required_for: [postprocessing]
+      depth: # water depth [m] the lagoon stores
+        min: 0
+        max: 5
+        required_for: [postprocessing]
+
 
   # NBS Protect-open
   nbs_land_reclamation:

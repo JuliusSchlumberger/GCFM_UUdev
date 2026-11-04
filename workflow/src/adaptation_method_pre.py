@@ -571,6 +571,7 @@ def apply_water_retention(
     out_rst_path: str | None = None,
     inlet: Path | None = None,
     inlet_sill_below_crest: float = 0.2,
+    inlet_snap_distance: float = 100.0,
     **kwargs,
 ) -> SfincsModel:
     """Lower the subgrid DEM in a retention polygon and ring it with a weir.
@@ -598,9 +599,10 @@ def apply_water_retention(
     rst_path's filename), so the zone is not pre-filled at t=0. Requires ind_path
     (sfincs.ind). None skips it (e.g. spin-up disabled).
     inlet: polyline(s) along the existing levee where the zone takes in river water;
-    those levee segments get their own crest - inlet_sill_below_crest [m], and the
-    ring weir is left out wherever the zone runs along an existing levee. None: ring
-    weir all around, no inlet.
+    the existing levee segments whose midpoint lies within inlet_snap_distance [m]
+    of it get their own crest - inlet_sill_below_crest [m], and the ring weir is
+    left out wherever the zone runs along an existing levee. None: ring weir all
+    around, no inlet.
     """
     if dep_subgrid is None:
         raise ValueError(
@@ -759,14 +761,39 @@ def apply_water_retention(
     )
 
     if inlet is not None:
+        if nearby_weir is None or nearby_weir.empty:
+            raise ValueError(
+                "water_retention inlet: no existing levee within 500 m of the zone to lower"
+            )
+        # Snap the inlet onto the levee: a trace digitised beside it (15-30 m off
+        # in 2433835) matches no segment within apply_river_levee's 2 m, which then
+        # adds a lower weir next to a levee that still holds the river back.
+        inlet_line = read_polyline(
+            mod.data_catalog.get_geodataframe(inlet, geom=mod.region), mod.crs
+        ).geometry.union_all()
+        levee = _flatten_elevation_from_z(nearby_weir)
+        mids = shapely.line_interpolate_point(
+            levee.geometry.values, 0.5, normalized=True
+        )
+        on_inlet = shapely.distance(mids, inlet_line) <= inlet_snap_distance
+        if not on_inlet.any():
+            raise ValueError(
+                f"water_retention inlet: no levee segment within {inlet_snap_distance} m "
+                f"of {inlet}"
+            )
+        inlet_levee = gpd.GeoDataFrame(
+            geometry=levee.geometry.values[on_inlet], crs=mod.crs
+        )
         print(
-            f"  Retention inlet: levee segments on {Path(str(inlet)).name} lowered by "
+            f"  Retention inlet: {int(on_inlet.sum())} levee segment(s), "
+            f"{inlet_levee.length.sum():.0f} m, within {inlet_snap_distance:.0f} m of "
+            f"{Path(str(inlet)).name} ({inlet_line.length:.0f} m) lowered by "
             f"{inlet_sill_below_crest:.2f} m"
         )
         apply_river_levee(
             mod,
-            locations=inlet,
-            elevation=weir_source_kwargs.get("elevation", 0.0) - inlet_sill_below_crest,
+            locations=inlet_levee,
+            elevation=weir_source_kwargs["elevation"] - inlet_sill_below_crest,
             par1=weir_par1,
             merge=False,
             raise_by=-inlet_sill_below_crest,
@@ -909,6 +936,16 @@ def apply_pumps(
         merge=merge,
     )
 
+    return mod
+
+
+# Advance: lagoon_storage
+def apply_lagoon_storage(mod: SfincsModel, **kwargs) -> SfincsModel:
+    """Return `mod` unchanged: the offshore_barrier weir already encloses the lagoon.
+
+    Postprocessing-only measure (adaptation_method_post.apply_lagoon_storage);
+    accepted here so a strategy with it also runs as preprocessing.
+    """
     return mod
 
 
@@ -1205,6 +1242,7 @@ selected_measures = {
     "water_retention": apply_water_retention,
     "coastal_levee": apply_coastal_levee,
     "pumps": apply_pumps,
+    "lagoon_storage": apply_lagoon_storage,
     # "dike_ring": apply_dike_ring,
     "urban_raising": apply_urban_raising,
     "retreat": apply_retreat,

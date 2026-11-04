@@ -485,6 +485,21 @@ def _unpumped_river_volume_m3(scenario_root: str, discharge: float) -> float:
     return float(np.maximum(q_tt - discharge, 0.0).sum() * 60.0)
 
 
+def _lagoon_storage_m3(coastline: str, width: float, depth: float) -> float:
+    """Return the storage [m3] of a lagoon `width` [m] wide and `depth` [m] deep along `coastline`.
+
+    Coastline length (features without geometry dropped, measured in UTM when
+    the file is geographic) x width x depth.
+    """
+    gdf = gpd.read_file(coastline)
+    gdf = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty]
+    if gdf.crs is None:
+        raise ValueError(f"lagoon coastline {coastline} has no CRS")
+    if gdf.crs.is_geographic:
+        gdf = gdf.to_crs(gdf.estimate_utm_crs())
+    return float(gdf.length.sum()) * width * depth
+
+
 # Advance/ Protect-closed
 def apply_pumps(
     flood_map_path: str, scenario_root: str, output_dir: str, discharge: float, **kwargs
@@ -543,6 +558,67 @@ def apply_pumps(
         f"unpumped river volume={unpumped_volume:.0f} m3 vs flood volume={current_volume:.0f} m3, "
         f"reduction depth={reduction_depth:.4f} m over {target_area / 1e6:.2f} km2, "
         f"remaining={remaining_volume:.0f} m3."
+    )
+
+    return {"method": "flood_map", "out_raster": str(out_path)}
+
+
+# Advance
+def apply_lagoon_storage(
+    flood_map_path: str,
+    scenario_root: str,
+    output_dir: str,
+    locations: str,
+    width: float,
+    depth: float,
+    **kwargs,
+) -> dict:
+    """Remove the volume the lagoon behind an offshore barrier stores from all flooding left.
+
+    The lagoon (coastline `locations` x `width` [m] x `depth` [m],
+    _lagoon_storage_m3) takes river water the pumps cannot discharge and coastal
+    water that overtops the barrier alike, so its one volume comes off the class
+    1, 2 and 3 flooding the earlier measures (offshore_barrier, pumps) left, as a
+    uniform layer (_uniform_layer_depth). List it after them in the strategy.
+    scenario_root: sfincs/ root; attribution_mask.tif is in its parent.
+    """
+    out_path = Path(output_dir) / "max_flood_depth.tif"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lagoon_volume = _lagoon_storage_m3(locations, width, depth)
+
+    with rasterio.open(flood_map_path) as src:
+        flood, prof = src.read(1), src.profile
+        cell_area = cell_area_m2(src.transform)
+
+    mask_path = Path(scenario_root).parent / "attribution_mask.tif"
+    if not mask_path.exists():
+        raise FileNotFoundError(f"Attribution mask not found at {mask_path}")
+
+    with rasterio.open(mask_path) as attr_src:
+        attr = attr_src.read(1)
+
+    target_mask = (
+        np.isin(attr, [1, 2, 3]) & (flood > 0) & (flood != prof["nodata"])
+    )  # river, coastal and compound
+    depths = flood[target_mask].astype(np.float64)
+    current_volume = float(depths.sum() * cell_area)
+    reduction_depth = _uniform_layer_depth(depths, lagoon_volume, cell_area)
+    remaining = np.maximum(depths - reduction_depth, 0.0)
+
+    # Drained cells -> NODATA, as apply_pumps.
+    flood_new = flood.copy()
+    flood_new[target_mask] = np.where(remaining <= 0, prof["nodata"], remaining)
+    remaining_volume = float(remaining.sum() * cell_area)
+
+    prof.update(dtype="float32")
+    with rasterio.open(out_path, "w", **prof) as dst:
+        dst.write(flood_new.astype("float32"), 1)
+
+    print(
+        f"  Lagoon storage: {width:.0f} m x {depth:.2f} m along {Path(locations).name} = "
+        f"{lagoon_volume:.0f} m3 vs flood volume={current_volume:.0f} m3, "
+        f"reduction depth={reduction_depth:.4f} m, remaining={remaining_volume:.0f} m3."
     )
 
     return {"method": "flood_map", "out_raster": str(out_path)}
@@ -780,6 +856,7 @@ selected_measures = {
     "river_levee": apply_river_levee,
     "coastal_levee": apply_coastal_levee,
     "pumps": apply_pumps,
+    "lagoon_storage": apply_lagoon_storage,
     "urban_raising": apply_urban_raising,
     # "dike_ring": apply_dike_ring,
     "retreat": apply_retreat,
