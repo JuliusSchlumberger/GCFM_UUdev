@@ -3,8 +3,9 @@
 `run`: for each scale, copies the basin's preprocessing_inputs (rules 01-10
 and the old rule-11 outputs) to a scratch results root
 (GCFM_PLAN_SCRATCH, default <results_dir>/../scratch_phase1; depth_<scale>/), then runs Snakemake there
-(GCFM_RESULTS_DIR) with river_depth_modelling.depth_scale = scale (a
---configfile overlay) and --forcerun modelled_depth_estimation, so rule 11
+(GCFM_RESULTS_DIR) with river_depth_modelling.depth_scale = scale and the
+bifurcation check reporting only (a --configfile overlay) and --forcerun
+modelled_depth_estimation, so rule 11
 (burn and calibration) and the build (skeleton, spin-up, event runs of
 --scenarios, metrics) run on the scaled bed. Production results are not touched.
 `compare`: flooded area and volume of each scale relative to the baseline
@@ -42,8 +43,11 @@ def run(basin_id: str, scale: float, scenarios: list[str], cores: int) -> int:
         shutil.rmtree(root / basin_id)
     shutil.copytree(src, dst)
     overlay = root / "depth_scale.yml"
+    # A scaled bed can shift the bifurcation split: report it, do not stop.
     overlay.write_text(
-        f"river_processing:\n  river_depth_modelling:\n    depth_scale: {scale}\n"
+        "river_processing:\n  river_depth_modelling:\n"
+        f"    depth_scale: {scale}\n"
+        "    bifurcation_check: {max_share_error: 1.0}\n"
     )
     env = {**os.environ, "GCFM_RESULTS_DIR": root.as_posix()}
     cmd = [
