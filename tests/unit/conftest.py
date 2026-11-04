@@ -77,4 +77,7 @@ def bed_cfg() -> dict:
         "gvf_max_step_m": 50.0,
         "forward_bands_m": [0.5, 1.0],
         "period_start": "2023-07-01",
+        "bed_method": "manning",
+        "slope_resolved_min": 3.0e-5,
+        "inversion_width_exponent_fallback": 0.4,
     }

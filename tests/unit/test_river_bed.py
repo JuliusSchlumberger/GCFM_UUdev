@@ -239,3 +239,21 @@ def test_period_median_uses_only_days_from_period_start():
     assert period_median_discharge(ds, "2023-07-01").tolist() == [300.0, 600.0]
     with pytest.raises(ValueError, match="period_start"):
         period_median_discharge(ds, "2030-01-01")
+
+
+def test_sea_inversion_meets_the_surface_at_the_first_resolved_node(
+    water_surface_cfg, bed_cfg
+):
+    def level_fn(x):  # resolved 4e-4 upstream of 10 km, flat 2e-5 to the sea
+        return np.where(x < 10000.0, 0.2 + 4e-4 * (10000.0 - x), 2e-5 * (20000.0 - x))
+
+    cfg = dict(bed_cfg, bed_method="manning_sea_inversion")
+    rb = _run(_rivers(), level_fn, water_surface_cfg, cfg)
+    manning = _run(_rivers(), level_fn, water_surface_cfg, bed_cfg)
+    assert rb.inverted.any() and not rb.on_floor[rb.inverted].any()
+    assert not rb.inverted[rb.slope > cfg["slope_resolved_min"]].any()
+    # the zone's depth differs from the floored Manning depth there
+    assert not np.allclose(rb.bed_m[rb.inverted], manning.bed_m[rb.inverted])
+    first = np.flatnonzero(~rb.inverted & (rb.slope > cfg["slope_resolved_min"]))
+    edge = first[np.argmin(rb.dist_to_sea_m[first])]
+    assert abs(rb.forward_level_m[edge] - rb.level_m[edge]) < 0.05

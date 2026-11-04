@@ -22,6 +22,11 @@ with the surface slope; the surface places the bed.
    bathymetry, not a water surface) keep the DEM bed unless it sits at GEBCO's
    shallow clamp; river beds within ``bathymetry_handover_m`` of such a node
    blend linearly into it.
+   With ``bed_method: manning_sea_inversion``, each set of connected nodes
+   whose slope is at or below ``slope_resolved_min`` and that reaches the sea
+   takes h = c W^b instead: b fitted on the resolved nodes
+   (src.gvf_solver.fit_width_depth), c such that the GVF level from the sea
+   meets the surface at the resolved nodes next to the set (2 cm).
 4. Check: a steady GVF solve on the bed from the surface at the network ends
    (src.gvf_solver.forward_network), at the design discharge, minus the
    surface. The depth uses the long-smoothed slope and the floor while the
@@ -69,7 +74,11 @@ CFG_KEYS = (
     "gvf_max_step_m",
     "forward_bands_m",
     "period_start",
+    "bed_method",
+    "slope_resolved_min",
+    "inversion_width_exponent_fallback",
 )
+BED_METHODS = ("manning", "manning_sea_inversion")
 _ROW_CHUNK = 500
 
 
@@ -94,6 +103,7 @@ class RiverBed:
     mean_level_m: np.ndarray
     sea_level_m: float
     forward_bands_m: tuple[float, ...]
+    inverted: np.ndarray  # depth from the sea inversion, not Manning
 
     @property
     def informative(self) -> np.ndarray:
@@ -105,7 +115,7 @@ class RiverBed:
     @property
     def on_floor(self) -> np.ndarray:
         """Nodes whose depth uses the slope floor, not the surface slope."""
-        return self.depth_slope > self.slope
+        return (self.depth_slope > self.slope) & ~self.inverted
 
     def node_table(self) -> pd.DataFrame:
         net = self.net
@@ -121,6 +131,7 @@ class RiverBed:
                 "slope": self.slope,
                 "depth_slope": self.depth_slope,
                 "on_floor": self.on_floor,
+                "inverted": self.inverted,
                 "width_m": self.width_m,
                 "q_m3s": self.q_m3s,
                 "depth_m": self.depth_m,
@@ -242,6 +253,79 @@ def surface_on_network(net: GvfNetwork, surface_nodes: pd.DataFrame) -> pd.DataF
     return t
 
 
+def _sea_zones(
+    graph: csr_matrix,
+    unresolved: np.ndarray,
+    resolved: np.ndarray,
+    mouths: np.ndarray,
+    bathy: np.ndarray,
+):
+    """Yield (zone, boundary) masks: unresolved node sets that reach the sea, and the resolved nodes next to them."""
+    from scipy.sparse.csgraph import connected_components
+
+    idx = np.flatnonzero(unresolved)
+    if not idx.size:
+        return
+    sub = graph[idx][:, idx]
+    _, label = connected_components(sub, directed=False)
+    touches_sea = set(mouths.tolist()) | set(
+        graph[np.flatnonzero(bathy)].nonzero()[1].tolist()
+    )
+    for k in np.unique(label):
+        members = idx[label == k]
+        if not touches_sea & set(members.tolist()):
+            continue
+        zone = np.zeros(unresolved.size, dtype=bool)
+        zone[members] = True
+        boundary = np.zeros_like(zone)
+        boundary[graph[members].nonzero()[1]] = True
+        boundary &= resolved
+        if boundary.any():
+            yield zone, boundary
+
+
+def _invert_zone(
+    forward,
+    bed: np.ndarray,
+    level: np.ndarray,
+    width: np.ndarray,
+    depth: np.ndarray,
+    zone: np.ndarray,
+    boundary: np.ndarray,
+    resolved: np.ndarray,
+    b_fallback: float,
+    tol_m: float = 0.02,
+    max_iter: int = 40,
+) -> tuple[np.ndarray, float, float, float]:
+    # h = c W^b in the zone; c by bisection in log c until the GVF level from
+    # the sea meets the surface at the zone's resolved boundary nodes.
+    if resolved.sum() >= 3:
+        c0, bexp = fit_width_depth(width[resolved], depth[resolved])
+    else:
+        bexp = b_fallback
+        c0 = float(np.median(depth[zone] / width[zone] ** bexp))
+
+    def trial(c: float) -> tuple[np.ndarray, float]:
+        out = bed.copy()
+        out[zone] = level[zone] - c * width[zone] ** bexp
+        return out, float(np.median(forward(out)[boundary] - level[boundary]))
+
+    lo, hi = np.log(c0 / 50.0), np.log(c0 * 50.0)
+    bed_lo, f_lo = trial(np.exp(lo))
+    bed_hi, f_hi = trial(np.exp(hi))
+    if f_lo <= 0:
+        return bed_lo, float(np.exp(lo)), bexp, f_lo
+    if f_hi >= 0:
+        return bed_hi, float(np.exp(hi)), bexp, f_hi
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        out, f = trial(np.exp(mid))
+        if abs(f) <= tol_m:
+            break
+        lo, hi = (mid, hi) if f > 0 else (lo, mid)
+    return out, float(np.exp(mid)), bexp, f
+
+
 def estimate_river_bed(
     rivers_m: gpd.GeoDataFrame,
     reach_q: dict[str, float],
@@ -312,15 +396,14 @@ def estimate_river_bed(
             f"River bed: {int((~flowing).sum())} node(s) without discharge, depth = {c:.3f} * width^{bexp:.2f}"
         )
 
-    bed = level - depth
     bathy = (
         (node_class == NODE_WATER_BODY)
         & np.isfinite(dem)
         & (dem < gebco_shallow_m - float(cfg["bathymetry_margin_m"]))
     )
     handover = float(cfg["bathymetry_handover_m"])
+    graph = csr_matrix((np.r_[d, d], (np.r_[a, b], np.r_[b, a])), shape=(n, n))
     if bathy.any():
-        graph = csr_matrix((np.r_[d, d], (np.r_[a, b], np.r_[b, a])), shape=(n, n))
         dist_b, _pred, src = dijkstra(
             graph,
             directed=False,
@@ -329,10 +412,15 @@ def estimate_river_bed(
             return_predecessors=True,
             limit=handover,
         )
-        bed = np.where(bathy, dem, bed)
         blend = ~bathy & np.isfinite(dist_b) & (src >= 0)
-        w = np.clip(dist_b[blend] / handover, 0.0, 1.0)
-        bed[blend] = (1.0 - w) * dem[src[blend]] + w * bed[blend]
+        w_blend = np.clip(dist_b[blend] / handover, 0.0, 1.0)
+
+    def with_bathymetry(bed_river: np.ndarray) -> np.ndarray:
+        if not bathy.any():
+            return bed_river
+        out = np.where(bathy, dem, bed_river)
+        out[blend] = (1.0 - w_blend) * dem[src[blend]] + w_blend * bed_river[blend]
+        return out
 
     reach_q_net = {r: float(reach_q.get(r, 0.0)) for r in net.reach_ids}
     main = np.zeros(n, dtype=bool)
@@ -347,6 +435,45 @@ def estimate_river_bed(
         "froude_cap": float(cfg["froude_cap"]),
         "max_step_m": float(cfg["gvf_max_step_m"]),
     }
+
+    method = str(cfg["bed_method"])
+    if method not in BED_METHODS:
+        raise ValueError(
+            f"river_depth_modelling.bed.bed_method must be one of {BED_METHODS}, got {method!r}"
+        )
+    bed = level - depth
+    inverted = np.zeros(n, dtype=bool)
+    if method == "manning_sea_inversion":
+        resolved = flowing & (slope > float(cfg["slope_resolved_min"])) & ~bathy
+        for zone, boundary in _sea_zones(
+            graph, ~resolved & flowing & ~bathy, resolved, mouths, bathy
+        ):
+            bed, c, bexp, mismatch = _invert_zone(
+                lambda bed_river: forward_network(
+                    net,
+                    with_bathymetry(bed_river),
+                    width,
+                    reach_q_net,
+                    manning_n,
+                    ends,
+                    **gvf,
+                ),
+                bed,
+                level,
+                width,
+                depth,
+                zone,
+                boundary,
+                resolved,
+                float(cfg["inversion_width_exponent_fallback"]),
+            )
+            inverted |= zone
+            log.info(
+                f"River bed sea inversion: {int(zone.sum())} node(s) below {int(boundary.sum())} resolved "
+                f"node(s), depth = {c:.3f} * width^{bexp:.2f}, level mismatch at the resolved node(s) "
+                f"{mismatch:+.3f} m"
+            )
+    bed = with_bathymetry(bed)
     forward = forward_network(net, bed, width, reach_q_net, manning_n, ends, **gvf)
     mean_level = (
         forward_network(
@@ -380,6 +507,7 @@ def estimate_river_bed(
         mean_level_m=mean_level,
         sea_level_m=float(sea_level_m),
         forward_bands_m=tuple(float(b) for b in cfg["forward_bands_m"]),
+        inverted=inverted,
     )
     _log_summary(result)
     return result

@@ -3,6 +3,20 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-04: sea inversion of the river bed as an option (- JS)
+
+**New option:** `river_depth_modelling.bed.bed_method: manning | manning_sea_inversion` (default `manning`), with `slope_resolved_min: 3.0e-5` and `inversion_width_exponent_fallback: 0.4`.
+- On connected nodes with a slope at or below `slope_resolved_min` that reach the sea, the depth becomes c·W^b.
+- c is set so that the GVF level from the sea meets the surface at the resolved nodes next to them.
+- `RiverBed.inverted` and the node table's `inverted` column mark those nodes.
+
+**Why the default stays** (analysis/phase4_report.md, `analysis/phase4_capacity.py`). Channel capacity (Q_cap, the discharge at which the GVF level reaches the bank top) and the inversion settle Phase 4:
+- **Bankfull discharge:** the inversion needs a channel 35–40 m deep in the flat lower reaches. A 1.5-year flood cannot sit below the mean-stage surface.
+- **Period-median discharge:** the depths are plausible (3 m and 8.5 m), but on Chao Phraya 428–629 nodes cannot carry the mean discharge within their banks.
+- **Result:** both gates fail, and `design_discharge: bankfull` and `bed_method: manning` stay.
+
+**Results unchanged:** the defaults are the old behaviour.
+
 # 2026-11-04: SWOT surface source, single fit and period-median discharge as options (- JS)
 
 **New rule-10 options** under `river_processing.water_surface`; the defaults are unchanged:
