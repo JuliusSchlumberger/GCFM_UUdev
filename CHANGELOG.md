@@ -3,6 +3,27 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-05: depth sensitivity on the advection-0 baseline, alpha stability search, GESLA check (- JS)
+
+**Analysis only; pipeline code, config and results unchanged.**
+
+**Depth sensitivity rerun** (`phase1_depth_sensitivity.py`, analysis/phase1_report.md 1.9). Beds × 0.7 and × 1.3 against the advection 0 / `alpha` 0.25 baseline, scenarios `coast_100_03SLR` and `river_100_03SLR`:
+- **Ebro river:** flooded area +4 % / **−64 %** (178.6 → 63.4 km² at × 1.3); urban exposed 4.9 / 3.4 / 0.5 km².
+- **Ebro coast:** area unchanged, volume −6 % / +6 %.
+- **Chao Phraya coast:** area −5 % / +6 %, volume −13 % / +13 %, urban exposed 603 / 650 / 720 km².
+- **Chao Phraya river:** +1 % / −3 %. The −30 % / −26 % against the advection-1 baseline was that baseline's backwater.
+- Bifurcation splits stay within 0.05 at both scales, apart from the accepted 44306300275.
+
+**Alpha stability search** (new `analysis/phase2c_alpha_stability.py`, analysis/phase2_report.md 2c):
+- `phase2_advection_channel.build_case` gains options for the ramp time, bed drops, inflow position and spread, and extra `sfincs.inp` keywords. Its defaults build byte-identical models.
+- On the synthetic trench, no ramp, bed-step, inflow, cell-size, `theta`, `wiggle_suppression` or `viscosity` setting replaces the small `alpha`.
+- `alpha` 0.35 is stable in every 100 m case, one step below the first failure (0.4). It is untested on a real event, so `sfincs.alpha` stays 0.25.
+- `event` and `event-compare` rerun a finished event with other `sfincs.inp` keywords, for that test.
+
+**GESLA storm-tide check** (analysis/phase6_report.md 6.2): GTSM matches the Tarragona gauge (13 years) within 0.03 m on the median annual maximum and the 10-year level. Chao Phraya has no usable gauge.
+
+**TODO B39:** coast-only scenarios carry the river's rising limb in their forcing length; the storm tide crosses the delta within hours, so their event runs could be several times shorter.
+
 # 2026-11-04: sea inversion of the river bed as an option (- JS)
 
 **New option:** `river_depth_modelling.bed.bed_method: manning | manning_sea_inversion` (default `manning`), with `slope_resolved_min: 3.0e-5` and `inversion_width_exponent_fallback: 0.4`.

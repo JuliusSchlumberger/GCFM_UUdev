@@ -163,27 +163,33 @@ Script: `phase1_swot_coverage.py`.
   - The static SWORD `wse` disagrees by 1–5 m in both basins.
 - **Reliable slopes:** no reach in either basin has a reliable SWOT slope.
 
-## 1.9 Depth sensitivity (Ebro)
+## 1.9 Depth sensitivity
 
 Script: `phase1_depth_sensitivity.py run|compare`.
 
-- `river_depth_modelling.depth_scale` set to 0.7 and 1.3, in scratch results roots (`<results_dir>/../scratch_phase1/depth_<scale>/`).
-- Rule 11 is force-rerun there, followed by the default build.
+- `river_depth_modelling.depth_scale` set to 0.7 and 1.3, in scratch results roots (`$GCFM_PLAN_SCRATCH/depth_<scale>/`).
+- Rule 11 is force-rerun there, followed by the build of `coast_100_03SLR` and `river_100_03SLR`.
 - Rule 11 recalibrates the crests on each bed, so the effect combines the bed and its crests.
+- Baseline: advection 0, `alpha` 0.25 (Phase 2), settle run length (Phase 6.1), Phase 3 and 4 defaults.
+- The bifurcation check only reports here. Chao Phraya's splits stay within 0.05 at both scales (largest 0.04 at × 1.3), apart from the accepted 44306300275 (0.22 / 0.14).
 
-| basin | depth scale | flooded area | volume | area / baseline | volume / baseline |
+| basin | scenario | flooded area × 0.7 / 1.0 / 1.3 | area / baseline | volume / baseline | urban exposed × 0.7 / 1.0 / 1.3 |
 |---|---|---|---|---|---|
-| 2433835 | 1.0 | 270.22 km² | 0.4141 km³ | 1.000 | 1.000 |
-| 2433835 | 0.7 | 266.83 km² | 0.4104 km³ | 0.987 | 0.991 |
-| 2433835 | 1.3 | 269.38 km² | 0.4246 km³ | 0.997 | 1.026 |
+| Ebro | coast | 260.4 / 260.4 / 260.3 km² | 1.00 / 1.00 | 0.94 / 1.06 | 2.2 / 2.2 / 2.2 km² |
+| Ebro | river | 186.4 / 178.6 / **63.4** km² | 1.04 / **0.36** | 1.08 / 0.82 | 4.9 / 3.4 / 0.5 km² |
+| Chao Phraya | coast | 1837 / 1937 / 2050 km² | 0.95 / 1.06 | 0.87 / 1.13 | 603 / 650 / 720 km² |
+| Chao Phraya | river | 1113 / 1099 / 1066 km² | 1.01 / 0.97 | 0.98 / 1.04 | 49 / 48 / 46 km² |
 
-Chao Phraya was not run (see below).
+- **Ebro river is the one sensitive case, and only one way.** A 30 % deeper bed carries most of the 100-year flow within the banks and removes 64 % of the flooded area; a 30 % shallower bed adds 4 %. A bed that is too deep is the error that matters.
+- **Ebro coast:** the bed only changes how much water the channel holds.
+- **Chao Phraya coast:** a deeper bed carries the surge further inland, so area and urban exposure grow with depth (±6 % area, 603–720 km² urban).
+- **Chao Phraya river:** small and monotonic (+1 % / −3 %). The non-monotonic −30 % / −26 % measured against the advection-1 baseline was that baseline's backwater artefact (Phase 2).
+- Phase 4's condition (sea inversion only if ±30 % depth moves Chao Phraya's volume by 5 % or more) is met on the coast scenario (−13 % / +13 %), but Phase 4 found no physical inversion to apply.
 
 ## Not computed, and why
 
 - **1.0 Chao Phraya: flood extent and volume.** The run was stopped after the spin-up, by decision: the event run is an outcome baseline and not needed for the river depth / GVF / timing diagnostics.
 - **1.5 Ebro.** There is no bifurcation on its forcing path.
-- **1.9 Chao Phraya.** Its condition (a main run under 2 h) could not be checked, because the main run was not done.
 - **1.8 datum.** The geoid offset (0.07 m) is too small in both basins to say which datum SWOT's `wse_obs` uses.
 - **1.7.** No reach of either basin is 10 or more cells wide.
 

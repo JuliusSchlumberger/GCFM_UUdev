@@ -54,7 +54,7 @@ Gate to proceed: none; this phase measures. Deliverable: one table with the two 
 
 ## Phase 1 — Results and decisions
 
-Four things are settled: river depth barely moves the Ebro flood (±30 % depth is ±1–3 % of volume), the GloFAS "bankfull" discharge is not a channel-forming flow on Chao Phraya, SWOT levels cover 92–100 % of the nodes, and the width split holds at three of four bifurcations. Two things are not: the 1D–2D gap test was inconclusive as designed, and the one number that decides the bed work, Chao Phraya's river-driven depth sensitivity, is still missing.
+Four things are settled: river depth matters one way on the Ebro river flood (a 30 % deeper bed removes 64 % of its area, a shallower one adds 4 %), the GloFAS "bankfull" discharge is not a channel-forming flow on Chao Phraya, SWOT levels cover 92–100 % of the nodes, and the width split holds at three of four bifurcations. The 1D–2D gap test was inconclusive as designed (Phase 2 resolved it). Chao Phraya's depth sensitivity is in the 1.9 row.
 
 | Item | Ebro | Chao Phraya | Reading |
 | --- | --- | --- | --- |
@@ -67,7 +67,7 @@ Four things are settled: river depth barely moves the Ebro flood (±30 % depth i
 | 1.6 spin-up | Converged; end minus GVF mean level +0.04 m | p95 rate 0.01 m/h; end minus GVF mean +0.28 m (p95 +2.1 m) | The 2D mean-flow level sits above the 1D one on Chao Phraya: the 1.7 gap at mean flow. B33 closes as documented |
 | 1.7 1D–2D gap | +0.76 m median over 8 reaches; Spearman with width −0.55, with chord angle +0.19 | +0.29 m (p5 −0.9, p95 +1.4); no correlation; run not steady | Inconclusive: a reach chord angle does not measure a meander's staircase, and Chao Phraya had not converged. Redo as slope excess against path-length ratio on steady runs |
 | 1.8 SWOT | 99.7 % of nodes observed; SWOT median 1.0 m below the rule-10 surface | 91.5 %; 0.2–0.3 m above | Coverage settles Phase 3 without a RiverSP download. The 1 m Ebro offset is a finding in itself: the FathomDEM-based surface is uncertain at the metre level. No reach has a reliable SWOT slope |
-| 1.9 depth sensitivity | ±30 % depth: area −1.3 % / −0.3 %, volume −0.9 % / +2.6 % | Not run | On a sea-dominated delta the bed hardly matters; Chao Phraya is the river-driven case and decides |
+| 1.9 depth sensitivity | Advection-0 baseline, × 0.7 / × 1.3: coast area 1.00 / 1.00; river area 1.04 / **0.36** | Coast area 0.95 / 1.06 (urban 603 / 650 / 720 km²); river 1.01 / 0.97 | A bed that is too deep empties the Ebro river flood; on Chao Phraya depth matters most for how far the surge reaches. The first runs (advection 1, default scenario: Ebro ±1–3 %) are superseded |
 
 Decisions:
 
@@ -292,7 +292,9 @@ Rows top to bottom: diagnostics, calibration, bed chain, scenario timing. Phases
 - with the period-median discharge, 523–629 Chao Phraya nodes have Q_cap below Q_mean;
 - the sea inversion with bankfull discharge needs channels 35–40 m deep.
 
-Next: rerun 1.9 against the advection-0 baseline with the unchanged defaults, then 6.2 and 8.
+1.9 is rerun on the advection-0 baseline (`analysis/phase1_report.md`). A 30 % deeper bed removes 64 % of the Ebro river flood area; every other case moves by 6 % or less, and Chao Phraya's coastal urban exposure grows with depth (603 / 650 / 720 km²). 6.2: GTSM matches the Tarragona gauge within 0.03 m; Chao Phraya has no usable gauge; the crest hydrograph runs were not done. 2c (`analysis/phase2_report.md`): no ramp, bed, inflow, grid or SFINCS smoothing setting replaces the small `alpha`; 0.35 passes the synthetic cases one step below the first failure and stays untested on a real event, so `alpha` stays 0.25.
+
+Next: Phase 8 standing checks.
 
 > 2a → 7 and the Phase 8 constants (alongside the runs) → 5 → 3 → 4 (one Chao Phraya bundle) → 6.2 comparison → 8 suite and docs
 

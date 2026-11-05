@@ -90,12 +90,18 @@ def centreline(layout: str, length_m: float, step_m: float = CENTRELINE_STEP_M):
 
 
 def channel_rasters(
-    layout: str, dx_m: float, nr_subgrid_pixels: int, length_m: float = CHANNEL_LENGTH_M
+    layout: str,
+    dx_m: float,
+    nr_subgrid_pixels: int,
+    length_m: float = CHANNEL_LENGTH_M,
+    bed_drops: tuple[tuple[float, float], ...] = (),
 ) -> dict:
     """Return the subgrid-resolution bed raster of one layout, and the grid around it.
 
     Bed: BED_SLOPE * (L - s) in the trench (L = length_m, s the nearest
     centreline point's distance from the inflow), WALL_HEIGHT_M higher outside.
+    Each (s_m, drop_m) in bed_drops raises the bed upstream of s_m by drop_m,
+    a sudden step down in the flow direction.
     The trench runs on past both ends so the outlet's boundary cells lie in
     it. The grid origin puts an aligned trench exactly on one cell row.
     """
@@ -115,6 +121,8 @@ def channel_rasters(
     dist, k = cKDTree(xy).query(np.c_[gx.ravel(), gy.ravel()])
     dist, s_px = dist.reshape(gx.shape), s[k].reshape(gx.shape)
     bed = BED_SLOPE * (length - s_px)
+    for s_drop, drop in bed_drops:
+        bed = bed + np.where(s_px < s_drop, drop, 0.0)
     z = np.where(dist <= TRENCH_WIDTH_M / 2.0, bed, bed + WALL_HEIGHT_M)
     return {
         "xy": xy,
@@ -162,8 +170,21 @@ def build_case(
     alpha: float,
     cfg: dict,
     length_m: float = CHANNEL_LENGTH_M,
+    ramp_hr: float = RAMP_HR,
+    run_hr: float = RUN_HR,
+    bed_drops: tuple[tuple[float, float], ...] = (),
+    inflow_s_m: float = 0.0,
+    n_inflow: int = 1,
+    extra_config: dict | None = None,
 ) -> dict:
-    """Write one SFINCS model of the trench to ``root``; return its rasters and normal depth."""
+    """Write one SFINCS model of the trench to ``root``; return its rasters and normal depth.
+
+    The discharge rises from 0.1 to 1 times q_m3s over ramp_hr (half cosine),
+    entering at n_inflow points 1.5 grid steps apart (distinct cells on any
+    layout) from path distance
+    inflow_s_m down, an equal share each. extra_config is merged into
+    sfincs.inp last.
+    """
     import geopandas as gpd
     import yaml
     from hydromt_sfincs import SfincsModel
@@ -178,8 +199,9 @@ def build_case(
     patch_nearest_extrapolation()
     dx = float(cfg["sfincs"]["grid"]["resolution_m"])
     sub = cfg["sfincs"]["subgrid"]
-    r = channel_rasters(layout, dx, int(sub["nr_subgrid_pixels"]), length_m)
+    r = channel_rasters(layout, dx, int(sub["nr_subgrid_pixels"]), length_m, bed_drops)
     h_n = normal_depth_m(q_m3s, TRENCH_WIDTH_M, MANNING_N, BED_SLOPE)
+    drop_total = sum(d for _, d in bed_drops)
     root.mkdir(parents=True, exist_ok=True)
     _write_raster(root / "bed.tif", r["z"], r)
     _write_raster(root / "manning.tif", np.full_like(r["z"], MANNING_N), r)
@@ -211,12 +233,13 @@ def build_case(
         {
             "tref": tref,
             "tstart": tref,
-            "tstop": tref + timedelta(hours=RUN_HR),
+            "tstop": tref + timedelta(hours=run_hr),
             "dtmapout": 3600,
             "dthisout": 3600,
             "advection": advection,
             "alpha": alpha,
-            "zsini": float(BED_SLOPE * r["length_m"] + h_n),
+            "zsini": float(BED_SLOPE * r["length_m"] + h_n + drop_total),
+            **(extra_config or {}),
         }
     )
     sf.elevation.create(elevation_list=[{"elevation": "bed"}])
@@ -248,12 +271,23 @@ def build_case(
     sf.water_level.create_timeseries(
         shape="constant", offset=h_n + BED_SLOPE * (r["length_m"] - r["s"][-1])
     )
-    times = pd.date_range(tref, tref + timedelta(hours=RUN_HR), freq="10min")
+    times = pd.date_range(tref, tref + timedelta(hours=run_hr), freq="10min")
     hr = (times - times[0]).total_seconds().to_numpy() / 3600.0
-    ramp = 0.5 - 0.5 * np.cos(np.pi * np.clip(hr / RAMP_HR, 0.0, 1.0))
-    start = Point(*(r["xy"][np.searchsorted(r["s"], 0.0)] + np.array(ORIGIN_XY)))
-    src = gpd.GeoDataFrame({"index": [1]}, geometry=[start], crs=EPSG)
-    q = pd.DataFrame({1: q_m3s * (0.1 + 0.9 * ramp)}, index=times)
+    ramp = 0.5 - 0.5 * np.cos(np.pi * np.clip(hr / ramp_hr, 0.0, 1.0))
+    ids = list(range(1, n_inflow + 1))
+    points = [
+        Point(
+            *(
+                r["xy"][np.searchsorted(r["s"], inflow_s_m + 1.5 * k * dx)]
+                + np.array(ORIGIN_XY)
+            )
+        )
+        for k in range(n_inflow)
+    ]
+    src = gpd.GeoDataFrame({"index": ids}, geometry=points, crs=EPSG)
+    q = pd.DataFrame(
+        {i: q_m3s / n_inflow * (0.1 + 0.9 * ramp) for i in ids}, index=times
+    )
     sf.discharge_points.create(timeseries=q, locations=src)
     sf.write()
     return {**r, "h_n": h_n}

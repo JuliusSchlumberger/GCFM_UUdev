@@ -106,9 +106,35 @@ Calibrated crests, median: Ebro 4.27 → 3.73 m, Chao Phraya 11.15 → 9.58 m.
 - **Chao Phraya river:** the large drop is the backwater from the advection artefact leaving the upper delta. The 1553 km² baseline was inflated by it. That also explains Phase 1.9's non-monotonic depth sensitivity: 1082 km² at depth × 0.7 and 1154 km² at × 1.3, both under the old baseline.
 - **Ebro river:** the max depth falls from 26.8 to 11.4 m. The old maximum was the inflow pile-up.
 
+## 2c Faster than `alpha` 0.25?
+
+Script: `phase2c_alpha_stability.py synthetic` (the 2b trench, advection 0, `phase2_advection_channel.build_case` with ramp, bed-drop, inflow and `sfincs.inp` options). Starting from the two 2b cases unstable at `alpha` 0.5, one factor changes at a time. Unstable: a 10-minute level step above 0.5 m after the ramp, or an end level more than 2 m off normal depth.
+
+| change from `alpha` 0.5, 100 m cells | aligned, 3000 m³/s | diagonal, 500 m³/s |
+|---|---|---|
+| `alpha` 0.25 / 0.35 | stable, same levels | stable, same levels |
+| `alpha` 0.4 | unstable | stable (step 0.14 m) |
+| `alpha` 0.45 | unstable | unstable |
+| discharge ramp 6 h or 24 h instead of 2 h | stable | unstable |
+| bed drop 0.5 / 1 / 2 m mid-channel | unstable | unstable |
+| inflow 2 km in, or spread over 3 cells | unstable | unstable |
+| `theta` 0.9 / 0.8 | unstable | oscillation damped, level 4.8–5.5 m too high |
+| `wiggle_suppression` 1, `viscosity` 0 | unstable | unstable |
+| 50 m cells (`alpha` 0.25 / 0.35 / 0.5) | stable / **unstable** / stable | stable |
+| 200 m cells (`alpha` 0.25 / 0.35 / 0.5) | unstable at all three | stable |
+
+![2c](<results_dir>/figures/analysis/phase2c_alpha_stability_synthetic.png)
+
+- **Two kinds of instability.** The aligned trench runs away at the end of the ramp and settles about 14 m too high; a slower ramp prevents it, and whether it is triggered depends erratically on `alpha` and cell size. The diagonal trench oscillates persistently from `alpha` 0.45 up, whatever the ramp, bed or inflow.
+- **Ramp rate** only matters for the triggered kind. Pipeline events start from the spin-up restart and the Ebro 100-year hydrograph rises by at most 75 m³/s per hour, yet the event went unstable at 0.5: the real case behaves like the diagonal one.
+- **Bed and surface steps, inflow position and spread** play no role.
+- **Grid resolution** is no remedy: 200 m cells make the deep one-cell trench worse, and 50 m cells cost about 8× the run time.
+- **`theta` smoothing** removes the oscillation by biasing the level, so it is not usable.
+- **`alpha` 0.35** is the only faster setting stable in every 100 m case, about 1.4× faster than 0.25. It sits one step below the first failure (0.4), and the triggered kind makes a synthetic pass weak evidence, so it is not adopted without a real-event test.
+
 ## Decisions and follow-ups
 
-- `sfincs.advection: 0` and `sfincs.alpha: 0.25` are the defaults for calibration and events.
+- `sfincs.advection: 0` and `sfincs.alpha: 0.25` are the defaults for calibration and events. 2c found no faster setting that is safe without a real-event test; `phase2c_alpha_stability.py event` reruns a finished event with other `sfincs.inp` keywords for that test.
 - **Phase 1.5:** the bifurcation shares were measured under advection 1, whose backwater drove the reversed splits. Rerun on the new round 1 before Phase 5.
 - **Phase 1.9:** the Chao Phraya depth sensitivity was measured against the inflated baseline. Rerun it with the Phase 4 bundle.
 - **Phase 8:** make the hourly level change in event runs a standing check.

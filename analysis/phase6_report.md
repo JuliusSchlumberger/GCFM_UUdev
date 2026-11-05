@@ -81,3 +81,21 @@ median level deficit 0.01 m at the run end, against 1.87 m before. Config:
 
 **Cost.** Rule 11 on 14 threads (`.snakemake/log/2026-11-01T170418.784022.snakemake.log`):
 Ebro 2.0 min, Chao Phraya 98.5 min. In the Phase 1 report these were 1.3 and 33.4 min.
+
+## 6.2 Storm tide against GESLA
+
+Script: `phase6_gesla_storm_tide.py`. Gauges as screened by `inspect_gesla_gauges`
+(10 or more complete years, outside the domain, within 50 km of a GTSM station),
+also keeping gauges excluded only for a timing lag under an hour. Per year, the
+maximum level above that year's mean; bias = gauge − GTSM.
+
+| basin | gauge | years | annual maximum, median: gauge / GTSM | bias, median | 10-year level: gauge / GTSM | bias |
+|---|---|---|---|---|---|---|
+| Ebro | Tarragona (GTSM station 2, 41.5 km) | 13 | 0.37 / 0.40 m | −0.03 m | 0.47 / 0.44 m | +0.03 m |
+| Chao Phraya | none usable | | | | | |
+
+![GESLA](<results_dir>/2433835/figures/analysis/90_phase6_gesla_storm_tide_annual_maxima.png)
+
+- **Ebro:** GTSM's storm tide matches the gauge within 0.03 m, well inside the ±0.3 m band.
+- **Chao Phraya:** no gauge qualifies, so its storm-tide forcing is unchecked.
+- The comparison of the held calibration sea against the storm-tide hydrograph (`phase6_crest_hydrograph.py`, TODO B36) was not run.
