@@ -3,6 +3,24 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-06: river peak travel and surge reach on the production model (- JS)
+
+**Analysis only; pipeline code, config and results unchanged.** Report: analysis/timing_boundary_report.md.
+
+**Calibration settling with advection 0** (rule 11 `steady_check.csv`): round 1 settles by 21 h (Ebro, 65 h run) and 171 h (Chao Phraya, 219 h run), with no cells still rising. `settle_factor` 1.75, measured with advection 1, still holds.
+
+**River peak travel** (`peak_lag.py`, `lag_plateau.py`, `estimate_peak_travel.py` on the advection-0 runs):
+- **Ebro:** inflow to mouth 16.3 h in SFINCS, against 6.2 h walled (rule 11) and 1.5-5.6 h from 1D celerities. Plateau-midpoint lag -17.7 h against the configured -21 h (tau95 10 h).
+- **Chao Phraya:** the mouth discharge plateau is open-ended. The lag is -54 h or later, against the configured -41 h (tau95 36 h). Only 1237 of 9206 m3/s leaves through the main mouth at its peak.
+- Both configured lags stay. The walled estimate's error does not reach production, since the settling time sets the calibration run length.
+
+**Surge reach** (new `analysis/surge_reach.py`): coastal run zsmax against the spin-up end level along each forcing mainstem, with `testing.upstream_boundary_check` thresholds.
+- **Ebro:** reach 53 km; forcing point at 65 km, margin 12 km.
+- **Chao Phraya:** reach 198 and 275 km; forcing points at 265 and 294 km, margins 66 and 18 km.
+- No rise at any forcing point. The reach is within 2-4 km of the earlier steady SFINCS benchmark.
+
+**TODO B32** reworded: the Chao Phraya river run ends on the mouth plateau.
+
 # 2026-11-05: depth sensitivity on the advection-0 baseline, alpha stability search, GESLA check (- JS)
 
 **Analysis only; pipeline code, config and results unchanged.**
