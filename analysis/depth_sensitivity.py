@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from _common import REPO_ROOT, script_parser, site_path
-from _figure_style import panel_letters, write_caption
+from _figure_style import panel_letters, save_figure, write_caption
 
 METRICS = {
     "flooded_area_km2": "flooded area",
@@ -154,7 +154,7 @@ def figure(table: pd.DataFrame, path: Path) -> None:
         ax.grid(alpha=0.3, axis="y")
     panel_letters(axes)
     fig.tight_layout()
-    fig.savefig(path, dpi=130)
+    save_figure(fig, path, dpi=130)
     plt.close(fig)
     base = table[table["depth_scale"] == 1.0]
     values = "\n".join(

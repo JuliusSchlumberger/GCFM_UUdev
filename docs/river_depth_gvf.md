@@ -31,20 +31,26 @@ changed without changing their content.
 
 ## 1. How the bed is set (`gvf_setup/concept.png`)
 
-1. **Water surface (rule 10):** FathomDEM river-centre medians per 500 m node,
-   mouths pinned at the calm sea level, a monotone downstream fit, two-scale
-   smoothing.
-2. **Slope S:** the surface slope along each node's largest-Q path, floored at
-   `slope_floor` (1e-5) for the depth only.
-3. **Depth:** Manning normal depth of a rectangular channel,
-   h = (n Q / (W √S))^(3/5), with Q the routed GloFAS bankfull discharge, W the
-   SWORD width and n `channel_manning_n` (0.03).
-4. **Bed:** surface − h (rule 11, round 0).
-5. **Forward check:** a steady GVF solve on that bed at Q_bankfull should
+1. **Observed water surface:** FathomDEM river-centre medians per 500 m node.
+2. **Fitted surface and slope (rule 10):** mouths pinned at the calm sea level,
+   a monotone downstream fit, two-scale smoothing. The slope is taken along each
+   node's largest-Q path and floored at `slope_floor` (1e-5) for the depth only.
+   The pin is the calm level, not a surge level, because the terrain model
+   records the river at ordinary water levels. A storm-tide pin would raise the
+   surface and deepen the bed near the coast for a condition the observation
+   never saw; the surge enters later, as the event's sea boundary.
+3. **Depth and bed (rule 11, round 0):** Manning normal depth of a rectangular
+   channel, h = (n Q / (W √S))^(3/5), with Q the routed GloFAS bankfull
+   discharge, W the SWORD width and n `channel_manning_n` (0.03); bed =
+   surface − h.
+4. **Forward check:** a steady GVF solve on that bed at Q_bankfull should
    return the surface. The bed is hung from the surface, so the GVF solve
-   checks the bed but does not set it.
-6. **SFINCS:** the bed is burned into the subgrid. Rule 11 runs the walled model
-   to set the coastal crests.
+   checks the bed but does not set it. On floored reaches the channel is
+   shallower than the flat surface needs, so the computed level climbs above
+   it. Upstream the excess decays as a backwater curve rather than adding up.
+5. **Flood model:** the bed is burned into the SFINCS subgrid. Rule 11 runs the
+   model with the river walled in to set the dikes along the river to the
+   protection standard.
 
 ## 2. Advection off, and when that is valid (`gvf_setup/froude_1d.png`, `froude_sfincs_<river event>.png`)
 
@@ -94,35 +100,32 @@ flow and is not the case the choice depends on.
 
 ## 3. The bed and its alternatives (`gvf_setup/long_profile_<basin>.png`, `bed_alternatives.png`)
 
-`bed_alternatives.png` scores ten ways to set the bed against four criteria a
-bed must meet. The alternatives (rows A-J) vary:
-- the water surface: FathomDEM or SWOT;
-- the fit: two-scale or a single fit over 20 or 40 km;
-- the design discharge: bankfull or the recent median;
-- the bed method: Manning, with or without the sea inversion.
+`bed_alternatives.png` compares ten ways to set the bed (A-J, described in
+its caption) with the production bed A, delta by delta, on six criteria (lower
+is better):
+- the forward check, |median| and p95;
+- the share of nodes overflowing at Q_bankfull, the design discharge;
+- the share of nodes on the slope floor;
+- the depth p95 and maximum, which count only when deeper than A.
 
-The criteria:
-- the forward check, median within ±0.25 m and p95 at most 0.75 m;
-- the share of nodes overflowing at Q_bankfull, at most 10 %;
-- the share overflowing at Q_mean, at most 2 %.
+**Decision rule.** An alternative replaces A only if it is no worse than A on
+every criterion in every delta and better on at least one. None is:
 
-The caption explains each alternative.
+| alternative | better than A | worse than A |
+|---|---|---|
+| B, D, F, H, J (recent median discharge) | forward check | overflow at bankfull 28-32 % (Ebro), 86-92 % (Chao Phraya) |
+| C, E (SWOT, bankfull) | forward check on the Ebro | Chao Phraya forward check (C), slope floor and depth (up to 84 m) |
+| G (SWOT, single 40 km, bankfull) | forward check in both deltas | Chao Phraya slope floor (36 % vs 25 %) and depth (p95 23.7 vs 20.6 m, max 84 vs 61 m) |
+| I (sea inversion) | forward check, slope floor | depth: channels 39-40 m deep (p95) |
 
-| alternative | Ebro | Chao Phraya | why not chosen |
-|---|---|---|---|
-| A production (FathomDEM, two-scale, bankfull) | fails forward p95 (0.87 m) | fails forward median and p95 (0.44 / 1.12 m) | chosen |
-| B, D, F, H, J recent median discharge | overflow at Q_bankfull 28-31 %, at Q_mean 4-5 % | overflow at Q_bankfull 86-92 %, at Q_mean 22-32 % | channel too small for the flows the model must carry |
-| C, E, G SWOT with bankfull | pass (E, G) or fail p95 (C) | fail the forward check (median 0.36-0.62 m) | no basin-independent gain |
-| I sea inversion | passes | fails forward p95 (0.92 m) | needs 35-40 m deep channels on the flat reaches |
+A is kept, which does not make it the best bed. G improves the forward check in
+both deltas at the cost of more floored nodes and deeper channels on the Chao
+Phraya; it is the candidate to test in the full model if the bed is revisited.
+A misses the forward check by design: the depth uses the floored,
+long-smoothed slope, which the surface does not share (concept.png, step 4).
 
-No alternative passes in both basins. A is the only one that keeps both
-bankfull and mean flow in the channel everywhere (overflow 2-8 % and 0-2 %).
-Its forward check misses by design: the depth uses the floored, long-smoothed
-slope, which the surface does not share (concept.png, step 5). It is kept.
-
-What was not tested: the Q_mean capacity of alternatives C-G. The slope floor
-was varied separately: 5e-6 and 2e-5 change the depth on the 25-29 % of nodes
-on the floor by +24 % and -20 %.
+The slope floor was varied separately: 5e-6 and 2e-5 change the depth on the
+25-29 % of nodes on the floor by +24 % and -20 %.
 
 - **Forward check:** the default bed returns the surface within a median of
   +0.20 m (Ebro) and +0.44 m (Chao Phraya); the p95 is 0.87 and 1.12 m.

@@ -34,7 +34,7 @@ import pandas as pd
 import yaml
 from _basin_inputs import basin_paths
 from _common import REPO_ROOT, analysis_dir, script_parser, site_path
-from _figure_style import add_land, map_axes, panel_letters, write_caption
+from _figure_style import add_land, map_axes, panel_letters, save_figure, write_caption
 from _upstream_profile import (
     boundary_verdict,
     influence_length,
@@ -220,7 +220,7 @@ def figure(results: dict, path, coast: str) -> None:
         layout.append((basin_id, reaches))
     panel_letters(axes)
     fig.tight_layout()
-    fig.savefig(path, dpi=130)
+    save_figure(fig, path, dpi=130)
     plt.close(fig)
     test = config_options()
     k, lines = 0, []

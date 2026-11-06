@@ -27,7 +27,7 @@ def _s_event(scenario):
 
 
 def _s_gvf_basin_outputs(basin_id):
-    names = ["nodes.csv", "surface_options.csv", "channel_capacity.csv"]
+    names = ["nodes.csv", "surface_options.csv"]
     if _S_VMAX:
         names.append(f"froude_sfincs_{_S_RIVER}.npz")
     return [f"{_S_DIR}/gvf_setup/{basin_id}/{n}" for n in names]
@@ -43,7 +43,7 @@ rule suite_gvf_setup_basin:
         spinup_map    = results_path("{basin_id}/spin_up/sfincs_map.nc"),
         river_map     = _s_event(_S_RIVER),
     output:
-        [f"{_S_DIR}/gvf_setup/{{basin_id}}/{n}" for n in ["nodes.csv", "surface_options.csv", "channel_capacity.csv"]]
+        [f"{_S_DIR}/gvf_setup/{{basin_id}}/{n}" for n in ["nodes.csv", "surface_options.csv"]]
         + ([f"{_S_DIR}/gvf_setup/{{basin_id}}/froude_sfincs_{_S_RIVER}.npz"] if _S_VMAX else []),
     log: "logs/analysis_suite/gvf_setup_{basin_id}.log"
     shell: f"python analysis/gvf_setup.py compute {{wildcards.basin_id}} --river {_S_RIVER} > {{log}} 2>&1"

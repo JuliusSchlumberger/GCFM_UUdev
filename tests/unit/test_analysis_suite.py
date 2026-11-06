@@ -53,7 +53,7 @@ def test_concept_figure_renders(tmp_path):
     path = tmp_path / "concept.png"
     gvf_setup.fig_concept(path)
     assert path.stat().st_size > 10_000
-    assert "(a)" in path.with_suffix(".txt").read_text(encoding="utf-8")
+    assert "5. Flood model" in path.with_suffix(".txt").read_text(encoding="utf-8")
 
 
 def test_depth_figure_renders_from_a_summary(tmp_path):

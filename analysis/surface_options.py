@@ -1,7 +1,8 @@
-"""Rule-10 surface options and the round-0 bed hung from each.
+"""Rule-10 surface options and the round-0 bed hung from each, with and without the sea inversion.
 
 Options: surface_source fathom | sword_swot, surface_fit two_scale | single,
-design_discharge bankfull | period_median. Each surface is rebuilt with
+design_discharge bankfull | period_median, and bed_method manning_sea_inversion
+for the pairs in INVERSION_CASES. Each surface is rebuilt with
 src.water_surface.build_water_surface on rule 10's stored inputs (rule 06's
 merged DEM and land use, SWOT levels from SWORD v17c), written to
 <results_dir>/<basin>/figures/analysis/surfaces/, and rule 11's round 0
@@ -9,7 +10,7 @@ merged DEM and land use, SWOT levels from SWORD v17c), written to
 
 Per option: surface minus SWOT on observed nodes; forward check (GVF level at
 the design discharge minus the surface); share of nodes on the slope floor;
-bankfull freeboard (bank top, bank_freeboard.bank_top, minus the GVF level at
+depth median, p95 and maximum; bankfull freeboard (bank top, bank_freeboard.bank_top, minus the GVF level at
 Q_bankfull on the bed).
 
 Writes per basin 90_surface_options_{summary.csv,profile.png} to
@@ -56,6 +57,11 @@ SURFACES = {
     },
 }
 DESIGNS = ("bankfull", "period_median")
+# (surface, design discharge) pairs also run with the sea inversion
+INVERSION_CASES = (
+    ("fathom_two_scale", "bankfull"),
+    ("swot_single_40km", "period_median"),
+)
 
 
 def build_surfaces(basin_id: str, cfg: dict) -> dict[str, str]:
@@ -128,9 +134,19 @@ def basin(basin_id: str, cfg: dict) -> list[dict]:
             basin_id, cfg, water_surface=s_path, design_discharge="bankfull"
         )
         q_bf_reach = reach_q_dict(rivers, q_bf)
-        for design in DESIGNS:
+        methods = [
+            (design, method)
+            for design in DESIGNS
+            for method in ("manning", "manning_sea_inversion")
+            if method == "manning" or (s_name, design) in INVERSION_CASES
+        ]
+        for design, method in methods:
             bed, _, _, _ = round0(
-                basin_id, cfg, water_surface=s_path, design_discharge=design
+                basin_id,
+                cfg,
+                water_surface=s_path,
+                design_discharge=design,
+                bed_method=method,
             )
             net = bed.net
             if bank is None:
@@ -158,6 +174,8 @@ def basin(basin_id: str, cfg: dict) -> list[dict]:
             free = np.where(keep, bank - level_bf, np.nan)
             fwd = forward_deviation_summary(bed)
             river = (bed.q_m3s > 0) & ~bed.bathymetry
+            # depth_m holds the Manning depth; the sea inversion only moves the bed
+            depth = bed.level_m - bed.bed_m
             surf_minus_swot = (bed.level_m - by_node["level_source_m"].to_numpy())[
                 swot_nodes
             ]
@@ -166,6 +184,7 @@ def basin(basin_id: str, cfg: dict) -> list[dict]:
                     "basin_id": basin_id,
                     "surface": s_name,
                     "design_discharge": design,
+                    "bed_method": method,
                     "share_nodes_swot": float(swot_nodes.mean()),
                     "surface_minus_swot_p50_m": pct(surf_minus_swot, 50),
                     "surface_minus_swot_abs_p95_m": pct(np.abs(surf_minus_swot), 95),
@@ -173,14 +192,17 @@ def basin(basin_id: str, cfg: dict) -> list[dict]:
                     "forward_p95_m": fwd["river_p95_m"],
                     "forward_within_0.5m": fwd["river_within_0.5m"],
                     "on_floor_share": float(bed.on_floor[river].mean()),
-                    "depth_p50_m": pct(bed.depth_m[river], 50),
+                    "depth_p50_m": pct(depth[river], 50),
+                    "depth_p95_m": pct(depth[river], 95),
+                    "depth_max_m": pct(depth[river], 100),
                     "freeboard_p50_m": pct(free, 50),
                     "freeboard_share_below_0": float(
                         (free[np.isfinite(free)] < 0).mean()
                     ),
                 }
             )
-            profiles[(s_name, design)] = bed
+            if method == "manning":
+                profiles[(s_name, design)] = bed
     t = pd.DataFrame(rows)
     t.to_csv(
         analysis_path(basin_id, __file__, "summary.csv"),

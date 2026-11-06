@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 from _basin_inputs import basin_paths, load_config
 from _common import REPO_ROOT, script_parser, site_path
-from _figure_style import panel_letters, write_caption
+from _figure_style import panel_letters, save_figure, write_caption
 from _upstream_profile import routed_discharge
 from lag_plateau import plateau_basin
 
@@ -156,7 +156,7 @@ def figure(results: list[dict], path, river: str, frac: float) -> None:
         b.grid(alpha=0.3, axis="x")
     panel_letters(np.r_[axes[0], axes[1]])
     fig.tight_layout()
-    fig.savefig(path, dpi=130)
+    save_figure(fig, path, dpi=130)
     plt.close(fig)
     letters = [f"({chr(97 + k)})" for k in range(2 * n)]
     basins = [r["row"] for r in results]

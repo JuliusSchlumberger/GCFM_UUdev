@@ -9,8 +9,7 @@
     the calm level; the bank top (bank_freeboard.bank_top) and the SFINCS grid
     DEM one cell beyond each bank (lower side); the spin-up's end level;
     SWOT node levels (surface_stages.swot_on_nodes);
-  surface_options.csv, channel_capacity.csv: the alternative beds of
-    surface_options.py and channel_capacity.py;
+  surface_options.csv: the alternative beds of surface_options.py;
   froude_sfincs_<river>.npz: per wet cell of the river event the largest
     vmax / sqrt(g (zsmax - zb)) over the max-output intervals; only when the
     map holds vmax (sfincs.simulation.storevelmax: 1).
@@ -50,7 +49,7 @@ from _basin_inputs import (
     round0,
 )
 from _common import REPO_ROOT, script_parser, site_path
-from _figure_style import add_land, map_axes, panel_letters, write_caption
+from _figure_style import add_land, map_axes, panel_letters, save_figure, write_caption
 from _upstream_profile import mainstem_path, path_nodes
 from matplotlib.collections import LineCollection
 from matplotlib.colors import BoundaryNorm, ListedColormap
@@ -65,38 +64,28 @@ DISCHARGES = {"q_mean": "Q_mean", "q_bf": "Q_bankfull", "q_peak": "event peak"}
 FR_BOUNDS = [0.0, 0.1, 0.2, "ok", "limit", 1.0, 2.0]
 FR_COLOURS = ["#1a9850", "#66bd63", "#a6d96a", "#fdae61", "#d73027", "#67001f"]
 
-# Bed alternatives: label, surface_options (surface, design discharge), channel_capacity option
-ALTERNATIVES = [
-    (
-        "A  FathomDEM, two-scale, bankfull (production)",
-        ("fathom_two_scale", "bankfull"),
-        "fathom_bankfull",
-    ),
-    (
-        "B  FathomDEM, two-scale, recent median Q",
-        ("fathom_two_scale", "period_median"),
-        "fathom_period_median",
-    ),
-    ("C  SWOT, two-scale, bankfull", ("swot_two_scale", "bankfull"), None),
-    ("D  SWOT, two-scale, recent median Q", ("swot_two_scale", "period_median"), None),
-    ("E  SWOT, single 20 km, bankfull", ("swot_single", "bankfull"), None),
-    ("F  SWOT, single 20 km, recent median Q", ("swot_single", "period_median"), None),
-    ("G  SWOT, single 40 km, bankfull", ("swot_single_40km", "bankfull"), None),
-    (
-        "H  SWOT, single 40 km, recent median Q",
-        ("swot_single_40km", "period_median"),
-        "swot40_period_median",
-    ),
-    ("I  A + sea inversion", None, "fathom_bankfull_inversion"),
-    ("J  H + sea inversion", None, "swot40_period_median_inversion"),
-]
-# criterion: column label, pass test
+# Bed alternatives: letter and its (surface, design discharge, bed method) in surface_options.csv
+ALTERNATIVES = {
+    "A": ("fathom_two_scale", "bankfull", "manning"),
+    "B": ("fathom_two_scale", "period_median", "manning"),
+    "C": ("swot_two_scale", "bankfull", "manning"),
+    "D": ("swot_two_scale", "period_median", "manning"),
+    "E": ("swot_single", "bankfull", "manning"),
+    "F": ("swot_single", "period_median", "manning"),
+    "G": ("swot_single_40km", "bankfull", "manning"),
+    "H": ("swot_single_40km", "period_median", "manning"),
+    "I": ("fathom_two_scale", "bankfull", "manning_sea_inversion"),
+    "J": ("swot_single_40km", "period_median", "manning_sea_inversion"),
+}
+PRODUCTION = "A"
+# criterion column: label, tolerance within which it counts as equal to production; lower is better
 CRITERIA = {
-    "forward_median_m": ("forward check\nmedian (m)", lambda v: abs(v) <= 0.25),
-    "forward_p95_m": ("forward check\np95 (m)", lambda v: v <= 0.75),
-    "overflow_bf": ("overflowing\nat Q_bankfull", lambda v: v <= 0.10),
-    "overflow_mean": ("overflowing\nat Q_mean", lambda v: v <= 0.02),
-    "on_floor_share": ("on the\nslope floor", None),
+    "forward_abs_median_m": ("forward check\n|median| (m)", 0.02),
+    "forward_p95_m": ("forward check\np95 (m)", 0.02),
+    "freeboard_share_below_0": ("overflowing\nat Q_bankfull", 0.01),
+    "on_floor_share": ("on the\nslope floor", 0.01),
+    "depth_p95_m": ("depth\np95 (m)", 0.5),
+    "depth_max_m": ("depth\nmax (m)", 0.5),
 }
 
 
@@ -266,7 +255,6 @@ def compute_sfincs_froude(basin_id: str, scenario: str) -> dict | None:
 
 
 def compute(basin_id: str, river: str) -> None:
-    import channel_capacity
     import surface_options
 
     cfg = load_config()
@@ -276,9 +264,6 @@ def compute(basin_id: str, river: str) -> None:
     )
     pd.DataFrame(surface_options.basin(basin_id, cfg)).to_csv(
         out / "surface_options.csv", index=False
-    )
-    pd.DataFrame(channel_capacity.basin(basin_id, cfg)).to_csv(
-        out / "channel_capacity.csv", index=False
     )
     fr = compute_sfincs_froude(basin_id, river)
     if fr is not None:
@@ -346,7 +331,7 @@ def fig_froude_1d(nodes: dict, path: Path, fr_ok: float, fr_limit: float) -> Non
         label="Froude number",
     )
     panel_letters(axes)
-    fig.savefig(path, dpi=130, bbox_inches="tight")
+    save_figure(fig, path, dpi=130, bbox_inches="tight")
     plt.close(fig)
     letters = _letters(nb * nc)
     rows = []
@@ -432,7 +417,7 @@ def fig_froude_sfincs(
         label="Froude number",
     )
     panel_letters(np.r_[axes[0], axes[1]])
-    fig.savefig(path, dpi=130, bbox_inches="tight")
+    save_figure(fig, path, dpi=130, bbox_inches="tight")
     plt.close(fig)
     letters = _letters(2 * nb)
     write_caption(
@@ -452,21 +437,28 @@ def fig_concept(path: Path) -> None:
     rng = np.random.default_rng(0)
     x = np.linspace(0, 100, 201)
     sea = 0.0
-    surface = sea + 6.0 * (np.maximum(x - 25.0, 0.0) / 75.0) ** 1.4
+    x_flat = 25.0
+    surface = sea + 6.0 * (np.maximum(x - x_flat, 0.0) / 75.0) ** 1.4
     raw = np.maximum(np.round(surface + rng.normal(0, 0.35, x.size), 0), sea - 0.4)
     slope = np.gradient(surface, x * 1000)
     floor = 1e-5
     depth = (0.03 * 1500 / (200 * np.sqrt(np.maximum(slope, floor)))) ** 0.6
     bed = surface - depth
-    # GVF level on the bed: where the slope is floored the bed is shallower than
-    # the flat surface needs, so the computed level rises at the floor slope
     flat = slope < floor
-    forward = np.maximum(surface, sea + 0.035 * x)
+    # Computed level on the bed: it climbs at the floor slope over the flat reach
+    # (the bed is shallower than the flat surface needs) and the excess decays
+    # upstream as a backwater curve where the bed follows the real slope.
+    excess = 0.9
+    forward = np.where(
+        x <= x_flat,
+        sea + excess * x / x_flat,
+        surface + excess * np.exp(-(x - x_flat) / 18.0),
+    )
+    # a subcritical level never falls going upstream
+    forward = np.maximum.accumulate(forward)
     crest = surface + 1.2 + 0.4 * (x / 100)
 
-    fig, (a, b) = plt.subplots(
-        1, 2, figsize=(15, 5.5), gridspec_kw={"width_ratios": [3, 2]}
-    )
+    fig, a = plt.subplots(figsize=(11, 5.5))
     a.plot(x, raw, ".", color="0.6", ms=4)
     a.plot(x, surface, color="tab:blue", lw=2)
     a.fill_between(x, bed, surface, color="tab:blue", alpha=0.10)
@@ -481,17 +473,16 @@ def fig_concept(path: Path) -> None:
         "", (xa, bed[k]), (xa, surface[k]), arrowprops=dict(arrowstyle="->", lw=1.5)
     )
     a.text(xa + 1.5, 0.5 * (bed[k] + surface[k]), "h", fontsize=12, va="center")
-    a.set_xticks([])
-    a.set_yticks([])
-    a.set_xlabel("distance from the mouth")
-    a.set_ylabel("level")
+
+    def at(xm):
+        return int(np.argmin(np.abs(x - xm)))
+
     marks = [
-        (1, 88, raw[np.argmin(np.abs(x - 88))] + 0.9),
-        (2, 50, surface[np.argmin(np.abs(x - 50))] + 0.9),
-        (3, 12, sea - 1.0),
-        (4, xa - 4, 0.5 * (bed[k] + surface[k])),
-        (5, 18, forward[np.argmin(np.abs(x - 18))] + 0.8),
-        (6, 40, crest[np.argmin(np.abs(x - 40))] + 0.8),
+        (1, 88, raw[at(88)] + 0.9),
+        (2, 12, sea - 1.0),
+        (3, xa - 4, 0.5 * (bed[k] + surface[k])),
+        (4, 18, forward[at(18)] + 0.8),
+        (5, 45, crest[at(45)] + 0.8),
     ]
     for n, xm, ym in marks:
         a.text(
@@ -504,65 +495,23 @@ def fig_concept(path: Path) -> None:
             fontweight="bold",
             bbox=dict(boxstyle="circle", facecolor="white", edgecolor="k"),
         )
-    steps = [
-        (
-            "Observed water surface",
-            "river-centre water levels read from the terrain\nmodel along the river network",
-        ),
-        (
-            "Fitted surface",
-            "levels may only fall towards the sea and end at the\ncalm sea level; small steps are smoothed out",
-        ),
-        (
-            "Water-surface slope",
-            "taken from the fitted surface; where the river is\nflat near the sea a minimum slope is used instead",
-        ),
-        (
-            "Depth and bed",
-            "depth of uniform flow at bankfull discharge for that\nslope, channel width and roughness; bed = surface - depth",
-        ),
-        (
-            "Check",
-            "water levels computed on this bed (gradually varied\nflow) should return the surface; they rise above it\nwhere the minimum slope was used",
-        ),
-        (
-            "Flood model",
-            "bed built into the flood model; dikes along the river\nset to the protection standard from a run with\nthe river walled in",
-        ),
-    ]
-    b.axis("off")
-    for n, (head, body) in enumerate(steps, start=1):
-        yk = 0.92 - 0.92 * (n - 1) / len(steps)
-        b.text(
-            0.02,
-            yk - 0.02,
-            str(n),
-            transform=b.transAxes,
-            fontsize=10,
-            fontweight="bold",
-            va="top",
-            bbox=dict(boxstyle="circle", facecolor="white", edgecolor="k"),
-        )
-        b.text(
-            0.10,
-            yk - 0.02,
-            head,
-            transform=b.transAxes,
-            fontsize=10,
-            fontweight="bold",
-            va="top",
-        )
-        b.text(0.10, yk - 0.07, body, transform=b.transAxes, fontsize=8.5, va="top")
-    panel_letters([a, b])
+    a.set_xticks([])
+    a.set_yticks([])
+    a.set_xlabel("distance from the mouth")
+    a.set_ylabel("level")
     fig.tight_layout()
-    fig.savefig(path, dpi=130)
+    save_figure(fig, path, dpi=130)
     plt.close(fig)
     write_caption(
         path,
         """
-How the river bed is set from the observed water surface (schematic, no scale). (a) Long profile from the mouth (left) to the upstream model boundary (right); circled numbers mark the steps listed in (b).
-Grey dots: water levels read from the terrain model along the river centre, which come in metre steps (1). Blue line: the fitted surface, sea-pinned, never rising towards the sea and smoothed (2). Orange band: the flat reach near the sea where the surface slope falls below the minimum slope used for the depth (3). Arrow h: the depth of uniform flow at bankfull discharge (Manning), which places the bed (black line) below the surface; blue shading is the channel (4). Dashed cyan line: the water level computed back on that bed with the gradually varied flow equation. It follows the surface where the true slope is used and rises above it on the flat reach, where the minimum slope makes the channel shallower than the flat surface would need (5). Dash-dotted brown line: dike crests along the river, set from a run with the river walled in at the protection-standard discharge (6). Dotted cyan line: calm sea level.
-(b) The steps in words.
+How the river bed is set from the observed water surface (schematic, no scale): long profile from the mouth (left) to the upstream model boundary (right). Circled numbers mark the steps.
+1. Observed water surface. Grey dots: river-centre water levels read from the terrain model (FathomDEM) along the river network; they come in metre steps.
+2. Fitted surface and its slope. Blue line: the levels are pinned to the calm sea level at the mouths, may only fall towards the sea, and are smoothed. Its slope sets the depth; on the flat reach near the sea (orange band) the slope falls below a minimum (1e-5), and the minimum is used instead.
+3. Depth and bed. Arrow h: the depth of uniform flow at bankfull discharge for that slope, channel width and roughness (Manning). The bed (black line) lies h below the surface; blue shading is the channel.
+4. Check. Dashed cyan line: the water level computed back on that bed at bankfull discharge with the gradually-varied-flow equation, starting from the sea. On the flat reach the minimum slope makes the channel shallower than the flat surface needs, so the computed level climbs above the surface. Upstream, where the bed follows the real slope, the excess does not add up further: it decays as a backwater curve towards the surface.
+5. Flood model. The bed is built into the flood model; dikes along the river (dash-dotted brown line) are set to the protection standard from a run with the river walled in.
+Dotted cyan line: calm sea level.
 """,
     )
 
@@ -618,7 +567,7 @@ def fig_long_profile(basin_id: str, t: pd.DataFrame, path: Path) -> None:
     b.grid(alpha=0.3)
     panel_letters([a, b])
     fig.tight_layout()
-    fig.savefig(path, dpi=130)
+    save_figure(fig, path, dpi=130)
     plt.close(fig)
     floor_km = km[fl]
     floor_txt = (
@@ -638,85 +587,136 @@ Long profile of the river bed and its inputs, basin {basin_id}, along the mainst
 
 def _alternatives_table(options: dict) -> pd.DataFrame:
     rows = []
-    for basin_id, o in options.items():
-        surf = o["surface"].set_index(["surface", "design_discharge"])
-        cap = o["capacity"].set_index("option")
-        for label, skey, ckey in ALTERNATIVES:
-            s = surf.loc[skey] if skey is not None else None
-            c = cap.loc[ckey] if ckey is not None else None
-            src = s if s is not None else c
+    for basin_id, surf in options.items():
+        surf = surf.set_index(["surface", "design_discharge", "bed_method"])
+        for letter, key in ALTERNATIVES.items():
+            s = surf.loc[key]
             rows.append(
                 {
                     "basin_id": basin_id,
-                    "alternative": label,
-                    "forward_median_m": float(src["forward_median_m"]),
-                    "forward_p95_m": float(src["forward_p95_m"]),
-                    "overflow_bf": float(c["share_q_cap_below_q_bf"])
-                    if c is not None
-                    else float(s["freeboard_share_below_0"]),
-                    "overflow_mean": float(c["share_q_cap_below_q_mean"])
-                    if c is not None
-                    else np.nan,
-                    "on_floor_share": float(src["on_floor_share"]),
+                    "alternative": letter,
+                    "forward_abs_median_m": abs(float(s["forward_median_m"])),
+                    **{c: float(s[c]) for c in list(CRITERIA)[1:]},
                 }
             )
     return pd.DataFrame(rows)
 
 
+def _compare(table: pd.DataFrame) -> pd.DataFrame:
+    """Return -1 (better), 0 (equal within tolerance) or +1 (worse) than production per cell."""
+    out = table.copy()
+    for basin_id, g in table.groupby("basin_id"):
+        ref = g[g["alternative"] == PRODUCTION].iloc[0]
+        for col, (_, tol) in CRITERIA.items():
+            d = g[col] - ref[col]
+            if col.startswith("depth"):
+                # only implausibly deep channels count; a shallow one shows as overflow
+                out.loc[g.index, col] = np.where(d > tol, 1, 0)
+            else:
+                out.loc[g.index, col] = np.where(np.abs(d) <= tol, 0, np.sign(d))
+    return out
+
+
 def fig_bed_alternatives(options: dict, path: Path) -> None:
     table = _alternatives_table(options)
-    table.to_csv(path.with_suffix(".csv"), index=False, float_format="%.3f")
-    basins = list(options)
-    labels = [a[0] for a in ALTERNATIVES]
-    fig, axes = plt.subplots(
-        1, len(basins), figsize=(7.5 * len(basins), 6.5), sharey=True, squeeze=False
+    cmp = _compare(table)
+    worse = cmp.groupby("alternative")[list(CRITERIA)].max().max(axis=1)
+    better = cmp.groupby("alternative")[list(CRITERIA)].min().min(axis=1)
+    replaces = {
+        a: bool(worse[a] <= 0 and better[a] < 0)
+        for a in ALTERNATIVES
+        if a != PRODUCTION
+    }
+    table.assign(replaces_production=table["alternative"].map(replaces)).to_csv(
+        path.with_suffix(".csv"), index=False, float_format="%.3f"
     )
-    colours = {True: "#a6d96a", False: "#f4a582", None: "0.92"}
-    for ax, basin_id in zip(axes[0], basins):
-        g = table[table["basin_id"] == basin_id].set_index("alternative").loc[labels]
-        for j, (col, (_, test)) in enumerate(CRITERIA.items()):
-            for i, v in enumerate(g[col]):
-                ok = None if test is None or not np.isfinite(v) else bool(test(v))
+    basins = list(options)
+    letters = list(ALTERNATIVES)
+    colours = {-1: "#a6d96a", 0: "0.90", 1: "#f4a582"}
+    fig, axes = plt.subplots(
+        1,
+        len(basins) + 1,
+        figsize=(5.2 * len(basins) + 1.6, 5.5),
+        sharey=True,
+        gridspec_kw={"width_ratios": [len(CRITERIA)] * len(basins) + [1]},
+    )
+    for ax, basin_id in zip(axes, basins):
+        g = table[table["basin_id"] == basin_id].set_index("alternative").loc[letters]
+        c = cmp[cmp["basin_id"] == basin_id].set_index("alternative").loc[letters]
+        for j, col in enumerate(CRITERIA):
+            for i, a in enumerate(letters):
+                face = "white" if a == PRODUCTION else colours[int(c.loc[a, col])]
                 ax.add_patch(
-                    plt.Rectangle(
-                        (j, i), 1, 1, facecolor=colours[ok], edgecolor="white", lw=2
-                    )
+                    plt.Rectangle((j, i), 1, 1, facecolor=face, edgecolor="0.6", lw=0.8)
                 )
+                v = g.loc[a, col]
                 text = (
-                    "n/a"
-                    if not np.isfinite(v)
-                    else (f"{v:.2f}" if col.startswith("forward") else f"{v:.0%}")
+                    f"{v:.0%}"
+                    if "share" in col
+                    else f"{v:.1f}"
+                    if "depth" in col
+                    else f"{v:.2f}"
                 )
-                ax.text(j + 0.5, i + 0.5, text, ha="center", va="center", fontsize=9)
+                ax.text(j + 0.5, i + 0.5, text, ha="center", va="center", fontsize=8.5)
         ax.set_xlim(0, len(CRITERIA))
-        ax.set_ylim(len(labels), 0)
         ax.set_xticks(np.arange(len(CRITERIA)) + 0.5)
-        ax.set_xticklabels([c[0] for c in CRITERIA.values()], fontsize=8)
+        ax.set_xticklabels([v[0] for v in CRITERIA.values()], fontsize=7.5)
         ax.xaxis.tick_top()
-        ax.set_yticks(np.arange(len(labels)) + 0.5)
-        ax.set_yticklabels(labels, fontsize=9)
+    d = axes[-1]
+    for i, a in enumerate(letters):
+        face = "white" if a == PRODUCTION else ("#a6d96a" if replaces[a] else "#f4a582")
+        d.add_patch(
+            plt.Rectangle((0, i), 1, 1, facecolor=face, edgecolor="0.6", lw=0.8)
+        )
+        d.text(
+            0.5,
+            i + 0.5,
+            "-" if a == PRODUCTION else ("yes" if replaces[a] else "no"),
+            ha="center",
+            va="center",
+            fontsize=9,
+        )
+    d.set_xlim(0, 1)
+    d.set_xticks([0.5])
+    d.set_xticklabels(["replaces\nA"], fontsize=7.5)
+    d.xaxis.tick_top()
+    axes[0].set_ylim(len(letters), 0)
+    axes[0].set_yticks(np.arange(len(letters)) + 0.5)
+    axes[0].set_yticklabels(letters, fontsize=11, fontweight="bold")
+    for ax in axes:
         ax.tick_params(length=0)
         for s in ax.spines.values():
             s.set_visible(False)
-    panel_letters(axes[0], xy=(-0.02, 1.12))
+    panel_letters(axes, xy=(-0.02, 1.16))
     fig.tight_layout()
-    fig.savefig(path, dpi=130)
+    save_figure(fig, path, dpi=130)
     plt.close(fig)
+    n = len(basins)
+    panels = ", ".join(f"({chr(97 + k)}) basin {b}" for k, b in enumerate(basins))
+    tol = "; ".join(f"{v[0].replace(chr(10), ' ')} {v[1]:g}" for v in CRITERIA.values())
     write_caption(
         path,
         f"""
-Alternative ways to set the river bed, scored against the criteria a bed must meet; one panel per basin ({", ".join(f"({chr(97 + k)}) {b}" for k, b in enumerate(basins))}). Green: criterion met; red: not met; grey: shown for information. Values in the cells; the table is in bed_alternatives.csv.
+Alternative ways to set the river bed, each compared with the production bed A; {panels}, ({chr(97 + n)}) the decision. Values in the cells; the table is in bed_alternatives.csv.
 
-Alternatives (rows). Each sets the bed as surface minus depth (concept.png) and differs in one or more choices:
-- water surface: the terrain model's (FathomDEM) river-centre levels, or SWOT satellite water levels (SWORD v17c node medians), with the terrain model where SWOT has no observation;
-- fit: "two-scale" smooths the level and the slope over separate lengths (production); "single 20 km / 40 km" takes both from one fit over that length;
-- design discharge: the discharge whose uniform-flow depth sets the bed: bankfull (GloFAS, about the 1.5-year flood; production) or the recent median (GloFAS daily median since 2023-07, the period SWOT observes);
-- sea inversion: on flat reaches connected to the sea the depth is not taken from the (floored) slope but scaled with width, h = c W^b, with c chosen so that computed levels from the sea meet the surface upstream.
+Rows: each alternative sets the bed as surface minus the depth of uniform flow (concept.png) and differs from A in one or more choices.
+- A: terrain-model surface (FathomDEM), two-scale fit, bankfull discharge, Manning depth (production).
+- B: as A with the recent median discharge (GloFAS daily median since 2023-07, the period SWOT observes) instead of bankfull.
+- C, D: SWOT satellite water levels (SWORD v17c node medians; the terrain model where SWOT has none) as the surface, two-scale fit; C bankfull, D recent median discharge.
+- E, F: SWOT surface with a single fit of level and slope over 20 km; E bankfull, F recent median.
+- G, H: as E, F with the single fit over 40 km.
+- I: A with the sea inversion: on flat reaches connected to the sea the depth is not taken from the (floored) slope but scaled with the channel width, h = c W^b, with c set so that levels computed from the sea meet the surface upstream.
+- J: H with the sea inversion.
+"Two-scale" smooths the level and the slope over separate lengths; bankfull is about the 1.5-year GloFAS flood.
 
-Criteria (columns):
-- forward check: the water level computed back on the bed at the design discharge minus the surface it was set from; median within +-0.25 m and 95th percentile at most 0.75 m;
-- overflowing at Q_bankfull / at Q_mean: share of river nodes whose channel capacity (the discharge at which the computed level reaches the bank top) is below the bankfull / mean discharge; at most 10 % / 2 %. A bed too shallow for the mean flow floods the floodplain permanently. n/a: not computed for that alternative;
-- on the slope floor: share of nodes whose depth uses the minimum slope instead of the observed one.
+Columns (lower is better for all):
+- forward check: the water level computed back on the bed at the design discharge minus the surface it was set from, |median| and 95th percentile (a bed that reproduces its surface has both near 0);
+- overflowing at Q_bankfull: share of river nodes where the computed level at bankfull discharge rises above the bank top (90th percentile of the terrain beside the channel);
+- on the slope floor: share of river nodes whose depth uses the minimum slope (1e-5) instead of the observed one;
+- depth p95 / max: 95th percentile and maximum of the depth below the surface; channels deeper than the river can plausibly be are an error of the method.
+
+Colours compare each cell with A in the same basin: green better, red worse, grey equal within the tolerance ({tol}); A's row is the reference (white). Depth only counts against an alternative (red when deeper than A); a shallower channel is not better in itself, its cost shows as overflow.
+Decision ({chr(97 + n)}): an alternative replaces A only if it is no worse than A on every criterion in every basin and better on at least one. "no" means it trades one criterion against another somewhere, and A is kept.
 """,
     )
 
@@ -736,13 +736,7 @@ def figures(basin_ids: list[str], river: str, fr_ok: float, fr_limit: float) -> 
     fig_froude_sfincs(data, river, out / f"froude_sfincs_{river}.png", fr_ok, fr_limit)
     for b, t in nodes.items():
         fig_long_profile(b, t, out / f"long_profile_{b}.png")
-    options = {
-        b: {
-            "surface": pd.read_csv(out_dir(b) / "surface_options.csv"),
-            "capacity": pd.read_csv(out_dir(b) / "channel_capacity.csv"),
-        }
-        for b in basin_ids
-    }
+    options = {b: pd.read_csv(out_dir(b) / "surface_options.csv") for b in basin_ids}
     fig_bed_alternatives(options, out / "bed_alternatives.png")
 
 

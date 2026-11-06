@@ -48,3 +48,9 @@ def write_caption(figure_path, text: str) -> None:
     Path(figure_path).with_suffix(".txt").write_text(
         text.strip() + "\n", encoding="utf-8"
     )
+
+
+def save_figure(fig, path, **kwargs) -> None:
+    """Save the figure, replacing an existing file (a viewer may hold it open for writing)."""
+    Path(path).unlink(missing_ok=True)
+    fig.savefig(path, **kwargs)
