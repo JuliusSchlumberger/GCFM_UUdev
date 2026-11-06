@@ -126,7 +126,6 @@ river_processing:
       bathymetry_margin_m: 0.1      # a water-body node is GEBCO bathymetry where the DEM lies this far below GEBCO's shallowest clamp
       froude_cap: 0.95              # GVF forward solve: depth held where the Froude number would exceed this (src.gvf_solver)
       gvf_max_step_m: 50            # GVF forward solve: largest RK4 substep along the channel
-      forward_bands_m: [0.5, 1.0]   # forward check: share of nodes within each |GVF level - surface| band (log and summary)
       bed_method: manning           # manning | manning_sea_inversion: on unresolved nodes that reach the sea, h = c * W^b with c set so the GVF level from the sea meets the surface
       slope_resolved_min: 3.0e-5    # manning_sea_inversion: surface slope above which the Manning depth is used
       inversion_width_exponent_fallback: 0.4  # manning_sea_inversion: b in h = c * W^b when fewer than 3 resolved nodes fit it
@@ -147,8 +146,6 @@ river_processing:
                                     # window_hr: a warning, or an error with fail: true; numbers in round{i}/steady_check.csv
     verify_crests: false            # run round 2 (production crests, reports overtopped edges); false: round 1 only
     depth_scale: 1.0                # sensitivity only: the burned depth below rule 10's surface is multiplied by this (1.0 = the estimated bed)
-    calibration_q_scale: 1.0        # sensitivity only: rounds 1-2 discharge forcing multiplied by this (the bed keeps the full calibration Q)
-    calibration_sfincs_settings: {} # sensitivity only: sfincs.inp keys set on rounds 1-2 (e.g. {advection: 0, nuvisc: 0, huthresh: 0.05})
     bifurcation_check:              # round 1 (walled, steady): SFINCS cross-sections across each arm of every bifurcation on the seeds' widest paths; end-of-run
                                     # discharge share per arm against the routed share, in round1/bifurcation_split.csv
       max_share_error: 0.05         # larger |SFINCS share - routed share| stops rule 11: fix the river network (arm alignment, widths), or set river_processing.split_override

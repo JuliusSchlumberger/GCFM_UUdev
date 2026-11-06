@@ -3,6 +3,13 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-06: unused river-bed checks and switches removed (- JS)
+
+No production result changes; each removed item was at its no-op value or reported only.
+- `river_depth_modelling.calibration_q_scale` and `calibration_sfincs_settings` (sensitivity hooks for a deleted sweep, at 1.0 and `{}`): removed from the config, rule 11 and its script.
+- `river_depth_modelling.bed.forward_bands_m`: removed; the forward check logs and reports p5/median/p95 only (`surface_options.csv` loses `forward_within_0.5m`).
+- `src.gvf_solver.forward_network(return_capped=...)`: removed with its test; the Froude cap itself stays.
+
 # 2026-11-06: analysis suite for the river bed, timing and boundary; analysis scripts consolidated (- JS)
 
 **New target `analysis_suite`** (`workflow/rules/90_analysis_suite.smk`, `config/analysis_suite.yml`):
@@ -23,8 +30,8 @@ the pipeline works; this file only describes *what changed and why*.
 **Config:** `sfincs.simulation.storevelmax: 1`, so event maps carry `vmax` for the SFINCS Froude check. Existing event runs have none (TODO B40).
 
 **Analysis scripts:**
-- Renamed to topic names: `_basin_inputs`, `bank_freeboard`, `gvf_gap`, `slope_floor`, `surface_options` (surfaces now in `figures/analysis/surfaces/`), `surface_stages`, `channel_capacity`, `depth_sensitivity`, `advection_channel`, `alpha_stability`, `lag_cooccurrence`.
-- Deleted: the one-off phase scripts, `mc_peak_travel.py`, and `benchmark_peak_travel.py` with its test.
+- Renamed to topic names: `_basin_inputs`, `bank_freeboard`, `gvf_gap`, `slope_floor`, `surface_options` (surfaces now in `figures/analysis/surfaces/`), `surface_stages`, `depth_sensitivity`, `lag_cooccurrence`.
+- Deleted: the one-off phase scripts, `mc_peak_travel.py`, `benchmark_peak_travel.py` with its test, `channel_capacity.py` (overflow at Q_mean is no longer a criterion; TODO B38 with it), the synthetic trench `advection_channel.py` with its test and `alpha_stability.py` (an `alpha` check in rule 11 is to replace it), and `benchmark_upstream_boundary.py` (the suite's GVF-vs-SFINCS-event comparison replaces it; TODO B31 closed).
 - The phase reports, the test-and-implementation plan and `docs/readout_river_depth_gvf.md` are merged into `docs/river_depth_gvf.md`.
 
 **Review summary:** `docs/river_depth_review_summary.md`: a self-contained summary of the method, findings, weaknesses and open questions, for an outside review against the literature.

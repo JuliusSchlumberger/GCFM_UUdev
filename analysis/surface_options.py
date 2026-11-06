@@ -234,7 +234,6 @@ def basin(basin_id: str, cfg: dict, peak_ratio: float = 1.0) -> list[dict]:
                     "surface_minus_swot_abs_p95_m": pct(np.abs(surf_minus_swot), 95),
                     "forward_median_m": fwd["river_median_m"],
                     "forward_p95_m": fwd["river_p95_m"],
-                    "forward_within_0.5m": fwd["river_within_0.5m"],
                     "on_floor_share": float(bed.on_floor[river].mean()),
                     "depth_p50_m": pct(depth[river], 50),
                     "depth_p95_m": pct(depth[river], 95),

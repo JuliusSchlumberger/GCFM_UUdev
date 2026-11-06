@@ -75,7 +75,6 @@ def bed_cfg() -> dict:
         "bathymetry_margin_m": 0.1,
         "froude_cap": 0.95,
         "gvf_max_step_m": 50.0,
-        "forward_bands_m": [0.5, 1.0],
         "period_start": "2023-07-01",
         "bed_method": "manning",
         "slope_resolved_min": 3.0e-5,

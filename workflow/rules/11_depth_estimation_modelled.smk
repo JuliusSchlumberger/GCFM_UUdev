@@ -101,8 +101,6 @@ rule modelled_depth_estimation:
         bifurcation_check            = config["river_processing"]["river_depth_modelling"]["bifurcation_check"],
         split_override               = config["river_processing"]["split_override"],
         depth_scale                  = config["river_processing"]["river_depth_modelling"]["depth_scale"],
-        calibration_q_scale          = config["river_processing"]["river_depth_modelling"]["calibration_q_scale"],
-        calibration_sfincs_settings  = config["river_processing"]["river_depth_modelling"]["calibration_sfincs_settings"],
         ramp_hr                      = config["river_processing"]["river_depth_modelling"]["ramp_hr"],
         weir_crest_m                  = config["river_processing"]["river_depth_modelling"]["weir_crest_m"],
         weir_par1                     = config["river_processing"]["river_depth_modelling"]["weir_par1"],

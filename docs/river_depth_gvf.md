@@ -78,8 +78,7 @@ within 0.03. The crest medians drop to 3.73 and 9.58 m, and the Chao Phraya
 river flood to 1099 km2 (-29 %). The cost is the time step: with advection off,
 `alpha` 0.5 went unstable on the Ebro river event (inflow level swinging 5-9 m
 per hour), so `sfincs.alpha` is 0.25, which roughly doubles run times.
-`alpha` 0.35 may also be stable but is untested on a real event
-(`analysis/alpha_stability.py`).
+`alpha` 0.35 may also be stable but is untested on a real event.
 
 **Validity.** Without advection SFINCS solves the local-inertia equations, which
 hold where inertia is small compared with gravity and friction, that is at low
@@ -253,11 +252,8 @@ production bed:
 ## Open
 
 - SFINCS Froude numbers need event runs with `storevelmax: 1`.
-- Steady SFINCS boundary benchmark on the current bed, including the stress
-  case (TODO B31).
 - Chao Phraya river run ends on the mouth plateau (TODO B32).
 - Held vs hydrograph calibration sea for the crests (TODO B36).
-- Bifurcation 44306300275 network fix (TODO B37); Chao Phraya bank tops and
-  flood walls (TODO B38).
+- Bifurcation 44306300275 network fix (TODO B37).
 - Shorter coast-only event runs (TODO B39).
-- `alpha` 0.35 on a real event (`analysis/alpha_stability.py event`).
+- `alpha` 0.35 on a real event.

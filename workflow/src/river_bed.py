@@ -72,7 +72,6 @@ CFG_KEYS = (
     "bathymetry_margin_m",
     "froude_cap",
     "gvf_max_step_m",
-    "forward_bands_m",
     "period_start",
     "bed_method",
     "slope_resolved_min",
@@ -102,7 +101,6 @@ class RiverBed:
     forward_level_m: np.ndarray
     mean_level_m: np.ndarray
     sea_level_m: float
-    forward_bands_m: tuple[float, ...]
     inverted: np.ndarray  # depth from the sea inversion, not Manning
 
     @property
@@ -506,7 +504,6 @@ def estimate_river_bed(
         forward_level_m=forward,
         mean_level_m=mean_level,
         sea_level_m=float(sea_level_m),
-        forward_bands_m=tuple(float(b) for b in cfg["forward_bands_m"]),
         inverted=inverted,
     )
     _log_summary(result)
@@ -652,10 +649,6 @@ def forward_deviation_summary(rb: RiverBed) -> dict[str, float]:
         out[f"{k}_nodes"] = float(m.sum())
         for name, q in (("p5", 5), ("median", 50), ("p95", 95)):
             out[f"{k}_{name}_m"] = float(np.percentile(d, q)) if d.size else np.nan
-        for band in rb.forward_bands_m:
-            out[f"{k}_within_{band:g}m"] = (
-                float(np.mean(np.abs(d) <= band)) if d.size else np.nan
-            )
     return out
 
 
@@ -672,14 +665,10 @@ def _log_summary(rb: RiverBed) -> None:
         f"sea level {rb.sea_level_m:+.2f} m"
     )
     for k, name in (("river", "all river nodes"), ("main", "largest-Q paths")):
-        bands = ", ".join(
-            f"{fwd[f'{k}_within_{b:g}m']:.0%} within {b:g} m"
-            for b in rb.forward_bands_m
-        )
         log.info(
             f"River bed forward check (steady GVF on the bed at the design discharge minus the surface), "
             f"{name} ({fwd[f'{k}_nodes']:.0f}): p5/median/p95 {fwd[f'{k}_p5_m']:+.2f}/"
-            f"{fwd[f'{k}_median_m']:+.2f}/{fwd[f'{k}_p95_m']:+.2f} m; {bands}"
+            f"{fwd[f'{k}_median_m']:+.2f}/{fwd[f'{k}_p95_m']:+.2f} m"
         )
 
 

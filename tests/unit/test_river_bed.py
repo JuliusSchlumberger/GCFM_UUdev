@@ -126,7 +126,7 @@ def test_forward_solve_on_the_bed_returns_the_surface_where_the_slope_steepens(
     rb = _run(_rivers(), level_fn, water_surface_cfg, bed_cfg)
     np.testing.assert_allclose(rb.forward_level_m, rb.level_m, atol=0.05)
     fwd = forward_deviation_summary(rb)
-    assert fwd["river_within_0.5m"] == 1.0
+    assert -0.5 <= fwd["river_p5_m"] and fwd["river_p95_m"] <= 0.5
     assert abs(fwd["river_median_m"]) < 0.05
 
 

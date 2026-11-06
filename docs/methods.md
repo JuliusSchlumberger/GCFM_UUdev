@@ -215,10 +215,8 @@ scenario in `scenarios.yml` with a surge RP and the stress case
 where the rise of the river level falls below `max(level_tol_m,
 amplitude_threshold_fraction × A0)`; at mean discharge the forcing point
 passes if its rise is below `level_tol_m` and it lies `margin_km` beyond that
-end. `benchmark_upstream_boundary.py <basin> ...` reruns built models steady
-at mean discharge with the sea calm and at SWL_ext and compares SFINCS with
-GVF along the main arms (`figs/upstream_boundary_benchmark/`, with a
-generated README of method, results and parameter choice); in three basins
+end. Steady SFINCS runs of built models at mean discharge, with the sea calm
+and at SWL_ext, compared with GVF along the main arms: in three basins
 (low gradient with small and with 4 m surge, one steep) SFINCS put the
 influence end within 2.9 km of the GVF estimate, with no amplification along
 the channels, which sets `margin_km` 5. Bankfull discharge moves the end
