@@ -131,9 +131,13 @@ every scored criterion in every delta and better on at least one. None is:
 A is kept. E comes closest: it would need lower dikes and reproduces its
 surface better in both deltas, but it raises the peak Froude number on the
 Chao Phraya into the range where dropping advection becomes questionable, and
-it relies more on the minimum slope (40-43 % of nodes). A misses the
-consistency check by design: the depth uses the floored, long-smoothed slope,
-which the surface does not share (concept.png, step 4).
+it relies more on the minimum slope (40-43 % of nodes).
+
+A misses the consistency check by design: the depth uses a slope smoothed over
+a longer distance than the surface keeps. The miss is not concentrated on the
+floored nodes:
+- Ebro: median 0.09 m on floored nodes, against 0.34 m elsewhere;
+- Chao Phraya: 0.50 m, against 0.41 m.
 
 The slope floor was varied separately: 5e-6 and 2e-5 change the depth on the
 25-29 % of nodes on the floor by +24 % and -20 %.

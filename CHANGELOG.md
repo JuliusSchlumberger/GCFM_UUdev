@@ -27,6 +27,8 @@ the pipeline works; this file only describes *what changed and why*.
 - Deleted: the one-off phase scripts, `mc_peak_travel.py`, and `benchmark_peak_travel.py` with its test.
 - The phase reports, the test-and-implementation plan and `docs/readout_river_depth_gvf.md` are merged into `docs/river_depth_gvf.md`.
 
+**Review summary:** `docs/river_depth_review_summary.md`: a self-contained summary of the method, findings, weaknesses and open questions, for an outside review against the literature.
+
 **TODO:** B34 removed (resolved by the settling-time run length; 0 cells still rising); B38 repointed; B40 added.
 
 # 2026-11-06: river peak travel and surge reach on the production model (- JS)
