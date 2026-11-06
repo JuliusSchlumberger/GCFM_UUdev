@@ -5,7 +5,7 @@ Literature review and a test plan for rule-based, per-delta 1D estimates of (a) 
 1. **Lag.** The forcing puts the river peak at the forcing point and the surge peak at the sea boundary at the same time. For the peaks to co-occur at the mouth, the river series has to start `lag = T_river − T_surge` earlier, if that lag is material.
 2. **Run length.** The event run must contain the time at which the river crest has passed the mouth, shifted or not.
 
-Status: planning document. Diagnostics on finished event runs and the main-path profile exist (§0.1); the parametric estimates are not built.
+Status: planning document. The pipeline implements a first version (rule `event_timing`, §0.1): the walled bankfull river travel time and the `√(gh)` sea leg set the compound lag per basin, and the river event runs until its main inflow falls below bankfull (capped) plus the river travel time. The open items are the overbank correction (M5), routing (M6), `T_fill`, `T_adjust` and the run-length cap (§7).
 
 ---
 
@@ -22,9 +22,9 @@ The same per-reach celerity model yields several times. They are not interchange
 | `T_fill` | Time to fill floodplain storage between bankfull and flood stage from the overbank discharge | End of the window on the floodplain: the max depth off-channel has occurred | Slow estimate |
 | `T_adjust` | Time for a steady discharge to reach a steady profile (spin-up, dike-crest calibration runs) | Spin-up and calibration run length | Slow estimate, then checked in-run |
 
-**Lag.** `T_lag(basin, RP) − T_surge(basin)` lets the river hydrograph be shifted earlier so its peak coincides with the surge peak at the mouth rather than at the two boundaries. The hook exists: `sfincs.boundary_setup.compound.lag_hr` (one value for every basin, default 0) shifts the river series in `14_build_sfincs.py`.
+**Lag.** `T_lag(basin, RP) − T_surge(basin)` lets the river hydrograph be shifted earlier so its peak coincides with the surge peak at the mouth rather than at the two boundaries. `sfincs.boundary_setup.compound.lag_hr: auto` takes `T_surge − T_river` per basin from rule `event_timing` (one value per basin, at bankfull, not per RP); a number fixes it for every basin. `14_build_sfincs.py` keeps the river peak in place and moves the surge.
 
-**Modelling period.** The event run starts from the spin-up restart and lasts `2 × window_hr`, symmetric around the surge peak (`boundary_forcings.surge.hydrograph.window_hr`, default 60 h; per-basin `window_overrides_hr`, 168 h for the Ebro). The forcing files also carry the `lead_days` lead-in, which the spin-up covers (`tstart = tref + spinup_days`, so `spinup_days` must equal `lead_days`). The rule in §2.2 replaces the overrides with an asymmetric window derived from `T_arrive`, `T_transit`, `T_fill`, the surge duration and the tidal spin-up.
+**Modelling period.** The event run starts from the spin-up restart. It ends at the later of the surge peak + `window_hr` (60 h) and, for a river event, the river peak at the inflow + the time until the main inflow falls below bankfull (at most `river_fall_max_hr`, 100 h) + `T_river`. Compound runs carry both forcings on one time axis, so the two peaks stay aligned by the lag and the run ends at the later of the two ends; river-only and surge-only runs end at their own. The forcing files also carry the `lead_days` lead-in, which the spin-up covers (`tstart = tref + spinup_days`, so `spinup_days` must equal `lead_days`). The rule in §2.2 is the fuller version: an asymmetric window from `T_arrive`, `T_transit`, `T_fill`, the surge duration and the tidal spin-up.
 
 **Constraints.**
 - No new SFINCS runs for the estimate itself; finished event runs serve as validation (§0.1). Inputs:
@@ -43,12 +43,13 @@ Built:
 - `analysis/check_event_timing.py`: per finished event run, the time of max water level of every wet cell relative to the surge peak (hourly `zsmax` with `timemax`, `dtmaxout: 3600`), τ95/τ90 of the summed inflow, the M1 gravity-wave travel time from the main inflow to the open boundary along wet cells at flood stage, the materiality flag (M1 vs τ95) and late-peak shares. Writes `figs/event_timing/event_timing.csv` and one map per basin.
 - `analysis/_upstream_profile.py`: main path from a forcing reach to the sea (largest discharge at bifurcations), the node profile along it, and `forward_levels`, the steady GVF level for any discharge and sea level (`src.gvf_solver.integrate_reach`). This covers §3 steps 1–3 and gives the surface slope M3 needs.
 - `src.river_network` routes discharge through the network with a width split at bifurcations.
-- `analysis/estimate_peak_travel.py`: the 1D estimate, from build inputs only (node table, river network, skeleton `gis/`, the scenario's forcing files).
-  - River leg: the steady GVF level at the scenario's peak main inflow, with the sea at the storm-tide peak level, along the main inflow's path. Three celerities per node: fast `u + √(gh)` (M1), slow `5/3·u` (kinematic, M2 on the surface slope), and regime (fast where the bed is below the calm sea level, slow elsewhere; a reduced M4).
+- Rule `event_timing` (`workflow/rules/12d_event_timing.smk`, `src/event_timing.py`), from rule 11's outputs and the skeleton, no SFINCS run. Writes `<results_dir>/{basin}/event_timing/{basin}_event_timing.csv`; tests in `tests/unit/test_event_timing.py`.
+  - River leg: `src.river_profile.walled_travel_time` at routed bankfull discharge along the main inflow's path (largest bankfull discharge among the active crossings), sea at rule 11's mouth level; the wave speed per node follows the regime (gravity or kinematic). It matched the SFINCS mouth-discharge plateau on the Ebro and the Chao Phraya (`docs/river_depth_gvf.md`).
   - Sea leg: the fastest wet path from the skeleton's water-level boundary cells to the mouth at `√(gh)`.
-  - Writes the lag, its materiality (lag > τ95) and the run length needed with and without the shift to `figs/peak_travel/`. Tests in `tests/unit/test_peak_travel.py`.
+  - Lag `T_surge − T_river`; rule 14 adds the falling limb above bankfull of the scenario's own hydrograph (`src.event_timing.falling_limb_hr`).
+  - Current values: Ebro (2433835) `T_river` 15.8 h over 64.4 km, `T_surge` 0.15 h, lag −15.6 h; Chao Phraya (3279946) 58.9 h over 288.4 km, 0.19 h, −58.7 h.
 
-1D estimate, scenario `default` (only these basins have a current rule 11 node table):
+1D estimate with three celerities per node (fast `u + √(gh)` M1, slow `5/3·u` M2 on the surface slope, regime a reduced M4) at the scenario's peak inflow, scenario `default`; the bankfull walled estimate above replaced it:
 
 | basin | path km | drowned | Q_peak/Q_bf | T_surge h | τ95 h | T_river fast / regime / slow h | lag material (slow) | window ok |
 |---|---|---|---|---|---|---|---|---|
@@ -81,7 +82,7 @@ Readings:
   - 2444235: one 40 km² compartment not bordering the channel (fed through other floodplain), rising 0.1 cm/h.
 
   So `T_fill` controls `after` in these basins, and in 1248635 it exceeds the 60 h after the surge peak the run has. Caveat: these three runs predate the current preprocessing (TODO B30).
-- **Ebro.** At 168 h the p99 time of max is +2 h, so the override is far longer than the run needs.
+- **Ebro.** In a run with a 168 h window the p99 time of max is +2 h, so the 60 h default covers it.
 
 Consequence for the order of work:
 1. Validate the river leg against a river-only SFINCS run on 2433835 and 3279946 (TODO B32).
@@ -230,7 +231,7 @@ Build one table per basin with one row per node (500 m) along the main path; ste
 
 ## 4. Test plan
 
-Order: E1 (river-only runs on 2433835 and 3279946 against `estimate_peak_travel.py`) → M5 overbank correction → E2 on every rebuilt basin → E5. E3, E4 and E6 follow once a basin needs them.
+Order: E1 (river-only runs on 2433835 and 3279946 against rule `event_timing`) → M5 overbank correction → E2 on every rebuilt basin → E5. E3, E4 and E6 follow once a basin needs them.
 
 ### E1 — Regression on the finished event runs (Ebro first)
 
@@ -311,33 +312,31 @@ for each basin, RP:
         T_adjust_P90 (for spin-up first guess and calibration run length)
 ```
 
-`14_build_sfincs.py` reads `lag_hr`, `window_before_hr` and `window_after_hr` from the basin file; the global `sfincs.boundary_setup.compound.lag_hr` (now a fixed shift for every basin, default 0), `window_overrides_hr` and the symmetric `hydrograph.window_hr` become fallbacks for basins without a timing file. The window is used where the surge shapes are built (rule 07c `storm_tide_hydrographs`), so a per-basin asymmetric window reruns rule 07c onward for that basin. The river forcing starts at `−(window_before_hr + lag_hr)` so the shifted rising limb is complete; the blend from the spin-up mean into the event (`max(min_ramp_hr, gap / (max_rise_per_hr × peak))`, capped at the lead-up, `src.river_forcing`) then sits before the shifted limb. The event `tstart` is taken from the spin-up restart file's timestamp, not from `spinup_days` (`14_build_sfincs.py` sets `tstart = tref + spinup_days`), which removes the hidden `spinup_days == lead_days` coupling. Rule 11 (dike-crest calibration) reads `T_adjust_P90` for its run length and storm-tide placement.
+`14_build_sfincs.py` reads `lag_hr` from the basin's `event_timing` csv (implemented) and would read `window_before_hr` and `window_after_hr` from the same file; the symmetric `hydrograph.window_hr` and `river_fall_max_hr` stay as fallbacks. The window is used where the surge shapes are built (rule 07c `storm_tide_hydrographs`), so a per-basin asymmetric window reruns rule 07c onward for that basin. The river forcing starts at `−(window_before_hr + lag_hr)` so the shifted rising limb is complete; the blend from the spin-up mean into the event (`max(min_ramp_hr, gap / (max_rise_per_hr × peak))`, capped at the lead-up, `src.river_forcing`) then sits before the shifted limb. The event `tstart` is taken from the spin-up restart file's timestamp, not from `spinup_days` (`14_build_sfincs.py` sets `tstart = tref + spinup_days`), which removes the hidden `spinup_days == lead_days` coupling. Rule 11 (dike-crest calibration) reads `T_adjust_P90` for its run length and storm-tide placement.
 
 ---
 
 ## 6. Code layout
 
-Test phase (E1–E5), diagnostics only, following the repo's `analysis/` pattern:
-
 ```
+workflow/
+  src/event_timing.py              # sea leg, gravity-wave path, falling limb above bankfull; add M5, M6, T_fill, T_adjust here
+  rules/12d_event_timing.smk       # per-basin csv read by rule 14 (lag) and its run length
+  scripts/14_build_sfincs.py       # event timeline (src.sfincs_run.event_timeline)
 analysis/
-  _upstream_profile.py      # §3 steps 1–3 (exists)
-  estimate_peak_travel.py   # 1D river and sea legs, lag, materiality, run length (exists: M1, M2, reduced M4); add M5, M6, T_adjust here
-  check_event_timing.py     # SFINCS cross-check on finished runs: time of max, late-filling compartments (exists); add the obs-point lag from river-only runs
-tests/unit/test_peak_travel.py    # synthetic channel and sea grid (exists)
-tests/unit/test_event_timing.py   # synthetic compartments (exists)
+  _upstream_profile.py             # §3 steps 1–3
+  check_event_timing.py            # SFINCS cross-check on finished runs: time of max, late-filling compartments; add the obs-point lag from river-only runs
+tests/unit/test_event_timing.py    # falling limb, sea leg
 ```
 
-Parameters (n range, overbank factor, materiality threshold 0.95, k* threshold 1/3, `after_min` 24 h) go in `config/config.yml` under `testing.flood_timing`, next to `testing.upstream_boundary_check` (protected file: needs a go-ahead). Slope floor and Manning n come from the existing keys.
-
-Pipeline phase, once the rule is accepted: the helpers move to `workflow/src/flood_timing.py` and a rule after rule 11 writes `<results_dir>/{basin}/timing/{basin}_timing.json`, which rules 07c, 11 and 14 read.
+Further parameters (n range, overbank factor, materiality threshold 0.95, k* threshold 1/3, `after_min` 24 h) go in `config/config.yml` next to `compound.lag_hr` and `river_fall_max_hr` (protected file: needs a go-ahead). Slope floor and Manning n come from the existing keys. A per-basin asymmetric surge window reruns rule 07c onward; a `T_adjust` for rule 11 reruns its calibration.
 
 ---
 
 ## 7. Open items to settle before coding
 
 1. What fills the late-peaking compartments (overtopping of calibrated crests, inflow through gaps, or rain-free ponding of the river overflow), and whether they belong in the hazard result at their run-end level or need a longer `after`. Settled by E1.
-2. Whether the Ebro's 168 h override can return to the default once the §2.2 rule is in place (p99 time of max +2 h).
+2. The run-length cap: 100 h after the inflow peak (`river_fall_max_hr`) and the 60 h surge window are provisional. Both 100-year river events (Ebro, Chao Phraya) stay above bankfull for more than 200 h, so the runs end while the floodplain still drains. Revisit together with pumps along the dikes, which set how fast that water leaves (TODO B41).
 3. Tidal velocity amplitude source: GTSM range at the mouth with analytical damping (Cai–Savenije) vs a simple `a·√(g/h)` without damping. The first is better in long tidal rivers (Kapuas-type), the second is enough for short drowned deltas.
 4. Peak definition at the coast: discharge peak (M6 output) vs water-level peak. For the compound timing the discharge peak is the right target because the surge sets the water level; record both where observations give both.
 5. E2 starts with the six basins that have finished event runs (§0.1); every basin with a rule 11 node table can join for the parametric terms.

@@ -289,7 +289,7 @@ sfincs:
                     # (> 0 delays the river); the river keeps its place after the restart and the surge moves.
                     # auto: surge minus river travel time to the main mouth (rule event_timing), so both peaks
                     # reach it together; a number sets it for every basin
-    river_fall_max_hr: 200  # river events run until the main inflow falls below bankfull, at most this long after
+    river_fall_max_hr: 100  # river events run until the main inflow falls below bankfull, at most this long after
                             # its peak, plus the river travel time to the main mouth (rule event_timing); runs end no
                             # earlier than the surge window; the average tide carries on to the end
     slr_ramp_hr: 24  # the spin-up is shared by all scenarios and has the spin-up scenario's SLR, so a

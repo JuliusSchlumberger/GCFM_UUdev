@@ -582,7 +582,7 @@ return period, the river peaks `compound.lag_hr` after the surge peak
 (negative: before); `auto` sets it to surge minus river travel time, so both
 peaks reach the main mouth together. A surge alone peaks right after its blend and half-window. A river
 event runs until its main inflow falls below bankfull (at most
-`river_fall_max_hr`, 200 h, after its peak), then for the river travel time.
+`river_fall_max_hr`, 100 h, after its peak), then for the river travel time.
 Every run lasts at least to the end of the surge window. The timeline is set
 in rule 14, so a new lag reruns the event runs only, not the crest
 calibration.
