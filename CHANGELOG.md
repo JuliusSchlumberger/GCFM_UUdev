@@ -3,6 +3,37 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-06: compound lag and event-run length from peak travel times (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW: adaptation `pre` runs share this timeline.**
+> `adapt_build_forcing_pre` runs `14_build_sfincs.py` with the same params, so
+> its runs change length like the baseline runs (river events longer, coast-only
+> runs shorter) and need the new `event_timing` output. The Ebro surge window
+> also drops from 168 h to 60 h (KGL's `window_overrides_hr`).
+
+**What changed:**
+- **New rule `event_timing` (`12d`, `src/event_timing.py`):** per basin, the time the river peak needs from the main inflow (largest bankfull discharge) to its mouth, as the walled travel time at routed bankfull discharge, and the surge peak's time from the water-level boundary to that mouth (`sqrt(g h)`). It writes `<results_dir>/{basin_id}/event_timing/{basin_id}_event_timing.csv`, from rule 11's outputs and the skeleton, with no SFINCS run.
+- **Compound lag:** `sfincs.boundary_setup.compound.lag_hr: auto` sets it to surge minus river travel time, so both peaks reach the main mouth together. A number still fixes it for every basin. The per-basin `lag_overrides_hr` (Ebro −21 h, Chao Phraya −41 h, read off finished runs) is removed.
+- **Event-run length:** a river event runs until its main inflow falls below bankfull (measured on the scenario's own hydrograph; `river_fall_max_hr`, at most 200 h after the peak), plus the river travel time. Every run lasts at least to the end of the surge window. This replaces `event_after_peak_hr` (60 h) and `event_after_peak_overrides_hr` (Chao Phraya 150 h).
+- **Surge window:** `window_overrides_hr` is now empty; the Ebro's 168 h existed to keep the river's falling limb in the run, which the river tail now does.
+- **Code moves:** `gravity_wave_travel` moves from `analysis/check_event_timing.py` to `src/event_timing.py`. `analysis/estimate_peak_travel.py` and its test are deleted; the rule replaces them. `analysis/lag_plateau.py` reads the lag the build uses.
+
+**Why:** the lags and tails were hand-set per basin from finished runs, so a new basin started with lag 0 and a 60 h tail. The walled bankfull estimate matched the SFINCS mouth-discharge plateau in both test deltas (`docs/river_depth_gvf.md`).
+
+**Effect (from the existing forcing; nothing rerun):**
+
+| | Ebro | Chao Phraya |
+|---|---|---|
+| river travel / surge travel | 15.8 h / 0.15 h | 58.9 h / 0.19 h |
+| compound lag | −15.6 h (was −21 h) | −58.7 h (was −41 h) |
+| `river_100_03SLR` run end after tref | about 432 h (was 384 h) | 571 h (was 462 h) |
+| `coast_100_03SLR` run end after tref | about 174 h (was 390 h) | 270 h (was 360 h) |
+
+- Both 100-year river events stay above bankfull for the whole 200 h, so the cap sets their tails.
+- The Chao Phraya estimate follows the main inflow. The suite's 65.5 h is the slower second inflow.
+- Ebro values are approximate until rule 07d places the river peak again with the 60 h surge window.
+- **Reruns:** for the Ebro, rules 07a/07d onward, including rule 11's crest calibration, which reads `surge_forcing.nc`; then every event run of both deltas.
+
 # 2026-11-06: unused river-bed checks and switches removed (- JS)
 
 No production result changes; each removed item was at its no-op value or reported only.

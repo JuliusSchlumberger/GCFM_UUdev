@@ -32,7 +32,7 @@ def event_timeline(
     river_peak_hr: float,
     window_hr: float,
     ramp_hr: float,
-    after_peak_hr: float,
+    river_after_peak_hr: float,
     lag_hr: float,
     surge_event: bool,
     river_event: bool,
@@ -44,8 +44,8 @@ def event_timeline(
     With both events lag_hr = river peak - surge peak: the river keeps its
     place (or moves later for lag_hr > 0) and the surge moves. A surge alone
     peaks right after its blend from the restart and its half-window; a tide
-    surge (no surge event) takes the river peak. The run ends after_peak_hr
-    after the last design peak, and not before the surge window closes.
+    surge (no surge event) takes the river peak. The run ends when the surge
+    window closes, or river_after_peak_hr after a river event's peak if later.
     """
     if surge_event and river_event:
         river_hr = river_peak_hr + max(lag_hr, 0.0)
@@ -54,8 +54,9 @@ def event_timeline(
         river_hr = surge_hr = start_hr + ramp_hr + window_hr
     else:
         river_hr = surge_hr = river_peak_hr
-    peaks = [p for p, on in ((surge_hr, surge_event), (river_hr, river_event)) if on]
-    end_hr = max([surge_hr + window_hr] + [p + after_peak_hr for p in peaks])
+    end_hr = surge_hr + window_hr
+    if river_event:
+        end_hr = max(end_hr, river_hr + river_after_peak_hr)
     return surge_hr, river_hr, end_hr
 
 

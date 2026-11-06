@@ -191,10 +191,10 @@ def test_place_discharge_points_raises_when_no_crossing_is_inside():
 
 def test_advanced_river_keeps_its_place_and_the_surge_peaks_later():
     surge_hr, river_hr, end_hr = event_timeline(
-        144.0, 312.0, 60.0, 6.0, 60.0, -41.0, surge_event=True, river_event=True
+        144.0, 312.0, 60.0, 6.0, 265.0, -41.0, surge_event=True, river_event=True
     )
     assert (river_hr, surge_hr) == (312.0, 353.0)
-    assert end_hr == max(353.0 + 60.0, 312.0 + 60.0)
+    assert end_hr == 312.0 + 265.0
 
 
 def test_delayed_river_moves_later_and_the_surge_keeps_its_place():
@@ -202,6 +202,14 @@ def test_delayed_river_moves_later_and_the_surge_keeps_its_place():
         48.0, 216.0, 60.0, 6.0, 60.0, 12.0, surge_event=True, river_event=True
     )
     assert (surge_hr, river_hr) == (216.0, 228.0)
+
+
+def test_short_river_tail_ends_with_the_surge_window():
+    surge_hr, river_hr, end_hr = event_timeline(
+        48.0, 216.0, 60.0, 6.0, 20.0, -16.0, surge_event=True, river_event=True
+    )
+    assert (river_hr, surge_hr) == (216.0, 232.0)
+    assert end_hr == 232.0 + 60.0
 
 
 def test_surge_alone_peaks_after_its_blend_and_half_window_and_ignores_the_lag():

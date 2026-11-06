@@ -8,7 +8,7 @@ in peak_lag.py), times after the inflow peak of:
   half rise: the filtered mouth discharge first reaching half way from its
     value at the run start to its maximum, minus the same for the inflow;
   plateau start / midpoint / end: the span within --plateau-frac of the
-    maximum (lag_plateau.py; the midpoint sets compound.lag_overrides_hr);
+    maximum (lag_plateau.py);
     open-ended when the run ends on the plateau;
   configured: the river travel implied by the configured compound lag,
     surge travel - lag.

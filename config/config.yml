@@ -178,10 +178,9 @@ boundary_forcings:
       # half-cosine of period_hr after the lead-in, and surge_rp_yr "Tide" is unavailable.
       enabled: true
       window_hr: 60          # event = -60..+60 h around the peak -> 120 h event window; also the length of the surge shapes
-      window_overrides_hr:   # optional per-basin window (h), keyed by basin id -- surges last hours on
-        2433835: 168         # some coasts and days on others. Changing a basin's window reruns its
+      window_overrides_hr: {}  # optional per-basin window (h), keyed by basin id -- surges last hours on
+                             # some coasts and days on others. Changing a basin's window reruns its
                              # storm_tide_hydrographs and rule 07d onward, not the GTSM extraction.
-      # KGL: Changed from 70 to 168 to ensure the whole falling limb is included in the timerseires
 
       ramp_hr: 6.0        # boundary blends from the calm lead-in level into the tide over the window's first hours (surge is still 0 there)
       max_match_km: 0.1      # coincidence tolerance: COAST-RP's coastal stations ARE GTSM output stations
@@ -286,15 +285,13 @@ sfincs:
     # driver alone (river_only/coastal_only); both null -> invalid.
     flat_boundary_point_spacing_m: 5000   # boundary-point spacing along the water-level mask, used only when mode="river_only"
     compound:
-      lag_hr: 0 # river peak minus surge peak (h) in compound runs with both a surge and a river RP
-                # (> 0 delays the river); the river keeps its place after the restart and the surge moves
-      lag_overrides_hr: {2433835: -21, 3279946: -41}  # per basin id, from analysis/lag_plateau.py: puts the surge peak
-                            # inside the river's discharge plateau at the main mouth (coast and river runs
-                            # of one RP/SLR); Ebro at its midpoint, Chao Phraya inside it (midpoint <= -47)
-    event_after_peak_hr: 60  # event runs go on at least this long after the last design peak (the surge
-                             # window may end later); the average tide carries on to the end
-    event_after_peak_overrides_hr: {3279946: 150}  # per basin id: long deltas drain the river flood
-                             # to the mouths more slowly (the CP mouth discharge still rises 60 h after the inflow peak)
+      lag_hr: auto  # river peak minus surge peak (h) at the forcing in compound runs with both a surge and a river RP
+                    # (> 0 delays the river); the river keeps its place after the restart and the surge moves.
+                    # auto: surge minus river travel time to the main mouth (rule event_timing), so both peaks
+                    # reach it together; a number sets it for every basin
+    river_fall_max_hr: 200  # river events run until the main inflow falls below bankfull, at most this long after
+                            # its peak, plus the river travel time to the main mouth (rule event_timing); runs end no
+                            # earlier than the surge window; the average tide carries on to the end
     slr_ramp_hr: 24  # the spin-up is shared by all scenarios and has the spin-up scenario's SLR, so a
                         # scenario with another slr_m would otherwise hit the restart as a step at the event
                         # start (a 0.34 m step overtopped ~1670 of 1789 coastal weir segments in basin
@@ -383,6 +380,7 @@ resources:
     modelled_depth_estimation:            all
     build_sfincs_skeleton:                1
     land_bed_level:                       1
+    event_timing:                         1
     build_adaptation_lines:               1
     build_sfincs:                         1
     run_spinup:                           all

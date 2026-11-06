@@ -193,8 +193,8 @@ Hours after the inflow peak, main mouth, river-only event:
 | walled estimate at the calibration discharge (rule 11) | 6.2 | 40.8 |
 | walled estimate at bankfull discharge | 15.8 | 65.5 |
 
-- **Reference point.** The plateau midpoint is the one used; it sets
-  `compound.lag_overrides_hr`.
+- **Reference point.** The plateau midpoint is the one compared with the
+  estimates.
   - The half rise and the plateau start are distorted by attenuation.
   - The first maximum is a single point on a plateau that is nearly flat.
   - The Chao Phraya plateau is still open when the run ends, so its midpoint is
@@ -205,8 +205,9 @@ Hours after the inflow peak, main mouth, river-only event:
     travels at the bankfull channel speed.
   - At the calibration discharge the estimate is 2.6 times too fast for the
     Ebro.
-  - It only sizes the calibration run, which the settling time already sets
-    longer.
+  - The bankfull estimate sets the compound lag and the run's tail (rule
+    `event_timing`, `docs/methods.md`); the calibration-discharge one only
+    sizes the calibration run, which the settling time already sets longer.
 - **Compound lag.** Both configured lags put the surge peak on the river's
   plateau: the aligned worst case.
   - Reanalysis (`analysis/lag_cooccurrence.py`, GTSM and GloFAS 1979–2024):

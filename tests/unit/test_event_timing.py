@@ -1,56 +1,40 @@
-"""Smoke tests for the late-compartment helpers in analysis/check_event_timing.py."""
-
-import sys
-from pathlib import Path
+"""Tests for the peak travel times and the river tail of src.event_timing."""
 
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "analysis"))
-
-from check_event_timing import _compartment_table, _label_compartments  # noqa: E402
-
-CELL_AREA_M2 = 100.0 * 100.0
+from src.event_timing import G_MS2, falling_limb_hr, sea_travel_hr
 
 
-def _grid():
-    """Channel in row 0, a filling 4x5 compartment next to it, a full one away from it, a 2-cell speck."""
-    zb = np.zeros((10, 12))
-    wet0 = np.zeros(zb.shape, bool)
-    wet0[0, :] = True
-    late = np.zeros(zb.shape, bool)
-    late[1:5, 0:5] = True
-    late[7:10, 8:12] = True
-    late[8, 2:4] = True
-    return zb, wet0, late
+def test_falling_limb_ends_at_the_first_hour_below_bankfull():
+    t = np.arange(0.0, 400.0)
+    q = 1000.0 * np.exp(-(((t - 100.0) / 40.0) ** 2))
+    fall = falling_limb_hr(t, q, 100.0, 500.0, 200.0)
+    assert fall == float(np.ceil(40.0 * np.sqrt(np.log(2.0))))
 
 
-def _frames(zb, labels, t_hr):
-    """Compartment 1 rises 0.1 m/h throughout; compartment 2 fills in the first 10 h, then holds."""
-    for t in t_hr:
-        zs = zb.copy()
-        zs[labels == 1] = 0.1 * t
-        zs[labels == 2] = 0.1 * min(t, 10.0)
-        yield zs
+def test_falling_limb_is_capped_when_the_flow_stays_above_bankfull():
+    t = np.arange(0.0, 400.0)
+    assert falling_limb_hr(t, np.full(t.size, 900.0), 100.0, 500.0, 200.0) == 200.0
 
 
-def test_small_patches_are_dropped():
-    _, _, late = _grid()
-    labels, n = _label_compartments(late, min_cells=10)
-    assert n == 2
-    assert labels[8, 2] == 0
+def test_rising_limb_below_bankfull_does_not_end_the_event():
+    t = np.arange(0.0, 300.0)
+    q = np.where(t < 100.0, 100.0, 1000.0)
+    assert falling_limb_hr(t, q, 100.0, 500.0, 150.0) == 150.0
 
 
-def test_filling_compartment_has_inflow_at_run_end():
-    zb, wet0, late = _grid()
-    labels, n = _label_compartments(late, min_cells=10)
-    t_hr = np.arange(0.0, 25.0)
-    comp = _compartment_table(
-        labels, n, zb, wet0, _frames(zb, labels, t_hr), t_hr, 12.0, CELL_AREA_M2
-    ).set_index("compartment")
-    filling, full = comp.loc[labels[2, 2]], comp.loc[labels[8, 9]]
-    assert filling["inflow_last6h_m3s"] > 0
-    assert np.isclose(filling["mean_rise_last6h_cm_hr"], 10.0)
-    assert 0 < filling["share_gained_after_surge"] < 1
-    assert full["inflow_last6h_m3s"] == 0
-    assert full["share_gained_after_surge"] == 0
-    assert filling["borders_initial_water"] and not full["borders_initial_water"]
+def test_sea_travel_is_distance_over_shallow_water_speed():
+    bed = np.full((3, 50), -10.0)
+    mask = np.ones(bed.shape, dtype=int)
+    mask[:, 0] = 2
+    hours, km = sea_travel_hr(bed, mask, 0.0, (1, 49), 100.0)
+    assert km == 4.9
+    assert np.isclose(hours, 4900.0 / np.sqrt(G_MS2 * 10.0) / 3600.0)
+
+
+def test_sea_travel_snaps_a_dry_mouth_to_the_nearest_wet_cell():
+    bed = np.full((3, 20), -5.0)
+    bed[1, 19] = 2.0
+    mask = np.ones(bed.shape, dtype=int)
+    mask[:, 0] = 2
+    hours, _ = sea_travel_hr(bed, mask, 0.0, (1, 19), 100.0)
+    assert np.isfinite(hours) and hours > 0

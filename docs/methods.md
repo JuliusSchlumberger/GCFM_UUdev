@@ -557,7 +557,7 @@ search radii 10-1000 km). Return levels are exact table lookups at the
 tabulated return periods; each station forces the nearest water-level boundary
 cell within `water_level_buffer_m`, and SFINCS interpolates between them. With
 hydrographs enabled the event is the average tide plus a surge shape peaking on
-tidal high water over ±`window_hr` (60 h; 168 h for `2433835`), shapes taken from
+tidal high water over ±`window_hr` (60 h), shapes taken from
 historic GTSM events near each return level (HGRAPHER, Dullaart et al., 2023;
 GTSMv3 hourly reanalysis 1950-2024). Outside the window the average tide
 repeats with its own period (the lag of its highest autocorrelation in 11-26 h).
@@ -565,16 +565,27 @@ From the restart the boundary blends from the spin-up's calm level into the
 event with a half-cosine weight over `hydrograph.ramp_hr`. In `river_only` the
 sea boundary is flat at `-(gebco_max_depth_m + 0.5)` m.
 
+**Peak travel times (rule `event_timing`).** Per basin, from the main inflow
+(largest bankfull discharge) to the mouth of its mainstem:
+- river: the walled travel time (`src.river_profile.walled_travel_time`) at
+  the routed bankfull discharge, with the sea at rule 11's calibration storm
+  tide. Above bankfull the extra flow spills onto the floodplain and the peak
+  travels at the bankfull channel speed; the estimate matched the SFINCS
+  mouth-discharge plateau on the Ebro and Chao Phraya
+  (`docs/river_depth_gvf.md`);
+- surge: `sqrt(g h)` along the fastest wet path from the water-level boundary
+  to that mouth.
+
 **Event timeline (rule 14).** The river peak keeps rule 07d's place, which
 leaves room for its rising limb after the restart. With a surge and a river
-return period, the surge peaks `compound.lag_hr` (per basin
-`lag_overrides_hr`, from `analysis/peak_lag.py`) before the river peak
-(positive = river later), so both peaks reach the main mouth together. A
-surge alone peaks right after its blend and half-window. Runs end
-`event_after_peak_hr` (per basin `event_after_peak_overrides_hr`) after the
-last design peak, and not before the surge
-window closes. The timeline is set in rule 14, so a new lag reruns the event
-runs only, not the crest calibration.
+return period, the river peaks `compound.lag_hr` after the surge peak
+(negative: before); `auto` sets it to surge minus river travel time, so both
+peaks reach the main mouth together. A surge alone peaks right after its blend and half-window. A river
+event runs until its main inflow falls below bankfull (at most
+`river_fall_max_hr`, 200 h, after its peak), then for the river travel time.
+Every run lasts at least to the end of the surge window. The timeline is set
+in rule 14, so a new lag reruns the event runs only, not the crest
+calibration.
 
 **No tide-gauge bias correction.** The surge forcing is not corrected against
 GESLA v4.1 tide-gauge records. That option was tested on the nine basins and
