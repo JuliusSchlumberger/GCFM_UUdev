@@ -664,11 +664,12 @@ def fig_bed_alternatives(
     colours = {-1: "#a6d96a", 0: "0.90", 1: "#f4a582"}
     fig, axes = plt.subplots(
         1,
-        len(basins) + 1,
-        figsize=(1.05 * len(cols) * len(basins) + 1.6, 6.2),
+        len(basins),
+        figsize=(1.05 * len(cols) * len(basins) + 0.6, 6.2),
         sharey=True,
-        gridspec_kw={"width_ratios": [len(cols)] * len(basins) + [1]},
+        squeeze=False,
     )
+    axes = axes[0]
     for ax, basin_id in zip(axes, basins):
         g = table[table["basin_id"] == basin_id].set_index("alternative").loc[letters]
         c = cmp[cmp["basin_id"] == basin_id].set_index("alternative").loc[letters]
@@ -712,27 +713,6 @@ def fig_bed_alternatives(
             ax.plot(
                 [x0 + 0.08, x1 - 0.08], [-0.85, -0.85], color="k", lw=0.8, clip_on=False
             )
-    d = axes[-1]
-    for i, a in enumerate(letters):
-        face = "white" if a == PRODUCTION else ("#a6d96a" if replaces[a] else "#f4a582")
-        d.add_patch(
-            plt.Rectangle((0, i), 1, 1, facecolor=face, edgecolor="0.6", lw=0.8)
-        )
-        d.text(
-            0.5,
-            i + 0.5,
-            "-" if a == PRODUCTION else ("yes" if replaces[a] else "no"),
-            ha="center",
-            va="center",
-            fontsize=9,
-        )
-    d.set_xlim(0, 1)
-    d.set_xticks([0.5])
-    d.set_xticklabels(["replaces A"], fontsize=7.5)
-    d.xaxis.tick_top()
-    d.text(
-        0.5, -0.95, "decision", ha="center", va="bottom", fontsize=8, fontweight="bold"
-    )
     axes[0].set_ylim(len(letters), 0)
     axes[0].set_yticks(np.arange(len(letters)) + 0.5)
     axes[0].set_yticklabels(letters, fontsize=11, fontweight="bold")
@@ -744,12 +724,12 @@ def fig_bed_alternatives(
     fig.tight_layout()
     save_figure(fig, path, dpi=130)
     plt.close(fig)
-    n = len(basins)
     panels = ", ".join(f"({chr(97 + k)}) basin {b}" for k, b in enumerate(basins))
+    kept = ", ".join(a for a, r in replaces.items() if r) or "none"
     write_caption(
         path,
         f"""
-Alternative ways to set the river bed, each compared with the production bed A; {panels}, ({chr(97 + n)}) the decision. Values in the cells; the table is in bed_alternatives.csv.
+Alternative ways to set the river bed, each compared with the production bed A; {panels}. Values in the cells; the table, with the decision per alternative, is in bed_alternatives.csv.
 
 Rows: each alternative sets the bed as surface minus the depth of uniform flow (concept.png) and differs from A in one or more choices.
 - A: terrain-model surface (FathomDEM), two-scale fit, bankfull discharge, Manning depth (production).
@@ -769,7 +749,7 @@ Column groups:
 - reliance on the minimum slope (information, not scored): share of river nodes whose depth uses the minimum slope (1e-5) instead of the observed one.
 
 Colours compare each scored cell with A in the same basin: green better, red worse, grey equal; A's row and the information column are white.
-Decision ({chr(97 + n)}): an alternative replaces A only if it is no worse than A on every scored criterion in every basin and better on at least one. "no" means it trades one criterion against another somewhere, and A is kept.
+Decision: an alternative replaces A only if its row has no red cell in any basin and at least one green one. Alternatives that would replace A: {kept}.
 """,
     )
 
