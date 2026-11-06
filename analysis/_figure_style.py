@@ -7,20 +7,19 @@ import numpy as np
 LAND_COLOUR = "0.88"
 
 
-def panel_letters(axes, start: int = 0, xy: tuple[float, float] = (0.01, 0.99)) -> None:
-    """Label each axis (a), (b), ... in its top-left corner, in the order given."""
+def panel_letters(axes, start: int = 0, xy: tuple[float, float] = (0.0, 1.01)) -> None:
+    """Label each axis (a), (b), ... just outside its top-left corner, in the order given."""
     for k, ax in enumerate(np.ravel(axes)):
         ax.text(
             xy[0],
             xy[1],
             f"({chr(ord('a') + start + k)})",
             transform=ax.transAxes,
-            ha="left",
-            va="top",
+            ha="right",
+            va="bottom",
             fontsize=11,
             fontweight="bold",
-            bbox=dict(facecolor="white", edgecolor="none", alpha=0.7, pad=1),
-            zorder=10,
+            clip_on=False,
         )
 
 

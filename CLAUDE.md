@@ -30,7 +30,7 @@ Site paths: `config/site.yml` (gitignored; copy `config/site.example.yml`), keys
 ## Figures
 
 - No titles or subtitles; annotations kept to a minimum (axis labels, colour bars).
-- Every panel is numbered (a), (b), ... in its top-left corner (`analysis/_figure_style.panel_letters`).
+- Every panel is numbered (a), (b), ... just outside its top-left corner (`analysis/_figure_style.panel_letters`).
 - Every figure gets a description `<figure>.txt` next to it: what is shown and what each colour, line style and marker means (`write_caption`).
 - Maps always show land in light grey for orientation (`add_land`).
 

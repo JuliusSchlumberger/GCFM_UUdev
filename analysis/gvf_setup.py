@@ -720,7 +720,7 @@ def fig_bed_alternatives(
         ax.tick_params(length=0)
         for s in ax.spines.values():
             s.set_visible(False)
-    panel_letters(axes, xy=(-0.02, 1.32))
+    panel_letters(axes, xy=(0.0, 1.21))
     fig.tight_layout()
     save_figure(fig, path, dpi=130)
     plt.close(fig)
