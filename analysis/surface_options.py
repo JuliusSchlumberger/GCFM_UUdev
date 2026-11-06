@@ -10,7 +10,10 @@ merged DEM and land use, SWOT levels from SWORD v17c), written to
 
 Per option: surface minus SWOT on observed nodes; forward check (GVF level at
 the design discharge minus the surface); share of nodes on the slope floor;
-depth median, p95 and maximum; bankfull freeboard (bank top, bank_freeboard.bank_top, minus the GVF level at
+depth median, p95 and maximum; crest height (rule 11's: the GVF level at the
+calibration discharge with the sea at the calibration storm tide, floored at the
+coastal protection crest, plus freeboard_m) above the DEM at the river centre;
+the 1D Froude number at Q_bankfull x peak_ratio; bankfull freeboard (bank top, bank_freeboard.bank_top, minus the GVF level at
 Q_bankfull on the bed).
 
 Writes per basin 90_surface_options_{summary.csv,profile.png} to
@@ -30,9 +33,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio
+import xarray as xr
 from _basin_inputs import (
     DEFAULT_BASINS,
     basin_paths,
+    calibration_sea_level_m,
     calm_sea_level_m,
     load_config,
     network_end_levels,
@@ -117,7 +122,8 @@ def build_surfaces(basin_id: str, cfg: dict) -> dict[str, str]:
     return paths
 
 
-def basin(basin_id: str, cfg: dict) -> list[dict]:
+def basin(basin_id: str, cfg: dict, peak_ratio: float = 1.0) -> list[dict]:
+    """Return one row per option; peak_ratio scales Q_bankfull to the event peak for the Froude number."""
     from src.gvf_solver import forward_network
     from src.river_bed import forward_deviation_summary
     from src.water_surface import read_water_surface
@@ -125,6 +131,17 @@ def basin(basin_id: str, cfg: dict) -> list[dict]:
     n = float(cfg["river_processing"]["channel_manning_n"])
     q_min = float(cfg["river_processing"]["river_depth_modelling"]["bed"]["q_min_m3s"])
     surfaces = build_surfaces(basin_id, cfg)
+    p = basin_paths(basin_id)
+    depth_net = gpd.read_file(p["rivers_depth"])
+    q_calib = reach_q_dict(depth_net, depth_net["q_calib"].to_numpy(float))
+    sea_calib = calibration_sea_level_m(basin_id)
+    with xr.open_dataset(p["surge_forcing"], decode_times=False) as ds:
+        coastal_crest = (
+            float(ds["coastal_protection_crest_m"].values)
+            if "coastal_protection_crest_m" in ds
+            else 0.0
+        )
+    freeboard = float(cfg["river_processing"]["river_depth_modelling"]["freeboard_m"])
     rows, profiles, bank = [], {}, None
     for s_name, s_path in surfaces.items():
         table, _ = read_water_surface(s_path)
@@ -172,6 +189,33 @@ def basin(basin_id: str, cfg: dict) -> list[dict]:
                 network_end_levels(bed),
             )
             free = np.where(keep, bank - level_bf, np.nan)
+            mouths = {int(m) for m in bed.mouths}
+            ends = network_end_levels(bed)
+            # crest as rule 11 sets it: the level at the calibration discharge
+            # with the sea at the calibration storm tide, floored at the coastal crest
+            level_calib = forward_network(
+                net,
+                bed.bed_m,
+                bed.width_m,
+                {r: q_calib.get(r, 0.0) for r in net.reach_ids},
+                n,
+                {e: sea_calib if e in mouths else v for e, v in ends.items()},
+            )
+            crest_above_dem = (
+                np.maximum(level_calib, coastal_crest) + freeboard - bed.fathom_level_m
+            )
+            q_peak = {r: peak_ratio * q_bf_reach.get(r, 0.0) for r in net.reach_ids}
+            level_peak = forward_network(
+                net,
+                bed.bed_m,
+                bed.width_m,
+                q_peak,
+                n,
+                {e: bed.sea_level_m if e in mouths else v for e, v in ends.items()},
+            )
+            h_peak = np.maximum(level_peak - bed.bed_m, 0.1)
+            q_node = np.array([q_peak.get(o, 0.0) for o in net.owner])
+            froude_peak = q_node / (bed.width_m * h_peak * np.sqrt(9.81 * h_peak))
             fwd = forward_deviation_summary(bed)
             river = (bed.q_m3s > 0) & ~bed.bathymetry
             # depth_m holds the Manning depth; the sea inversion only moves the bed
@@ -195,6 +239,10 @@ def basin(basin_id: str, cfg: dict) -> list[dict]:
                     "depth_p50_m": pct(depth[river], 50),
                     "depth_p95_m": pct(depth[river], 95),
                     "depth_max_m": pct(depth[river], 100),
+                    "crest_above_dem_p50_m": pct(crest_above_dem[river], 50),
+                    "crest_above_dem_p95_m": pct(crest_above_dem[river], 95),
+                    "froude_peak_p50": pct(froude_peak[river & (q_node > 0)], 50),
+                    "froude_peak_max": pct(froude_peak[river & (q_node > 0)], 100),
                     "freeboard_p50_m": pct(free, 50),
                     "freeboard_share_below_0": float(
                         (free[np.isfinite(free)] < 0).mean()

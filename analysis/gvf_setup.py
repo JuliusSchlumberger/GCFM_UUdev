@@ -78,15 +78,30 @@ ALTERNATIVES = {
     "J": ("swot_single_40km", "period_median", "manning_sea_inversion"),
 }
 PRODUCTION = "A"
-# criterion column: label, tolerance within which it counts as equal to production; lower is better
+# criterion column: (concept, sub-label, scoring, parameter). Scoring against
+# production: "lower" (better when lower by more than the tolerance), "band"
+# (Froude bands, worse only when the value moves into a higher band), "deeper"
+# (worse only when deeper than production by more than the factor), None (shown
+# for information).
 CRITERIA = {
-    "forward_abs_median_m": ("forward check\n|median| (m)", 0.02),
-    "forward_p95_m": ("forward check\np95 (m)", 0.02),
-    "freeboard_share_below_0": ("overflowing\nat Q_bankfull", 0.01),
-    "on_floor_share": ("on the\nslope floor", 0.01),
-    "depth_p95_m": ("depth\np95 (m)", 0.5),
-    "depth_max_m": ("depth\nmax (m)", 0.5),
+    "forward_abs_median_m": ("consistency", "|median| (m)", "lower", 0.02),
+    "forward_p95_m": ("consistency", "p95 (m)", "lower", 0.02),
+    "crest_above_dem_p50_m": ("crest demand", "median (m)", "lower", 0.05),
+    "crest_above_dem_p95_m": ("crest demand", "p95 (m)", "lower", 0.05),
+    "froude_peak_p50": ("advection-off validity", "median", "band", None),
+    "froude_peak_max": ("advection-off validity", "max", "band", None),
+    "depth_p50_m": ("depth plausibility", "median (m)", "deeper", 1.5),
+    "depth_p95_m": ("depth plausibility", "p95 (m)", "deeper", 1.5),
+    "on_floor_share": ("reliance on the\nminimum slope", "share of nodes", None, None),
 }
+GROUP_LABELS = {
+    "consistency": "consistency\ncomputed level - fitted surface",
+    "crest demand": "crest demand\ndike crest - river-centre DEM",
+    "advection-off validity": "advection-off validity\nFroude number, event peak",
+    "depth plausibility": "depth plausibility\ndepth below the surface",
+    "reliance on the\nminimum slope": "reliance on the\nminimum slope",
+}
+SCORED = [c for c, v in CRITERIA.items() if v[2] is not None]
 
 
 def out_dir(basin_id: str | None = None) -> Path:
@@ -259,10 +274,10 @@ def compute(basin_id: str, river: str) -> None:
 
     cfg = load_config()
     out = out_dir(basin_id)
-    compute_nodes(basin_id, cfg, river).to_csv(
-        out / "nodes.csv", index=False, float_format="%.4g"
-    )
-    pd.DataFrame(surface_options.basin(basin_id, cfg)).to_csv(
+    nodes = compute_nodes(basin_id, cfg, river)
+    nodes.to_csv(out / "nodes.csv", index=False, float_format="%.4g")
+    peak_ratio = float(nodes["peak_over_bankfull"].iloc[0])
+    pd.DataFrame(surface_options.basin(basin_id, cfg, peak_ratio=peak_ratio)).to_csv(
         out / "surface_options.csv", index=False
     )
     fr = compute_sfincs_froude(basin_id, river)
@@ -602,26 +617,39 @@ def _alternatives_table(options: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _compare(table: pd.DataFrame) -> pd.DataFrame:
-    """Return -1 (better), 0 (equal within tolerance) or +1 (worse) than production per cell."""
+def _froude_band(v, fr_ok: float, fr_limit: float) -> np.ndarray:
+    return np.digitize(v, [fr_ok, fr_limit], right=True)
+
+
+def _compare(table: pd.DataFrame, fr_ok: float, fr_limit: float) -> pd.DataFrame:
+    """Return -1 (better), 0 (equal) or +1 (worse) than production per scored cell."""
     out = table.copy()
-    for basin_id, g in table.groupby("basin_id"):
+    for _, g in table.groupby("basin_id"):
         ref = g[g["alternative"] == PRODUCTION].iloc[0]
-        for col, (_, tol) in CRITERIA.items():
-            d = g[col] - ref[col]
-            if col.startswith("depth"):
-                # only implausibly deep channels count; a shallow one shows as overflow
-                out.loc[g.index, col] = np.where(d > tol, 1, 0)
+        for col, (_, _, rule, par) in CRITERIA.items():
+            v, r = g[col].to_numpy(float), float(ref[col])
+            if rule == "lower":
+                d = v - r
+                score = np.where(np.abs(d) <= par, 0, np.sign(d))
+            elif rule == "band":
+                score = np.sign(
+                    _froude_band(v, fr_ok, fr_limit) - _froude_band(r, fr_ok, fr_limit)
+                )
+            elif rule == "deeper":
+                score = np.where(v > par * r, 1, 0)
             else:
-                out.loc[g.index, col] = np.where(np.abs(d) <= tol, 0, np.sign(d))
+                score = np.full(len(v), np.nan)
+            out.loc[g.index, col] = score
     return out
 
 
-def fig_bed_alternatives(options: dict, path: Path) -> None:
+def fig_bed_alternatives(
+    options: dict, path: Path, fr_ok: float = 0.3, fr_limit: float = 0.5
+) -> None:
     table = _alternatives_table(options)
-    cmp = _compare(table)
-    worse = cmp.groupby("alternative")[list(CRITERIA)].max().max(axis=1)
-    better = cmp.groupby("alternative")[list(CRITERIA)].min().min(axis=1)
+    cmp = _compare(table, fr_ok, fr_limit)
+    worse = cmp.groupby("alternative")[SCORED].max().max(axis=1)
+    better = cmp.groupby("alternative")[SCORED].min().min(axis=1)
     replaces = {
         a: bool(worse[a] <= 0 and better[a] < 0)
         for a in ALTERNATIVES
@@ -632,20 +660,26 @@ def fig_bed_alternatives(options: dict, path: Path) -> None:
     )
     basins = list(options)
     letters = list(ALTERNATIVES)
+    cols = list(CRITERIA)
     colours = {-1: "#a6d96a", 0: "0.90", 1: "#f4a582"}
     fig, axes = plt.subplots(
         1,
         len(basins) + 1,
-        figsize=(5.2 * len(basins) + 1.6, 5.5),
+        figsize=(1.05 * len(cols) * len(basins) + 1.6, 6.2),
         sharey=True,
-        gridspec_kw={"width_ratios": [len(CRITERIA)] * len(basins) + [1]},
+        gridspec_kw={"width_ratios": [len(cols)] * len(basins) + [1]},
     )
     for ax, basin_id in zip(axes, basins):
         g = table[table["basin_id"] == basin_id].set_index("alternative").loc[letters]
         c = cmp[cmp["basin_id"] == basin_id].set_index("alternative").loc[letters]
-        for j, col in enumerate(CRITERIA):
+        for j, col in enumerate(cols):
             for i, a in enumerate(letters):
-                face = "white" if a == PRODUCTION else colours[int(c.loc[a, col])]
+                scored = CRITERIA[col][2] is not None
+                face = (
+                    "white"
+                    if a == PRODUCTION or not scored
+                    else colours[int(c.loc[a, col])]
+                )
                 ax.add_patch(
                     plt.Rectangle((j, i), 1, 1, facecolor=face, edgecolor="0.6", lw=0.8)
                 )
@@ -654,14 +688,30 @@ def fig_bed_alternatives(options: dict, path: Path) -> None:
                     f"{v:.0%}"
                     if "share" in col
                     else f"{v:.1f}"
-                    if "depth" in col
+                    if col.endswith("_m") and not col.startswith("forward")
                     else f"{v:.2f}"
                 )
                 ax.text(j + 0.5, i + 0.5, text, ha="center", va="center", fontsize=8.5)
-        ax.set_xlim(0, len(CRITERIA))
-        ax.set_xticks(np.arange(len(CRITERIA)) + 0.5)
-        ax.set_xticklabels([v[0] for v in CRITERIA.values()], fontsize=7.5)
+        ax.set_xlim(0, len(cols))
+        ax.set_xticks(np.arange(len(cols)) + 0.5)
+        ax.set_xticklabels([CRITERIA[c][1] for c in cols], fontsize=7.5)
         ax.xaxis.tick_top()
+        groups = list(dict.fromkeys(CRITERIA[c][0] for c in cols))
+        for grp in groups:
+            idx = [k for k, c in enumerate(cols) if CRITERIA[c][0] == grp]
+            x0, x1 = idx[0], idx[-1] + 1
+            ax.text(
+                0.5 * (x0 + x1),
+                -0.95,
+                GROUP_LABELS[grp],
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                fontweight="bold",
+            )
+            ax.plot(
+                [x0 + 0.08, x1 - 0.08], [-0.85, -0.85], color="k", lw=0.8, clip_on=False
+            )
     d = axes[-1]
     for i, a in enumerate(letters):
         face = "white" if a == PRODUCTION else ("#a6d96a" if replaces[a] else "#f4a582")
@@ -678,8 +728,11 @@ def fig_bed_alternatives(options: dict, path: Path) -> None:
         )
     d.set_xlim(0, 1)
     d.set_xticks([0.5])
-    d.set_xticklabels(["replaces\nA"], fontsize=7.5)
+    d.set_xticklabels(["replaces A"], fontsize=7.5)
     d.xaxis.tick_top()
+    d.text(
+        0.5, -0.95, "decision", ha="center", va="bottom", fontsize=8, fontweight="bold"
+    )
     axes[0].set_ylim(len(letters), 0)
     axes[0].set_yticks(np.arange(len(letters)) + 0.5)
     axes[0].set_yticklabels(letters, fontsize=11, fontweight="bold")
@@ -687,13 +740,12 @@ def fig_bed_alternatives(options: dict, path: Path) -> None:
         ax.tick_params(length=0)
         for s in ax.spines.values():
             s.set_visible(False)
-    panel_letters(axes, xy=(-0.02, 1.16))
+    panel_letters(axes, xy=(-0.02, 1.32))
     fig.tight_layout()
     save_figure(fig, path, dpi=130)
     plt.close(fig)
     n = len(basins)
     panels = ", ".join(f"({chr(97 + k)}) basin {b}" for k, b in enumerate(basins))
-    tol = "; ".join(f"{v[0].replace(chr(10), ' ')} {v[1]:g}" for v in CRITERIA.values())
     write_caption(
         path,
         f"""
@@ -709,14 +761,15 @@ Rows: each alternative sets the bed as surface minus the depth of uniform flow (
 - J: H with the sea inversion.
 "Two-scale" smooths the level and the slope over separate lengths; bankfull is about the 1.5-year GloFAS flood.
 
-Columns (lower is better for all):
-- forward check: the water level computed back on the bed at the design discharge minus the surface it was set from, |median| and 95th percentile (a bed that reproduces its surface has both near 0);
-- overflowing at Q_bankfull: share of river nodes where the computed level at bankfull discharge rises above the bank top (90th percentile of the terrain beside the channel);
-- on the slope floor: share of river nodes whose depth uses the minimum slope (1e-5) instead of the observed one;
-- depth p95 / max: 95th percentile and maximum of the depth below the surface; channels deeper than the river can plausibly be are an error of the method.
+Column groups:
+- consistency: does the bed give back the surface it was set from? The water level computed on the bed at bankfull discharge (gradually varied flow) minus the fitted surface, |median| and 95th percentile; scored lower-is-better (equal within 0.02 m).
+- crest demand: how much dike does the bed force on the model? The crest rule 11 would set (computed level at the calibration discharge, sea at the calibration storm tide, floored at the coastal protection crest, plus freeboard) minus the terrain-model elevation at the river centre, median and 95th percentile; scored lower-is-better (equal within 0.05 m).
+- advection-off validity: is SFINCS without its advection term accurate on this bed? The 1D Froude number at the river event's peak discharge, kept in the channel, median and maximum; scored by band (up to {fr_ok:g} fine, {fr_ok:g}-{fr_limit:g} caution, above {fr_limit:g} not acceptable): worse only when the value moves into a higher band than A's, better when into a lower one.
+- depth plausibility: is the channel not implausibly deep? Depth of the bed below the fitted surface, median and 95th percentile; worse when more than 50 % deeper than A, never better (a shallow channel shows its cost as crest demand).
+- reliance on the minimum slope (information, not scored): share of river nodes whose depth uses the minimum slope (1e-5) instead of the observed one.
 
-Colours compare each cell with A in the same basin: green better, red worse, grey equal within the tolerance ({tol}); A's row is the reference (white). Depth only counts against an alternative (red when deeper than A); a shallower channel is not better in itself, its cost shows as overflow.
-Decision ({chr(97 + n)}): an alternative replaces A only if it is no worse than A on every criterion in every basin and better on at least one. "no" means it trades one criterion against another somewhere, and A is kept.
+Colours compare each scored cell with A in the same basin: green better, red worse, grey equal; A's row and the information column are white.
+Decision ({chr(97 + n)}): an alternative replaces A only if it is no worse than A on every scored criterion in every basin and better on at least one. "no" means it trades one criterion against another somewhere, and A is kept.
 """,
     )
 
@@ -737,7 +790,7 @@ def figures(basin_ids: list[str], river: str, fr_ok: float, fr_limit: float) -> 
     for b, t in nodes.items():
         fig_long_profile(b, t, out / f"long_profile_{b}.png")
     options = {b: pd.read_csv(out_dir(b) / "surface_options.csv") for b in basin_ids}
-    fig_bed_alternatives(options, out / "bed_alternatives.png")
+    fig_bed_alternatives(options, out / "bed_alternatives.png", fr_ok, fr_limit)
 
 
 def main() -> int:

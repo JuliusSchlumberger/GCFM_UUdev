@@ -36,9 +36,10 @@ changed without changing their content.
    a monotone downstream fit, two-scale smoothing. The slope is taken along each
    node's largest-Q path and floored at `slope_floor` (1e-5) for the depth only.
    The pin is the calm level, not a surge level, because the terrain model
-   records the river at ordinary water levels. A storm-tide pin would raise the
-   surface and deepen the bed near the coast for a condition the observation
-   never saw; the surge enters later, as the event's sea boundary.
+   records the river at ordinary water levels; the surge enters later, as the
+   event's sea boundary. On the flat reach near the sea the depth follows from
+   Q, W and the minimum slope, not from the pin, so a higher pin would lift
+   surface and bed together and leave the channel shallower relative to the sea.
 3. **Depth and bed (rule 11, round 0):** Manning normal depth of a rectangular
    channel, h = (n Q / (W √S))^(3/5), with Q the routed GloFAS bankfull
    discharge, W the SWORD width and n `channel_manning_n` (0.03); bed =
@@ -101,28 +102,38 @@ flow and is not the case the choice depends on.
 ## 3. The bed and its alternatives (`gvf_setup/long_profile_<basin>.png`, `bed_alternatives.png`)
 
 `bed_alternatives.png` compares ten ways to set the bed (A-J, described in
-its caption) with the production bed A, delta by delta, on six criteria (lower
-is better):
-- the forward check, |median| and p95;
-- the share of nodes overflowing at Q_bankfull, the design discharge;
-- the share of nodes on the slope floor;
-- the depth p95 and maximum, which count only when deeper than A.
+its caption) with the production bed A, delta by delta, on what matters for
+the flood model:
+- **consistency:** computed level at bankfull minus the fitted surface, |median|
+  and p95 (equal within 0.02 m);
+- **crest demand:** the dike crest rule 11 would set minus the terrain at the
+  river centre, median and p95 (equal within 0.05 m). Overtopping in itself is
+  not a criterion, since rule 11 builds a dike wherever the river would
+  overtop; what a bed costs is how high those dikes must be;
+- **advection-off validity:** 1D Froude number at the event peak, median and
+  maximum, scored by band (up to 0.3, 0.3-0.5, above 0.5);
+- **depth plausibility:** depth median and p95, worse when more than 50 % deeper
+  than A;
+- **reliance on the minimum slope:** share of nodes on the slope floor, shown for
+  information.
 
 **Decision rule.** An alternative replaces A only if it is no worse than A on
-every criterion in every delta and better on at least one. None is:
+every scored criterion in every delta and better on at least one. None is:
 
 | alternative | better than A | worse than A |
 |---|---|---|
-| B, D, F, H, J (recent median discharge) | forward check | overflow at bankfull 28-32 % (Ebro), 86-92 % (Chao Phraya) |
-| C, E (SWOT, bankfull) | forward check on the Ebro | Chao Phraya forward check (C), slope floor and depth (up to 84 m) |
-| G (SWOT, single 40 km, bankfull) | forward check in both deltas | Chao Phraya slope floor (36 % vs 25 %) and depth (p95 23.7 vs 20.6 m, max 84 vs 61 m) |
-| I (sea inversion) | forward check, slope floor | depth: channels 39-40 m deep (p95) |
+| B, D, F, H, J (recent median discharge) | consistency | crest demand about doubled (Chao Phraya median 10 m vs 4.4 m); Froude maximum above 0.5 |
+| C (SWOT, two-scale, bankfull) | Ebro consistency and crest demand | Chao Phraya consistency, crest p95, Froude maximum 0.75 |
+| E (SWOT, single 20 km, bankfull) | consistency, crest demand in both deltas | Chao Phraya Froude maximum 0.46 vs 0.22 |
+| G (SWOT, single 40 km, bankfull) | consistency in both deltas | Ebro crest p95 (5.9 vs 5.3 m); Chao Phraya Froude maximum 0.41 vs 0.22 |
+| I (sea inversion) | consistency, crest demand | channels 39-40 m deep (p95), four times A's on the Ebro |
 
-A is kept, which does not make it the best bed. G improves the forward check in
-both deltas at the cost of more floored nodes and deeper channels on the Chao
-Phraya; it is the candidate to test in the full model if the bed is revisited.
-A misses the forward check by design: the depth uses the floored,
-long-smoothed slope, which the surface does not share (concept.png, step 4).
+A is kept. E comes closest: it would need lower dikes and reproduces its
+surface better in both deltas, but it raises the peak Froude number on the
+Chao Phraya into the range where dropping advection becomes questionable, and
+it relies more on the minimum slope (40-43 % of nodes). A misses the
+consistency check by design: the depth uses the floored, long-smoothed slope,
+which the surface does not share (concept.png, step 4).
 
 The slope floor was varied separately: 5e-6 and 2e-5 change the depth on the
 25-29 % of nodes on the floor by +24 % and -20 %.
