@@ -341,7 +341,7 @@ sfincs:
     dtmapout:     3600           # spatial map output interval (s) -- MAIN EVENT run only
     dtmaxout:     3600           # max-value envelope output interval (s)
     dthisout:      600           # time-series output at observation points (s) -- MAIN EVENT run only
-    storevelmax:     0           # write maximum flow velocity (0=off, 1=on)
+    storevelmax:     1           # write maximum flow velocity (0=off, 1=on); the Froude check of the analysis suite reads it
     storetwet:       0           # write inundation duration / time-wet (0=off, 1=on)
     # SFINCS executable: sfincs_exe in config/site.yml (see config/site.example.yml)
     timeout_s: 68400             # max wall-clock time for a SFINCS subprocess (s, 19 h) --

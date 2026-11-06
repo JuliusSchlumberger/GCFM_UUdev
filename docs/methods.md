@@ -363,8 +363,8 @@ them:
   lagoons and stands at the dike when the river peak arrives, independent of
   `T_walled`; the event runs' storm-tide wave touches its peak for about an
   hour at the boundary. The arrival time of the river at the
-  mouth is checked separately, on a copy of round 1 with the sea held at the
-  storm tide (`analysis/benchmark_peak_travel.py --run`);
+  mouth is checked on the river-only event run (`analysis/travel_time.py`,
+  docs/river_depth_gvf.md);
 - rivers: each crossing from its reach's mean discharge (the flow that holds the
   initial river level, below) to the discharge at the FLOPROS riverine return
   period (`river_protection_rp_yr`, log-RP interpolated from the discharge

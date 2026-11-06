@@ -1,4 +1,4 @@
-"""Phase 1.7: 1D-2D gap per reach against channel angle, width and diagonal-only connectivity.
+"""1D-2D gap per reach against channel angle, width and diagonal-only connectivity.
 
 Gap = round-1 end-of-run SFINCS level minus the steady 1D level, median over
 the reach's centreline cells (round1/calibration_state.csv). The 1D level is
@@ -13,11 +13,11 @@ Connectivity: channel cells (finite in rule 11's burned DEM on the grid)
 whose only channel neighbours are diagonal, assigned to the nearest
 centreline cell's reach.
 
-Writes per basin 90_phase1_gvf_gap_reaches.csv and _scatter.png to
-<results_dir>/<basin>/figures/analysis/, and phase1_gvf_gap_summary.csv to
+Writes per basin 90_gvf_gap_reaches.csv and _scatter.png to
+<results_dir>/<basin>/figures/analysis/, and gvf_gap_summary.csv to
 <results_dir>/figures/analysis/.
 
-Usage: python analysis/phase1_gvf_gap.py [basin_id ...]
+Usage: python analysis/gvf_gap.py [basin_id ...]
 """
 
 import logging
@@ -30,9 +30,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio
-from _common import analysis_path, script_parser
-from _phase1 import (
-    PHASE1_BASINS,
+from _basin_inputs import (
+    DEFAULT_BASINS,
     basin_paths,
     calibration_sea_level_m,
     git_hash,
@@ -43,6 +42,7 @@ from _phase1 import (
     round0,
     write_summary,
 )
+from _common import analysis_path, script_parser
 from scipy.spatial import cKDTree
 
 WIDTH_CLASSES = [
@@ -172,7 +172,7 @@ def gap_basin(basin_id: str, cfg: dict, tag: str) -> dict:
     ax.set_xlabel("reach angle to the grid (deg, 0-45)")
     ax.set_ylabel("SFINCS round-1 end level - 1D GVF level (m)")
     ax.set_title(
-        f"phase1 1.7 1D-2D gap | {basin_id} | calibration Q | dx {dx:.0f} m | {tag}",
+        f"gvf_gap | {basin_id} | calibration Q | dx {dx:.0f} m | {tag}",
         fontsize=9,
     )
     ax.grid(alpha=0.3)
@@ -202,7 +202,7 @@ def gap_basin(basin_id: str, cfg: dict, tag: str) -> dict:
 
 def main() -> int:
     parser = script_parser(__doc__)
-    parser.add_argument("basin_ids", nargs="*", default=PHASE1_BASINS)
+    parser.add_argument("basin_ids", nargs="*", default=DEFAULT_BASINS)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     cfg, tag = load_config(), git_hash()

@@ -1,4 +1,4 @@
-"""Phase 3.1: SWOT node levels against each stage of the rule-10 surface.
+"""SWOT node levels against each stage of the rule-10 surface.
 
 Stages, rebuilt on rule 10's node network from its stored node medians
 (src.water_surface.build_water_surface): raw FathomDEM median, sea pin (every
@@ -8,11 +8,11 @@ shifted from EGM2008 to the model datum (GOCO06s) with
 src.raster.compute_geoid_offset_arr, matched to the nearest network node of the
 same reach within 500 m.
 
-Writes per basin 90_phase3_surface_stages_{reaches.csv,along.png} to
-<results_dir>/<basin>/figures/analysis/ and phase3_surface_stages_summary.csv to
+Writes per basin 90_surface_stages_{reaches.csv,along.png} to
+<results_dir>/<basin>/figures/analysis/ and surface_stages_summary.csv to
 <results_dir>/figures/analysis/.
 
-Usage: python analysis/phase3_surface_stages.py [basin_id ...]
+Usage: python analysis/surface_stages.py [basin_id ...]
 """
 
 import logging
@@ -21,22 +21,58 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from _common import analysis_path, script_parser
-from _phase1 import (
-    PHASE1_BASINS,
+from _basin_inputs import (
+    DEFAULT_BASINS,
     basin_paths,
     calm_sea_level_m,
     load_config,
     pct,
     write_summary,
 )
-from phase1_swot_coverage import MIN_OBS, _sword, geoid_offset_at
+from _common import REPO_ROOT, analysis_path, script_parser
 from pyproj import Transformer
 from scipy.spatial import cKDTree
 
 log = logging.getLogger(__name__)
+MIN_OBS = 10
 MATCH_M = 500.0
 STAGES = ["raw", "pinned", "isotonic", "level"]
+
+
+def _sword(
+    cfg: dict, layer: str, bounds, reach_ids: set[int], columns: list[str]
+) -> pd.DataFrame:
+    from src.io import catalogue_entry, load_catalogue, raw_input_path
+
+    cat = load_catalogue(REPO_ROOT / cfg["data_catalogue"])
+    parts = []
+    for region in catalogue_entry(cat, "river_network")["regions"]:
+        path = raw_input_path(cat, "river_network").format(region=region)
+        df = gpd.read_file(path, layer=layer, bbox=bounds)
+        if len(df):
+            parts.append(
+                df[df["reach_id"].astype("int64").isin(reach_ids)][
+                    columns + ["geometry"]
+                ]
+            )
+    return (
+        pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=columns)
+    )
+
+
+def geoid_offset_at(cfg: dict, lon: np.ndarray, lat: np.ndarray) -> np.ndarray:
+    import rasterio
+    from src.io import load_catalogue, raw_input_path
+    from src.raster import compute_geoid_offset_arr
+
+    cat = load_catalogue(REPO_ROOT / cfg["data_catalogue"])
+    arr, transform, crs = compute_geoid_offset_arr(
+        raw_input_path(cat, "goco06s"), raw_input_path(cat, "egm2008_geoid")
+    )
+    x, y = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(lon, lat)
+    rows, cols = rasterio.transform.rowcol(transform, x, y)
+    rows, cols = np.clip(rows, 0, arr.shape[0] - 1), np.clip(cols, 0, arr.shape[1] - 1)
+    return arr[rows, cols].astype(float)
 
 
 def stages(basin_id: str, cfg: dict):
@@ -222,7 +258,7 @@ def _plot(basin_id: str, nodes: pd.DataFrame, net, main: set[str]) -> None:
 
 def main() -> int:
     parser = script_parser(__doc__)
-    parser.add_argument("basin_ids", nargs="*", default=PHASE1_BASINS)
+    parser.add_argument("basin_ids", nargs="*", default=DEFAULT_BASINS)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     cfg = load_config()

@@ -1,4 +1,4 @@
-"""Phase 2a: SFINCS steady level in a synthetic sub-cell trench, advection on and off, against normal depth.
+"""SFINCS steady level in a synthetic sub-cell trench, advection on and off, against normal depth.
 
 A rectangular trench (width TRENCH_WIDTH_M, Manning n, bed slope BED_SLOPE)
 between walls WALL_HEIGHT_M above the bed carries a constant discharge to a
@@ -24,7 +24,7 @@ depth, away from both ends (EDGE_SKIP_M).
 Writes advection_channel_summary.csv and the same-name _profiles.png and
 _map.png to <results_dir>/figures/analysis/; model runs to --run-dir.
 
-Usage: python analysis/phase2_advection_channel.py [--run-dir DIR] [--skip-run]
+Usage: python analysis/advection_channel.py [--run-dir DIR] [--skip-run]
 """
 
 import logging
@@ -332,7 +332,7 @@ def summarise(
         "path_ratio": float(steps * r["dx_m"] / span) if span > 0 else np.nan,
         "error_median_m": float(err["error_m"].median()),
         "error_p95_m": float(err["error_m"].quantile(0.95)),
-        # positive when the error grows upstream, as the slope excess of phase2_gap_slope.py
+        # positive when the error grows upstream, a staircase effect of the grid
         "error_slope_m_per_km": float(
             np.polyfit((r["length_m"] - err["s_m"]) / 1000.0, err["error_m"], 1)[0]
         ),
@@ -373,7 +373,7 @@ def plot(results: dict, tag: str) -> None:
                 ax.set_ylabel("SFINCS - normal-depth level (m)")
     axes[0, 0].legend(fontsize=8)
     fig.suptitle(
-        f"phase2 2a synthetic trench W {TRENCH_WIDTH_M:.0f} m, n {MANNING_N}, S {BED_SLOPE:g}: "
+        f"advection_channel: synthetic trench W {TRENCH_WIDTH_M:.0f} m, n {MANNING_N}, S {BED_SLOPE:g}: "
         f"steady level error | {tag}",
         fontsize=10,
     )
@@ -416,7 +416,7 @@ def plot_map(models: dict, results: dict, tag: str) -> None:
             ax.set_title(f"{layout}, advection {adv}: centreline cells", fontsize=9)
             fig.colorbar(sc, ax=ax, shrink=0.7, label="level error (m)")
     fig.suptitle(
-        f"phase2 2a synthetic trench, Q {q:.0f} m3/s, alpha {alpha:g} | {tag}",
+        f"advection_channel: synthetic trench, Q {q:.0f} m3/s, alpha {alpha:g} | {tag}",
         fontsize=10,
     )
     fig.tight_layout()
@@ -432,7 +432,7 @@ def main() -> int:
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING)
     sys.path.insert(0, str(REPO_ROOT / "workflow"))
-    from _phase1 import git_hash, load_config
+    from _basin_inputs import git_hash, load_config
     from src.sfincs_run import run_sfincs_subprocess
 
     cfg, tag = load_config(), git_hash()

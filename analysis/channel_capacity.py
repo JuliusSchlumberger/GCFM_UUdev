@@ -1,7 +1,7 @@
-"""Phase 4.2: channel capacity Q_cap per node for the round-0 bed options.
+"""Channel capacity Q_cap per node for the round-0 bed options.
 
 Q_cap is the discharge at which the steady GVF level on the bed reaches the
-bank top (phase1_freeboard.bank_top: P90 of rule 06's merged DEM beside the
+bank top (bank_freeboard.bank_top: P90 of rule 06's merged DEM beside the
 channel, lower bank); nodes whose bank top is not above the calm sea level
 are left out. The network is solved at k x the routed Q_bankfull for
 k on a log grid (SCALES), the network ends held at their levels in the bed
@@ -10,17 +10,17 @@ bank top, interpolated in log k. Below the smallest k the node is reported
 at that k, above the largest at that k.
 
 Bed options: the stored surface (FathomDEM two-scale) with design_discharge
-bankfull (the default) and period_median, and Phase 3's SWOT single 40 km
-surface (figures/analysis/phase3_surfaces/swot_single_40km.gpkg) with
+bankfull (the default) and period_median, and surface_options' SWOT single 40 km
+surface (figures/analysis/surfaces/swot_single_40km.gpkg) with
 period_median; bankfull-FathomDEM and period-median-SWOT also with
 bed_method manning_sea_inversion (4.4). Each row also gives the forward check
 and the shares of flowing nodes on the slope floor and inverted.
 
-Writes per basin 90_phase4_capacity_{nodes.csv,profile.png} to
-<results_dir>/<basin>/figures/analysis/ and phase4_capacity_summary.csv to
+Writes per basin 90_channel_capacity_{nodes.csv,profile.png} to
+<results_dir>/<basin>/figures/analysis/ and channel_capacity_summary.csv to
 <results_dir>/figures/analysis/.
 
-Usage: python analysis/phase4_capacity.py [basin_id ...]
+Usage: python analysis/channel_capacity.py [basin_id ...]
 """
 
 import logging
@@ -31,9 +31,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from _common import analysis_dir, analysis_path, script_parser
-from _phase1 import (
-    PHASE1_BASINS,
+from _basin_inputs import (
+    DEFAULT_BASINS,
     basin_paths,
     load_config,
     network_end_levels,
@@ -43,14 +42,15 @@ from _phase1 import (
     round0,
     write_summary,
 )
-from phase1_freeboard import bank_top, net_crs, node_tangents
+from _common import analysis_dir, analysis_path, script_parser
+from bank_freeboard import bank_top, net_crs, node_tangents
 
 log = logging.getLogger(__name__)
 SCALES = np.geomspace(0.05, 5.0, 25)
 
 
 def options(basin_id: str) -> dict[str, tuple[object, str, str]]:
-    swot = analysis_dir(basin_id) / "phase3_surfaces" / "swot_single_40km.gpkg"
+    swot = analysis_dir(basin_id) / "surfaces" / "swot_single_40km.gpkg"
     inv = "manning_sea_inversion"
     return {
         "fathom_bankfull": (None, "bankfull", "manning"),
@@ -219,7 +219,7 @@ def _figure(basin_id: str, nodes: dict[str, pd.DataFrame]) -> None:
     ax.grid(alpha=0.3, which="both")
     ax.legend(fontsize=8)
     ax.set_title(
-        f"phase4 4.2 | {basin_id} | channel capacity of the round-0 bed options"
+        f"channel_capacity | {basin_id} | channel capacity of the round-0 bed options"
     )
     fig.tight_layout()
     fig.savefig(analysis_path(basin_id, __file__, "profile.png"), dpi=130)
@@ -228,7 +228,7 @@ def _figure(basin_id: str, nodes: dict[str, pd.DataFrame]) -> None:
 
 def main() -> int:
     parser = script_parser(__doc__)
-    parser.add_argument("basin_ids", nargs="*", default=PHASE1_BASINS)
+    parser.add_argument("basin_ids", nargs="*", default=DEFAULT_BASINS)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     cfg = load_config()

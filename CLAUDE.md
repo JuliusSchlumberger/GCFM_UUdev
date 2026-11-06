@@ -15,6 +15,7 @@ Site paths: `config/site.yml` (gitignored; copy `config/site.example.yml`), keys
 - `snakemake build --cores N`: SFINCS build, spin-up, event run, flood metrics
 - `snakemake all --cores N`: preprocess + build; the default target (`default_target`), so a bare `snakemake` runs it; any target takes `--config target_basins="[ID]" target_scenarios="['name']"`
 - `snakemake adapt --cores N --config target_strategies="['advance_1']"`: needs `build` done; strategies with `auto/<name>` locations also run rule 12c `build_adaptation_lines` (writes `<results_dir>/{basin_id}/adaptation_lines/`)
+- `snakemake analysis_suite --cores N --rerun-triggers mtime`: cross-delta figures (bed set-up, travel time, upstream boundary, opt-in depth sensitivity) from finished runs; basins and events in `config/analysis_suite.yml`; see `docs/river_depth_gvf.md`
 - `python tools/<script>.py`: one-off data preparation
 - `python analysis/<script>.py [basin_id]`: stand-alone figures and checks on finished results, including the diagnostics that are not rules (river-network map, upstream-boundary check, bifurcation options, GRDC and GESLA screens); shared helpers in `analysis/_common.py`
 - `python plot_dag.py`: rule graph to `figs/dag/`

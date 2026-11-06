@@ -1,22 +1,22 @@
-"""Phase 3.6: rule-10 surface options and the round-0 bed hung from each.
+"""Rule-10 surface options and the round-0 bed hung from each.
 
 Options: surface_source fathom | sword_swot, surface_fit two_scale | single,
 design_discharge bankfull | period_median. Each surface is rebuilt with
 src.water_surface.build_water_surface on rule 10's stored inputs (rule 06's
 merged DEM and land use, SWOT levels from SWORD v17c), written to
-<results_dir>/<basin>/figures/analysis/phase3_surfaces/, and rule 11's round 0
-(_phase1.round0) is run on it.
+<results_dir>/<basin>/figures/analysis/surfaces/, and rule 11's round 0
+(_basin_inputs.round0) is run on it.
 
 Per option: surface minus SWOT on observed nodes; forward check (GVF level at
 the design discharge minus the surface); share of nodes on the slope floor;
-bankfull freeboard (bank top, phase1_freeboard.bank_top, minus the GVF level at
+bankfull freeboard (bank top, bank_freeboard.bank_top, minus the GVF level at
 Q_bankfull on the bed).
 
-Writes per basin 90_phase3_surface_options_{summary.csv,profile.png} to
-<results_dir>/<basin>/figures/analysis/ and phase3_surface_options_summary.csv
+Writes per basin 90_surface_options_{summary.csv,profile.png} to
+<results_dir>/<basin>/figures/analysis/ and surface_options_summary.csv
 to <results_dir>/figures/analysis/.
 
-Usage: python analysis/phase3_surface_options.py [basin_id ...]
+Usage: python analysis/surface_options.py [basin_id ...]
 """
 
 import logging
@@ -29,9 +29,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio
-from _common import analysis_dir, analysis_path, script_parser
-from _phase1 import (
-    PHASE1_BASINS,
+from _basin_inputs import (
+    DEFAULT_BASINS,
     basin_paths,
     calm_sea_level_m,
     load_config,
@@ -42,7 +41,8 @@ from _phase1 import (
     round0,
     write_summary,
 )
-from phase1_freeboard import bank_top, net_crs, node_tangents
+from _common import analysis_dir, analysis_path, script_parser
+from bank_freeboard import bank_top, net_crs, node_tangents
 
 log = logging.getLogger(__name__)
 SURFACES = {
@@ -91,7 +91,7 @@ def build_surfaces(basin_id: str, cfg: dict) -> dict[str, str]:
         dem_crs,
     )
     water_code = int(cfg["landuse"]["water_code"])
-    out_dir = analysis_dir(basin_id) / "phase3_surfaces"
+    out_dir = analysis_dir(basin_id) / "surfaces"
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = {}
     for name, opt in SURFACES.items():
@@ -252,7 +252,7 @@ def _figure(basin_id, profiles, bank, surfaces) -> None:
     ax.set_ylabel("m (GOCO06s)")
     ax.grid(alpha=0.3)
     ax.legend(fontsize=7, ncol=2)
-    ax.set_title(f"phase3 3.6 | {basin_id} | surface options and round-0 beds")
+    ax.set_title(f"surface_options | {basin_id} | surface options and round-0 beds")
     fig.tight_layout()
     fig.savefig(analysis_path(basin_id, __file__, "profile.png"), dpi=130)
     plt.close(fig)
@@ -260,7 +260,7 @@ def _figure(basin_id, profiles, bank, surfaces) -> None:
 
 def main() -> int:
     parser = script_parser(__doc__)
-    parser.add_argument("basin_ids", nargs="*", default=PHASE1_BASINS)
+    parser.add_argument("basin_ids", nargs="*", default=DEFAULT_BASINS)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     cfg = load_config()

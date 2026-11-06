@@ -1,4 +1,4 @@
-"""Tests for the synthetic trench of analysis/phase2_advection_channel.py."""
+"""Tests for the synthetic trench of analysis/advection_channel.py."""
 
 import sys
 from pathlib import Path
@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "analysis"))
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
 
-import phase2_advection_channel as ac  # noqa: E402
+import advection_channel as ac  # noqa: E402
 
 DX_M = 100.0
 LENGTH_M = 2000.0
@@ -49,8 +49,8 @@ def test_trench_bed_falls_at_bed_slope_and_walls_stand_above(layout):
 
 
 def _steady_errors(root, layout, advection):
+    from _basin_inputs import load_config
     from _common import site_path
-    from _phase1 import load_config
     from src.sfincs_run import run_sfincs_subprocess
 
     r = ac.build_case(

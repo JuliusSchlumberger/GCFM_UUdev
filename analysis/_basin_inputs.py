@@ -1,4 +1,4 @@
-"""Shared inputs of the Phase 1 diagnostic scripts (analysis/phase1_*.py): basin paths and a rule-11 round-0 bed."""
+"""Shared inputs of the river-bed analysis scripts: basin paths and a rule-11 round-0 bed."""
 
 import json
 import sys
@@ -11,7 +11,7 @@ from _common import REPO_ROOT, site_path
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
 
-PHASE1_BASINS = ["2433835", "3279946"]  # Ebro first, then Chao Phraya
+DEFAULT_BASINS = ["2433835", "3279946"]  # Ebro first, then Chao Phraya
 
 
 def load_config() -> dict:
@@ -22,7 +22,7 @@ def load_config() -> dict:
 
 
 def basin_paths(basin_id: str) -> dict[str, Path]:
-    """Return the rule 06-11 outputs of a basin the Phase 1 scripts read."""
+    """Return the rule 06-11 outputs of a basin the analysis scripts read."""
     root = site_path("results_dir") / basin_id
     prep = root / "preprocessing_inputs"
     dom, frc = prep / "domain", prep / "forcing"

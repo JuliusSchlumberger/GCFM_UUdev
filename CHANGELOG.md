@@ -3,6 +3,30 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-06: analysis suite for the river bed, timing and boundary; analysis scripts consolidated (- JS)
+
+**New target `analysis_suite`** (`workflow/rules/90_analysis_suite.smk`, `config/analysis_suite.yml`):
+- Cross-delta figures from finished runs for the basins and coast/river events listed in the config, in `<results_dir>/figures/analysis/`.
+- `gvf_setup/` (`analysis/gvf_setup.py`): concept of the bed method, 1D and SFINCS Froude numbers, the advection effect, long profiles, bed options.
+- `travel_time/` (`analysis/travel_time.py`): river peak reference points and the walled estimates at calibration and bankfull discharge.
+- `upstream_boundary/` (`analysis/upstream_boundary.py`): sea reach of the SFINCS event against the steady GVF at the event and the extreme sea level.
+- `depth_sensitivity/` (`analysis/depth_sensitivity.py`): opt-in, since it runs rule 11 and the build per basin and scale. The runs live in `<results_dir>/../depth_sensitivity_runs`.
+- Smoke tests: `tests/unit/test_analysis_suite.py`.
+
+**Findings on the current production runs (advection 0, `alpha` 0.25):**
+- **1D Froude number:** Chao Phraya is below 0.3 everywhere except 0.4 % of nodes at Q_mean. On the Ebro, 8-12 % of nodes (the upper gorge) are between 0.3 and 0.5, and none is above 0.5.
+- **Walled estimate at bankfull discharge:** 15.8 h (Ebro) and 65.5 h (Chao Phraya), against SFINCS plateau midpoints of 17.8 h and at least 54.6 h. At the calibration discharge it gives 6.2 and 40.8 h.
+- **Sea reach:** the steady GVF and the SFINCS event agree within 1 km on both deltas.
+
+**Config:** `sfincs.simulation.storevelmax: 1`, so event maps carry `vmax` for the SFINCS Froude check. Existing event runs have none (TODO B40).
+
+**Analysis scripts:**
+- Renamed to topic names: `_basin_inputs`, `bank_freeboard`, `gvf_gap`, `slope_floor`, `surface_options` (surfaces now in `figures/analysis/surfaces/`), `surface_stages`, `channel_capacity`, `depth_sensitivity`, `advection_channel`, `alpha_stability`, `lag_cooccurrence`.
+- Deleted: the one-off phase scripts, `mc_peak_travel.py`, and `benchmark_peak_travel.py` with its test.
+- The phase reports, the test-and-implementation plan and `docs/readout_river_depth_gvf.md` are merged into `docs/river_depth_gvf.md`.
+
+**TODO:** B34 removed (resolved by the settling-time run length; 0 cells still rising); B38 repointed; B40 added.
+
 # 2026-11-06: river peak travel and surge reach on the production model (- JS)
 
 **Analysis only; pipeline code, config and results unchanged.** Report: analysis/timing_boundary_report.md.

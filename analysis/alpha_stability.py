@@ -1,6 +1,6 @@
-"""Phase 2c: search for a SFINCS setting stable above alpha 0.25 with advection off.
+"""Search for a SFINCS setting stable above alpha 0.25 with advection off.
 
-`synthetic`: the Phase 2b trench (phase2_advection_channel.build_case),
+`synthetic`: the advection_channel trench (advection_channel.build_case),
 advection 0, from the two cases unstable at alpha 0.5 (aligned at 3000 m3/s,
 diagonal at 500 m3/s). One factor at a time from alpha 0.5: alpha, discharge
 ramp time, a sudden bed drop mid-channel, inflow position and spread, and the
@@ -16,14 +16,14 @@ step and cells stepping more than STEP_FLAG_M in an hour, cells reversing,
 the zsmax difference and the change in wet cells, and the wall time.
 
 Scratch under $GCFM_PLAN_SCRATCH/p2c (default <results_dir>/../scratch_plan/p2c).
-Writes phase2c_alpha_stability_synthetic_summary.csv and _synthetic.png to
+Writes alpha_stability_synthetic_summary.csv and _synthetic.png to
 <results_dir>/figures/analysis/, and per basin
-90_phase2c_alpha_stability_event_<scenario>_summary.csv and .png.
+90_alpha_stability_event_<scenario>_summary.csv and .png.
 
 Usage:
-  python analysis/phase2c_alpha_stability.py synthetic [--workers 4 --threads 3]
-  python analysis/phase2c_alpha_stability.py event 2433835 river_100_03SLR --name alpha0.5 --set alpha=0.5
-  python analysis/phase2c_alpha_stability.py event-compare 2433835 river_100_03SLR
+  python analysis/alpha_stability.py synthetic [--workers 4 --threads 3]
+  python analysis/alpha_stability.py event 2433835 river_100_03SLR --name alpha0.5 --set alpha=0.5
+  python analysis/alpha_stability.py event-compare 2433835 river_100_03SLR
 """
 
 import logging
@@ -43,8 +43,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
+from _basin_inputs import git_hash, load_config, write_summary
 from _common import REPO_ROOT, analysis_path, script_parser, site_path
-from _phase1 import git_hash, load_config, write_summary
 
 log = logging.getLogger("alpha_stability")
 
@@ -117,7 +117,7 @@ def _spec(variant: str) -> tuple[float, dict]:
 def build_synthetic(root: Path, base: str, variant: str, cfg: dict) -> dict:
     import copy
 
-    from phase2_advection_channel import build_case
+    from advection_channel import build_case
 
     layout, q = BASES[base]
     alpha, spec = _spec(variant)
@@ -146,7 +146,7 @@ def run_synthetic(root: Path, threads: int) -> float:
 def synthetic_metrics(
     root: Path, r: dict, base: str, variant: str, wall_s: float
 ) -> tuple[dict, pd.DataFrame]:
-    from phase2_advection_channel import BED_SLOPE, RAMP_HR
+    from advection_channel import BED_SLOPE, RAMP_HR
 
     alpha, spec = _spec(variant)
     cells = _centreline_cells(r)
@@ -234,7 +234,7 @@ def _plot_synthetic(df: pd.DataFrame, series: pd.DataFrame, tag: str) -> None:
         ax.grid(alpha=0.3)
     axes[1, -1].legend(fontsize=6, ncol=2)
     fig.suptitle(
-        f"phase2 2c synthetic trench, advection 0, one factor from alpha 0.5 | {tag}",
+        f"alpha_stability: synthetic trench, advection 0, one factor from alpha 0.5 | {tag}",
         fontsize=10,
     )
     fig.tight_layout()
@@ -374,7 +374,7 @@ def _plot_event(basin_id: str, scenario: str, fields: dict, tag: str) -> None:
         ax.set_title(f"zsmax {name} - pipeline", fontsize=9)
         fig.colorbar(im, ax=ax, shrink=0.7, label="m")
     fig.suptitle(
-        f"phase2 2c | {basin_id} | {scenario}: reruns against the pipeline run | {tag}",
+        f"alpha_stability | {basin_id} | {scenario}: reruns against the pipeline run | {tag}",
         fontsize=10,
     )
     fig.tight_layout()

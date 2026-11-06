@@ -145,4 +145,5 @@ git clone and a one-time `pre-commit install`
 | [docs/data.md](docs/data.md) | every input dataset: version, source, licence, how to obtain it, where it goes (generated from `config/data_catalogue.yml`) |
 | [docs/running.md](docs/running.md) | targets, `--config` keys, scenarios, adaptation runs, reruns, outputs |
 | [docs/methods.md](docs/methods.md) | how the model is built: datums, grid, river depth and crest calibration, forcing, adaptation |
+| [docs/river_depth_gvf.md](docs/river_depth_gvf.md) | river bed, advection and timing choices with their evidence; the `analysis_suite` target |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | branching, pull requests, code and docstring style, pre-commit |

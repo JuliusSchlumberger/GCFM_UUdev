@@ -1,4 +1,4 @@
-"""Phase 7: observed timing of surge and river peaks from reanalysis, against the configured compound lag.
+"""Observed timing of surge and river peaks from reanalysis, against the configured compound lag.
 
 Per basin, over the overlap of GTSM hourly surge (gtsm_hourly.nc, the station
 nearest a mouth) and GloFAS daily discharge (river_forcing.nc discharge_daily,
@@ -19,10 +19,10 @@ the crossing with the largest mean flow):
 The configured lag (sfincs.boundary_setup.compound) uses the same sign
 convention at the boundary: river peak minus surge peak.
 
-Writes phase7_lag_cooccurrence_summary.csv, _pairs.csv and _hist.png to
+Writes lag_cooccurrence_summary.csv, _pairs.csv and _hist.png to
 <results_dir>/figures/analysis/.
 
-Usage: python analysis/phase7_lag_cooccurrence.py [basin_id ...] [--river river_100_03SLR]
+Usage: python analysis/lag_cooccurrence.py [basin_id ...] [--river river_100_03SLR]
 """
 
 import geopandas as gpd
@@ -220,7 +220,8 @@ def plot(rows: list[dict], pairs: pd.DataFrame, tag: str, path) -> None:
         ax.legend(fontsize=7)
         ax.grid(alpha=0.3)
     fig.suptitle(
-        f"phase7 surge-river peak co-occurrence (GTSM, GloFAS) | {tag}", fontsize=10
+        f"lag_cooccurrence: surge-river peak co-occurrence (GTSM, GloFAS) | {tag}",
+        fontsize=10,
     )
     fig.tight_layout()
     fig.savefig(path, dpi=120)
