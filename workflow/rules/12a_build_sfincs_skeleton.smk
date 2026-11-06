@@ -38,6 +38,8 @@ rule build_sfincs_skeleton:
         # Rule 11's round-1 subgrid table, copied when this model's mask is identical.
         calibration_subgrid = calibration_subgrid_files(),
         river_bed_nodes   = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_bed/{basin_id}_river_bed_nodes.csv"),
+        # The alpha rule 11's calibration round ran stable with.
+        alpha_check       = diagnostics_path("alpha_check.csv"),
         # Only calm_sea_level_m/coastal_protection_crest_m and bankfull_discharge_m3s/
         # has_glofas (observation points); no forcing timeseries.
         surge_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
@@ -63,7 +65,6 @@ rule build_sfincs_skeleton:
         nr_levels          = config["sfincs"]["subgrid"]["nr_levels"],
         nrmax              = config["sfincs"]["subgrid"]["nrmax"],
         advection          = config["sfincs"]["advection"],
-        alpha              = config["sfincs"]["alpha"],
         inputs_dir        = lambda wildcards: results_path(f"{wildcards.basin_id}/preprocessing_inputs"),
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         active_mask_enabled        = config["sfincs"]["grid"]["active_mask"]["enabled"],

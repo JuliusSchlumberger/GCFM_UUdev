@@ -77,13 +77,14 @@ gap is 0.19 m (Ebro) and 0.24 m (Chao Phraya), and the splits match the widths
 within 0.03. The crest medians drop to 3.73 and 9.58 m, and the Chao Phraya
 river flood to 1099 km2 (-29 %). The cost is the time step: with advection off,
 `alpha` 0.5 went unstable on the Ebro river event (inflow level swinging 5-9 m
-per hour), so `sfincs.alpha` is 0.25, which roughly doubles run times.
+per hour). Rule 11 therefore picks alpha per basin, the first of 0.5, 0.35 and
+0.25 that runs its calibration round without river-network level swings
+(`docs/methods.md`, alpha check); 0.25 roughly doubles run times against 0.5.
 Spreading the inflow over five points along the first 800 m does not prevent
 it: the level jumps at the same time (inflow about 2500 m3/s), the inflow level
 still reaches 48 m (54 m with one point), and the upper 7 km stand at about
 24 m in both cases. The jump fills the gorge, the reach with 1D Froude numbers
 of 0.3-0.5, so it is a channel instability, not a point-source one.
-`alpha` 0.35 may also be stable but is untested on a real event.
 
 **Validity.** Without advection SFINCS solves the local-inertia equations, which
 hold where inertia is small compared with gravity and friction, that is at low
@@ -262,4 +263,4 @@ production bed:
 - Held vs hydrograph calibration sea for the crests (TODO B36).
 - Bifurcation 44306300275 network fix (TODO B37).
 - Shorter coast-only event runs (TODO B39).
-- `alpha` 0.35 on a real event.
+- Alpha per basin from rule 11's check, after the Ebro and Chao Phraya reruns.

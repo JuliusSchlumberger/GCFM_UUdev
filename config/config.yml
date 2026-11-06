@@ -315,9 +315,13 @@ sfincs:
                                  # and events match. On, steady channel levels stand up to 7 m above a 1D GVF
                                  # profile along deep sub-cell trenches (Chao Phraya); off, the gap median is
                                  # 0.19 m (Ebro) and 0.25 m (Chao Phraya)
-  alpha: 0.25                    # SFINCS time-step factor (fraction of the CFL limit); rules 11 and 12a. With
-                                 # advection off, 0.5 goes unstable where deep fast flow runs through a narrow
-                                 # subgrid trench (Ebro 100-yr river event: inflow level swings 5-9 m per hour)
+  alpha: [0.5, 0.35, 0.25]       # SFINCS time-step factor (fraction of the CFL limit), tried in this order in rule 11's
+                                 # calibration round 1; the first stable one is the basin's (12a skeleton: spin-up, events,
+                                 # adaptation). With advection off, 0.5 goes unstable where deep fast flow runs through a
+                                 # narrow subgrid trench (Ebro: inflow level swings 5-9 m per hour)
+  alpha_reversal_max_m: 1.0      # unstable: a river-network cell's hourly level step undone by more than this in the next
+                                 # hour (src.sfincs_run.level_reversal_m); stable runs stay below 0.2 m, Ebro at 0.5 reaches
+                                 # 2.7-2.9 m. Rule 11 then tries the next alpha; an event run fails
   subgrid:                       # always built -- the model relies on it for channels narrower than a cell
     nr_subgrid_pixels: 10        # subgrid pixels per grid cell (must be multiple of 2)
     nr_levels: 20                 # water-level bins for subgrid tables; memory scales linearly with this (default: 20)

@@ -3,6 +3,32 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-06: SFINCS alpha per basin from rule 11's calibration round (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW: adaptation runs take the basin's alpha.**
+> The adaptation `pre` runs inherit alpha from the skeleton's `sfincs.inp`,
+> now rule 11's choice per basin instead of the fixed 0.25, and
+> `adapt_run_event_pre` runs the new river-network swing check of
+> `15_run_event.py`, so an unstable adaptation run now fails instead of
+> finishing.
+
+**What changed:**
+- **`sfincs.alpha`** is the candidate list `[0.5, 0.35, 0.25]` (was 0.25). Rule 11's calibration round 1 runs with each in turn and keeps the first stable one; rule 12a writes it into the skeleton, so spin-up, event and adaptation runs use it. Every attempt is logged and written to `diagnostics/{basin_id}_alpha_check.csv`; no stable candidate fails rule 11.
+- **Instability test** (`alpha_reversal_max_m: 1.0`, `src.sfincs_run.level_reversal_m`): a river-network cell's hourly level step undone in the next hour by more than 1 m, or a non-zero SFINCS exit (`SfincsExitError`). Floodplain cells off the network are not looked at.
+- **Event runs** (`15_run_event.py`, also `adapt_run_event_pre`) run the same test on the cells along the clean river network and fail above the threshold.
+
+**Why:** 0.25 was set for every basin because the Ebro river event went unstable at 0.5; basins stable at 0.5 run about twice as fast.
+
+**Threshold, from existing runs (no new SFINCS run):** the largest hourly change does not separate stable from unstable runs (the stable Chao Phraya calibration round rises 1.34 m/h while the flood front fills the channel), the up-down swing does:
+
+| run | alpha | largest hourly change | largest swing | cells > 1 m |
+|---|---|---|---|---|
+| Ebro calibration round 1, `river_100`, `coast_100` | 0.25 | 0.89 / 0.27 / 0.04 m | 0.00 / 0.02 / 0.01 m | 0 |
+| Chao Phraya calibration round 1, `river_100`, `coast_100` | 0.25 | 1.34 / 0.42 / 0.61 m | 0.02 / 0.13 / 0.17 m | 0 |
+| Ebro split test, 1 / 5 inflow points | 0.5 | 10.2 / 7.9 m | 2.73 / 2.91 m | 194 / 234 |
+
+**Reruns:** rule 11 onward for every basin (new output `alpha_check.csv`, and the skeleton's alpha may change).
+
 # 2026-11-06: compound lag and event-run length from peak travel times (- JS)
 
 > **⚠ KIARA, PLEASE REVIEW: adaptation `pre` runs share this timeline.**

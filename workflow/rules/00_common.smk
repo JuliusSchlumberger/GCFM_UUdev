@@ -512,4 +512,5 @@ def run_event_params():
         timeout_s                  = config["sfincs"]["simulation"]["timeout_s"],
         min_inundation_depth_m     = config["sfincs"]["sanity_checks"]["min_inundation_depth_m"],
         animation_fps              = config["sfincs"]["sanity_checks"]["animation_fps"],
+        alpha_reversal_max_m       = config["sfincs"]["alpha_reversal_max_m"],
     )

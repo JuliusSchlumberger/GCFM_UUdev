@@ -41,6 +41,7 @@ from src.landuse import LANDUSE_SEA_CODE
 from src.log import setup_logging
 from src.sfincs_run import (
     create_active_mask,
+    selected_alpha,
     set_sea_and_outflow_boundaries,
     write_weir_file,
 )
@@ -99,7 +100,7 @@ nr_subgrid_pixels = snakemake.params.nr_subgrid_pixels
 nr_levels = snakemake.params.nr_levels
 nrmax = snakemake.params.nrmax
 advection = int(snakemake.params.advection)
-alpha = float(snakemake.params.alpha)
+alpha = selected_alpha(snakemake.input.alpha_check)
 active_mask_enabled = snakemake.params.active_mask_enabled
 active_mask_elevation_buffer_m = float(snakemake.params.active_mask_elevation_buffer_m)
 outflow_buffer_m = snakemake.params.outflow_buffer_m
@@ -422,6 +423,7 @@ sf.config.set("sbgfile", "sfincs_subgrid.nc")
 # Spin-up, event and adaptation runs inherit both from the skeleton's sfincs.inp.
 sf.config.set("advection", advection)
 sf.config.set("alpha", alpha)
+log.info(f"alpha {alpha:g} (rule 11's first stable candidate)")
 
 
 def _create_subgrid() -> None:

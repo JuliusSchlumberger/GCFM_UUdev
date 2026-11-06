@@ -392,6 +392,20 @@ last 3 h. Runs longer than `calibration_max_days` fail. After each round,
 `steady_check` warns when centreline cells still rose more than `tol_m` over the
 last `window_hr`.
 
+**Time-step factor (alpha check).** Round 1 runs with each `sfincs.alpha`
+candidate in turn (0.5, 0.35, 0.25) and keeps the first one whose run is
+stable. Unstable means SFINCS fails, or a river-centreline cell's hourly level
+step is undone in the next hour by more than `alpha_reversal_max_m` (1 m;
+`src.sfincs_run.level_reversal_m`). A steady rise, such as the flood front
+filling the channel (up to 1.3 m/h on 3279946), counts 0, and flooding outside
+the river network is not looked at. Stable runs swing at most 0.17 m; the Ebro
+at 0.5 swings 2.7-2.9 m at about 200 cells. The steady calibration discharge is
+the hardest flow the channel sees in rule 11, so the kept alpha goes into the
+skeleton (rule 12a) and every spin-up, event and adaptation run. Each attempt
+is logged and written to `diagnostics/{basin_id}_alpha_check.csv`; no stable
+candidate fails the rule. Event runs repeat the check on the river network
+(rule 15) and fail when an event swings more than the calibration did.
+
 Round 2 reports some overtopped edges even though its inputs equal round 1's
 except the crests: lowering the crests from 1000 m changes SFINCS's solution by
 a few cm even where no water reaches them, and a few unstable cells (levels

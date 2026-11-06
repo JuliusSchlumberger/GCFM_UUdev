@@ -139,7 +139,9 @@ from src.river_network import (
     outflow_crossing_mask,
 )
 from src.sfincs_run import (
+    SfincsExitError,
     create_active_mask,
+    level_reversal_m,
     place_discharge_points,
     read_face_zmin,
     run_sfincs_subprocess,
@@ -210,7 +212,8 @@ nr_subgrid_pixels = int(snakemake.params.nr_subgrid_pixels)
 nr_levels = int(snakemake.params.nr_levels)
 nrmax = int(snakemake.params.nrmax)
 advection = int(snakemake.params.advection)
-alpha = float(snakemake.params.alpha)
+alpha_candidates = [float(a) for a in snakemake.params.alpha]
+alpha_reversal_max_m = float(snakemake.params.alpha_reversal_max_m)
 active_mask_enabled = snakemake.params.active_mask_enabled
 active_mask_elevation_buffer_m = float(snakemake.params.active_mask_elevation_buffer_m)
 outflow_buffer_m = float(snakemake.params.outflow_buffer_m)
@@ -352,7 +355,7 @@ sf.config.update(
         "dtrstout": 0,
         "zsini": -9999.0,
         "advection": advection,
-        "alpha": alpha,
+        "alpha": alpha_candidates[0],
     }
 )
 
@@ -1362,9 +1365,65 @@ if not _bif_crs.empty:
     sf.cross_sections.set(_bif_crs[["name", "geometry"]], merge=False)
     _bif_crs.to_file(calib_root / "cross_sections.gpkg", driver="GPKG")
 log.info(f"[{round_label}] {len(_bif_crs)} bifurcation cross-section(s) set")
-period_max_zs_1, final_zs, final_times_s = _run_calibration_round(
-    round_label, round_root
-)
+
+
+def _clear_run_outputs(run_dir: Path) -> None:
+    # A rerun in the same directory cannot recreate netCDF files SFINCS
+    # left behind on Windows.
+    for path in [run_dir / "sfincs_map.nc", run_dir / "sfincs_his.nc", *run_dir.glob("sfincs.*.rst")]:
+        path.unlink(missing_ok=True)
+
+
+# Round 1 is also the alpha check: the steady calibration discharge is the
+# hardest flow the channel sees, and the first candidate whose run keeps the
+# river centreline free of hourly level swings is the basin's alpha (rule 12a).
+alpha_rows = []
+for alpha in alpha_candidates:
+    sf.config.set("alpha", alpha)
+    try:
+        period_max_zs_1, final_zs, final_times_s = _run_calibration_round(
+            round_label, round_root
+        )
+    except SfincsExitError as err:
+        alpha_rows.append(
+            {"alpha": alpha, "max_reversal_m": np.inf, "cells_over": -1, "reach_id": "",
+             "along_m": np.nan, "sfincs_failed": True, "stable": False}
+        )
+        log.warning(f"[{round_label}] alpha {alpha:g}: {err} -- unstable")
+        _clear_run_outputs(round_root)
+        continue
+    reversal = level_reversal_m(final_zs)
+    worst = int(np.argmax(np.nan_to_num(reversal, nan=-1.0)))
+    stable = bool(reversal[worst] <= alpha_reversal_max_m)
+    alpha_rows.append(
+        {
+            "alpha": alpha,
+            "max_reversal_m": float(reversal[worst]),
+            "cells_over": int((reversal > alpha_reversal_max_m).sum()),
+            "reach_id": str(cell_gdf["reach_id"].iloc[worst]),
+            "along_m": float(cell_gdf["along_m"].iloc[worst]),
+            "sfincs_failed": False,
+            "stable": stable,
+        }
+    )
+    log.info(
+        f"[{round_label}] alpha {alpha:g}: largest hourly level swing on the river centreline "
+        f"{reversal[worst]:.2f} m (reach {alpha_rows[-1]['reach_id']}, {alpha_rows[-1]['along_m']:.0f} m along), "
+        f"{alpha_rows[-1]['cells_over']}/{reversal.size} cell(s) above {alpha_reversal_max_m:g} m -- "
+        f"{'stable' if stable else 'unstable'}"
+    )
+    if stable:
+        break
+    _clear_run_outputs(round_root)
+alpha_check = pd.DataFrame(alpha_rows)
+alpha_check["selected"] = alpha_check["stable"]
+alpha_check.to_csv(snakemake.output.alpha_check, index=False)
+if not alpha_check["stable"].any():
+    raise RuntimeError(
+        f"[{round_label}] no alpha in {alpha_candidates} ran stable "
+        f"(details in {snakemake.output.alpha_check}): check the bed in the reaches listed there"
+    )
+log.info(f"alpha {alpha:g} kept for basin {basin_id}")
 _steady_check(round_label, final_zs, final_times_s)
 
 
