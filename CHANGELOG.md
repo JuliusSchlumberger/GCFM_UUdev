@@ -10,6 +10,8 @@ No production result changes; each removed item was at its no-op value or report
 - `river_depth_modelling.bed.forward_bands_m`: removed; the forward check logs and reports p5/median/p95 only (`surface_options.csv` loses `forward_within_0.5m`).
 - `src.gvf_solver.forward_network(return_capped=...)`: removed with its test; the Froude cap itself stays.
 
+**Inflow split test (no code change):** the Ebro `river_100_03SLR` event at `alpha` 0.5, from the spin-up restart to 12 h after the river peak, once with one discharge point and once with the discharge split over five points along the first 800 m. Both blow up at the same time (inflow about 2500 m³/s). The inflow level reaches 54 m with one point and 48 m with five, the upper 7 km of gorge (1D Froude 0.3-0.5) stand at about 24 m in both, and the largest hourly step is 10.2 m and 10.8 m. Production at 0.25 stays below 16.7 m, with a largest hourly step of 0.27 m along the first 15 km. Splitting the inflow is not pursued; `alpha` 0.25 stays. Runs in `D:/GCFM_UU/scratch/discharge_split/`.
+
 # 2026-11-06: analysis suite for the river bed, timing and boundary; analysis scripts consolidated (- JS)
 
 **New target `analysis_suite`** (`workflow/rules/90_analysis_suite.smk`, `config/analysis_suite.yml`):

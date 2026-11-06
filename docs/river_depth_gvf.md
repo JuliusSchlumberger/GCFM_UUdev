@@ -78,6 +78,11 @@ within 0.03. The crest medians drop to 3.73 and 9.58 m, and the Chao Phraya
 river flood to 1099 km2 (-29 %). The cost is the time step: with advection off,
 `alpha` 0.5 went unstable on the Ebro river event (inflow level swinging 5-9 m
 per hour), so `sfincs.alpha` is 0.25, which roughly doubles run times.
+Spreading the inflow over five points along the first 800 m does not prevent
+it: the level jumps at the same time (inflow about 2500 m3/s), the inflow level
+still reaches 48 m (54 m with one point), and the upper 7 km stand at about
+24 m in both cases. The jump fills the gorge, the reach with 1D Froude numbers
+of 0.3-0.5, so it is a channel instability, not a point-source one.
 `alpha` 0.35 may also be stable but is untested on a real event.
 
 **Validity.** Without advection SFINCS solves the local-inertia equations, which
