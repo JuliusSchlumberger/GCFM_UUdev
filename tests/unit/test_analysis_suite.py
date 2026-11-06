@@ -51,8 +51,9 @@ def test_network_lines_give_one_segment_per_node_pair():
 
 def test_concept_figure_renders(tmp_path):
     path = tmp_path / "concept.png"
-    gvf_setup.fig_concept(path, "test")
+    gvf_setup.fig_concept(path)
     assert path.stat().st_size > 10_000
+    assert "(a)" in path.with_suffix(".txt").read_text(encoding="utf-8")
 
 
 def test_depth_figure_renders_from_a_summary(tmp_path):

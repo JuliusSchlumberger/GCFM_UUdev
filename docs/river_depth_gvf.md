@@ -16,10 +16,13 @@ Basins, events and switches: `config/analysis_suite.yml`. Figures go to
 
 | folder | script | figures |
 |---|---|---|
-| `gvf_setup/` | `analysis/gvf_setup.py` | `concept`, `froude_1d`, `froude_sfincs_<scenario>`, `advection`, `long_profile`, `bed_options` |
+| `gvf_setup/` | `analysis/gvf_setup.py` | `concept`, `froude_1d`, `froude_sfincs_<river event>`, `long_profile_<basin>`, `bed_alternatives` |
 | `travel_time/` | `analysis/travel_time.py` | `travel_time` |
 | `upstream_boundary/` | `analysis/upstream_boundary.py` | `upstream_boundary` |
 | `depth_sensitivity/` | `analysis/depth_sensitivity.py` | `depth_sensitivity` (opt-in: `depth_sensitivity.enabled`) |
+
+Each figure has a description `<figure>.txt` next to it: what the panels show
+and what each colour, line and marker stands for.
 
 The depth-sensitivity runs are a full rule 11 + build per basin and scale, about
 12 h per scale for the Chao Phraya on 14 cores. `--rerun-triggers mtime` keeps
@@ -43,54 +46,83 @@ changed without changing their content.
 6. **SFINCS:** the bed is burned into the subgrid. Rule 11 runs the walled model
    to set the coastal crests.
 
-## 2. Advection off, and when that is valid (`gvf_setup/advection.png`, `froude_1d.png`)
+## 2. Advection off, and when that is valid (`gvf_setup/froude_1d.png`, `froude_sfincs_<river event>.png`)
 
-**Why advection is off.** On a 100 m grid a diagonal or meandering river is a
-staircase of cells. SFINCS's advection term loses momentum at every corner and
-adds head that grows upstream. In a synthetic trench (exact answer known), the
-median level error is:
-- aligned: the same with and without advection;
-- diagonal: +2.33 m with advection, +0.76 m without;
-- meander: +8.70 m with advection, +1.11 m without.
+**Why advection is off.** The rivers are narrower than a 100 m cell and run
+diagonally or meander across the grid, so SFINCS routes them through a staircase
+of cells. With the advection term on, the flow loses momentum at every corner of
+that staircase. The model makes up for the loss with extra water-surface slope,
+so the level rises and the error grows upstream. It is a grid artefact, not
+physics.
 
-On the deltas, the steady 2D level stood 0.76 m (Ebro) and 3.43 m (Chao Phraya)
-above the 1D profile with advection. Without it the gap is 0.19 and 0.24 m
-(median). Rules 11 and 12a set `sfincs.advection: 0`.
+**Effect with advection on**, steady calibration runs against the 1D profile on
+the same bed:
+- the 2D channel level stood a median 0.76 m (Ebro) and 3.43 m (Chao Phraya)
+  above the 1D level, up to 6-7 m on the narrow Chao Phraya branches;
+- the backwater reversed the discharge split at two Chao Phraya bifurcations
+  (0.31 and 0.52 of the flow down arms whose width gives 0.16 and 0.20);
+- the calibrated crests were too high (median Ebro 4.27 m, Chao Phraya
+  11.15 m);
+- the Chao Phraya 100-year river flood covered 1553 km2.
 
-**Validity.** The local-inertia equations (advection off) hold where inertia is
-small: errors are negligible below Froude 0.3 and grow above 0.5 (de Almeida &
-Bates 2013).
+**With advection off** (rules 11 and 12a, `sfincs.advection: 0`), the median
+gap is 0.19 m (Ebro) and 0.24 m (Chao Phraya), and the splits match the widths
+within 0.03. The crest medians drop to 3.73 and 9.58 m, and the Chao Phraya
+river flood to 1099 km2 (-29 %). The cost is the time step: with advection off,
+`alpha` 0.5 went unstable on the Ebro river event (inflow level swinging 5-9 m
+per hour), so `sfincs.alpha` is 0.25, which roughly doubles run times.
+`alpha` 0.35 may also be stable but is untested on a real event
+(`analysis/alpha_stability.py`).
+
+**Validity.** Without advection SFINCS solves the local-inertia equations, which
+hold where inertia is small compared with gravity and friction, that is at low
+Froude numbers: errors are negligible below about 0.3 and grow above 0.5
+(de Almeida & Bates 2013). The check is on the river channels at high
+discharge, where the flow is fastest. Coastal inundation is slow, deep-water
+flow and is not the case the choice depends on.
 - **Chao Phraya:** under 0.3 on every node at Q_bankfull and the event peak,
   and on 99.6 % at Q_mean. The p95 at the peak is 0.17.
-- **Ebro:** 8–12 % of nodes are between 0.3 and 0.5, all in the upper gorge
-  (the first 10 km below the inflow); none is above 0.5. The p95 at the peak is
-  0.37.
-- **1D solver:** it keeps the (1 − Fr²) term of the GVF equation. At p95 this
+- **Ebro:** 8-12 % of nodes are between 0.3 and 0.5, all in the upper gorge
+  below the inflow; none is above 0.5. The p95 at the peak is 0.37.
+- **1D solver:** it keeps the (1 - Fr^2) term of the GVF equation. At p95 this
   steepens the 1D profile by a factor of 1.03 (Chao Phraya) and 1.15 (Ebro)
   against SFINCS's form, which is small next to the bed uncertainty.
-- **SFINCS Froude numbers:** the event maps store `vmax`
-  (`sfincs.simulation.storevelmax: 1`). `froude_sfincs_<scenario>.png` maps the
-  largest vmax / √(g h) per wet cell. Runs from before that setting have no
-  vmax; the figure says so.
+- **SFINCS Froude numbers:** the river event map stores `vmax`
+  (`sfincs.simulation.storevelmax: 1`), and `froude_sfincs_<river event>.png`
+  maps the largest vmax / sqrt(g h) per wet cell. Runs from before that setting
+  have no vmax (TODO B40).
 
-**Time step.** With advection off, `alpha` 0.5 went unstable on the Ebro river
-event, with the inflow level swinging 5–9 m per hour. `sfincs.alpha` is 0.25.
+## 3. The bed and its alternatives (`gvf_setup/long_profile_<basin>.png`, `bed_alternatives.png`)
 
-A synthetic search (`analysis/alpha_stability.py`) tested whether anything else
-lets the time step grow:
-- no ramp, bed step, inflow position, cell size, `theta`,
-  `wiggle_suppression` or `viscosity` setting replaces the small `alpha`;
-- `alpha` 0.35 is stable in every 100 m case but untested on a real event.
+`bed_alternatives.png` scores ten ways to set the bed against four criteria a
+bed must meet. The alternatives (rows A-J) vary:
+- the water surface: FathomDEM or SWOT;
+- the fit: two-scale or a single fit over 20 or 40 km;
+- the design discharge: bankfull or the recent median;
+- the bed method: Manning, with or without the sea inversion.
 
-## 3. The bed and its inputs (`gvf_setup/long_profile.png`, `bed_options.png`)
+The criteria:
+- the forward check, median within ±0.25 m and p95 at most 0.75 m;
+- the share of nodes overflowing at Q_bankfull, at most 10 %;
+- the share overflowing at Q_mean, at most 2 %.
 
-| choice | options compared | kept | evidence |
+The caption explains each alternative.
+
+| alternative | Ebro | Chao Phraya | why not chosen |
 |---|---|---|---|
-| surface source | FathomDEM; SWOT node levels (SWORD v17c) | FathomDEM | SWOT does not reduce the share of nodes on the slope floor |
-| surface fit | two-scale; single 20 km; single 40 km | two-scale | single fits pass the forward check only with the period-median discharge |
-| design discharge | bankfull; mean; GloFAS median since 2023-07 | bankfull | beds for lower discharges overflow at Q_bankfull on 31 % (Ebro) and 91 % (Chao Phraya) of nodes, and 7 / 523–629 nodes cannot carry Q_mean |
-| bed method | Manning; Manning + sea inversion | Manning | the inversion needs 35–40 m deep channels at bankfull |
-| slope floor | 5e-6; 1e-5; 2e-5 | 1e-5 | depth on the floor nodes (25–29 %) changes +24 % / −20 % |
+| A production (FathomDEM, two-scale, bankfull) | fails forward p95 (0.87 m) | fails forward median and p95 (0.44 / 1.12 m) | chosen |
+| B, D, F, H, J recent median discharge | overflow at Q_bankfull 28-31 %, at Q_mean 4-5 % | overflow at Q_bankfull 86-92 %, at Q_mean 22-32 % | channel too small for the flows the model must carry |
+| C, E, G SWOT with bankfull | pass (E, G) or fail p95 (C) | fail the forward check (median 0.36-0.62 m) | no basin-independent gain |
+| I sea inversion | passes | fails forward p95 (0.92 m) | needs 35-40 m deep channels on the flat reaches |
+
+No alternative passes in both basins. A is the only one that keeps both
+bankfull and mean flow in the channel everywhere (overflow 2-8 % and 0-2 %).
+Its forward check misses by design: the depth uses the floored, long-smoothed
+slope, which the surface does not share (concept.png, step 5). It is kept.
+
+What was not tested: the Q_mean capacity of alternatives C-G. The slope floor
+was varied separately: 5e-6 and 2e-5 change the depth on the 25-29 % of nodes
+on the floor by +24 % and -20 %.
 
 - **Forward check:** the default bed returns the surface within a median of
   +0.20 m (Ebro) and +0.44 m (Chao Phraya); the p95 is 0.87 and 1.12 m.

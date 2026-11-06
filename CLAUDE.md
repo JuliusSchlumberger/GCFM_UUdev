@@ -27,6 +27,13 @@ Site paths: `config/site.yml` (gitignored; copy `config/site.example.yml`), keys
 - `environment.yml`, `environment.win-64.lock.yml`, `.pre-commit-config.yaml` (pinned versions); `config/site.yml` (machine paths)
 - Local, gitignored: `config/site.yml`, `CLAUDE.local.md`
 
+## Figures
+
+- No titles or subtitles; annotations kept to a minimum (axis labels, colour bars).
+- Every panel is numbered (a), (b), ... in its top-left corner (`analysis/_figure_style.panel_letters`).
+- Every figure gets a description `<figure>.txt` next to it: what is shown and what each colour, line style and marker means (`write_caption`).
+- Maps always show land in light grey for orientation (`add_land`).
+
 ## Changelog
 
 Every change to code, config or results goes into `CHANGELOG.md` in the same session:

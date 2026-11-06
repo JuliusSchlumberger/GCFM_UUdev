@@ -31,8 +31,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from _basin_inputs import git_hash
 from _common import REPO_ROOT, script_parser, site_path
+from _figure_style import panel_letters, write_caption
 
 METRICS = {
     "flooded_area_km2": "flooded area",
@@ -131,9 +131,7 @@ def figure(table: pd.DataFrame, path: Path) -> None:
     groups = list(table.groupby(["basin_id", "scenario"], sort=False).groups)
     scales = sorted(s for s in table["depth_scale"].unique() if s != 1.0)
     markers = {s: m for s, m in zip(scales, ["v", "^", "s", "D"])}
-    fig, axes = plt.subplots(
-        1, len(METRICS), figsize=(5 * len(METRICS), 4.2), sharey=True
-    )
+    fig, axes = plt.subplots(1, len(METRICS), figsize=(5 * len(METRICS), 4.2))
     for ax, (key, label) in zip(axes, METRICS.items()):
         for i, (basin, scen) in enumerate(groups):
             g = table[(table["basin_id"] == basin) & (table["scenario"] == scen)]
@@ -147,40 +145,34 @@ def figure(table: pd.DataFrame, path: Path) -> None:
                     color="tab:red" if s > 1 else "tab:blue",
                     ms=8,
                     zorder=2,
-                    label=f"depth x {s:g}" if i == 0 else None,
                 )
-            base = g.loc[g["depth_scale"] == 1.0, key].iloc[0]
-            text = (
-                f"{base / 1e9:.2f} km3"
-                if key == "volume_m3"
-                else f"{base:.0f} km2"
-                if base >= 10
-                else f"{base:.1f} km2"
-            )
-            ax.annotate(
-                text,
-                (i, 1.0),
-                xytext=(6, 6),
-                textcoords="offset points",
-                fontsize=7,
-                va="center",
-            )
         ax.axhline(1.0, color="k", lw=0.8)
         ax.set_xticks(range(len(groups)))
         ax.set_xticklabels([f"{b}\n{s}" for b, s in groups], fontsize=7)
-        ax.set_title(label, fontsize=10)
+        ax.set_ylabel(f"{label}, relative to the production bed")
         ax.set_ylim(0, 2)
         ax.grid(alpha=0.3, axis="y")
-    axes[0].set_ylabel("relative to the production bed (x 1)")
-    axes[0].legend(fontsize=8, loc="upper left")
-    fig.suptitle(
-        "depth_sensitivity: burned river depth scaled; baseline value labelled | "
-        + git_hash(),
-        fontsize=10,
-    )
+    panel_letters(axes)
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     plt.close(fig)
+    base = table[table["depth_scale"] == 1.0]
+    values = "\n".join(
+        f"- basin {r.basin_id}, {r.scenario}: flooded area {r.flooded_area_km2:.0f} km2, "
+        f"volume {r.volume_m3 / 1e9:.2f} km3, urban area exposed {r.urban_exposed_km2:.1f} km2"
+        for r in base.itertuples()
+    )
+    marks = ", ".join(
+        f"{'blue downward' if s < 1 else 'red upward'} triangle depth x {s:g}"
+        for s in scales
+    )
+    write_caption(
+        path,
+        f"""
+Sensitivity of flooding to the river depth: the burned depth below the water surface scaled, the coastal dike crests recalibrated on each scaled bed, and the events rerun. (a) flooded area, (b) flood volume, (c) urban area exposed, each relative to the production bed (black line at 1). Per basin and event (x axis): {marks}; the grey bar spans the two. The production values are:
+{values}
+""",
+    )
 
 
 def main() -> int:

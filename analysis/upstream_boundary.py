@@ -32,8 +32,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
-from _basin_inputs import basin_paths, git_hash
+from _basin_inputs import basin_paths
 from _common import REPO_ROOT, analysis_dir, script_parser, site_path
+from _figure_style import add_land, map_axes, panel_letters, write_caption
 from _upstream_profile import (
     boundary_verdict,
     influence_length,
@@ -162,88 +163,87 @@ def basin(basin_id: str, coast: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 def write_figure(out, basin_ids: list[str], coast: str) -> None:
     results = {}
+    summary = pd.read_csv(out / "summary.csv", dtype={"reach_id": str, "basin_id": str})
     for b in basin_ids:
         prof = pd.read_csv(out / f"{b}_profiles.csv", dtype={"reach_id": str})
-        summary = pd.read_csv(
-            out / "summary.csv", dtype={"reach_id": str, "basin_id": str}
-        )
         results[b] = (summary[summary["basin_id"] == b].reset_index(drop=True), prof)
-    test = config_options()
-    figure(
-        results,
-        out / "upstream_boundary.png",
-        f"upstream_boundary: sea influence on the river at Q_mean, {coast} vs SWL_ext "
-        f"(RP{test['stress_surge_rp_yr']:g} + {test['stress_slr_m']:g} m SLR); "
-        f"margin needed {test['margin_km']:g} km | {git_hash()}",
-    )
+    figure(results, out / "upstream_boundary.png", coast)
 
 
-def figure(results: dict, path, title: str) -> None:
+def figure(results: dict, path, coast: str) -> None:
+    from src.grid import load_grid_def
+
     n_paths = max(len(s) for s, _ in results.values())
     fig = plt.figure(figsize=(6 + 5 * n_paths, 5.2 * len(results)))
     gs = fig.add_gridspec(len(results), 1 + n_paths, width_ratios=[1.4] + [1] * n_paths)
+    axes, layout = [], []
     for r, (basin_id, (summary, prof)) in enumerate(results.items()):
         ax = fig.add_subplot(gs[r, 0])
-        from src.grid import load_grid_def
-
+        axes.append(ax)
         p = basin_paths(basin_id)
         rivers = gpd.read_file(p["rivers_clean"]).to_crs(
             load_grid_def(p["sfincs_grid"])["crs"]
         )
-        rivers.plot(ax=ax, color="0.75", lw=0.6)
+        add_land(ax, basin_id)
+        rivers.plot(ax=ax, color="0.55", lw=0.6)
         for _, s in summary.iterrows():
-            p = prof[prof["reach_id"] == s["reach_id"]]
-            ax.plot(p["x"], p["y"], color="0.35", lw=1.4)
-            ax.plot(p["x"].iloc[0], p["y"].iloc[0], "kv", ms=9)
-            d = p["dist_from_mouth_km"].to_numpy()
-            for case, (label, col, mk) in CASES.items():
+            q = prof[prof["reach_id"] == s["reach_id"]]
+            ax.plot(q["x"], q["y"], color="k", lw=1.4)
+            ax.plot(q["x"].iloc[0], q["y"].iloc[0], "kv", ms=9)
+            d = q["dist_from_mouth_km"].to_numpy()
+            for case, (_label, col, mk) in CASES.items():
                 x_inf = s[f"x_inf_{case}_km"]
                 if np.isfinite(x_inf):
                     k = int(np.argmin(np.abs(d - x_inf)))
                     ax.plot(
-                        p["x"].iloc[k],
-                        p["y"].iloc[k],
-                        mk,
-                        color=col,
-                        ms=8,
-                        mec="k",
-                        label=label if s.name == summary.index[0] else None,
+                        q["x"].iloc[k], q["y"].iloc[k], mk, color=col, ms=8, mec="k"
                     )
-        ax.plot([], [], "kv", label="forcing point")
-        ax.set_aspect("equal")
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.set_title(f"{basin_id}: where the sea's influence ends", fontsize=9)
-        ax.legend(fontsize=7, loc="lower left")
+        xb, yb = rivers.total_bounds[[0, 2]], rivers.total_bounds[[1, 3]]
+        pad = 0.05 * max(np.ptp(xb), np.ptp(yb))
+        ax.set_xlim(xb[0] - pad, xb[1] + pad)
+        ax.set_ylim(yb[0] - pad, yb[1] + pad)
+        map_axes(ax)
+        reaches = []
         for c, (_, s) in enumerate(summary.iterrows()):
             b = fig.add_subplot(gs[r, 1 + c])
-            p = prof[prof["reach_id"] == s["reach_id"]]
-            for case, (label, col, _mk) in CASES.items():
-                b.plot(
-                    p["dist_from_mouth_km"],
-                    p[f"dz_{case}_m"],
-                    color=col,
-                    lw=1.4,
-                    label=label,
-                )
+            axes.append(b)
+            q = prof[prof["reach_id"] == s["reach_id"]]
+            for case, (_label, col, _mk) in CASES.items():
+                b.plot(q["dist_from_mouth_km"], q[f"dz_{case}_m"], color=col, lw=1.4)
                 if np.isfinite(s[f"x_inf_{case}_km"]):
                     b.axvline(s[f"x_inf_{case}_km"], color=col, ls="--", lw=1)
-            b.axvline(s["x_f_km"], color="k", lw=1.3, label="forcing point")
-            b.set_xlabel("distance from mouth along the mainstem (km)")
+            b.axvline(s["x_f_km"], color="k", lw=1.3)
+            b.set_xlabel("distance from the mouth along the mainstem (km)")
             b.set_ylabel("rise over the calm-sea level (m)")
-            margins = " / ".join(f"{s[f'margin_{c}_km']:.0f}" for c in CASES)
-            b.set_title(
-                f"reach {s['reach_id']}: margin {margins} km\n"
-                "(SFINCS event / GVF event / GVF extreme)",
-                fontsize=8,
-            )
             b.grid(alpha=0.3)
-            if c == 0:
-                b.legend(fontsize=7)
-    fig.suptitle(title, fontsize=10)
+            reaches.append(s)
+        layout.append((basin_id, reaches))
+    panel_letters(axes)
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     plt.close(fig)
+    test = config_options()
+    k, lines = 0, []
+    for basin_id, reaches in layout:
+        map_letter = chr(97 + k)
+        prof_letters = [chr(97 + k + 1 + j) for j in range(len(reaches))]
+        k += 1 + len(reaches)
+        detail = "; ".join(
+            f"({lt}) forcing reach {s['reach_id']} at {s['x_f_km']:.1f} km: margin "
+            + " / ".join(f"{s[f'margin_{c}_km']:.0f}" for c in CASES)
+            + " km"
+            for lt, s in zip(prof_letters, reaches)
+        )
+        lines.append(f"- basin {basin_id}: map ({map_letter}); {detail}")
+    write_caption(
+        path,
+        f"""
+How far up the river the sea raises the water level, at mean river discharge: the coastal event {coast} in SFINCS against the steady gradually-varied-flow (GVF) estimate. Values in summary.csv.
+Maps: light grey land; grey lines, river network; black lines, the mainstem from each forcing point (black triangle, where the river discharge enters the model) to the sea. Markers show where the sea's influence ends on each mainstem (x_inf: the first point upstream where the rise falls below max({test["level_tol_m"]:g} m, {float(_config()["testing"]["upstream_boundary_check"]["amplitude_threshold_fraction"]):.0%} of the rise at the mouth)): blue circle, SFINCS coastal event (highest level of the run minus the spin-up level); orange square, GVF with the sea at the event's storm-tide level; red triangle, GVF with the sea at the extreme level (the highest storm tide over all scenarios and the stress case RP{test["stress_surge_rp_yr"]:g} + {test["stress_slr_m"]:g} m sea-level rise).
+Profiles, one per forcing point: the rise along the mainstem in the same three colours, dashed vertical lines at each x_inf, black vertical line at the forcing point. The boundary passes when the forcing point lies at least {test["margin_km"]:g} km beyond x_inf. Margins below are SFINCS event / GVF event / GVF extreme.
+"""
+        + "\n".join(lines),
+    )
 
 
 def main() -> int:

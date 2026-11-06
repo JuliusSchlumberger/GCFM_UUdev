@@ -27,18 +27,14 @@ def _s_event(scenario):
 
 
 def _s_gvf_basin_outputs(basin_id):
-    names = ["nodes.csv", "gap.csv", "surface_options.csv", "channel_capacity.csv", "slope_floor.csv"]
+    names = ["nodes.csv", "surface_options.csv", "channel_capacity.csv"]
     if _S_VMAX:
-        names += [f"froude_sfincs_{s}.npz" for s in (_S_RIVER, _S_COAST)]
+        names.append(f"froude_sfincs_{_S_RIVER}.npz")
     return [f"{_S_DIR}/gvf_setup/{basin_id}/{n}" for n in names]
 
 
-rule suite_advection_channel:
-    output:
-        summary = f"{_S_DIR}/advection_channel_summary.csv",
-    threads: 4
-    log: "logs/analysis_suite/advection_channel.log"
-    shell: "python analysis/advection_channel.py --threads {threads} > {log} 2>&1"
+def _s_figures(folder, names):
+    return [f"{_S_DIR}/{folder}/{n}{ext}" for n in names for ext in (".png", ".txt")]
 
 
 rule suite_gvf_setup_basin:
@@ -46,27 +42,22 @@ rule suite_gvf_setup_basin:
         depth_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
         spinup_map    = results_path("{basin_id}/spin_up/sfincs_map.nc"),
         river_map     = _s_event(_S_RIVER),
-        coast_map     = _s_event(_S_COAST),
     output:
-        [f"{_S_DIR}/gvf_setup/{{basin_id}}/{n}" for n in
-         ["nodes.csv", "gap.csv", "surface_options.csv", "channel_capacity.csv", "slope_floor.csv"]]
-        + ([f"{_S_DIR}/gvf_setup/{{basin_id}}/froude_sfincs_{s}.npz" for s in (_S_RIVER, _S_COAST)]
-           if _S_VMAX else []),
+        [f"{_S_DIR}/gvf_setup/{{basin_id}}/{n}" for n in ["nodes.csv", "surface_options.csv", "channel_capacity.csv"]]
+        + ([f"{_S_DIR}/gvf_setup/{{basin_id}}/froude_sfincs_{_S_RIVER}.npz"] if _S_VMAX else []),
     log: "logs/analysis_suite/gvf_setup_{basin_id}.log"
-    shell: f"python analysis/gvf_setup.py compute {{wildcards.basin_id}} --river {_S_RIVER} --coast {_S_COAST} > {{log}} 2>&1"
+    shell: f"python analysis/gvf_setup.py compute {{wildcards.basin_id}} --river {_S_RIVER} > {{log}} 2>&1"
 
 
 rule suite_gvf_setup_figures:
     input:
         [o for b in _S_BASINS for o in _s_gvf_basin_outputs(b)],
-        f"{_S_DIR}/advection_channel_summary.csv",
     output:
-        [f"{_S_DIR}/gvf_setup/{n}" for n in
-         ["froude_1d.png", f"froude_sfincs_{_S_RIVER}.png", f"froude_sfincs_{_S_COAST}.png",
-          "advection.png", "concept.png", "long_profile.png", "bed_options.png"]],
+        _s_figures("gvf_setup", ["concept", "froude_1d", f"froude_sfincs_{_S_RIVER}", "bed_alternatives"]
+                   + [f"long_profile_{b}" for b in _S_BASINS]),
     log: "logs/analysis_suite/gvf_setup_figures.log"
     shell:
-        f"python analysis/gvf_setup.py figures {_S_ARGS} --river {_S_RIVER} --coast {_S_COAST} "
+        f"python analysis/gvf_setup.py figures {_S_ARGS} --river {_S_RIVER} "
         f"--fr-ok {SUITE['froude']['acceptable']} --fr-limit {SUITE['froude']['limit']} > {{log}} 2>&1"
 
 
@@ -76,7 +67,7 @@ rule suite_travel_time:
         [results_path(f"{b}/preprocessing_inputs/domain/{b}_river_network_depth_estimated.gpkg") for b in _S_BASINS],
     output:
         summary = f"{_S_DIR}/travel_time/summary.csv",
-        figure  = f"{_S_DIR}/travel_time/travel_time.png",
+        figures = _s_figures("travel_time", ["travel_time"]),
     log: "logs/analysis_suite/travel_time.log"
     shell: f"python analysis/travel_time.py {_S_ARGS} --coast {_S_COAST} --river {_S_RIVER} > {{log}} 2>&1"
 
@@ -87,7 +78,7 @@ rule suite_upstream_boundary:
         [results_path(f"{b}/spin_up/sfincs_map.nc") for b in _S_BASINS],
     output:
         summary = f"{_S_DIR}/upstream_boundary/summary.csv",
-        figure  = f"{_S_DIR}/upstream_boundary/upstream_boundary.png",
+        figures = _s_figures("upstream_boundary", ["upstream_boundary"]),
     log: "logs/analysis_suite/upstream_boundary.log"
     shell: f"python analysis/upstream_boundary.py {_S_ARGS} --coast {_S_COAST} > {{log}} 2>&1"
 
@@ -114,7 +105,7 @@ rule suite_depth_figure:
          for b in _S_BASINS for k in _S_SCALES for s in (_S_COAST, _S_RIVER)],
     output:
         summary = f"{_S_DIR}/depth_sensitivity/summary.csv",
-        figure  = f"{_S_DIR}/depth_sensitivity/depth_sensitivity.png",
+        figures = _s_figures("depth_sensitivity", ["depth_sensitivity"]),
     log: "logs/analysis_suite/depth_sensitivity.log"
     shell:
         f"(python analysis/depth_sensitivity.py summary {_S_ARGS} --scales {' '.join(_S_SCALES)} "
