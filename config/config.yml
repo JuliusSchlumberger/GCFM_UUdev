@@ -212,12 +212,15 @@ boundary_forcings:
       separation_days: 14    # independent flood peaks are at least this far apart
       n_largest: 5           # a return level above every recorded peak uses the average of the n_largest
                              # events, each scaled to it
-      max_rising_days: 7     # the rising limb starts at the main inflow's lowest daily flow within this many
-                             # days before the peak; in storm-tide mode the forcing window makes room for it
-                             # (both peaks move later, the surge holds the calm level until its window)
-      # The event run starts at the spin-up's mean discharge; where the rising-limb start is off the
-      # mean, the discharge blends from the mean into the event (half-cosine) over a ramp ending there of
-      #   max(min_ramp_hr, pi/2 x gap / (max_rise_per_hr x peak))   with gap = |rising-limb start discharge - mean|
+      max_rising_days: 7     # the event's start (the last upward crossing of Q_start) is searched within this
+                             # many days before the peak
+      start_fraction: 0.5    # Q_start = the protection discharge when the peak exceeds it, else mean +
+                             # start_fraction x (peak - mean): a river event leaves the spin-up's mean
+                             # discharge on a ramp up to Q_start, then
+                             # follows the scaled GloFAS event from its last upward crossing of Q_start
+                             # before the peak (src.event_timing.event_start_discharge, event_window)
+      # The ramp (half-cosine, ending where the event reaches Q_start) lasts
+      #   max(min_ramp_hr, pi/2 x (Q_start - mean) / (max_rise_per_hr x peak))
       min_ramp_hr: 6.0    # shortest ramp (h)
       max_rise_per_hr: 0.02  # the blend's steepest rise, as a share of the main inflow's peak per hour
                              # (0.02 -> a gap of 50 % of the peak takes 39 h). Relative, so it suits
@@ -293,9 +296,10 @@ sfincs:
                     # event start and the surge moves, with a lag > 0 the river moves later.
                     # auto: surge minus river travel time to the main mouth (rule event_timing), so both peaks
                     # reach it together; a number sets it for every basin
-    river_fall_max_hr: 100  # river events run until the main inflow falls below bankfull, at most this long after
-                            # its peak, plus the river travel time to the main mouth (rule event_timing); runs end no
-                            # earlier than the surge window; the average tide carries on to the end
+    river_fall_max_hr: 100  # a river event ends when the main inflow falls below Q_start again, at most this long
+                            # after its peak, plus the river travel time to the main mouth (rule event_timing); a
+                            # surge event ends hydrograph.window_hr after its peak plus the surge travel time; the
+                            # run ends with the later one, the other padded with mean conditions (TODO B41)
     travel_wave_ramp_hr: 6.0  # rule event_timing: the rise time T against which each node's friction rate r decides
                               # gravity or kinematic flood-wave speed (r T vs wave_regime_rT); 6 h matched the SFINCS
                               # mouth-discharge plateau in 2433835 and 3279946 (docs/river_depth_gvf.md)

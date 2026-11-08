@@ -3,25 +3,41 @@
 import numpy as np
 import pytest
 import xarray as xr
-from src.event_timing import G_MS2, falling_limb_hr, scenario_sea_level_m, sea_travel_hr
+from src.event_timing import (
+    G_MS2,
+    event_start_discharge,
+    event_window,
+    scenario_sea_level_m,
+    sea_travel_hr,
+)
 
 
-def test_falling_limb_ends_at_the_first_hour_below_bankfull():
+def _flood():
     t = np.arange(0.0, 400.0)
-    q = 1000.0 * np.exp(-(((t - 100.0) / 40.0) ** 2))
-    fall = falling_limb_hr(t, q, 100.0, 500.0, 200.0)
-    assert fall == float(np.ceil(40.0 * np.sqrt(np.log(2.0))))
+    return t, 100.0 + 900.0 * np.exp(-(((t - 200.0) / 40.0) ** 2))
 
 
-def test_falling_limb_is_capped_when_the_flow_stays_above_bankfull():
+def test_event_window_starts_and_ends_where_the_flow_crosses_q_start():
+    t, q = _flood()
+    start, end = event_window(t, q, 200.0, 550.0, 168.0, 100.0)
+    half = 40.0 * np.sqrt(np.log(2.0))  # q = 550 at 200 +- half
+    assert start == pytest.approx(200.0 - half, abs=0.5)
+    assert end == float(np.ceil(200.0 + half))
+
+
+def test_event_window_is_capped_before_and_after_the_peak():
     t = np.arange(0.0, 400.0)
-    assert falling_limb_hr(t, np.full(t.size, 900.0), 100.0, 500.0, 200.0) == 200.0
+    start, end = event_window(t, np.full(t.size, 900.0), 200.0, 500.0, 50.0, 100.0)
+    assert (start, end) == (150.0, 300.0)
 
 
-def test_rising_limb_below_bankfull_does_not_end_the_event():
-    t = np.arange(0.0, 300.0)
-    q = np.where(t < 100.0, 100.0, 1000.0)
-    assert falling_limb_hr(t, q, 100.0, 500.0, 150.0) == 150.0
+def test_q_start_is_the_protection_discharge_unless_the_event_stays_below_it():
+    assert event_start_discharge(100.0, 1100.0, 400.0, 0.5) == 400.0
+    assert (
+        event_start_discharge(100.0, 1100.0, 1000.0, 0.5) == 1000.0
+    )  # above halfway too
+    assert event_start_discharge(100.0, 500.0, 800.0, 0.5) == 300.0
+    assert event_start_discharge(100.0, 500.0, None, 0.5) == 300.0
 
 
 def test_sea_travel_is_distance_over_shallow_water_speed():

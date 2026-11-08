@@ -54,6 +54,7 @@ rule adapt_build_forcing_pre:
         event_timing    = results_path("{basin_id}/runs/{scenario}/event_timing.csv"),
         surge_forcing   = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         river_forcing   = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
+        protection_levels = results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"),
         # Strategy-local restart, so water_retention's adjusted water level is used.
         rstart          = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/" + RST_FNAME),
         # The restart time (spinup_hr) of the spin-up that restart was copied from.

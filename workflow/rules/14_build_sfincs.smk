@@ -10,6 +10,8 @@ rule build_sfincs:
         event_timing    = results_path("{basin_id}/runs/{scenario}/event_timing.csv"),
         surge_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         river_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
+        # River protection RP: its discharge starts a big river event's window.
+        protection_levels = results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"),
         # Only when spin-up is enabled: the restart of the spin-up with the
         # scenario's slr_m, and its stability.csv (the restart time, spinup_hr).
         rstart = lambda wildcards: (

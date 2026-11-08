@@ -29,34 +29,41 @@ logger = logging.getLogger(__name__)
 
 def event_timeline(
     start_hr: float,
-    river_peak_hr: float,
-    window_hr: float,
-    ramp_hr: float,
-    river_after_peak_hr: float,
+    surge_ramp_hr: float,
+    surge_window_hr: float,
+    surge_travel_hr: float,
+    river_lead_hr: float,
+    river_tail_hr: float,
     lag_hr: float,
     surge_event: bool,
     river_event: bool,
 ) -> tuple[float, float, float]:
     """Return (surge peak, river peak, end) in hours of an event run's forcing.
 
-    start_hr: the event start (restart); river_peak_hr: rule 07d's river
-    peak, which leaves room for the river's rising limb after the restart.
-    With both events lag_hr = river peak - surge peak: the river keeps its
-    place (or moves later for lag_hr > 0) and the surge moves. A surge alone
-    peaks right after its blend from the restart and its half-window; a tide
-    surge (no surge event) takes the river peak. The run ends when the surge
-    window closes, or river_after_peak_hr after a river event's peak if later.
+    start_hr: the restart. Surge part: the boundary blends from the calm level
+    over surge_ramp_hr, then surge_window_hr each side of the peak, then
+    surge_travel_hr for that peak to reach the main mouth. River part:
+    river_lead_hr from the start of its ramp from the mean to its peak at the
+    inflow, river_tail_hr from that peak until the event has passed the mouth
+    (falling limb + travel). With both events lag_hr = river peak - surge peak,
+    so both peaks reach the main mouth together; the part that needs more time
+    before its peak starts at the restart, the other is padded with mean
+    conditions (mean discharge; tide). The run ends when the later part ends.
+    Without either event the surge part's timing holds (tide, mean discharge).
     """
+    surge_lead_hr = surge_ramp_hr + surge_window_hr
     if surge_event and river_event:
-        river_hr = river_peak_hr + max(lag_hr, 0.0)
-        surge_hr = river_hr - lag_hr
-    elif surge_event:
-        river_hr = surge_hr = start_hr + ramp_hr + window_hr
+        surge_hr = start_hr + max(surge_lead_hr, river_lead_hr - lag_hr)
+        river_hr = surge_hr + lag_hr
+    elif river_event:
+        river_hr = surge_hr = start_hr + river_lead_hr
     else:
-        river_hr = surge_hr = river_peak_hr
-    end_hr = surge_hr + window_hr
+        river_hr = surge_hr = start_hr + surge_lead_hr
+    end_hr = start_hr
+    if surge_event or not river_event:
+        end_hr = surge_hr + surge_window_hr + surge_travel_hr
     if river_event:
-        end_hr = max(end_hr, river_hr + river_after_peak_hr)
+        end_hr = max(end_hr, river_hr + river_tail_hr)
     return surge_hr, river_hr, end_hr
 
 

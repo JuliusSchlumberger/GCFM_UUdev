@@ -3,6 +3,34 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-08: event timeline from the protection discharge, both peaks at the mouth (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW: adaptation `pre` runs use the same timeline.**
+> `adapt_build_forcing_pre` runs `14_build_sfincs.py`, so its river events start
+> at the protection discharge and its runs get the new lengths below; it reads
+> `protection_levels.json`.
+
+**What changed (rule 14, `src.event_timing`, `src.sfincs_run.event_timeline`, `src.river_forcing`):**
+- **River event:** `Q_start` = the main inflow's discharge at the riverine protection return period when the peak exceeds it, else `start_fraction` (0.5) of the way from the mean to the peak (`event_start_discharge`). From the restart the discharge holds the mean, ramps (half-cosine, `max(min_ramp_hr, π/2 × (Q_start − mean) / (max_rise_per_hr × peak))`) up to the event's last upward crossing of `Q_start` within `max_rising_days` before the peak, follows the scaled GloFAS event and ends when it falls below `Q_start` again (at most `river_fall_max_hr` after the peak), plus the river travel time (`event_window`). It started at the rising limb's lowest daily flow and ended below bankfull.
+- **Surge event:** blend from the calm sea, `window_hr` each side of the peak, plus the surge travel time (rule 12d's `surge_travel_hr`).
+- **Timeline:** the part that needs more time before its peak starts at the restart; the other waits in mean conditions (mean discharge, average tide); the run ends when the later part ends. River-only runs end with the river part (they ran at least to the end of a surge window).
+- `real_flood_event_matrix` is `real_flood_event` and returns the event without a ramp; `ramp_from_mean` adds it in rule 14. `falling_limb_hr` is replaced by `event_window`. New key `event_hydrograph.start_fraction: 0.5`; `max_rising_days` now bounds the search for the crossing.
+
+**Why:** below the protection discharge nothing leaves the diked river, so the event only matters from there; the run length follows the scenario's own hydrograph and both travel times.
+
+**Effect (rule 14's timeline on the existing inputs; nothing rerun):**
+
+| | Ebro | Chao Phraya |
+|---|---|---|
+| mean / `Q_start` (protection) / peak, 100-year river (m3/s) | 289 / 3,247 / 3,739 | 1,358 / 7,222 / 8,673 |
+| ramp; `Q_start` reached before / passed again after the peak | 62 h; 17 h / 39 h | 53 h; 57 h / 96 h |
+| run end after tref: `river_100_0SLR`, `coast_100_0SLR`, `compound_100_0SLR` | 182, 174, 203 h | 355, 222, 362 h |
+| before (river_100_03SLR, coast_100_03SLR) | ~332, ~174 h | 471, 270 h |
+
+The Ebro river run ends 39 h after the peak with the inflow still at ~2,600 m3/s (TODO B41).
+
+**Reruns:** the builds and event runs of every scenario.
+
 # 2026-11-08: compound lag and river travel time per scenario, at its own sea level (- JS)
 
 > **⚠ KIARA, PLEASE REVIEW: adaptation `pre` runs read the scenario's timing.**

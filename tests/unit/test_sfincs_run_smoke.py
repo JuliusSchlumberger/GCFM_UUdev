@@ -189,32 +189,33 @@ def test_place_discharge_points_raises_when_no_crossing_is_inside():
     assert not created
 
 
-def test_advanced_river_keeps_its_place_and_the_surge_peaks_later():
+# event_timeline(start, surge_ramp, surge_window, surge_travel, river_lead,
+#                river_tail, lag, surge_event, river_event)
+def test_long_river_lead_starts_at_the_restart_and_the_surge_waits_for_it():
     surge_hr, river_hr, end_hr = event_timeline(
-        144.0, 312.0, 60.0, 6.0, 265.0, -41.0, surge_event=True, river_event=True
+        48.0, 6.0, 60.0, 0.2, 200.0, 158.0, -58.7, surge_event=True, river_event=True
     )
-    assert (river_hr, surge_hr) == (312.0, 353.0)
-    assert end_hr == 312.0 + 265.0
+    assert river_hr == pytest.approx(48.0 + 200.0)
+    assert surge_hr - river_hr == pytest.approx(58.7)
+    assert end_hr == pytest.approx(max(surge_hr + 60.0 + 0.2, river_hr + 158.0))
 
 
-def test_delayed_river_moves_later_and_the_surge_keeps_its_place():
+def test_long_surge_lead_starts_at_the_restart_and_the_river_is_padded():
     surge_hr, river_hr, _ = event_timeline(
-        48.0, 216.0, 60.0, 6.0, 60.0, 12.0, surge_event=True, river_event=True
-    )
-    assert (surge_hr, river_hr) == (216.0, 228.0)
-
-
-def test_short_river_tail_ends_with_the_surge_window():
-    surge_hr, river_hr, end_hr = event_timeline(
-        48.0, 216.0, 60.0, 6.0, 20.0, -16.0, surge_event=True, river_event=True
-    )
-    assert (river_hr, surge_hr) == (216.0, 232.0)
-    assert end_hr == 232.0 + 60.0
-
-
-def test_surge_alone_peaks_after_its_blend_and_half_window_and_ignores_the_lag():
-    surge_hr, _, end_hr = event_timeline(
-        48.0, 216.0, 60.0, 6.0, 60.0, -12.0, surge_event=True, river_event=False
+        48.0, 6.0, 60.0, 0.2, 20.0, 50.0, -15.6, surge_event=True, river_event=True
     )
     assert surge_hr == 48.0 + 6.0 + 60.0
-    assert end_hr == surge_hr + 60.0
+    assert river_hr == pytest.approx(surge_hr - 15.6)
+    assert river_hr - 20.0 > 48.0  # the river ramp starts after the restart
+
+
+def test_river_alone_ends_with_its_tail_and_surge_alone_with_its_window():
+    _, river_hr, end_hr = event_timeline(
+        48.0, 6.0, 60.0, 0.2, 100.0, 120.0, -15.6, surge_event=False, river_event=True
+    )
+    assert (river_hr, end_hr) == (148.0, 268.0)
+    surge_hr, _, end_hr = event_timeline(
+        48.0, 6.0, 60.0, 0.2, 100.0, 120.0, -15.6, surge_event=True, river_event=False
+    )
+    assert surge_hr == 48.0 + 6.0 + 60.0
+    assert end_hr == pytest.approx(surge_hr + 60.2)

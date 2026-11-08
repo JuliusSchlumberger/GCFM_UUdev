@@ -588,14 +588,21 @@ GloFAS flood of the main inflow whose peak is nearest that level, scaled to it
 inflows carry their own discharge on the same dates times the same factor.
 `cosine` uses a synthetic wave of `period_hr` on the mean discharge. The daily
 means are joined by a monotone cubic (PCHIP), so the slope is continuous and the
-peak keeps its value and hour. The rising limb starts at the main inflow's lowest
-daily flow within `max_rising_days` before the peak; in storm-tide mode rule 07d
-moves both peaks later to make room for it. Up to there the discharge holds the
-spin-up mean and blends into the flood with a half-cosine weight over
-`max(min_ramp_hr, π/2 × gap / (max_rise_per_hr × peak))`, ending at the rising-limb
-start, so the blend's steepest rise is `max_rise_per_hr × peak` per hour.
-Large rivers' floods rise over weeks, so their rising-limb start can still be well
-above the mean. In `coastal_only` the discharge points stay with zero flow.
+peak keeps its value and hour. The event starts at `Q_start`: the main inflow's
+discharge at the riverine protection return period (rule 03, the discharge rule 11
+calibrates the dikes for) when the peak exceeds it, since below it nothing leaves
+the diked river; otherwise `start_fraction` (0.5) of the way from the mean to the
+peak (`src.event_timing.event_start_discharge`). From the restart the discharge
+holds the spin-up mean, then blends into the flood with a half-cosine weight over
+`max(min_ramp_hr, π/2 × (Q_start − mean) / (max_rise_per_hr × peak))`, ending at
+the last upward crossing of `Q_start` within `max_rising_days` before the peak
+(`event_window`, `ramp_from_mean`), so the blend's steepest rise is
+`max_rise_per_hr × peak` per hour; every inflow shares the weight and keeps its
+own mean. On the 100-year events the ramp lasts 62 h (Ebro, `Q_start` 3,247 of a
+3,739 m3/s peak, reached 17 h before it) and 53 h (Chao Phraya, 7,222 of 8,673,
+57 h). After the river part ends the hydrograph carries on as it is. Scenarios
+with a `Mean` river hold the mean discharge throughout; in `coastal_only` the
+discharge points stay with zero flow.
 
 **Surge.** Rule 07a picks 6-10 COAST-RP stations (deduplicated within 1 km,
 search radii 10-1000 km). Return levels are exact table lookups at the
@@ -627,16 +634,23 @@ the mean over the surge stations of the storm-tide peak level at its
 - surge: `sqrt(g h)` along the fastest wet path from the water-level boundary
   to that mouth, at the same sea level.
 
-**Event timeline (rule 14).** The event starts at the restart. With a surge and
-a river return period, the river peaks `compound.lag_hr` after the surge peak
-(negative: before); `auto` sets it to surge minus river travel time, so both
-peaks reach the main mouth together. With a lag of zero or less the river peak
-keeps rule 07d's distance from the event start, which leaves room for its rising
-limb, and the surge moves; with a positive lag the river moves later by the lag. A surge alone peaks right after its blend and half-window. A river
-event runs until its main inflow falls below bankfull (at most
-`river_fall_max_hr`, 100 h, after its peak), then for the river travel time.
-Every run lasts at least to the end of the surge window. The timeline is set
-in rule 14, so a new lag reruns the event runs only, not the crest
+**Event timeline (rule 14, `src.sfincs_run.event_timeline`).** The run starts at
+the restart and has two parts:
+- river event: the ramp from the mean to `Q_start`, the flood from its crossing
+  of `Q_start` to its peak, and after the peak until the main inflow falls below
+  `Q_start` again (at most `river_fall_max_hr`, 100 h), plus the river travel
+  time to the main mouth;
+- surge event: the blend from the calm sea (`hydrograph.ramp_hr`), `window_hr`
+  (60 h) each side of the peak, plus the surge travel time to the main mouth.
+
+With both, the river peaks `compound.lag_hr` after the surge peak (negative:
+before); `auto` sets it to surge minus river travel time, so both peaks reach the
+main mouth together. The part that needs more time before its peak starts at the
+restart, the other waits in mean conditions (mean discharge, the average tide),
+and the run ends when the later part ends. On the present-day 100-year events
+the run ends 182 h (Ebro river), 174 h (Ebro coast), 203 h (Ebro compound),
+355 h, 222 h and 362 h (Chao Phraya) after `tref`. The timeline is set in rule
+14, so a new lag or window reruns the event runs only, not the crest
 calibration.
 
 **No tide-gauge bias correction.** The surge forcing is not corrected against

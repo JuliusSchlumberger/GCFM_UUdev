@@ -104,17 +104,58 @@ def sea_travel_hr(
     return gravity_wave_travel(depth, wet, mouth_rc, mask == 2, dx_m)
 
 
-def falling_limb_hr(
+def event_start_discharge(
+    q_mean_m3s: float,
+    q_peak_m3s: float,
+    q_protection_m3s: float | None,
+    fraction: float,
+) -> float:
+    """Return the discharge Q_start at which a river event leaves its ramp from the mean.
+
+    The protection discharge when the peak exceeds it (below it nothing leaves
+    the diked river); otherwise, or without a protection level, the point
+    fraction of the way up from the mean to the peak.
+    """
+    if (
+        q_protection_m3s is not None
+        and np.isfinite(q_protection_m3s)
+        and q_peak_m3s > q_protection_m3s
+    ):
+        return float(q_protection_m3s)
+    return float(q_mean_m3s + fraction * (q_peak_m3s - q_mean_m3s))
+
+
+def event_window(
     t_hr: np.ndarray,
     q_m3s: np.ndarray,
     peak_hr: float,
-    q_bankfull_m3s: float,
-    max_hr: float,
-) -> float:
-    """Return the hours from the peak until the discharge falls below bankfull, at most ``max_hr``."""
-    after = (t_hr > peak_hr) & (t_hr <= peak_hr + max_hr)
-    below = np.flatnonzero(after & (q_m3s < q_bankfull_m3s))
-    return float(t_hr[below[0]] - peak_hr) if below.size else float(max_hr)
+    q_start_m3s: float,
+    max_before_hr: float,
+    max_after_hr: float,
+) -> tuple[float, float]:
+    """Return (start, end) in hours of the river event around its peak.
+
+    start: the last upward crossing of q_start_m3s before the peak, at most
+    max_before_hr before it (that bound when the flow stays above). end: the
+    first time after the peak it falls below q_start_m3s, at most
+    max_after_hr after it.
+    """
+    before = np.flatnonzero((t_hr >= peak_hr - max_before_hr) & (t_hr <= peak_hr))
+    below = before[q_m3s[before] < q_start_m3s]
+    if below.size:
+        k = int(below[-1])
+        t0, t1, q0, q1 = t_hr[k], t_hr[k + 1], q_m3s[k], q_m3s[k + 1]
+        start = (
+            float(t0 + (q_start_m3s - q0) / (q1 - q0) * (t1 - t0))
+            if q1 != q0
+            else float(t1)
+        )
+    else:
+        start = float(peak_hr - max_before_hr)
+    after = (t_hr > peak_hr) & (t_hr <= peak_hr + max_after_hr)
+    fall = np.flatnonzero(after & (q_m3s < q_start_m3s))
+    end = float(t_hr[fall[0]]) if fall.size else float(peak_hr + max_after_hr)
+    return start, end
 
 
 def scenario_sea_level_m(surge_ds, surge_rp_yr, slr_m: float) -> float:
