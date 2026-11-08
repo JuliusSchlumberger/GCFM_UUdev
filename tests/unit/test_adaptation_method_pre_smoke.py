@@ -69,3 +69,18 @@ def test_raise_by_lifts_matched_segments_and_new_stretches_get_the_design_crest(
     crests = _levee_crests(new, 5.0, baseline, 2.0, raise_by=0.5)
     assert np.allclose(crests, [3.5, 5.0])
     assert _levee_crests(new, 5.0, baseline, 2.0) == 5.0
+
+
+def test_subgrid_rebuild_uses_the_baseline_table_settings():
+    from types import SimpleNamespace
+
+    from src.adaptation_method_pre import _rebuild_subgrid
+
+    calls = []
+    mod = SimpleNamespace(subgrid=SimpleNamespace(create=lambda **kw: calls.append(kw)))
+    _rebuild_subgrid(
+        mod, "dep.tif", "man.tif", None, 10, {"nr_levels": 20, "nrmax": 2000}
+    )
+    assert calls[0]["nr_levels"] == 20 and calls[0]["nrmax"] == 2000
+    with pytest.raises(ValueError, match="subgrid_table"):
+        _rebuild_subgrid(mod, "dep.tif", "man.tif", None, 10, None)

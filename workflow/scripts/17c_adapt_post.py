@@ -62,6 +62,9 @@ for measure_type, raw_params in strategy_def["measures"].items():
         # From rule attribution_mask, the same reference the pre method reads.
         with open(snakemake.input.baseline_excess_volume) as fh:
             resolved["baseline_excess_volume"] = json.load(fh)["baseline_excess_volume"]
+    if measure_type in ("nbs_land_reclamation", "water_retention", "pumps"):
+        # Cells lowered to hmin or below are dry, as in the baseline map.
+        resolved["hmin"] = hmin
     log.info(f"Applying measure {measure_type} with params {resolved}")
 
     result = dispatch_rules(

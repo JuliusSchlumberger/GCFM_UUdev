@@ -34,6 +34,8 @@ rule adapt_apply_pre:
     params:
         strategy_def       = basin_strategy_def,
         measures_def       = MEASURES_DEFS,
+        # Subgrid measures rebuild the tables with the baseline's settings.
+        subgrid_table      = {k: config["sfincs"]["subgrid"][k] for k in ("nr_levels", "nrmax")},
         baseline_sfincs_root = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),
         adaptation_root    = lambda wildcards: adaptation_data_root(),
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),

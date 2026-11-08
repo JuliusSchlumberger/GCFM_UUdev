@@ -89,6 +89,46 @@ def test_unpumped_volume_is_total_discharge_above_capacity(tmp_path):
     assert _unpumped_river_volume_m3(str(tmp_path / "none"), 10.0) == 0.0
 
 
+def test_nbs_reduction_dries_cells_at_or_below_hmin(tmp_path):
+    import rasterio
+    from rasterio.transform import from_origin
+    from src.adaptation_method_post import apply_nbs_land_reclamation
+
+    prof = dict(
+        driver="GTiff",
+        height=1,
+        width=3,
+        count=1,
+        dtype="float32",
+        nodata=-9999.0,
+        crs="EPSG:32631",
+        transform=from_origin(0, 30, 10, 10),
+    )
+    flood_path, scenario_root = tmp_path / "flood.tif", tmp_path / "scen" / "sfincs"
+    scenario_root.mkdir(parents=True)
+    with rasterio.open(flood_path, "w", **prof) as dst:
+        dst.write(np.array([[0.30, 0.34, 1.00]], dtype="float32"), 1)
+    with rasterio.open(
+        scenario_root.parent / "attribution_mask.tif",
+        "w",
+        **{**prof, "dtype": "uint8", "nodata": 0},
+    ) as dst:
+        dst.write(np.array([[2, 2, 2]], dtype="uint8"), 1)
+    # 1200 m belt x 0.25 m/km = 0.30 m lower: 0.00 and 0.04 m left, both <= hmin
+    out = apply_nbs_land_reclamation(
+        str(flood_path),
+        str(scenario_root),
+        str(tmp_path / "out"),
+        1200.0,
+        0.25,
+        hmin=0.05,
+    )
+    with rasterio.open(out["out_raster"]) as src:
+        depth = src.read(1)
+    assert np.all(depth[0, :2] == -9999.0)
+    assert depth[0, 2] == pytest.approx(0.70)
+
+
 def test_bool_param_rejects_non_bool_value():
     spec = {
         "params": {

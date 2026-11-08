@@ -3,6 +3,26 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-08: adaptation subgrid levels and post-measure dry threshold match the baseline (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW: both fixes are in the adaptation methods.**
+> `pre` measures that rebuild the subgrid (nbs_land_reclamation, water_retention,
+> urban_raising, retreat) now use the baseline's 20 subgrid levels instead of
+> hydromt_sfincs' default 10. The `post` measures nbs_land_reclamation,
+> water_retention and pumps now dry a lowered cell at `metrics.hmin` (0.05 m)
+> instead of 0 m.
+
+**What changed:**
+- **Subgrid levels (`pre`):** the four `subgrid.create` calls in `src/adaptation_method_pre.py` passed no `nr_levels`/`nrmax`, so hydromt_sfincs' defaults (10 levels) applied, against `sfincs.subgrid.nr_levels: 20` in rules 11 and 12a. They now go through one helper, `_rebuild_subgrid`, which takes `sfincs.subgrid` from rule `adapt_apply_pre`.
+- **Dry threshold (`post`):** baseline and `pre` flood maps keep depth > `metrics.hmin`; the three volume-lowering `post` measures kept every cell above 0 m, so cells left with 0-0.05 m still counted as flooded.
+- **`sfincs.simulation.dtmapout`** must be 3600 s (checked at startup): the river-network swing check of rules 11 and 15 compares hourly level steps.
+
+**Why:** the pre-vs-baseline and post-vs-baseline differences should come from the measure only; a coarser subgrid table and a different flooded threshold added differences of their own.
+
+**Effect:** no rerun yet. `pre` runs of the four subgrid measures and `post` results of the three measures change; post flooded area and urban exposure drop by the cells left at 0-0.05 m.
+
+**Reruns:** `adapt` for strategies with those measures.
+
 # 2026-11-06: SFINCS alpha per basin from rule 11's calibration round (- JS)
 
 > **⚠ KIARA, PLEASE REVIEW: adaptation runs take the basin's alpha.**

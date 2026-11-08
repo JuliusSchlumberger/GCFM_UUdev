@@ -347,6 +347,14 @@ _COMPOUND_LAG = config["sfincs"]["boundary_setup"]["compound"]["lag_hr"]
 if _COMPOUND_LAG != "auto" and (isinstance(_COMPOUND_LAG, bool) or not isinstance(_COMPOUND_LAG, (int, float))):
     raise ValueError(f"sfincs.boundary_setup.compound.lag_hr must be 'auto' or a number (h), got {_COMPOUND_LAG!r}")
 
+# The river-network swing check (alpha_reversal_max_m, rules 11 and 15) is
+# defined on hourly level steps, and rule 11 writes maps every hour.
+if int(config["sfincs"]["simulation"]["dtmapout"]) != 3600:
+    raise ValueError(
+        f"sfincs.simulation.dtmapout must be 3600 s, got {config['sfincs']['simulation']['dtmapout']}: "
+        "the river-network swing check (alpha_reversal_max_m) compares hourly level steps"
+    )
+
 # The event run starts from the restart at spinup_days on the forcing's own time
 # axis, so the forcing's calm lead-in must last exactly as long: a shorter
 # lead-in cuts off the start of the event window and starts the run from a calm
