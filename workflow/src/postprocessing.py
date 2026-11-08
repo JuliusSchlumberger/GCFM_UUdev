@@ -32,7 +32,9 @@ from hydromt_sfincs import utils as sfincs_utils
 STATS_MAX_BYTES: float = 1.5e9
 
 
-def load_sfincs_output(run_dir: str | Path) -> SfincsModel:
+def load_sfincs_output(
+    run_dir: str | Path, map_file: str = "sfincs_map.nc"
+) -> SfincsModel:
     """Load a SFINCS run's map output via SfincsModel (HydroMT-aware spatial dims).
 
     Reads ONLY sfincs_map.nc: for a run with zero observation points SFINCS still
@@ -44,7 +46,7 @@ def load_sfincs_output(run_dir: str | Path) -> SfincsModel:
     # `self.set(...)` call doesn't re-trigger the full (map+his) `read()` --
     # `set()` calls `_initialize()` too, which only acts while `_data is None`.
     mod.output._initialize(skip_read=True)
-    fn_map = Path(run_dir) / "sfincs_map.nc"
+    fn_map = Path(run_dir) / map_file
     if fn_map.is_file():
         mod.output.read_map_file(fn_map=str(fn_map))
     return mod
@@ -233,6 +235,7 @@ def compute_flood_progression(
     run_dir: str | Path,
     sea_mask_path: str | Path,
     variable: str = "depth",
+    map_file: str = "sfincs_map.nc",
 ) -> xr.DataArray | None:
     """Return an instantaneous time series for a flood-progression animation.
 
@@ -240,13 +243,14 @@ def compute_flood_progression(
     per ``dtmapout``, NO subgrid downscaling), masked to exclude open sea via
     ``sea_mask_path`` (pass ``zsini_sea_cells_on_grid.tif``, on the same coarse
     grid as ``zb``). ``variable="level"``: raw ``zs``, unmasked, since water
-    level is meaningful over sea too.
+    level is meaningful over sea too. ``map_file``: another map in ``run_dir``
+    (a spin-up chunk's sfincs_map_chunkNN.nc).
     Returns None when ``zs`` is not in the output, or for depth when ``zb`` is missing.
     """
     if variable not in ("depth", "level"):
         raise ValueError(f"variable must be 'depth' or 'level', got {variable!r}")
 
-    mod = load_sfincs_output(run_dir)
+    mod = load_sfincs_output(run_dir, map_file)
     if "zs" not in mod.output.data:
         return None
     da_zs_native = mod.output.data["zs"]

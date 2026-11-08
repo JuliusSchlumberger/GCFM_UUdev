@@ -60,6 +60,7 @@ from src.gvf_target import (
     smooth_on_network,
 )
 from src.io import require_keys
+from src.landuse import LANDUSE_SEA_CODE
 from src.river_network import (
     _sample_line_cells,
     build_downstream_adjacency,
@@ -70,7 +71,6 @@ from src.river_network import (
 
 log = logging.getLogger(__name__)
 
-LANDUSE_SEA_CODE = 200
 SURFACE_LAYER = "nodes"
 STRUCTURE_LAYER = "structures"
 SURFACE_KEYS = (

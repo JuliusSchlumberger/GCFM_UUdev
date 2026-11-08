@@ -15,9 +15,12 @@ profiling:
 
 analysis: false    # true: also write the diagnostic figures to <results_dir>/{basin_id}/figures/analysis/; false: only the core figures in figures/
 
+default_scenarios: [compound_100_0SLR, river_100_0SLR, coast_100_0SLR]  # run without target_scenarios:
+                                   # the present-day 100-year compound event and its attribution counterparts
+
 # Command-line only (snakemake --config key=value), never set here:
 #   target_basins: [2433835]           # default: every basin in delta_polygons
-#   target_scenarios: ['default']      # default: ['default']
+#   target_scenarios: ['compound_100_0SLR']  # default: default_scenarios
 #   target_strategies: ['retreat_04']  # strategies or families; default: [] (no adaptation run)
 #   target_method: ['pre', 'post']     # default: both
 
@@ -174,8 +177,8 @@ boundary_forcings:
       # built per basin at its own surge stations (rules select_surge_stations ->
       # extract_gtsm_series -> storm_tide_hydrographs, src/storm_tide_hydrograph.py). When enabled,
       # every surge scenario uses average tide + surge peaking on tidal high water ("Tide": tide
-      # only) over -window_hr..+window_hr; the window starts right after the lead-in (lead_days)
-      # and the river peak is aligned with the surge peak. Disabled: an RP falls back to a
+      # only) over -window_hr..+window_hr; rule 14 places it on the event timeline (the restart,
+      # compound.lag_hr). Disabled: an RP falls back to a
       # half-cosine of period_hr after the lead-in, and surge_rp_yr "Tide" is unavailable.
       enabled: true
       window_hr: 60          # event = -60..+60 h around the peak -> 120 h event window; also the length of the surge shapes
@@ -224,7 +227,7 @@ boundary_forcings:
     glofas_min_mean_discharge_m3s: 10.0  # minimum mean discharge (m³/s) for a GloFAS cell to be considered
 
     eva:  # Extreme value analysis on GloFAS discharge -- river-only
-      preview_rp_yr: 100.0          # diagnostic-only preview return period (yr) for rule get_boundary_forcings' own q_rp100/CI/plot-vertical-line and the has_glofas "ok" gate -- a fixed, basin-level constant, NOT derived from any requested scenario's own river_rp_yr (a scenario-derived value here previously made this basin-level rule's own output -- and therefore everything downstream, including the expensive depth calibration -- rerun on every scenario switch, and even made has_glofas itself vary depending on which scenario happened to be requested first). The actual production discharge_rp_table (rules 08/11/14) is always computed at every standard RP regardless of this value.
+      preview_rp_yr: 100.0          # diagnostic-only return period (yr) of rule get_boundary_forcings: q_preview and its CI, the plot's vertical line, the has_glofas "ok" gate and the surge preview (storm_tide_at_rp_m, water_level). A fixed basin-level value, so no scenario reruns this rule (and with it rule 11); the production discharge_rp_table (rules 08/11/14) holds every standard RP regardless
       bankfull_rp_yr: 1.5            # return period for bankfull discharge (yr, AMAX/GEV fit)
       ci_alpha: 0.95
       n_boot: 200               # bootstrap resamples for the q_rp2/q_rp100 confidence intervals
@@ -280,21 +283,19 @@ sfincs:
     water_level_buffer_m: 25000   # search radius for matching surge boundary stations to the
                                   # nearest water-level boundary cell (m)
     outflow_buffer_m: 500.0      # buffer radius (m) around each delta-outline outflow point
-    # mode/river_rp_yr/surge_rp_yr are no longer set here --
-    # derived per-scenario from config/scenarios.yml (see scenario_params in
-    # 00_common.smk): both RPs set -> compound; exactly one set -> that
-    # driver alone (river_only/coastal_only); both null -> invalid.
+    # mode, river_rp_yr and surge_rp_yr are per scenario (config/scenarios.yml,
+    # scenario_params in 00_common.smk): both RPs set -> compound; exactly one
+    # set -> that driver alone (river_only/coastal_only); both null -> invalid.
     flat_boundary_point_spacing_m: 5000   # boundary-point spacing along the water-level mask, used only when mode="river_only"
     compound:
       lag_hr: auto  # river peak minus surge peak (h) at the forcing in compound runs with both a surge and a river RP
-                    # (> 0 delays the river); the river keeps its place after the restart and the surge moves.
+                    # (> 0 delays the river); with a lag <= 0 the river keeps rule 07d's distance from the
+                    # event start and the surge moves, with a lag > 0 the river moves later.
                     # auto: surge minus river travel time to the main mouth (rule event_timing), so both peaks
                     # reach it together; a number sets it for every basin
     river_fall_max_hr: 100  # river events run until the main inflow falls below bankfull, at most this long after
                             # its peak, plus the river travel time to the main mouth (rule event_timing); runs end no
                             # earlier than the surge window; the average tide carries on to the end
-                        # 0 = old behaviour (step). A param of rule 14 only: changing it rebuilds
-                        # the scenarios, never rule 07d or the spin-up.
   grid:
     resolution_m: 100            # main-grid cell size dx (m) for every basin. The subgrid pixel is
                                  # dx / subgrid.nr_subgrid_pixels (10 m at the defaults); channels

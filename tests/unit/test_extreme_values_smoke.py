@@ -132,8 +132,8 @@ def eva_result():
 def test_analyse_cell_rp100_exceeds_rp2_with_ordered_ci(eva_result):
     res = eva_result
     assert res.ok
-    assert res.q_rp100 > res.q_rp2 > 0.0
-    for lo, hi in (res.q_rp2_ci, res.q_rp100_ci):
+    assert res.q_preview > res.q_rp2 > 0.0
+    for lo, hi in (res.q_rp2_ci, res.q_preview_ci):
         assert np.isfinite(lo) and np.isfinite(hi)
         assert lo <= hi
     assert res.pot_n_peaks > 0
@@ -141,7 +141,7 @@ def test_analyse_cell_rp100_exceeds_rp2_with_ordered_ci(eva_result):
 
 
 def test_protection_rp_level_lies_between_rp2_and_rp100(eva_result):
-    assert eva_result.q_rp2 < eva_result.q_protection < eva_result.q_rp100
+    assert eva_result.q_rp2 < eva_result.q_protection < eva_result.q_preview
 
 
 def test_protection_level_equals_discharge_rp_table_at_that_rp(eva_result):
@@ -168,7 +168,7 @@ def test_analyse_cell_short_record_is_skipped_with_nan_levels():
     q[::7] = np.nan
     res = analyse_cell(times, q, _EVA_CFG)
     assert not res.ok
-    assert np.isnan(res.q_rp2) and np.isnan(res.q_rp100)
+    assert np.isnan(res.q_rp2) and np.isnan(res.q_preview)
     assert res.n_valid_days == int(np.isfinite(q).sum())
     assert res.messages
     assert res.skip_reason == "record too short"
@@ -186,7 +186,7 @@ def test_forced_pot_failure_is_not_ok_and_fails_the_crossing(monkeypatch):
     times, q = _daily_discharge(12)
     res = analyse_cell(times, q, _EVA_CFG, label="forced")
     assert np.isfinite(res.q_rp2)
-    assert np.isnan(res.q_rp100)
+    assert np.isnan(res.q_preview)
     assert not res.ok and not res.skip_reason
     with pytest.raises(EVAFitError, match="crossing0.*forced POT failure"):
         eva_active_flags([("crossing0", res)])

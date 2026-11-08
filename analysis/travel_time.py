@@ -93,6 +93,7 @@ def walled_times(basin_id: str) -> dict[str, float]:
             float(w["level_m"].iloc[-1]),
             float(cfg["river_processing"]["channel_manning_n"]),
             forcing_hr=float(rdm["ramp_hr"]),
+            froude_cap=float(rdm["bed"]["froude_cap"]),
             regime_rT=tuple(rdm["wave_regime_rT"]),
         )
         t_cal.append(float(w["t_wave_hr"].iloc[-1]))

@@ -21,13 +21,8 @@ CATALOGUE = load_catalogue(config["data_catalogue"])
 # results_dir, raw_data_root (applied in load_catalogue) and sfincs_exe.
 # Forward slashes: mixed separators break Snakemake output/input matching.
 config["results_dir"] = Path(site_setting("results_dir")).as_posix()
-
-def sfincs_exe_path(wildcards=None):
-    """Return the SFINCS executable path (site setting sfincs_exe).
-
-    Resolved lazily as a rule param, so only solver rules require it.
-    """
-    return site_setting("sfincs_exe")
+# sfincs_exe is read by the solver scripts themselves (rules 11, 13a, 15), so
+# only they require it and moving the executable reruns nothing.
 
 def catalogue_path(name):
     """Return the raw-data path of a catalogue entry."""
@@ -214,7 +209,7 @@ def hydrograph_window_hr(basin_id):
 
 
 # ── scenario axis ──
-# Scenarios are named in config/scenarios.yml ("default" is used when no
+# Scenarios are named in config/scenarios.yml (default_scenarios runs when no
 # target_scenarios is given). forcing_mode is derived from which RPs are set.
 
 _SURGE_RPS = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000)    # COAST-RP tabulated; no interpolation
@@ -223,11 +218,6 @@ _RIVER_RP_MIN, _RIVER_RP_MAX = 2, 1000                     # log-interpolated fr
 with open(config["scenarios_file"]) as _f:
     SCENARIO_DEFS = _yaml.safe_load(_f) or {}
 
-if "default" not in SCENARIO_DEFS:
-    raise ValueError(
-        f"{config['scenarios_file']} must define a 'default' scenario -- "
-        f"used whenever target_scenarios is not given"
-    )
 
 for _name, _s in SCENARIO_DEFS.items():
     if not _re.fullmatch(r"[A-Za-z0-9_-]+", _name):
@@ -306,9 +296,9 @@ def attribution_counterparts(scenario):
     return river, coastal
 
 
-# What to run: CLI override, else just the "default" scenario.
-#   snakemake build --config target_scenarios="['baseline','coast_100']"
-SCENARIOS = list(config.get("target_scenarios", ["default"]))
+# What to run: CLI override, else default_scenarios.
+#   snakemake build --config target_scenarios="['compound_100_0SLR','coast_100_03SLR']"
+SCENARIOS = list(config.get("target_scenarios") or config["default_scenarios"])
 _unknown = sorted(set(SCENARIOS) - set(SCENARIO_DEFS))
 if _unknown:
     raise ValueError(f"target_scenarios {_unknown} not defined in {config['scenarios_file']}")
@@ -521,9 +511,5 @@ def run_event_params():
     """Return the params shared by rules run_event and adapt_run_event_pre."""
     return dict(
         basin_id                   = lambda wildcards: wildcards.basin_id,
-        sfincs_exe                 = sfincs_exe_path,
-        timeout_s                  = config["sfincs"]["simulation"]["timeout_s"],
-        min_inundation_depth_m     = config["sfincs"]["sanity_checks"]["min_inundation_depth_m"],
-        animation_fps              = config["sfincs"]["sanity_checks"]["animation_fps"],
         alpha_reversal_max_m       = config["sfincs"]["alpha_reversal_max_m"],
     )

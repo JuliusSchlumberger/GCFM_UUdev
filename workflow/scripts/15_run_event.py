@@ -2,8 +2,9 @@
 
 Run by rule run_event (and adapt_run_event_pre). Executes the sfincs.inp from
 build_sfincs in sfincs_root: tstop = end of forcing; with spin-up, tstart =
-spin-up end and rstfile = the basin-level restart; without, tstart = tref from
-a dry bed.
+spin-up end and rstfile = the restart of the spin-up with the scenario's
+slr_m; without, tstart = tref from the skeleton's initial levels (sea at the
+calm level, channels at the steady mean-flow level; river_only starts dry).
 
 Writes stability.csv: the river-network swing check of rule 11's alpha check
 (src.sfincs_run.river_network_stability) plus the spin-up's verdict; an
@@ -23,6 +24,7 @@ import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Polygon
 
+from src.io import site_setting
 from src.log import setup_logging
 from src.plots import (
     animate_flood_progression,
@@ -49,10 +51,12 @@ log = setup_logging(snakemake.log[0])
 
 # ── params ──
 sfincs_root = Path(snakemake.params.sfincs_root)
-sfincs_exe = Path(snakemake.params.sfincs_exe)
-timeout_s = int(snakemake.params.timeout_s)
-min_inundation_depth_m = float(snakemake.params.min_inundation_depth_m)
-animation_fps = int(snakemake.params.animation_fps)
+# Not params: the SFINCS executable, the wall-clock timeout and plot settings do
+# not change results, and as params a new value would rerun every SFINCS run.
+sfincs_exe = Path(site_setting("sfincs_exe"))
+timeout_s = int(snakemake.config["sfincs"]["simulation"]["timeout_s"])
+min_inundation_depth_m = float(snakemake.config["sfincs"]["sanity_checks"]["min_inundation_depth_m"])
+animation_fps = int(snakemake.config["sfincs"]["sanity_checks"]["animation_fps"])
 alpha_reversal_max_m = float(snakemake.params.alpha_reversal_max_m)
 land_polygons_path = Path(snakemake.input.land_mask_on_grid)  # plot background
 sea_mask_path = Path(snakemake.input.sea_mask)

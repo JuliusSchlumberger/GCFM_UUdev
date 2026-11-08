@@ -97,6 +97,7 @@ from src.hydromt_sfincs_patch import (
     raster_catalog_entry,
 )
 from src.landuse import LANDUSE_SEA_CODE
+from src.io import site_setting
 from src.log import setup_logging
 from src.plots import (
     plot_crest_profiles,
@@ -184,8 +185,10 @@ delta_outflow_points_path = Path(snakemake.input.delta_outflow_points)
 
 basin_id = str(snakemake.wildcards.basin_id)  # plot titles
 calib_root = Path(snakemake.params.calib_root)
-sfincs_exe = Path(snakemake.params.sfincs_exe)
-timeout_s = int(snakemake.params.timeout_s)
+# Not params: the SFINCS executable, the wall-clock timeout and plot settings do
+# not change results, and as params a new value would rerun every SFINCS run.
+sfincs_exe = Path(site_setting("sfincs_exe"))
+timeout_s = int(snakemake.config["sfincs"]["simulation"]["timeout_s"])
 
 bed_cfg = dict(snakemake.params.bed)
 gebco_min_depth_m = float(snakemake.params.gebco_min_depth_m)
@@ -1170,6 +1173,7 @@ for _reach in sorted({normalize_reach_id(r) for r in inside_ids_valid} - {None})
         float(coastal_design_peaks.max()),
         channel_manning_n,
         forcing_hr=ramp_hr,
+        froude_cap=float(bed_cfg["froude_cap"]),
         regime_rT=wave_regime_rT,
     )
     _t_settle = settle_time_hr(
@@ -1190,7 +1194,7 @@ if not _walled:
         "No crossing reach has river-bed nodes -- cannot size the calibration run"
     )
 walled = pd.concat(_walled, ignore_index=True)
-walled.to_csv(_bed_dir / f"{basin_id}_walled_travel.csv", index=False)
+walled.to_csv(snakemake.output.walled_travel, index=False)
 _ends = walled.groupby("crossing_reach_id")[
     ["t_wave_hr", "t_kinematic_hr", "t_gravity_hr", "t_settle_hr"]
 ].last()
@@ -1213,7 +1217,8 @@ log.info(
     f"Walled travel time to the network end per crossing reach (regime / all-kinematic / all-gravity / "
     f"settle L^2/D, h): "
     f"{ {r: (round(t, 1), round(k, 1), round(g, 1), round(s, 1)) for r, (t, k, g, s) in _ends.iterrows()} }; "
-    f"inertial nodes {int((walled['regime'] == 'inertial').sum())} of {len(walled)}; run "
+    f"inertial nodes {int((walled['regime'] == 'inertial').sum())} of {len(walled)}, Froude-capped "
+    f"{int(walled['froude_capped'].sum())}; run "
     f"({run_length_cfg['method']}) = {ramp_hr:g} h ramp + {t_run_hr:.1f} h + {calibration_margin_hr:g} h margin "
     f"= {run_hr:.0f} h (T_walled {t_walled_hr:.1f} h, {settle_factor:g} x t_settle {settle_factor * t_settle_hr:.1f} h)"
 )

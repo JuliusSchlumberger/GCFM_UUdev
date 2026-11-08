@@ -12,6 +12,7 @@ from typing import cast
 
 import geopandas as gpd
 import pandas as pd
+import xarray as xr
 from shapely.geometry import Polygon
 from src.log import setup_logging
 from src.plots import (
@@ -65,12 +66,15 @@ plot_inundation_check(
 )
 
 if hasattr(out, "animation_flood_progress"):
-    # Needs zs in sfincs_map.nc (finite dtmapout).
-    da_h = compute_flood_progression(run_root, inp.sea_mask)
-    if da_h is None:
+    # Needs zs in the maps (finite dtmapout). The spin-up's earlier chunks are
+    # kept as sfincs_map_chunkNN.nc; the animation runs through all of them.
+    map_files = [p.name for p in sorted(run_root.glob("sfincs_map_chunk*.nc"))] + ["sfincs_map.nc"]
+    frames = [compute_flood_progression(run_root, inp.sea_mask, map_file=f) for f in map_files]
+    if any(f is None for f in frames):
         raise RuntimeError(
             f"No 'zs' or 'zb' in the SFINCS output of {run_root}; dtmapout must be set"
         )
+    da_h = xr.concat(frames, dim="time") if len(frames) > 1 else frames[0]
     animate_flood_progression(
         da_h,
         domain_poly,

@@ -37,6 +37,7 @@ import xarray as xr
 from shapely.geometry import Polygon
 from hydromt_sfincs import SfincsModel
 
+from src.io import site_setting
 from src.log import setup_logging
 from src.plots import (
     plot_max_inundation_map,
@@ -69,11 +70,13 @@ slr_m = float(snakemake.params.slr_m)
 chunk_hr = float(snakemake.params.chunk_hr)
 max_hr = float(snakemake.params.max_days) * 24.0
 steady_cfg = dict(snakemake.params.steady_check)
-sfincs_exe = Path(snakemake.params.sfincs_exe)
+# Not params: the SFINCS executable, the wall-clock timeout and plot settings do
+# not change results, and as params a new value would rerun every SFINCS run.
+sfincs_exe = Path(site_setting("sfincs_exe"))
 rst_fname = snakemake.params.rst_fname  # fixed name (00_common RST_FNAME)
 dtmapout_s = int(snakemake.params.dtmapout_s)
 dthisout_s = int(snakemake.params.dthisout_s)
-timeout_s = int(snakemake.params.timeout_s)
+timeout_s = int(snakemake.config["sfincs"]["simulation"]["timeout_s"])
 water_level_buffer_m = snakemake.params.water_level_buffer_m
 boundary_ramp_hr = float(snakemake.params.boundary_ramp_hr)
 land_polygons_path = Path(snakemake.input.land_mask_on_grid)  # plot background

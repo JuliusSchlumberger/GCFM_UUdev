@@ -1,5 +1,6 @@
 """I/O utilities for loading the data catalogue and reading spatial datasets."""
 
+import logging
 import os
 from collections.abc import Iterable
 from pathlib import Path
@@ -29,6 +30,7 @@ def site_setting(key: str) -> str:
     env_var = SITE_ENV_VARS[key]
     value = os.environ.get(env_var)
     if value:
+        logging.getLogger(__name__).info(f"site setting {key} from {env_var}: {value}")
         return value
     site = {}
     if SITE_FILE.exists():

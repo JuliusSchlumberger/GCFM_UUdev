@@ -12,8 +12,9 @@ forcing_mode (from scenario river_rp_yr/surge_rp_yr, scenario_params in 00_commo
                    a river RP, compound.lag_hr is the river peak minus the
                    surge peak (positive = river peak later); "auto" takes rule
                    event_timing's lag, so both peaks reach the main mouth
-                   together. In storm-tide mode the surge moves and the river
-                   keeps its place.
+                   together. With a lag <= 0 the river keeps its distance
+                   from the event start and the surge moves; with a lag > 0
+                   the river moves later.
   "coastal_only" — surge/tide boundary; discharge points kept with a zeroed
                    timeseries so the model structure matches other modes.
   "river_only"   — river discharge; flat boundary at river_only_flat_level_m,
@@ -371,9 +372,9 @@ sf.discharge_points.write()
 
 # ── sfincs.inp (hand-written; see module docstring) ──
 inp_settings: dict[str, object] = {}
-# rstfile: the basin-level run_spinup restart (mean river discharge + calm
-# sea), used by every forcing mode including river_only; a sibling tree of
-# sfincs_root, referenced by a computed relative path.
+# rstfile: the restart of the spin-up with the scenario's slr_m (mean river
+# discharge, calm sea + that SLR), used by every forcing mode including
+# river_only; a sibling tree of sfincs_root, referenced by a relative path.
 if include_rstart:
     tstart_event = tref + timedelta(hours=spinup_hr)
     rst_rel = os.path.relpath(spin_up_root / rst_fname, start=sfincs_root)

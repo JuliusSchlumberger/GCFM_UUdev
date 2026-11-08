@@ -50,7 +50,7 @@ prof = mainstem_profile(
 )
 
 # Rule 11's walled run: its level at the mainstem's last node is the sea level it held.
-walled_path = Path(snakemake.input.river_bed_nodes).with_name(f"{basin_id}_walled_travel.csv")
+walled_path = Path(snakemake.input.walled_travel)
 walled = pd.read_csv(walled_path, dtype={"crossing_reach_id": str})
 walled = walled[walled["crossing_reach_id"].map(normalize_reach_id) == main_reach]
 if walled.empty:
@@ -63,8 +63,11 @@ river = walled_travel_time(
     sea_level_m,
     float(snakemake.params.channel_manning_n),
     forcing_hr=float(snakemake.params.ramp_hr),
+    froude_cap=float(snakemake.params.froude_cap),
     regime_rT=tuple(snakemake.params.wave_regime_rT),
 )
+if river["froude_capped"].any():
+    log.info(f"Froude cap ({snakemake.params.froude_cap:g}) holds the depth at {int(river['froude_capped'].sum())} of {len(river)} node(s)")
 river_travel_hr = float(river["t_wave_hr"].iloc[-1])
 
 gis = Path(snakemake.input.skeleton_inp).parent / "gis"

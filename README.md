@@ -69,17 +69,17 @@ Everything is written under `<results_dir>/{basin_id}/`:
    how to unset them: [docs/install.md](docs/install.md#site-settings).
 
 4. Check the job graph with a dry run on the smallest case (Ebro delta, basin
-   `2433835`, scenario `default`); it lists 15 jobs:
+   `2433835`, scenario `compound_100_0SLR`); it lists 15 jobs:
 
    ```bash
-   snakemake -n preprocess --cores 1 --config target_basins="[2433835]" target_scenarios="['default']"
+   snakemake -n preprocess --cores 1 --config target_basins="[2433835]" target_scenarios="['compound_100_0SLR']"
    ```
 
 5. Run it. Without a target Snakemake runs `all` (preprocess + build).
 
    ```bash
-   snakemake preprocess --cores 4 --config target_basins="[2433835]" target_scenarios="['default']"
-   snakemake build      --cores 4 --config target_basins="[2433835]" target_scenarios="['default']"
+   snakemake preprocess --cores 4 --config target_basins="[2433835]" target_scenarios="['compound_100_0SLR']"
+   snakemake build      --cores 4 --config target_basins="[2433835]" target_scenarios="['compound_100_0SLR']"
    ```
 
 ### Targets

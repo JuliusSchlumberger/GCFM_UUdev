@@ -47,9 +47,9 @@ class EVAResult:
     """Outcome of extreme-value analysis for a single GloFAS cell."""
 
     q_rp2: float = np.nan
-    q_rp100: float = np.nan
+    q_preview: float = np.nan
     q_rp2_ci: tuple[float, float] = (np.nan, np.nan)
-    q_rp100_ci: tuple[float, float] = (np.nan, np.nan)
+    q_preview_ci: tuple[float, float] = (np.nan, np.nan)
 
     # POT/GPD discharge at analyse_cell's protection_rp_yr; NaN unless requested.
     q_protection: float = np.nan
@@ -656,7 +656,7 @@ def analyse_cell(
             res.pot_threshold_status = status
 
             eva_pot.fit_model(fit_method)
-            res.q_rp100 = _rv(eva_pot, preview_rp_yr)
+            res.q_preview = _rv(eva_pot, preview_rp_yr)
             gpd_params = eva_pot.model.fit_parameters
             # pyextremes picks "genpareto" or "expon" by AIC; "expon" is the GPD
             # with c = 0, so a missing "c" means shape 0, not a failed fit.
@@ -693,7 +693,7 @@ def analyse_cell(
                 exceedances = exceedances[~neg_mask]
 
             # CI is conditional on the chosen threshold and r_days (not propagated).
-            res.q_rp100_ci = _gpd_boot_ci(
+            res.q_preview_ci = _gpd_boot_ci(
                 exceedances,
                 res.pot_threshold,
                 ppy,
@@ -703,7 +703,7 @@ def analyse_cell(
                 c0=gpd_params.get("c"),
                 scale0=gpd_params.get("scale"),
             )
-            if not np.all(np.isfinite(res.q_rp100_ci)):
+            if not np.all(np.isfinite(res.q_preview_ci)):
                 res.messages.append(
                     f"{tag}GPD bootstrap CI undefined (too few valid refits)"
                 )
@@ -722,7 +722,7 @@ def analyse_cell(
         res.messages.append(msg)
 
     # ok = both estimators finite; advisory messages do not affect it.
-    res.ok = np.isfinite(res.q_rp2) and np.isfinite(res.q_rp100)
+    res.ok = np.isfinite(res.q_rp2) and np.isfinite(res.q_preview)
     return res
 
 
@@ -736,7 +736,7 @@ def eva_active_flags(evas: list[tuple[str, EVAResult]]) -> list[bool]:
     failed = [(label, r) for label, r in evas if not r.ok and not r.skip_reason]
     if failed:
         details = "\n".join(
-            f"  {label}: q_rp2={r.q_rp2:.4g} q_rp100={r.q_rp100:.4g}; "
+            f"  {label}: q_rp2={r.q_rp2:.4g} q_preview={r.q_preview:.4g}; "
             + ("; ".join(r.messages) or "no message")
             for label, r in failed
         )

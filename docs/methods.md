@@ -210,7 +210,7 @@ overstate it.
 **16 `compute_flood_metrics`.** Downscales the maximum water level to the subgrid
 bed (`downscale_floodmap`) as `max_flood_depth.tif`, masks the sea, and writes
 `flood_metrics.csv`: domain, land and urban areas, flooded area and share
-(depth ≥ `metrics.hmin`), urban exposure (land use `metrics.urban_landuse_code`),
+(depth > `metrics.hmin`), urban exposure (land use `metrics.urban_landuse_code`),
 mean and maximum depth, volume.
 
 **12c, 17a-18** adaptation; see [Adaptation](#adaptation).
@@ -382,8 +382,13 @@ them:
   `0.5 (1 − cos πs)` used for every river forcing (`src.river_forcing.cosine_ramp`),
   then held to the run end.
 
-The run lasts `ramp_hr + T_walled + calibration_margin_hr` (12 h), so the full
-discharge reaches the coast and every level settles before the run ends. `T_walled`
+The run lasts `ramp_hr + max(T_walled, settle_factor × L²/D) +
+calibration_margin_hr` (`run_length.method: settle`; `settle_factor` 1.75, margin
+12 h), so the full discharge reaches the coast and every level settles before the
+run ends; `method: walled` drops the settling term. `L²/D` is the diffusive
+settling time of each crossing's mainstem, `D = Q / (2 W S)` the median hydraulic
+diffusivity, `S` the walled surface slope floored at `settle_slope_floor`
+(`src.river_profile.settle_time_hr`). `T_walled`
 is the slowest travel time from a crossing to its network end with the whole
 calibration discharge in the channel (no overtopping), along the crossing's mainstem
 (the larger-discharge arm at each bifurcation) on round 0's bed (steady GVF level, sea
@@ -397,10 +402,11 @@ kinematic speed `5/3·u`, the in-bank flood-wave speed of a wide Manning channel
 which is also the slower one in the transition up to `wave_regime_rT[1]` (3)
 (1248635 Waal, `r·T` ≈ 12). The kinematic speed alone gave 516 h on 1248635's
 80 km Meuse path, the regime speed 51 h. All-kinematic and all-gravity times are
-logged for comparison. In the earlier 24 h runs, round 1 settled within
-about 4 h of `ramp_hr + T_walled` on 2433835 (64 km path, `T_walled` 6 h), and on
-3279946 (288 km, `T_walled` 34 h) the upper 150 km still rose 0.2–0.8 m in the
-last 3 h. Runs longer than `calibration_max_days` fail. After each round,
+logged for comparison. Round 1 settled within about 4 h of `ramp_hr + T_walled`
+on 2433835 (64 km path, `T_walled` 6 h); on 3279946 (288 km, `T_walled` 34 h)
+the upper 150 km still rose 0.2–0.8 m 24 h in, which the settling term covers
+(steady after 21 h of 65 h on 2433835 and 171 h of 219 h on 3279946). Runs
+longer than `calibration_max_days` fail. After each round,
 `steady_check` warns when centreline cells still rose more than `tol_m` over the
 last `window_hr`.
 
@@ -615,11 +621,12 @@ sea boundary is flat at `-(gebco_max_depth_m + 0.5)` m.
 - surge: `sqrt(g h)` along the fastest wet path from the water-level boundary
   to that mouth.
 
-**Event timeline (rule 14).** The river peak keeps rule 07d's place, which
-leaves room for its rising limb after the restart. With a surge and a river
-return period, the river peaks `compound.lag_hr` after the surge peak
+**Event timeline (rule 14).** The event starts at the restart. With a surge and
+a river return period, the river peaks `compound.lag_hr` after the surge peak
 (negative: before); `auto` sets it to surge minus river travel time, so both
-peaks reach the main mouth together. A surge alone peaks right after its blend and half-window. A river
+peaks reach the main mouth together. With a lag of zero or less the river peak
+keeps rule 07d's distance from the event start, which leaves room for its rising
+limb, and the surge moves; with a positive lag the river moves later by the lag. A surge alone peaks right after its blend and half-window. A river
 event runs until its main inflow falls below bankfull (at most
 `river_fall_max_hr`, 100 h, after its peak), then for the river travel time.
 Every run lasts at least to the end of the surge window. The timeline is set
@@ -692,7 +699,7 @@ the same river level, with the sea at the calm level. Rule 10's surface itself i
 
 ## Protection levels
 
-Rule 04 (`src/protection_levels.py`) takes the dominant WRI Aqueduct
+Rule 03 (`src/protection_levels.py`) takes the dominant WRI Aqueduct
 `geogunit_107` unit (largest pixel count) inside the delta polygon, read in a
 window, and its FLOPROS (Scussolini et al., 2016) design return periods. About
 74% of units have a riverine value and about 25% a coastal one; each hazard falls

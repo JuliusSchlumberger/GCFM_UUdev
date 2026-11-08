@@ -190,7 +190,7 @@ Hours after the inflow peak, main mouth, river-only event:
 | first maximum of the tide-filtered mouth discharge | 16.3 | 24.5 |
 | half rise | −3.5 | 56.2 |
 | plateau (within 2 % of the maximum): start / midpoint / end | 1.0 / 17.8 / 34.7 | −4.8 / 54.6 / 114.0 (open) |
-| configured lag | 21.2 | 41.2 |
+| compound lag (`auto`: river travel at bankfull minus surge travel) | 15.6 | 58.7 |
 | walled estimate at the calibration discharge (rule 11) | 6.2 | 40.8 |
 | walled estimate at bankfull discharge | 15.8 | 65.5 |
 
@@ -209,8 +209,10 @@ Hours after the inflow peak, main mouth, river-only event:
   - The bankfull estimate sets the compound lag and the run's tail (rule
     `event_timing`, `docs/methods.md`); the calibration-discharge one only
     sizes the calibration run, which the settling time already sets longer.
-- **Compound lag.** Both configured lags put the surge peak on the river's
-  plateau: the aligned worst case.
+- **Compound lag.** `compound.lag_hr: auto` (rule `event_timing`) puts the
+  surge peak at the mouth together with the river peak by the bankfull
+  estimate along the main inflow: 15.6 h (Ebro) and 58.7 h (Chao Phraya), both
+  inside the plateau, so the aligned worst case.
   - Reanalysis (`analysis/lag_cooccurrence.py`, GTSM and GloFAS 1979–2024):
     Chao Phraya surge and river peaks are seasonally disjoint (NE vs SW
     monsoon).

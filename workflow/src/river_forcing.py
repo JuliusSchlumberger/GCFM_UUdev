@@ -427,7 +427,7 @@ def build_river_dataset(
     for i, r in enumerate(results):
         if r is not None:
             rp2_lo[i], rp2_hi[i] = r.q_rp2_ci
-            rp100_lo[i], rp100_hi[i] = r.q_rp100_ci
+            rp100_lo[i], rp100_hi[i] = r.q_preview_ci
             trend_str[i] = r.trend
 
     cross_lons = crossings.geometry.x.values if n_cross > 0 else np.array([])

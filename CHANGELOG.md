@@ -3,6 +3,29 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-08: audit fixes: default scenarios, rerun triggers, untracked inputs, docs (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW: default scenarios and levee measures.**
+> The `default` scenario is gone. Without `target_scenarios` the workflow runs
+> `default_scenarios` (config.yml): `compound_100_0SLR` and its attribution
+> counterparts `river_100_0SLR` and `coast_100_0SLR`, plus the new `mean_0SLR`
+> for their own counterparts, so `adapt` works on them. `apply_river_levee` and
+> `apply_coastal_levee` (pre) now share one body (`_apply_levee`); behaviour
+> unchanged.
+
+**What changed:**
+- **Scenarios:** `default` (surge 250 yr, river 50 yr, 0.3 m SLR; no counterparts, so `adapt` failed on it) replaced by `compound_100_0SLR`, `river_100_0SLR`, `coast_100_0SLR` and `mean_0SLR` (scenarios.yml) and the new `default_scenarios` key (config.yml).
+- **Rerun triggers:** rule 07d takes only `event_hydrograph.source` and `max_rising_days` (the rest shapes the event in rule 14) and its surge preview at the fixed `eva.preview_rp_yr` instead of the `default` scenario's RP, so neither reruns rule 07d and rule 11's calibration. The SFINCS executable, the timeout and the plot settings (`animation_fps`, `min_inundation_depth_m`) are read by the scripts of rules 11, 13a and 15 instead of being params, so a new executable path or plot setting reruns no SFINCS run.
+- **Tracked inputs:** `{basin}_walled_travel.csv` is a rule 11 output and an input of rule 12d and `suite_travel_time`; the GTSM station subset is an input of rule `extract_gtsm_series` (missing file stops the DAG). `read_calm_sea_level_m` raises instead of returning 0 m when `calm_sea_level_m` is absent; a site setting taken from its environment variable is logged.
+- **Froude cap:** `walled_travel_time` takes `bed.froude_cap` (it used the solver default) and reports `froude_capped` per node; rules 11 and 12d log the count.
+- **Spin-up animation** (rule 13b) runs through every chunk (`sfincs_map_chunkNN.nc`, then `sfincs_map.nc`).
+- **Hygiene:** `EVAResult.q_rp100` renamed `q_preview` (it holds the flow at `eva.preview_rp_yr`); `water_surface.LANDUSE_SEA_CODE` imported from `src.landuse`; history wording and an orphaned comment removed from config.yml.
+- **Docs:** methods.md: calibration run length with the settle term, rule 03 for protection levels, flooded = depth > `hmin`, the event timeline for both signs of the lag; river_depth_gvf.md: the `auto` lag in the timing table; config.yml, rule 14 and rule 15 docstrings to match the code.
+
+**Why:** the review's findings that rerun expensive rules for settings that do not change results, read files no rule declares, or describe a removed state.
+
+**Effect:** no result changes. Rule 07d reruns once for its new params (and with it everything downstream, already pending).
+
 # 2026-11-08: observation points from every inflow to the water-level boundary, 1 km apart (- JS)
 
 **What changed:**

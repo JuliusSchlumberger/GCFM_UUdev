@@ -245,6 +245,51 @@ def _levee_crests(
 
 
 # Grey protect-open: river_levee
+def _apply_levee(
+    name,
+    mod,
+    locations,
+    elevation,
+    par1,
+    dep,
+    buffer,
+    dz,
+    merge,
+    max_match_distance_m,
+    raise_by,
+):
+    # Shared by apply_river_levee and apply_coastal_levee; name labels the error.
+    if merge:
+        if _is_current_protection(elevation) or raise_by is not None:
+            raise ValueError(f"{name}: current_protection / raise_by need merge: false")
+        mod.weirs.create(
+            locations=locations,
+            elevation=elevation,
+            par1=par1,
+            dep=dep,
+            buffer=buffer,
+            dz=dz,
+            merge=True,
+        )
+        return mod
+
+    new_gdf = read_polyline(
+        mod.data_catalog.get_geodataframe(locations, geom=mod.region), mod.crs
+    )
+    new_gdf["elevation"] = _levee_crests(
+        new_gdf, elevation, mod.weirs.data, max_match_distance_m, raise_by
+    )
+    new_gdf["par1"] = par1
+
+    merged = merge_weir_preserve_unmatched(
+        mod.weirs.data, new_gdf, max_match_distance_m=max_match_distance_m
+    )
+    mod.weirs.set(merged, merge=False)
+    mod.config.set("weirfile", "sfincs.weir")
+
+    return mod
+
+
 def apply_river_levee(
     mod: SfincsModel,
     locations: Path,
@@ -280,37 +325,19 @@ def apply_river_levee(
     (_levee_crests).
     par1, dep, buffer, dz: as in apply_offshore_barrier.
     """
-    if merge:
-        if _is_current_protection(elevation) or raise_by is not None:
-            raise ValueError(
-                "river_levee: current_protection / raise_by need merge: false"
-            )
-        mod.weirs.create(
-            locations=locations,
-            elevation=elevation,
-            par1=par1,
-            dep=dep,
-            buffer=buffer,
-            dz=dz,
-            merge=True,
-        )
-        return mod
-
-    new_gdf = read_polyline(
-        mod.data_catalog.get_geodataframe(locations, geom=mod.region), mod.crs
+    return _apply_levee(
+        "river_levee",
+        mod,
+        locations,
+        elevation,
+        par1,
+        dep,
+        buffer,
+        dz,
+        merge,
+        max_match_distance_m,
+        raise_by,
     )
-    new_gdf["elevation"] = _levee_crests(
-        new_gdf, elevation, mod.weirs.data, max_match_distance_m, raise_by
-    )
-    new_gdf["par1"] = par1
-
-    merged = merge_weir_preserve_unmatched(
-        mod.weirs.data, new_gdf, max_match_distance_m=max_match_distance_m
-    )
-    mod.weirs.set(merged, merge=False)
-    mod.config.set("weirfile", "sfincs.weir")
-
-    return mod
 
 
 # # Grey protect-open: storm_surge_barrier
@@ -852,37 +879,19 @@ def apply_coastal_levee(
     cell; too tight silently leaves old segments in place.
     raise_by: as in apply_river_levee.
     """
-    if merge:
-        if _is_current_protection(elevation) or raise_by is not None:
-            raise ValueError(
-                "coastal_levee: current_protection / raise_by need merge: false"
-            )
-        mod.weirs.create(
-            locations=locations,
-            elevation=elevation,  # adds absolute elevation
-            par1=par1,
-            dep=dep,
-            buffer=buffer,
-            dz=dz,  # Adds weir on top of dem
-            merge=True,
-        )
-        return mod
-
-    new_gdf = read_polyline(
-        mod.data_catalog.get_geodataframe(locations, geom=mod.region), mod.crs
+    return _apply_levee(
+        "coastal_levee",
+        mod,
+        locations,
+        elevation,
+        par1,
+        dep,
+        buffer,
+        dz,
+        merge,
+        max_match_distance_m,
+        raise_by,
     )
-    new_gdf["elevation"] = _levee_crests(
-        new_gdf, elevation, mod.weirs.data, max_match_distance_m, raise_by
-    )
-    new_gdf["par1"] = par1
-
-    merged = merge_weir_preserve_unmatched(
-        mod.weirs.data, new_gdf, max_match_distance_m=max_match_distance_m
-    )
-    mod.weirs.set(merged, merge=False)
-    mod.config.set("weirfile", "sfincs.weir")
-
-    return mod
 
 
 # Advance / Protect-closed: pumps

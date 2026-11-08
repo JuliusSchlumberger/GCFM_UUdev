@@ -269,13 +269,17 @@ def calm_sea_levels(surge_ds: xr.Dataset, slr_m: float = 0.0) -> np.ndarray:
 
 
 def read_calm_sea_level_m(surge_ds: xr.Dataset) -> float:
-    """Read surge_forcing.nc's calm_sea_level_m, rounded to 1 cm; 0.0 if the field is absent.
+    """Read surge_forcing.nc's calm_sea_level_m, rounded to 1 cm.
 
     calm_sea_level_m is the basin-mean local MSL in model coordinates (MDT-only),
     the level rule 11's calibration and rule 12a's skeleton zsini hold the sea at.
+    Raises KeyError when the field is absent (rule 07d always writes it).
     """
     if "calm_sea_level_m" not in surge_ds:
-        return 0.0
+        raise KeyError(
+            "surge_forcing.nc has no calm_sea_level_m (the sea's datum offset) -- rerun rule "
+            "get_boundary_forcings"
+        )
     return float(round_level(float(surge_ds["calm_sea_level_m"].values)))
 
 

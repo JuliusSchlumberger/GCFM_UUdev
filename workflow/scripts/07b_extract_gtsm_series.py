@@ -24,7 +24,7 @@ with open(snakemake.input.surge_stations) as f:
 lons = np.array([s["lon"] for s in stations])
 lats = np.array([s["lat"] for s in stations])
 
-with xr.open_dataset(snakemake.params.gtsm_station_subset) as subset:
+with xr.open_dataset(snakemake.input.gtsm_station_subset) as subset:
     gtsm_ids, positions = subset_positions(subset, lons, lats, float(snakemake.params.max_match_km))
     log.info(f"{len(stations)} surge station(s) matched to GTSM stations {gtsm_ids.tolist()}")
     picked = subset[list(GTSM_VARIABLES)].isel(station=positions).load()

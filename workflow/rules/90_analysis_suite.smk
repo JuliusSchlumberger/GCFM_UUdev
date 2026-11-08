@@ -65,6 +65,7 @@ rule suite_travel_time:
     input:
         [results_path(f"{b}/runs/{s}/sfincs/sfincs_map.nc") for b in _S_BASINS for s in (_S_RIVER, _S_COAST)],
         [results_path(f"{b}/preprocessing_inputs/domain/{b}_river_network_depth_estimated.gpkg") for b in _S_BASINS],
+        [results_path(f"{b}/preprocessing_inputs/visuals/11_calibration/river_bed/{b}_walled_travel.csv") for b in _S_BASINS],
     output:
         summary = f"{_S_DIR}/travel_time/summary.csv",
         figures = _s_figures("travel_time", ["travel_time"]),

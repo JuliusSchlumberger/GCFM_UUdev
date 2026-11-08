@@ -58,6 +58,9 @@ rule modelled_depth_estimation:
         # mask is identical instead of building the same table again.
         calibration_subgrid          = calibration_subgrid_files(),
         river_bed_nodes              = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_bed/{basin_id}_river_bed_nodes.csv"),
+        # Walled hydraulics and travel times per crossing at the calibration
+        # discharge (run length; rule 12d's sea level; analysis/travel_time.py).
+        walled_travel                = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_bed/{basin_id}_walled_travel.csv"),
         # DEM, bed and crest along each seed-to-mouth path.
         plot_crest_profile           = figure_path("30_calib_crest_profile.png"),
         # Boundary forcing and max flood depth of every SFINCS round (calib_r1, calib_r2).
@@ -82,8 +85,6 @@ rule modelled_depth_estimation:
     params:
         calib_root  = lambda wildcards: results_path(f"{wildcards.basin_id}/preprocessing_inputs/depth_crest_calibration"),
         resolution_m = lambda wildcards: grid_resolution_m(wildcards.basin_id),
-        sfincs_exe  = sfincs_exe_path,
-        timeout_s   = config["sfincs"]["simulation"]["timeout_s"],
         active_mask_enabled = config["sfincs"]["grid"]["active_mask"]["enabled"],
         active_mask_elevation_buffer_m = config["sfincs"]["grid"]["active_mask"]["elevation_buffer_m"],
         outflow_buffer_m = config["sfincs"]["boundary_setup"]["outflow_buffer_m"],
