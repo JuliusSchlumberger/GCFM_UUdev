@@ -124,7 +124,7 @@ def lag_basin(basin_id: str, river: str) -> tuple[dict, pd.DataFrame]:
     lag_from_river = -nearest_lag_hr(qp, sp, PAIR_WINDOW_DAYS)  # t_Q - t_surge
     t_river = river_travel_hr(basin_id)
     tau = tau95_hr(basin_id, river)
-    lag_cfg = configured_lag_hr(basin_id)
+    lag_cfg = configured_lag_hr(basin_id, river)
     row = {
         "basin_id": basin_id,
         "gtsm_station": station,

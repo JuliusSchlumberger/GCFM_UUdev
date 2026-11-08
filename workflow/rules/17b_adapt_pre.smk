@@ -51,7 +51,7 @@ rule adapt_build_forcing_pre:
     input:
         skeleton_inp    = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sfincs.inp"),
         river_network   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
-        event_timing    = results_path("{basin_id}/event_timing/{basin_id}_event_timing.csv"),
+        event_timing    = results_path("{basin_id}/runs/{scenario}/event_timing.csv"),
         surge_forcing   = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         river_forcing   = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
         # Strategy-local restart, so water_retention's adjusted water level is used.

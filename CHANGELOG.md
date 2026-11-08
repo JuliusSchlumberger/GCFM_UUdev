@@ -3,6 +3,33 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-08: compound lag and river travel time per scenario, at its own sea level (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW: adaptation `pre` runs read the scenario's timing.**
+> `adapt_build_forcing_pre` reads `runs/{scenario}/event_timing.csv` instead of
+> the basin-level file; lag and river tail now depend on the scenario's sea level.
+
+**What changed:**
+- **Rule `event_timing` per scenario** (`runs/{scenario}/event_timing.csv`, was `event_timing/{basin}_event_timing.csv` per basin): the sea at the mouth is the scenario's, the mean over the surge stations of the storm-tide peak level at its `surge_rp_yr`, else of the calm level, both plus its `slr_m` × fingerprint (`src.event_timing.scenario_sea_level_m`). It was rule 11's calibration storm tide, read from `walled_travel.csv`, which rule 12d no longer reads (that file stays a rule 11 output for `analysis/travel_time.py`).
+- **`sfincs.boundary_setup.travel_wave_ramp_hr: 6`**: the rise time against which rule 12d picks each node's wave speed; it was rule 11's calibration `ramp_hr` (same value), so retuning the calibration no longer moves the lag.
+- `analysis/lag_plateau.py` and `lag_cooccurrence.py` read the lag of the scenario they analyse.
+
+**Why:** the river wave slows over the drowned lower reach when the sea is higher, so the lag and the river tail depend on the scenario's surge and SLR.
+
+**Effect (rule 12d's script on the existing inputs; nothing rerun):**
+
+| scenario | sea at the mouth (m) Ebro / Chao Phraya | river travel (h) | lag (h) |
+|---|---|---|---|
+| before, every scenario | 0.40 / 3.42 | 15.8 / 58.9 | −15.6 / −58.7 |
+| `river_100_0SLR` | −0.05 / 1.20 | 15.1 / 53.1 | −14.9 / −52.8 |
+| `compound_100_0SLR` | 0.42 / 3.51 | 15.8 / 59.1 | −15.7 / −58.9 |
+| `river_100_03SLR` | 0.29 / 1.88 | 15.6 / 54.8 | −15.5 / −54.6 |
+| `compound_100_03SLR`, `coast_100_03SLR` | 0.76 / 4.20 | 16.3 / 61.0 | −16.2 / −60.8 |
+
+The Chao Phraya rows use its earlier `results/` network (its `results_plan` copy awaits the rule 11 rerun).
+
+**Reruns:** rule `event_timing` and the builds and event runs of every scenario.
+
 # 2026-11-08: audit fixes: default scenarios, rerun triggers, untracked inputs, docs (- JS)
 
 > **⚠ KIARA, PLEASE REVIEW: default scenarios and levee measures.**

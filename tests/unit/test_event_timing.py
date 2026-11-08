@@ -1,7 +1,9 @@
 """Tests for the peak travel times and the river tail of src.event_timing."""
 
 import numpy as np
-from src.event_timing import G_MS2, falling_limb_hr, sea_travel_hr
+import pytest
+import xarray as xr
+from src.event_timing import G_MS2, falling_limb_hr, scenario_sea_level_m, sea_travel_hr
 
 
 def test_falling_limb_ends_at_the_first_hour_below_bankfull():
@@ -38,3 +40,23 @@ def test_sea_travel_snaps_a_dry_mouth_to_the_nearest_wet_cell():
     mask[:, 0] = 2
     hours, _ = sea_travel_hr(bed, mask, 0.0, (1, 19), 100.0)
     assert np.isfinite(hours) and hours > 0
+
+
+def _surge_ds():
+    return xr.Dataset(
+        {
+            "station_calm_sea_level_m": ("station", [0.1, 0.3]),
+            "slr_fingerprint": ("station", [1.0, 1.2]),
+            "storm_tide_rp_table": (("station", "rp"), [[1.0, 2.0], [1.4, 2.2]]),
+        },
+        coords={"rp_yr": ("rp", [10.0, 100.0])},
+    )
+
+
+def test_surge_scenario_sea_is_the_storm_tide_peak_and_others_the_calm_sea():
+    ds = _surge_ds()
+    calm = scenario_sea_level_m(ds, "Tide", 0.5)
+    assert calm == pytest.approx(np.mean([0.1 + 0.5, 0.3 + 0.6]))
+    storm = scenario_sea_level_m(ds, 100, 0.5)
+    assert storm == pytest.approx(np.mean([2.0 + 0.6, 2.2 + 0.9]))
+    assert scenario_sea_level_m(ds, None, 0.0) < storm

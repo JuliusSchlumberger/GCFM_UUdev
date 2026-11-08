@@ -296,6 +296,9 @@ sfincs:
     river_fall_max_hr: 100  # river events run until the main inflow falls below bankfull, at most this long after
                             # its peak, plus the river travel time to the main mouth (rule event_timing); runs end no
                             # earlier than the surge window; the average tide carries on to the end
+    travel_wave_ramp_hr: 6.0  # rule event_timing: the rise time T against which each node's friction rate r decides
+                              # gravity or kinematic flood-wave speed (r T vs wave_regime_rT); 6 h matched the SFINCS
+                              # mouth-discharge plateau in 2433835 and 3279946 (docs/river_depth_gvf.md)
   grid:
     resolution_m: 100            # main-grid cell size dx (m) for every basin. The subgrid pixel is
                                  # dx / subgrid.nr_subgrid_pixels (10 m at the defaults); channels

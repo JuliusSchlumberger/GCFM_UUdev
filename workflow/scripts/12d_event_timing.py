@@ -1,12 +1,14 @@
-"""Write the river and surge peak travel times to the main mouth and the compound lag; run by rule event_timing.
+"""Write a scenario's river and surge peak travel times to the main mouth and the compound lag; run by rule event_timing.
 
-River: walled travel time (src.river_profile.walled_travel_time) at the routed
-bankfull discharge from the main inflow (largest bankfull discharge) along its
-mainstem, with the sea at rule 11's calibration storm tide. It matched the
-SFINCS mouth-discharge plateau on 2433835 and 3279946 (docs/river_depth_gvf.md).
-Surge: sqrt(g h) from the water-level boundary to that mainstem's mouth.
-lag_hr = surge - river travel: the river peak forced that much before the
-surge peak reaches the mouth with it.
+The sea at the mouth is the scenario's: the mean over the surge stations of the
+storm-tide peak level at its surge_rp_yr, else of the calm level, both with its
+slr_m x fingerprint. River: walled travel time (src.river_profile.walled_travel_time)
+at the routed bankfull discharge from the main inflow (largest bankfull
+discharge) along its mainstem, to that sea level; it matched the SFINCS
+mouth-discharge plateau on 2433835 and 3279946 (docs/river_depth_gvf.md).
+Surge: sqrt(g h) from the water-level boundary to that mainstem's mouth at the
+same sea level. lag_hr = surge - river travel: the river peak forced that much
+before the surge peak reaches the mouth with it.
 """
 
 from pathlib import Path
@@ -16,7 +18,7 @@ import numpy as np
 import pandas as pd
 import rasterio
 import xarray as xr
-from src.event_timing import sea_travel_hr
+from src.event_timing import scenario_sea_level_m, sea_travel_hr
 from src.log import setup_logging
 from src.river_network import (
     build_downstream_adjacency,
@@ -49,20 +51,17 @@ prof = mainstem_profile(
     nodes, build_downstream_adjacency(rivers), main_reach, reach_q=q_bankfull
 )
 
-# Rule 11's walled run: its level at the mainstem's last node is the sea level it held.
-walled_path = Path(snakemake.input.walled_travel)
-walled = pd.read_csv(walled_path, dtype={"crossing_reach_id": str})
-walled = walled[walled["crossing_reach_id"].map(normalize_reach_id) == main_reach]
-if walled.empty:
-    raise RuntimeError(f"{basin_id}: {walled_path.name} has no rows for main inflow reach {main_reach}")
-sea_level_m = float(walled["level_m"].iloc[-1])
+surge_rp_yr = snakemake.params.surge_rp_yr
+slr_m = float(snakemake.params.slr_m)
+with xr.open_dataset(snakemake.input.surge_forcing, decode_times=False) as sds:
+    sea_level_m = scenario_sea_level_m(sds, surge_rp_yr, slr_m)
 
 river = walled_travel_time(
     prof,
     prof["reach_id"].map(q_bankfull).to_numpy(float),
     sea_level_m,
     float(snakemake.params.channel_manning_n),
-    forcing_hr=float(snakemake.params.ramp_hr),
+    forcing_hr=float(snakemake.params.wave_ramp_hr),
     froude_cap=float(snakemake.params.froude_cap),
     regime_rT=tuple(snakemake.params.wave_regime_rT),
 )
@@ -84,6 +83,9 @@ out = pd.DataFrame(
     [
         {
             "basin_id": basin_id,
+            "scenario": snakemake.params.scenario,
+            "surge_rp_yr": surge_rp_yr,
+            "slr_m": slr_m,
             "main_reach_id": main_reach,
             "river_path_km": float(prof["dist_from_mouth_m"].iloc[0]) / 1e3,
             "q_bankfull_main_m3s": float(bankfull[main]),
@@ -98,7 +100,7 @@ out = pd.DataFrame(
 Path(snakemake.output.event_timing).parent.mkdir(parents=True, exist_ok=True)
 out.to_csv(snakemake.output.event_timing, index=False)
 log.info(
-    f"Event timing: river peak {river_travel_hr:.1f} h over {out['river_path_km'].iloc[0]:.1f} km "
+    f"Event timing ({snakemake.params.scenario}, sea {sea_level_m:+.2f} m): river peak {river_travel_hr:.1f} h over {out['river_path_km'].iloc[0]:.1f} km "
     f"(bankfull {bankfull[main]:.0f} m3/s), surge peak {surge_travel_hr:.2f} h over {sea_path_km:.1f} km; "
     f"compound lag {out['lag_hr'].iloc[0]:+.1f} h"
 )

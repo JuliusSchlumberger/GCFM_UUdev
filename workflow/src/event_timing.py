@@ -115,3 +115,18 @@ def falling_limb_hr(
     after = (t_hr > peak_hr) & (t_hr <= peak_hr + max_hr)
     below = np.flatnonzero(after & (q_m3s < q_bankfull_m3s))
     return float(t_hr[below[0]] - peak_hr) if below.size else float(max_hr)
+
+
+def scenario_sea_level_m(surge_ds, surge_rp_yr, slr_m: float) -> float:
+    """Return a scenario's sea level at the mouth for the travel times (m), mean over the stations.
+
+    The storm-tide peak level at a numeric surge_rp_yr, else the calm level;
+    both with slr_m x fingerprint (src.surge).
+    """
+    from src.surge import calm_sea_levels, lookup_storm_tide_at_rp
+
+    if surge_rp_yr is not None and not isinstance(surge_rp_yr, str):
+        return float(
+            np.mean(lookup_storm_tide_at_rp(surge_ds, float(surge_rp_yr), slr_m=slr_m))
+        )
+    return float(np.mean(calm_sea_levels(surge_ds, slr_m)))

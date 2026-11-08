@@ -610,16 +610,22 @@ From the restart the boundary blends from the spin-up's calm level into the
 event with a half-cosine weight over `hydrograph.ramp_hr`. In `river_only` the
 sea boundary is flat at `-(gebco_max_depth_m + 0.5)` m.
 
-**Peak travel times (rule `event_timing`).** Per basin, from the main inflow
-(largest bankfull discharge) to the mouth of its mainstem:
+**Peak travel times (rule `event_timing`).** Per scenario
+(`runs/{scenario}/event_timing.csv`), from the main inflow (largest bankfull
+discharge) to the mouth of its mainstem, with the scenario's sea at the mouth:
+the mean over the surge stations of the storm-tide peak level at its
+`surge_rp_yr`, else of the calm level, both plus its `slr_m` × fingerprint
+(`src.event_timing.scenario_sea_level_m`):
 - river: the walled travel time (`src.river_profile.walled_travel_time`) at
-  the routed bankfull discharge, with the sea at rule 11's calibration storm
-  tide. Above bankfull the extra flow spills onto the floodplain and the peak
-  travels at the bankfull channel speed; the estimate matched the SFINCS
-  mouth-discharge plateau on the Ebro and Chao Phraya
-  (`docs/river_depth_gvf.md`);
+  the routed bankfull discharge, the wave speed per node chosen against the
+  rise time `travel_wave_ramp_hr` (6 h). Above bankfull the extra flow spills
+  onto the floodplain and the peak travels at the bankfull channel speed; the
+  estimate matched the SFINCS mouth-discharge plateau on the Ebro and Chao
+  Phraya (`docs/river_depth_gvf.md`). A higher sea slows the wave over the
+  drowned lower reach: Ebro 15.1 h (sea −0.05 m) to 16.3 h (0.76 m), Chao
+  Phraya 53.1 h (1.20 m) to 61.0 h (4.20 m);
 - surge: `sqrt(g h)` along the fastest wet path from the water-level boundary
-  to that mouth.
+  to that mouth, at the same sea level.
 
 **Event timeline (rule 14).** The event starts at the restart. With a surge and
 a river return period, the river peaks `compound.lag_hr` after the surge peak
