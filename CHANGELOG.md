@@ -14,7 +14,7 @@ the pipeline works; this file only describes *what changed and why*.
 
 **What changed:**
 - **`sfincs.alpha`** is the candidate list `[0.5, 0.35, 0.25]` (was 0.25). Rule 11's calibration round 1 runs with each in turn and keeps the first stable one; rule 12a writes it into the skeleton, so spin-up, event and adaptation runs use it. Every attempt is logged and written to `diagnostics/{basin_id}_alpha_check.csv`; no stable candidate fails rule 11.
-- **Instability test** (`alpha_reversal_max_m: 1.0`, `src.sfincs_run.level_reversal_m`): a river-network cell's hourly level step undone in the next hour by more than 1 m, or a non-zero SFINCS exit (`SfincsExitError`). Floodplain cells off the network are not looked at.
+- **Instability test** (`alpha_reversal_max_m: 1.0`, `src.sfincs_run.level_reversal_m`): a river-network cell's hourly level step undone in the next hour by more than 1 m, or a level turning non-finite. Floodplain cells off the network are not looked at. A failed SFINCS run (non-zero exit, e.g. a write error) stops rule 11 with that error instead of counting as unstable.
 - **Event runs** (`15_run_event.py`, also `adapt_run_event_pre`) run the same test on the cells along the clean river network and fail above the threshold.
 
 **Why:** 0.25 was set for every basin because the Ebro river event went unstable at 0.5; basins stable at 0.5 run about twice as fast.

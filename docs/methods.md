@@ -394,9 +394,10 @@ last `window_hr`.
 
 **Time-step factor (alpha check).** Round 1 runs with each `sfincs.alpha`
 candidate in turn (0.5, 0.35, 0.25) and keeps the first one whose run is
-stable. Unstable means SFINCS fails, or a river-centreline cell's hourly level
-step is undone in the next hour by more than `alpha_reversal_max_m` (1 m;
-`src.sfincs_run.level_reversal_m`). A steady rise, such as the flood front
+stable. Unstable means a river-centreline cell's hourly level step is undone in
+the next hour by more than `alpha_reversal_max_m` (1 m;
+`src.sfincs_run.level_reversal_m`), or its level turns non-finite; a failed
+SFINCS run stops the rule with its error. A steady rise, such as the flood front
 filling the channel (up to 1.3 m/h on 3279946), counts 0, and flooding outside
 the river network is not looked at. Stable runs swing at most 0.17 m; the Ebro
 at 0.5 swings 2.7-2.9 m at about 200 cells. The steady calibration discharge is

@@ -426,11 +426,7 @@ def run_sfincs_subprocess(
     t_err.join()
 
     if proc.returncode != 0:
-        raise SfincsExitError(f"{label} failed with exit code {proc.returncode}")
-
-
-class SfincsExitError(RuntimeError):
-    """SFINCS ended with a non-zero exit code."""
+        raise RuntimeError(f"{label} failed with exit code {proc.returncode}")
 
 
 def level_reversal_m(zs: np.ndarray) -> np.ndarray:

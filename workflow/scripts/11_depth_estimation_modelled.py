@@ -139,7 +139,6 @@ from src.river_network import (
     outflow_crossing_mask,
 )
 from src.sfincs_run import (
-    SfincsExitError,
     create_active_mask,
     level_reversal_m,
     place_discharge_points,
@@ -1380,18 +1379,11 @@ def _clear_run_outputs(run_dir: Path) -> None:
 alpha_rows = []
 for alpha in alpha_candidates:
     sf.config.set("alpha", alpha)
-    try:
-        period_max_zs_1, final_zs, final_times_s = _run_calibration_round(
-            round_label, round_root
-        )
-    except SfincsExitError as err:
-        alpha_rows.append(
-            {"alpha": alpha, "max_reversal_m": np.inf, "cells_over": -1, "reach_id": "",
-             "along_m": np.nan, "sfincs_failed": True, "stable": False}
-        )
-        log.warning(f"[{round_label}] alpha {alpha:g}: {err} -- unstable")
-        _clear_run_outputs(round_root)
-        continue
+    # A failed SFINCS run raises: instability shows in the levels SFINCS
+    # writes (swings, non-finite values), a failed run is a different problem.
+    period_max_zs_1, final_zs, final_times_s = _run_calibration_round(
+        round_label, round_root
+    )
     reversal = level_reversal_m(final_zs)
     worst = int(np.argmax(np.nan_to_num(reversal, nan=-1.0)))
     stable = bool(reversal[worst] <= alpha_reversal_max_m)
@@ -1402,7 +1394,6 @@ for alpha in alpha_candidates:
             "cells_over": int((reversal > alpha_reversal_max_m).sum()),
             "reach_id": str(cell_gdf["reach_id"].iloc[worst]),
             "along_m": float(cell_gdf["along_m"].iloc[worst]),
-            "sfincs_failed": False,
             "stable": stable,
         }
     )
