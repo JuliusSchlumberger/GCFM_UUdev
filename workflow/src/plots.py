@@ -1686,6 +1686,84 @@ def plot_water_level_timeseries(
     save_figure(fig, output_path, dpi=150, bbox_inches="tight")
 
 
+def plot_observation_levels(
+    t_hr: np.ndarray,
+    zs: np.ndarray,
+    points: pd.DataFrame,
+    output_path: str,
+    markers_hr: list[tuple[float, str]] | None = None,
+) -> None:
+    """Plot the water level at every observation point, river and sea in two panels.
+
+    zs is (n_time, n_points) in the row order of ``points`` (rule 12a's
+    {basin}_obs_points.gpkg: kind, dist_from_mouth_m). Panel (a): inflow, river
+    and mouth points; (b): sea points from the mouths to the water-level
+    boundary. Each line is coloured by its distance from the mouth; no legend.
+    markers_hr: (time, description) of dashed vertical lines, described in the
+    caption. Writes <figure>.txt alongside.
+    """
+    if zs.shape[1] != len(points):
+        raise ValueError(
+            f"plot_observation_levels: {zs.shape[1]} series but {len(points)} observation points"
+        )
+    kind = points["kind"].to_numpy()
+    dist_km = points["dist_from_mouth_m"].to_numpy(float) / 1e3
+    panels = [
+        (
+            np.isin(kind, ["inflow", "river", "mouth"]),
+            "Distance upstream of the mouth (km)",
+            "viridis",
+        ),
+        (kind == "sea", "Distance seaward of the mouth (km)", "cividis"),
+    ]
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    for k, (ax, (sel, cb_label, cmap_name)) in enumerate(zip(axes, panels)):
+        cmap = plt.get_cmap(cmap_name)
+        # A colour bar on both panels, so they keep the same width.
+        norm = mcolors.Normalize(
+            vmin=0.0, vmax=max(float(dist_km[sel].max()), 1e-6) if sel.any() else 1.0
+        )
+        for i in np.flatnonzero(sel):
+            ax.plot(t_hr, zs[:, i], color=cmap(norm(dist_km[i])), lw=0.7, alpha=0.8)
+        if not sel.any():
+            ax.text(
+                0.5, 0.5, "no observation points", transform=ax.transAxes, ha="center"
+            )
+        fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, label=cb_label)
+        for t, _ in markers_hr or []:
+            ax.axvline(t, color="red", linestyle="--", linewidth=1.0)
+        ax.set_ylabel("Water level (m)")
+        ax.grid(True, alpha=0.3, linewidth=0.5)
+        ax.text(
+            0.0,
+            1.01,
+            f"({chr(ord('a') + k)})",
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=11,
+            fontweight="bold",
+        )
+    axes[-1].set_xlabel("Time since tref (h)")
+    save_figure(fig, output_path, dpi=150, bbox_inches="tight")
+    n_r, n_s = int(panels[0][0].sum()), int(panels[1][0].sum())
+    caption = (
+        f"Water level at the observation points of one SFINCS run. (a) {n_r} river points: every "
+        "active inflow, then one per observation_points.spacing_m along every reach downstream of "
+        "them, and the points at and above each river mouth; colour = distance upstream of the "
+        f"mouth (km, viridis). (b) {n_s} sea points along each mouth's fastest wet path to the "
+        "water-level boundary; colour = distance seaward of the mouth (km, cividis). Lines are not "
+        "labelled individually."
+    )
+    if markers_hr:
+        caption += (
+            " Red dashed lines: "
+            + "; ".join(f"{d} ({t:g} h)" for t, d in markers_hr)
+            + "."
+        )
+    Path(output_path).with_suffix(".txt").write_text(caption + "\n", encoding="utf-8")
+
+
 def plot_crest_gap_map(
     crest_on_grid: np.ndarray,
     grid_transform,

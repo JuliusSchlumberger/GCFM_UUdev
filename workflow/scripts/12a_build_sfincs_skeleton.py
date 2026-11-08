@@ -27,7 +27,7 @@ import pandas as pd
 import xarray as xr
 import yaml
 from rasterio.transform import Affine
-from shapely.geometry import Point, Polygon
+from shapely.geometry import Polygon
 from hydromt_sfincs import SfincsModel
 
 from src.grid import create_model_grid, load_grid_def
@@ -49,7 +49,17 @@ from src.plots import add_land_background_to_geoaxes, imshow_on_grid, save_figur
 from src.protection_weir import GridArrays
 from src.raster import FLOAT_NODATA, dry_isolated_sea_cells, read_on_grid
 from src.river_burn import build_channel_mask_regular
-from src.river_network import normalize_reach_id
+from src.observation_points import (
+    downstream_reaches,
+    nearest_node_distance,
+    river_points,
+    sea_points,
+)
+from src.river_network import (
+    build_downstream_adjacency,
+    normalize_reach_id,
+    outflow_crossing_mask,
+)
 from src.surge import read_calm_sea_level_m
 from src.river_depth_calibration import mouth_sections
 from src.water_surface import read_water_surface, river_cells_at_surface
@@ -104,9 +114,8 @@ alpha = selected_alpha(snakemake.input.alpha_check)
 active_mask_enabled = snakemake.params.active_mask_enabled
 active_mask_elevation_buffer_m = float(snakemake.params.active_mask_elevation_buffer_m)
 outflow_buffer_m = snakemake.params.outflow_buffer_m
-n_top_crossings = snakemake.params.n_top_crossings
-n_per_crossing = snakemake.params.n_per_crossing
-max_downstream_hops = snakemake.params.max_downstream_hops
+obs_spacing_m = float(snakemake.params.obs_spacing_m)
+max_downstream_hops = int(snakemake.params.max_downstream_hops)
 mouth_upstream_m = float(snakemake.params.mouth_upstream_m)
 mouth_section_margin_m = float(snakemake.params.mouth_section_margin_m)
 
@@ -445,121 +454,82 @@ def _create_subgrid() -> None:
 
 
 # ── 8. Observation points ──
-# N_OBS_PER_CROSSING evenly spaced points along the downstream path (up to
-# max_downstream_hops reaches) of the N_TOP_CROSSINGS crossings with the
-# highest bankfull discharge; independent of any design RP.
-import re as _re
-
+# A point at every active inflow, one per obs_spacing_m along every reach
+# downstream of them (on rule 11's river-bed nodes), at and 1 km above every
+# river mouth (with a cross-section), and one per obs_spacing_m along each
+# mouth's fastest wet path to the water-level boundary (src.observation_points);
+# independent of any design RP. The table is written next to the skeleton, in
+# sfincs.obs order.
 river_ds = xr.open_dataset(river_forcing_path, decode_times=False)
-active = river_ds.has_glofas.values.astype(bool)
-n_active = int(active.sum())
-log.info(
-    f"River forcing: {n_active}/{len(active)} crossings with valid GloFAS data (for observation points)"
-)
+active = river_ds.has_glofas.values.astype(bool) & ~outflow_crossing_mask(river_ds, rivers)
+bed_nodes = pd.read_csv(snakemake.input.river_bed_nodes)
+seeds = [normalize_reach_id(r) for r in river_ds["inside_reach_id"].values[active]]
+reaches = downstream_reaches(build_downstream_adjacency(rivers), seeds, max_downstream_hops)
 
-N_OBS_PER_CROSSING = n_per_crossing
-N_TOP_CROSSINGS = n_top_crossings
-
-
-obs_points_list = []
-
-if n_active >= 1 and not rivers.empty:
-    bankfull_vals = river_ds.bankfull_discharge_m3s.values.copy()
-    bankfull_vals[~active] = -np.inf
-    src_lons_all = river_ds.longitude.values
-    src_lats_all = river_ds.latitude.values
-
-    top_indices = np.argsort(bankfull_vals)[::-1][:N_TOP_CROSSINGS]
-    top_indices = [i for i in top_indices if bankfull_vals[i] > 0]
-
-    centroids_utm = rivers_utm.geometry.centroid
-    reach_lookup = {
-        normalize_reach_id(r["reach_id"]): r
-        for _, r in rivers_utm.iterrows()
-        if normalize_reach_id(r.get("reach_id"))
-    }
-
-    obs_id = 1
-    for rank, ci in enumerate(top_indices):
-        src_pt = (
-            gpd.GeoDataFrame(
-                geometry=gpd.points_from_xy([src_lons_all[ci]], [src_lats_all[ci]]),
-                crs="EPSG:4326",
-            )
-            .to_crs(sf.crs)
-            .geometry.iloc[0]
-        )
-
-        nearest_reach_id = normalize_reach_id(
-            rivers_utm.iloc[centroids_utm.distance(src_pt).idxmin()]["reach_id"]
-        )
-
-        dn_rows, current, visited = [], nearest_reach_id, set()
-        for _ in range(max_downstream_hops):
-            if not current or current in visited or current not in reach_lookup:
-                break
-            visited.add(current)
-            row = reach_lookup[current]
-            dn_rows.append(row)
-            dn_raw = str(row.get("rch_id_dn", "") or "").strip().strip("[]")
-            if not dn_raw or dn_raw.lower() in ("nan", "none", "<na>"):
-                break
-            nxt = next(
-                (
-                    normalize_reach_id(t.strip())
-                    for t in _re.split(r"[,\s]+", dn_raw)
-                    if normalize_reach_id(t.strip())
-                ),
-                None,
-            )
-            if not nxt:
-                break
-            current = nxt
-
-        if not dn_rows:
-            log.warning(f"Crossing rank {rank + 1}: no downstream reaches — skipping")
-            continue
-
-        dn_line = gpd.GeoDataFrame(dn_rows, crs=sf.crs).geometry.union_all()
-        total_len = dn_line.length
-        for i in range(N_OBS_PER_CROSSING):
-            dist = (i + 0.5) * total_len / N_OBS_PER_CROSSING
-            obs_points_list.append(
-                {"obs_id": obs_id, "geometry": dn_line.interpolate(dist)}
-            )
-            obs_id += 1
-
-        log.info(
-            f"Crossing rank {rank + 1} (Q={bankfull_vals[ci]:.0f} m³/s): "
-            f"{N_OBS_PER_CROSSING} obs points along {len(dn_rows)} downstream reaches"
-        )
-
-# One obs point and one cross-section at every river mouth (rule 10's mouth
-# nodes, mouth_upstream_m up their reach): level and discharge where river and
-# surge peaks meet (analysis/peak_lag.py).
-surface_nodes, _ = read_water_surface(snakemake.input.water_surface)
-mouths = mouth_sections(
-    surface_nodes.to_crs(sf.crs), mouth_upstream_m, mouth_section_margin_m
-)
-mouths["obs_index"] = range(len(obs_points_list), len(obs_points_list) + len(mouths))
-for _, m in mouths.iterrows():
-    obs_points_list.append(
-        {"obs_id": len(obs_points_list) + 1, "geometry": Point(m["x"], m["y"])}
+inflow_xy = (
+    gpd.GeoSeries(
+        gpd.points_from_xy(river_ds.longitude.values[active], river_ds.latitude.values[active]),
+        crs="EPSG:4326",
     )
+    .to_crs(sf.crs)
+)
+inflows = pd.DataFrame(
+    {
+        "kind": "inflow",
+        "reach_id": seeds,
+        "x": inflow_xy.x.to_numpy(),
+        "y": inflow_xy.y.to_numpy(),
+        "dist_from_mouth_m": [nearest_node_distance(bed_nodes, p.x, p.y) for p in inflow_xy],
+    }
+)
+
+# Mouth points and cross-sections: level and discharge where river and surge
+# peaks meet (analysis/peak_lag.py, by obs_index).
+surface_nodes, _ = read_water_surface(snakemake.input.water_surface)
+surface_nodes = surface_nodes.to_crs(sf.crs)
+mouths = mouth_sections(surface_nodes, mouth_upstream_m, mouth_section_margin_m)
+mouth_nodes = surface_nodes[surface_nodes["is_mouth"].astype(bool)]
+mouth_points = pd.DataFrame(
+    {
+        "kind": "mouth",
+        "reach_id": list(mouths["reach_id"].map(str)) + list(mouth_nodes["reach_id"].map(str)),
+        "x": list(mouths["x"]) + list(mouth_nodes.geometry.x),
+        "y": list(mouths["y"]) + list(mouth_nodes.geometry.y),
+        "dist_from_mouth_m": [mouth_upstream_m] * len(mouths) + [0.0] * len(mouth_nodes),
+    }
+)
+
+sea = sea_points(
+    sf.grid.data["dep"].values.astype(float),
+    sf.grid.data["mask"].values,
+    sf.grid.data["dep"].raster.transform,
+    calm_sea_level_m,
+    [(str(m["reach_id"]), m.geometry.x, m.geometry.y) for _, m in mouth_nodes.iterrows()],
+    obs_spacing_m,
+)
+obs_table = pd.concat(
+    [inflows, river_points(bed_nodes, reaches, obs_spacing_m), mouth_points, sea],
+    ignore_index=True,
+)
+# The mouth cross-section points are the first len(mouths) "mouth" rows.
+mouths["obs_index"] = np.flatnonzero(obs_table["kind"].to_numpy() == "mouth")[: len(mouths)]
+obs_gdf = gpd.GeoDataFrame(
+    obs_table.assign(obs_id=np.arange(1, len(obs_table) + 1)),
+    geometry=gpd.points_from_xy(obs_table["x"], obs_table["y"]),
+    crs=sf.crs,
+)
+obs_gdf.to_file(snakemake.output.obs_points, driver="GPKG")
 if len(mouths):
     sf.cross_sections.set(mouths[["name", "geometry"]], merge=False)
 mouths.to_file(snakemake.output.mouths, driver="GPKG")
 log.info(
-    f"River mouths: {len(mouths)} obs point(s) and cross-section(s) "
-    f"{mouth_upstream_m:g} m upstream of rule 10's mouth nodes"
+    f"Observation points every {obs_spacing_m:g} m: "
+    f"{obs_table['kind'].value_counts().to_dict()} over {len(reaches)} reach(es) downstream of "
+    f"{len(seeds)} inflow(s); {len(mouths)} mouth cross-section(s) {mouth_upstream_m:g} m upstream"
 )
-
-if obs_points_list:
-    obs_gdf = gpd.GeoDataFrame(obs_points_list, crs=sf.crs)
-    sf.observation_points.create(locations=obs_gdf, merge=False)
-    log.info(f"Observation points: {len(obs_points_list)} total")
-else:
-    log.warning("No observation points placed")
+if obs_gdf.empty:
+    raise RuntimeError("No observation points placed: no active inflow, river-bed node or mouth")
+sf.observation_points.create(locations=obs_gdf[["obs_id", "geometry"]], merge=False)
 
 # ── write ──
 # No forcing component was created, so sf.write() writes none.

@@ -18,6 +18,8 @@ rule run_event:
         clean_river_network  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
         # The spin-up's swing check, carried into this run's stability.csv.
         spinup_stability     = spinup_stability_input,
+        # sfincs.obs order: kind and distance from the mouth of every series.
+        obs_points           = results_path("{basin_id}/sfincs_skeleton/{basin_id}_obs_points.gpkg"),
     output:
         sfincs_map_nc              = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"),
         # River-network swing check (src.sfincs_run.river_network_stability).
@@ -27,6 +29,8 @@ rule run_event:
         **({
             "animation_flood_progress": figure_path("50_run_flood_progression__{scenario}.mp4"),
             "flood_timeseries_csv": results_path("{basin_id}/runs/{scenario}/visuals/flood_timeseries.csv"),
+            "plot_water_level": figure_path("52_run_water_level__{scenario}.png"),
+            "caption_water_level": figure_path("52_run_water_level__{scenario}.txt"),
         } if ANALYSIS else {}),
     params:
         sfincs_root                = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),

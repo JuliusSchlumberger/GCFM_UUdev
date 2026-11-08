@@ -11,15 +11,13 @@ from pathlib import Path
 from typing import cast
 
 import geopandas as gpd
-import numpy as np
 import pandas as pd
-import xarray as xr
 from shapely.geometry import Polygon
 from src.log import setup_logging
 from src.plots import (
     animate_flood_progression,
     plot_inundation_check,
-    plot_water_level_timeseries,
+    plot_observation_levels,
 )
 from src.postprocessing import (
     compute_flood_progression,
@@ -27,6 +25,7 @@ from src.postprocessing import (
     inundation_stats,
     read_land_bed_level,
 )
+from src.sfincs_run import read_observation_levels
 
 log = setup_logging(snakemake.log[0])
 inp, out, params = snakemake.input, snakemake.output, snakemake.params
@@ -84,32 +83,13 @@ if hasattr(out, "animation_flood_progress"):
     )
 
 if hasattr(out, "plot_water_level"):
-    try:
-        ds = xr.open_dataset(inp.sfincs_his)
-    except ValueError:
-        # Time units SFINCS wrote that xarray cannot decode: use raw seconds.
-        ds = xr.open_dataset(inp.sfincs_his, decode_times=False)
-    t = ds["time"].values
-    if np.issubdtype(t.dtype, np.datetime64):
-        t_days = (t - t[0]) / np.timedelta64(1, "D")
-    else:
-        t_days = np.asarray(t, dtype=float) / 86400.0
-    zs_var = next((v for v in ("point_zs", "zs") if v in ds), None)
-    if zs_var is None:
-        raise KeyError(
-            f"No water-level variable (point_zs, zs) in {inp.sfincs_his}; available: {list(ds.data_vars)}"
-        )
-    zs = ds[zs_var].values
-    zs = zs[:, np.newaxis] if zs.ndim == 1 else zs
-    zs = zs.T if zs.shape[0] != len(t_days) else zs
-    spinup_days = float(pd.read_csv(inp.stability)["spinup_hr"].iloc[0]) / 24.0
-    plot_water_level_timeseries(
-        t_days,
+    t_hr, zs = read_observation_levels(Path(inp.sfincs_his).parent)
+    spinup_hr = float(pd.read_csv(inp.stability)["spinup_hr"].iloc[0])
+    plot_observation_levels(
+        t_hr,
         zs,
+        gpd.read_file(inp.obs_points),
         str(out.plot_water_level),
-        day_markers=[(spinup_days, f"Day {spinup_days} (restart written)")],
-        basin_id=f"Basin {basin_id}",
-        run_label=f"Spin-up validation | lines should be near-flat at day {spinup_days} if spin-up is sufficient",
-        ylabel=f"Water level — {zs_var} (m)",
+        markers_hr=[(spinup_hr, "end of the spin-up, restart written; lines should be flat before it")],
     )
 log.info("Done")

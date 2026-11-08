@@ -171,7 +171,17 @@ adaptation.
 basin: grid, elevation, masks, weir, roughness, subgrid table, observation
 points and the default initial water level. Nothing is reprojected here: every
 input is already on the model grid. Not runnable on its own (no forcing, no
-times).
+times). Observation points (`src.observation_points`): one at every active
+inflow, one per `observation_points.spacing_m` (1 km) along every reach
+downstream of them through every bifurcation arm (on rule 11's 500 m river-bed
+nodes), one at each river mouth and one `mouth_upstream_m` above it (with a
+cross-section, for the peak lag), and one per `spacing_m` along each mouth's
+fastest wet path to the water-level boundary (the path rule 12d times the surge
+on), ending on the boundary. `{basin}_obs_points.gpkg` lists them in
+`sfincs.obs` order with their kind (inflow, river, mouth, sea), reach and
+distance from the mouth; the water-level figures of the spin-up (13b) and of
+each event run (rule 15, with `analysis`) draw the river and the sea points in
+two panels, coloured by that distance.
 
 **12b `land_bed_level`.** Once per basin: the skeleton's subgrid bed level on
 the grid flood depths are computed on, masked to NaN on open sea (the corrected

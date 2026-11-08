@@ -327,9 +327,10 @@ sfincs:
     nr_levels: 20                 # water-level bins for subgrid tables; memory scales linearly with this (default: 20)
     nrmax: 2000                  # tile size for subgrid computation (default 2000)
   observation_points:
-    n_top_crossings: 2           # number of highest-Q boundary crossings to trace downstream
-    n_per_crossing: 5            # observation points placed per crossing
-    max_downstream_hops: 200     # river-network traversal limit per crossing
+    spacing_m: 1000              # a point at every active inflow, then one per spacing_m along every reach downstream
+                                 # of them (on rule 11's 500 m river-bed nodes) and along each mouth's fastest wet path
+                                 # to the water-level boundary (src.observation_points); table in {basin}_obs_points.gpkg
+    max_downstream_hops: 200     # river-network traversal limit downstream of the inflows
     mouth_upstream_m: 1000       # an obs point and a cross-section (crsfile) at every river mouth (rule 10's
                                  # is_mouth nodes), this far upstream of it along its reach, for the peak lag
     mouth_section_margin_m: 150  # cross-section length beyond each bank (m)

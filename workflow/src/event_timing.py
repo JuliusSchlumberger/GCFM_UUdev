@@ -18,6 +18,29 @@ def gravity_wave_travel(
     dx_m: float,
 ) -> tuple[float, float]:
     """Return (hours, km) of the fastest wet 4-neighbour path from start to any target cell, at sqrt(g h)."""
+    hours, path = _fastest_wet_path(depth_m, wet, start, targets, dx_m)
+    if path is None:
+        return np.nan, np.nan
+    return hours, (len(path) - 1) * dx_m / 1e3
+
+
+def sea_path(
+    bed_m: np.ndarray,
+    mask: np.ndarray,
+    sea_level_m: float,
+    mouth_rc: tuple[int, int],
+    dx_m: float,
+) -> np.ndarray:
+    """Return the (row, col) cells of sea_travel_hr's path, from the mouth to the water-level boundary.
+
+    Empty (0, 2) when no wet path reaches the boundary.
+    """
+    depth, wet, mouth_rc = _sea_wet_cells(bed_m, mask, sea_level_m, mouth_rc)
+    _, path = _fastest_wet_path(depth, wet, mouth_rc, mask == 2, dx_m)
+    return np.empty((0, 2), dtype=int) if path is None else np.asarray(path, dtype=int)
+
+
+def _fastest_wet_path(depth_m, wet, start, targets, dx_m):
     idx = -np.ones(wet.shape, dtype=np.int64)
     idx[wet] = np.arange(int(wet.sum()))
     rows, cols, weights = [], [], []
@@ -36,20 +59,33 @@ def gravity_wave_travel(
     n = int(wet.sum())
     graph = coo_matrix((weights, (rows, cols)), shape=(n, n)).tocsr()
     if idx[start] < 0:
-        return np.nan, np.nan
+        return np.nan, None
     t_s, pred = dijkstra(
         graph, directed=False, indices=int(idx[start]), return_predecessors=True
     )
     tgt = idx[targets & wet]
     tgt = tgt[np.isfinite(t_s[tgt])]
     if not tgt.size:
-        return np.nan, np.nan
+        return np.nan, None
     best = int(tgt[np.argmin(t_s[tgt])])
-    steps, node = 0, best
+    rc = np.argwhere(wet)  # row-major, the order of idx
+    nodes, node = [best], best
     while node != idx[start] and node >= 0:
         node = pred[node]
-        steps += 1
-    return float(t_s[best] / 3600.0), steps * dx_m / 1e3
+        nodes.append(node)
+    return float(t_s[best] / 3600.0), [tuple(rc[n]) for n in reversed(nodes)]
+
+
+def _sea_wet_cells(bed_m, mask, sea_level_m, mouth_rc):
+    depth = sea_level_m - bed_m
+    wet = (mask > 0) & np.isfinite(bed_m) & (depth > MIN_SEA_DEPTH_M)
+    if not wet.any():
+        raise ValueError("sea_travel_hr: no wet cell at the sea level")
+    if not wet[mouth_rc]:
+        r, c = np.nonzero(wet)
+        k = int(np.argmin((r - mouth_rc[0]) ** 2 + (c - mouth_rc[1]) ** 2))
+        mouth_rc = (int(r[k]), int(c[k]))
+    return depth, wet, mouth_rc
 
 
 def sea_travel_hr(
@@ -64,14 +100,7 @@ def sea_travel_hr(
     Shallow-water wave speed sqrt(g h) over the bed at ``sea_level_m``. The
     mouth snaps to the nearest wet cell when its own cell is dry.
     """
-    depth = sea_level_m - bed_m
-    wet = (mask > 0) & np.isfinite(bed_m) & (depth > MIN_SEA_DEPTH_M)
-    if not wet.any():
-        raise ValueError("sea_travel_hr: no wet cell at the sea level")
-    if not wet[mouth_rc]:
-        r, c = np.nonzero(wet)
-        k = int(np.argmin((r - mouth_rc[0]) ** 2 + (c - mouth_rc[1]) ** 2))
-        mouth_rc = (int(r[k]), int(c[k]))
+    depth, wet, mouth_rc = _sea_wet_cells(bed_m, mask, sea_level_m, mouth_rc)
     return gravity_wave_travel(depth, wet, mouth_rc, mask == 2, dx_m)
 
 

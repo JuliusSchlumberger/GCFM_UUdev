@@ -3,6 +3,19 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-08: observation points from every inflow to the water-level boundary, 1 km apart (- JS)
+
+**What changed:**
+- **Placement (rule 12a, `src.observation_points`):** a point at every active inflow; one per `observation_points.spacing_m` (1000 m) along every reach downstream of them through every bifurcation arm, on rule 11's river-bed nodes; one at each river mouth and one `mouth_upstream_m` above it (kept, with its cross-section); and one per `spacing_m` along each mouth's fastest wet path to the water-level boundary, ending on it. Replaces `n_top_crossings` (2) x `n_per_crossing` (5) points spread along the two largest inflows' first-arm paths, which had no point at the inflow and none seaward of the mouths.
+- **`{basin}_obs_points.gpkg`** (new skeleton output): every point in `sfincs.obs` order with kind (inflow, river, mouth, sea), reach and distance from the mouth.
+- **Figure:** the spin-up water-level figure (13b) and a new one per event and adaptation `pre` run (`52_run_water_level__<run>.png`, with `analysis`) plot the river points (a) and the sea points (b), each line coloured by its distance from the mouth, no legend, with a `.txt` caption (`src.plots.plot_observation_levels`). `src.event_timing.sea_path` returns the surge path's cells.
+
+**Why:** the observation series should show the water level from each inflow down every branch and across the sea leg to the boundary, at a spacing that resolves how the river and surge peaks travel.
+
+**Effect (Ebro, from the skeleton inputs; nothing rerun):** 6 points before, now 70 river points (0-65.5 km above the mouth), 2 at the mouth and 5 sea points over the 4.9 km to the boundary. No flood result changes; the obs output grows (a few hundred to ~1,500 points per basin).
+
+**Reruns:** rule 12a onward (skeleton, spin-ups, event runs), with the other pending reruns.
+
 # 2026-11-08: one spin-up per sea-level rise, run in chunks until the rivers have settled (- JS)
 
 > **⚠ KIARA, PLEASE REVIEW: adaptation `pre` runs restart from the new spin-ups.**

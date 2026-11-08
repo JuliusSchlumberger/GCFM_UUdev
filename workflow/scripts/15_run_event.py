@@ -24,7 +24,12 @@ import pandas as pd
 from shapely.geometry import Polygon
 
 from src.log import setup_logging
-from src.plots import animate_flood_progression, plot_inundation_check, stamp_unstable
+from src.plots import (
+    animate_flood_progression,
+    plot_inundation_check,
+    plot_observation_levels,
+    stamp_unstable,
+)
 from src.postprocessing import (
     compute_flood_progression,
     compute_flood_timeseries_stats,
@@ -33,6 +38,7 @@ from src.postprocessing import (
     read_land_bed_level,
 )
 from src.sfincs_run import (
+    read_observation_levels,
     spinup_flagged,
     river_network_stability,
     run_sfincs_subprocess,
@@ -142,6 +148,15 @@ if hasattr(snakemake.output, "plot_inundation_ratio"):
     log.info(f"Inundation ratio plot written: {snakemake.output.plot_inundation_ratio}")
     if stability_note(stability):
         stamp_unstable(snakemake.output.plot_inundation_ratio, stability_note(stability))
+
+# ── water level at the observation points (analysis), river and sea panels ──
+if hasattr(snakemake.output, "plot_water_level"):
+    t_hr, zs_obs = read_observation_levels(sfincs_root)
+    plot_observation_levels(
+        t_hr, zs_obs, gpd.read_file(snakemake.input.obs_points), str(snakemake.output.plot_water_level)
+    )
+    if stability_note(stability):
+        stamp_unstable(snakemake.output.plot_water_level, stability_note(stability))
 
 # ── flood progression (analysis): animation + per-timestep area/volume CSV ──
 if hasattr(snakemake.output, "animation_flood_progress"):

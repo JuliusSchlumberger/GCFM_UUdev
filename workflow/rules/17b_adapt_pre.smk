@@ -89,6 +89,7 @@ rule adapt_run_event_pre:
         domain_gpkg         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
         spinup_stability    = spinup_stability_input,
+        obs_points          = results_path("{basin_id}/sfincs_skeleton/{basin_id}_obs_points.gpkg"),
     output:
         sfincs_map_nc            = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),
         stability                = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/stability.csv"),
@@ -97,6 +98,8 @@ rule adapt_run_event_pre:
         **({
             "animation_flood_progress": figure_path("63_adapt_flood_progression__{scenario}__pre_{strategy}.mp4"),
             "flood_timeseries_csv": results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_timeseries.csv"),
+            "plot_water_level": figure_path("52_run_water_level__{scenario}__pre_{strategy}.png"),
+            "caption_water_level": figure_path("52_run_water_level__{scenario}__pre_{strategy}.txt"),
         } if ANALYSIS else {}),
     params:
         sfincs_root   = lambda wildcards: results_path(

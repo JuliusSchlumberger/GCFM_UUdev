@@ -610,6 +610,20 @@ def stability_metrics(path: str | Path) -> dict:
     }
 
 
+def read_observation_levels(run_dir: str | Path) -> tuple[np.ndarray, np.ndarray]:
+    """Return (hours since tref, water level (n_time, n_points)) of a run's sfincs_his.nc."""
+    import xarray as xr
+
+    run_dir = Path(run_dir)
+    tref = pd.to_datetime(
+        parse_sfincs_inp(run_dir / "sfincs.inp")["tref"], format="%Y%m%d %H%M%S"
+    )
+    with xr.open_dataset(run_dir / "sfincs_his.nc") as ds:
+        t_hr = (pd.to_datetime(ds["time"].values) - tref) / pd.Timedelta(hours=1)
+        zs = ds["point_zs"].transpose("time", ...).values
+    return np.asarray(t_hr, dtype=float), zs.reshape(len(t_hr), -1)
+
+
 def selected_alpha(alpha_check_csv: str | Path) -> float:
     """Return the alpha rule 11's calibration round kept (row with selected true)."""
     df = pd.read_csv(alpha_check_csv)

@@ -48,6 +48,9 @@ rule build_sfincs_skeleton:
         # Mouth obs points (index into sfincs.obs) and cross-sections (sfincs.crs)
         # every event run inherits; read by analysis/peak_lag.py.
         mouths         = results_path("{basin_id}/sfincs_skeleton/{basin_id}_mouths.gpkg"),
+        # Every observation point in sfincs.obs order: kind (inflow, river, mouth,
+        # sea), reach_id, dist_from_mouth_m; for the water-level figures.
+        obs_points     = results_path("{basin_id}/sfincs_skeleton/{basin_id}_obs_points.gpkg"),
         sfincs_inp     = results_path("{basin_id}/sfincs_skeleton/sfincs.inp"),
         sfincs_subgrid = results_path("{basin_id}/sfincs_skeleton/sfincs_subgrid.nc"),
         sfincs_weir    = results_path("{basin_id}/sfincs_skeleton/sfincs.weir"),
@@ -70,8 +73,7 @@ rule build_sfincs_skeleton:
         active_mask_enabled        = config["sfincs"]["grid"]["active_mask"]["enabled"],
         active_mask_elevation_buffer_m = config["sfincs"]["grid"]["active_mask"]["elevation_buffer_m"],
         outflow_buffer_m  = config["sfincs"]["boundary_setup"]["outflow_buffer_m"],
-        n_top_crossings    = config["sfincs"]["observation_points"]["n_top_crossings"],
-        n_per_crossing     = config["sfincs"]["observation_points"]["n_per_crossing"],
+        obs_spacing_m      = config["sfincs"]["observation_points"]["spacing_m"],
         max_downstream_hops = config["sfincs"]["observation_points"]["max_downstream_hops"],
         mouth_upstream_m   = config["sfincs"]["observation_points"]["mouth_upstream_m"],
         mouth_section_margin_m = config["sfincs"]["observation_points"]["mouth_section_margin_m"],
