@@ -514,6 +514,50 @@ def river_network_stability(
     }
 
 
+def river_network_steady(
+    run_dir: str | Path,
+    rivers: gpd.GeoDataFrame,
+    window_hr: float,
+    tol_m: float,
+    spacing_m: float = 50.0,
+) -> dict:
+    """Return whether the river-network levels of a finished run have settled at its end.
+
+    Per river-network cell the window_hr mean level at the run's end is
+    compared with the window_hr mean just before it (rule 11's steady_check,
+    in both directions); a change above tol_m in any cell is not steady.
+    Keys: max_level_change_m, cells_changing, steady. The map must span at
+    least 2 x window_hr.
+    """
+    import xarray as xr
+
+    run_dir = Path(run_dir)
+    inp = parse_sfincs_inp(run_dir / "sfincs.inp")
+    rivers = rivers.to_crs(epsg=int(inp["epsg"]))
+    with xr.open_dataset(run_dir / "sfincs_map.nc") as ds:
+        n, m = river_cells_on_map(ds["x"].values, ds["y"].values, rivers, spacing_m)
+        zs = (
+            ds["zs"]
+            .isel(n=xr.DataArray(n, dims="cell"), m=xr.DataArray(m, dims="cell"))
+            .values
+        )
+        t_hr = (ds["time"].values - ds["time"].values[0]) / np.timedelta64(1, "h")
+    end = t_hr[-1]
+    last = t_hr > end - window_hr
+    before = (t_hr > end - 2 * window_hr) & ~last
+    if not before.any():
+        raise ValueError(
+            f"river_network_steady: run of {end:g} h is shorter than 2 x window_hr ({window_hr:g} h)"
+        )
+    change = np.abs(np.nanmean(zs[last], axis=0) - np.nanmean(zs[before], axis=0))
+    cells = int(np.nansum(change > tol_m))
+    return {
+        "max_level_change_m": float(np.nanmax(change)),
+        "cells_changing": cells,
+        "steady": cells == 0,
+    }
+
+
 def stability_note(row: dict) -> str | None:
     """Return the one-line warning stamped on figures of an unstable run, None if stable.
 
@@ -526,8 +570,10 @@ def stability_note(row: dict) -> str | None:
             f"hourly level swing {row['max_swing_m']:.2f} m on the river network "
             f"({row['cells_over']} cells, alpha {row['alpha']:g})"
         )
+    if not row.get("steady", True):
+        notes.append(f"spin-up not steady after {row['spinup_hr']:.0f} h")
     if row.get("spinup_unstable", False):
-        notes.append("spin-up unstable")
+        notes.append("spin-up unstable or not steady")
     return "Check stability: " + " | ".join(notes) if notes else None
 
 
@@ -537,8 +583,16 @@ def read_stability(path: str | Path) -> dict:
     if len(df) != 1:
         raise ValueError(f"{path}: expected one row, found {len(df)}")
     row = df.iloc[0].to_dict()
-    row["unstable"] = bool(row["unstable"])
+    for key in ("unstable", "steady", "spinup_unstable"):
+        if key in row:
+            row[key] = bool(row[key])
     return row
+
+
+def spinup_flagged(spinup_stability_csv: str | Path) -> bool:
+    """Return whether a spin-up is unstable or did not settle (its stability.csv)."""
+    row = read_stability(spinup_stability_csv)
+    return row["unstable"] or not row.get("steady", True)
 
 
 def stability_metrics(path: str | Path) -> dict:

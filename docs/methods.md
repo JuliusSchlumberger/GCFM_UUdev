@@ -180,9 +180,9 @@ metrics and attribution read it, so its non-null pixels are the land domain of
 every flood statistic; `adapt_apply_pre` writes the same file for each adapted
 skeleton.
 
-**13a `run_spinup`, 13b `sanity_checks`.** One spin-up per basin; see
-[Spin-up](#spin-up). Rule 13b reports the share of land pixels wetted during
-spin-up and animates it.
+**13a `run_spinup`, 13b `sanity_checks`.** One spin-up per basin and `slr_m`
+of the requested scenarios; see [Spin-up](#spin-up). Rule 13b reports the share
+of land pixels wetted during each spin-up and animates it.
 
 **14 `build_sfincs`.** Per scenario: loads the skeleton, writes only the
 water-level and discharge forcing, and hand-writes `sfincs.inp` with relative
@@ -643,22 +643,31 @@ screening per gauge (`figs/gesla_overview/`).
 **Sea-level rise.** Rule 07 stores only a dimensionless fingerprint per station:
 local over global-mean AR6 regional sea-level change (Garner et al., 2021, Zenodo
 DOI 10.5281/zenodo.5914710; values in mm; `ssp245`, medium confidence, 2100,
-median; 1.0 when no AR6 location lies within 3°). Rule 13 adds
-`fingerprint × slr_m`, ramped in from 0 over `sfincs.boundary_setup.slr_ramp_hr`
-(24 h) after the event start because the shared spin-up has no SLR.
-`surge_forcing.nc` never contains SLR, so changing `slr_m` reruns only the
-scenario.
+median; 1.0 when no AR6 location lies within 3°). Rules 13a and 14 add
+`fingerprint × slr_m` to every station level: the spin-up of that `slr_m`
+holds it, and its events start from there. `surge_forcing.nc` never contains
+SLR, so a new `slr_m` reruns only that scenario and, if no requested scenario
+had it yet, adds its spin-up.
 
 ## Spin-up
 
-Rule 14 runs once per basin for `spinup_days` with each crossing's constant mean
-discharge and the sea ramped over `boundary_ramp_hr` from `calm_sea_level_m` to
-each station's calm level, the levels every event starts from, so there is no
-jump at the restart. It writes `sfincs.YYYYMMDD.HHMMSS.rst` at
-`tref + spinup_days`, used by every scenario. `storevel` is 0 in the spin-up.
-The forcing's calm lead-in (`boundary_forcings.lead_days`) must equal
-`spinup_days`, so the event run starts where the lead-in ends; the workflow
-refuses to start otherwise.
+Rule 13a runs once per basin and `slr_m` of the requested scenarios
+(`spin_up/slr_<slr_m>/`), with each crossing's constant mean discharge and the
+sea ramped over `boundary_ramp_hr` from `calm_sea_level_m` to each station's
+calm level plus `slr_m` × fingerprint: the levels the events of that `slr_m`
+start from, so there is no jump at the restart. It runs in chunks of
+`sfincs.spinup.chunk_hr` (48 h), each restarting from the last, until rule 11's
+steady test passes on the river-network cells: no cell's
+`steady_check.window_hr` (12 h) mean level differs by more than `tol_m` (5 cm)
+from the window before (`src.sfincs_run.river_network_steady`). A spin-up still
+not steady after `max_days` (14) is kept and marked (`stability.csv` `steady`,
+a "Check stability" banner, and `spinup_unstable` in its events' metrics). The
+existing 48 h and 144 h spin-ups were steady after 13 h (2433835) and 87 h
+(3279946). The restart at the end (`sfincs.spinup.rst`) and the spin-up length
+(`stability.csv` `spinup_hr`) set the event's start: rule 14 places the event
+there, whatever the forcing files' own lead-in (`boundary_forcings.lead_days`).
+`storevel` is 0 in the spin-up; its map is the last chunk's, its observation
+series cover all chunks.
 
 The initial water level (`zsini`) is `calm_sea_level_m` on the sea cells of
 `zsini_sea_cells_on_grid.tif`, the steady GVF level of the routed mean discharge
@@ -720,7 +729,7 @@ connected to the open sea.
 
 | method | rule | approach |
 |---|---|---|
-| `pre` | 17b | edits a copy of the skeleton (weirs, drainage structures, subgrid), reuses the basin spin-up restart and reruns SFINCS (rules `adapt_build_forcing_pre`, `adapt_run_event_pre`, `adapt_flood_metrics_pre`) |
+| `pre` | 17b | edits a copy of the skeleton (weirs, drainage structures, subgrid), reuses the spin-up restart of the scenario's `slr_m` and reruns SFINCS (rules `adapt_build_forcing_pre`, `adapt_run_event_pre`, `adapt_flood_metrics_pre`) |
 | `post` | 17c | chains each measure on the baseline `max_flood_depth.tif` without SFINCS |
 
 Rule 17a classifies the baseline flood map by dominant source: 1 river,

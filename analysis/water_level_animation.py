@@ -18,6 +18,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
+from _basin_inputs import spinup_dir  # noqa: E402
 from _common import REPO_ROOT, analysis_path, script_parser, site_path  # noqa: E402
 from matplotlib.animation import FFMpegWriter, FuncAnimation
 
@@ -85,7 +86,7 @@ def main():
     sfincs_root = (
         basin_root / "runs" / SCENARIO / "adaptation" / "pre" / STRATEGY / "sfincs"
     )
-    spinup_root = basin_root / "spin_up"  # shared by every scenario/strategy
+    spinup_root = spinup_dir(BASIN_ID, SCENARIO)  # the spin-up of the scenario's slr_m
     # Same sea mask as rule 15's compute_flood_progression (sea_mask input).
     sea_mask_path = (
         basin_root

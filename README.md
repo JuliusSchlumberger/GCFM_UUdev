@@ -14,7 +14,7 @@ Everything is written under `<results_dir>/{basin_id}/`:
 | `preprocessing_inputs/domain/` | delta polygon, model domain, elevation, land use, roughness, river network (raw, cleaned, depth-calibrated), coastal protection weir, SFINCS grid definition |
 | `preprocessing_inputs/forcing/` | storm-tide hydrographs, surge and river forcing (`surge_forcing.nc`, `river_forcing.nc`) |
 | `sfincs_skeleton/` | per-basin SFINCS model (`sfincs.inp`, `sfincs.weir`, `sfincs_subgrid.nc`) and `land_bed_level.nc`, the bed level every flood depth is computed on (open sea masked) |
-| `spin_up/` | spin-up run and restart file (when `sfincs.spinup.enabled`) |
+| `spin_up/slr_<slr_m>/` | spin-up runs and restart files, one per `slr_m` (when `sfincs.spinup.enabled`) |
 | `runs/{scenario}/sfincs/` | event run (`sfincs_map.nc`) |
 | `runs/{scenario}/visuals/` | maximum flood depth (`max_flood_depth.tif`) and flood time series |
 | `runs/{scenario}/metrics/flood_metrics.csv` | flood-risk metrics (flooded shares of the land and urban area, depths) |

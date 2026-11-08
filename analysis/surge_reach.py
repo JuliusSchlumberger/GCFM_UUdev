@@ -34,6 +34,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
+from _basin_inputs import spinup_dir
 from _common import REPO_ROOT, analysis_dir, analysis_path, script_parser, site_path
 from _upstream_profile import (
     boundary_verdict,
@@ -117,7 +118,9 @@ def reach_basin(basin_id: str, scenario: str) -> tuple[pd.DataFrame, pd.DataFram
     nx, ny = net.node_x[nodes], net.node_y[nodes]
 
     zs, t_hr, cell_d = sample_frames(run / "sfincs_map.nc", nx, ny, "zs")
-    zs_spin, _, _ = sample_frames(root / "spin_up" / "sfincs_map.nc", nx, ny, "zs")
+    zs_spin, _, _ = sample_frames(
+        spinup_dir(basin_id, scenario) / "sfincs_map.nc", nx, ny, "zs"
+    )
     ref = zs_spin[-1]
     with xr.open_dataset(run / "sfincs_map.nc") as ds:
         zsmax_all = ds["zsmax"].max(dim=ds["zsmax"].dims[0]).values

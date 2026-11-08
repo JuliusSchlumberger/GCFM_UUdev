@@ -322,45 +322,10 @@ def storm_tide_at_rp_interpolated(
     return round_level(raw + _station_calm_levels_unrounded(surge_ds, slr_m))
 
 
-def _ramp_in_slr(
-    matrix: np.ndarray,
-    surge_ds: xr.Dataset,
-    slr_m: float,
-    slr_ramp_hr: float,
-    spinup_slr_m: float = 0.0,
-) -> np.ndarray:
-    # The shared spin-up runs at spinup_slr_m; a boundary jumping to another
-    # SLR level at the event start sends in a front that overtops the coastal
-    # weir. The offset is the difference of ROUNDED calm levels, so before the
-    # event the boundary equals the spin-up's calm level exactly.
-    if slr_m == spinup_slr_m or slr_ramp_hr <= 0.0 or "slr_fingerprint" not in surge_ds:
-        return matrix
-    times = surge_ds["time"].values.astype(float)
-    start_hr = float(surge_ds.attrs["lead_days"]) * 24.0
-    peak_hr = float(
-        surge_ds.attrs.get(
-            "hg_peak_hr", start_hr + float(surge_ds.attrs["period_hr"]) / 2.0
-        )
-    )
-    if start_hr + slr_ramp_hr > peak_hr:
-        raise ValueError(
-            f"slr_ramp_hr={slr_ramp_hr:g} h runs past the surge peak "
-            f"({peak_hr - start_hr:g} h after the event start) -- the design peak would "
-            "miss part of its SLR; shorten sfincs.boundary_setup.slr_ramp_hr"
-        )
-    slr_offset_m = calm_sea_levels(surge_ds, slr_m) - calm_sea_levels(
-        surge_ds, spinup_slr_m
-    )
-    w = np.clip((times - start_hr) / slr_ramp_hr, 0.0, 1.0)
-    return matrix - (1.0 - w)[None, :] * slr_offset_m[:, None]
-
-
 def build_design_surge_matrix(
     surge_ds: xr.Dataset,
     rp_yr: int | None | str,
     slr_m: float = 0.0,
-    slr_ramp_hr: float = 0.0,
-    spinup_slr_m: float = 0.0,
 ) -> np.ndarray:
     """Rebuild the (n_station, n_time) water-level boundary (m) at rp_yr.
 
@@ -372,9 +337,8 @@ def build_design_surge_matrix(
     and "tide" raises ValueError. Lead-in and peak levels are rounded to 1 cm;
     the tide signal is not.
     slr_m: target global-mean SLR (m) x slr_fingerprint, added to baseline,
-    peak and tide; 0.0 reproduces the MDT-only fields. slr_ramp_hr > 0:
-    the SLR term is spinup_slr_m (the spin-up's) until the event start and
-    goes linearly to slr_m over slr_ramp_hr.
+    peak and tide over the whole run (the event restarts from a spin-up at the
+    same slr_m); 0.0 reproduces the MDT-only fields.
     The protection_level is deliberately NOT subtracted: it already floors
     the weir crest, and subtracting it here would double-count FLOPROS and
     assume a uniform wall along the whole coast.
@@ -382,13 +346,7 @@ def build_design_surge_matrix(
     times = surge_ds["time"].values
 
     if rp_yr is not None and "hg_tide_m" in surge_ds:
-        return _ramp_in_slr(
-            _hydrograph_surge_matrix(surge_ds, rp_yr, slr_m),
-            surge_ds,
-            slr_m,
-            slr_ramp_hr,
-            spinup_slr_m,
-        )
+        return _hydrograph_surge_matrix(surge_ds, rp_yr, slr_m)
 
     if isinstance(rp_yr, str) and rp_yr.strip().lower() == "tide":
         raise ValueError(
@@ -410,7 +368,7 @@ def build_design_surge_matrix(
             for b, lvl in zip(baselines, storm_tide_at_rp_m)
         ]
     )
-    return _ramp_in_slr(wave, surge_ds, slr_m, slr_ramp_hr, spinup_slr_m)
+    return wave
 
 
 # The MDT vertical correction and SLR fingerprint below adapt the method of

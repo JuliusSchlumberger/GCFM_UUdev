@@ -10,11 +10,13 @@ rule build_sfincs:
         event_timing    = results_path("{basin_id}/event_timing/{basin_id}_event_timing.csv"),
         surge_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         river_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
-        # Only when spin-up is enabled.
+        # Only when spin-up is enabled: the restart of the spin-up with the
+        # scenario's slr_m, and its stability.csv (the restart time, spinup_hr).
         rstart = lambda wildcards: (
-            results_path(f"{wildcards.basin_id}/spin_up/" + RST_FNAME)
+            spinup_path(wildcards.basin_id, wildcards.scenario, RST_FNAME)
             if config["sfincs"]["spinup"]["enabled"] else []
         ),
+        spinup_stability = spinup_stability_input,
     output:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs.inp"),
         plot_forcing = figure_path("20_forcing_timeseries__{scenario}.png"),
@@ -23,7 +25,7 @@ rule build_sfincs:
         run_label          = lambda wildcards: run_label(wildcards.scenario),
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         sfincs_root        = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),
-        spin_up_root       = lambda wildcards: results_path(f"{wildcards.basin_id}/spin_up"),
+        spin_up_root       = lambda wildcards: os.path.dirname(spinup_path(wildcards.basin_id, wildcards.scenario, RST_FNAME)),
     threads: rule_threads("build_sfincs")
     log:
         "logs/{basin_id}/runs/{scenario}/14_build_sfincs.log"

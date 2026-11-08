@@ -33,7 +33,7 @@ from src.postprocessing import (
     read_land_bed_level,
 )
 from src.sfincs_run import (
-    read_stability,
+    spinup_flagged,
     river_network_stability,
     run_sfincs_subprocess,
     stability_note,
@@ -91,7 +91,7 @@ stability = river_network_stability(
 # An unstable spin-up taints every event that restarts from it.
 spinup_stability = getattr(snakemake.input, "spinup_stability", None)
 stability["spinup_unstable"] = (
-    read_stability(spinup_stability)["unstable"] if spinup_stability else False
+    spinup_flagged(spinup_stability) if spinup_stability else False
 )
 pd.DataFrame([stability]).to_csv(snakemake.output.stability, index=False)
 if stability["unstable"]:
@@ -102,7 +102,7 @@ else:
         f"{stability['max_swing_m']:.2f} m (alpha {stability['alpha']:g}): stable"
     )
 if stability["spinup_unstable"]:
-    log.warning("[Check 0] the spin-up this run restarts from is UNSTABLE (spin_up/stability.csv)")
+    log.warning("[Check 0] the spin-up this run restarts from is unstable or not steady (its stability.csv)")
 
 # ── Check 1: inundation ratio (envelope, zsmax), as in 13b_sanity_checks.py ──
 da_hmax, da_dep = compute_max_inundation(

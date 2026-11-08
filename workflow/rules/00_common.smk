@@ -313,34 +313,40 @@ _unknown = sorted(set(SCENARIOS) - set(SCENARIO_DEFS))
 if _unknown:
     raise ValueError(f"target_scenarios {_unknown} not defined in {config['scenarios_file']}")
 
-# Basin-level restart file: run_spinup (13a) runs at the spin-up scenario's
-# mean conditions (mean river discharge, calm sea + its SLR) for the basin's
-# spin-up length and renames SFINCS's time-stamped restart to this fixed name,
-# shared by every scenario of the basin.
+# Spin-up (rule 13a): one per slr_m the requested scenarios use, at mean
+# conditions (mean river discharge, calm sea + that slr_m x fingerprint), run in
+# chunks until the river network has settled. Each event restarts from the one
+# with its own slr_m; SFINCS's time-stamped restart is renamed to RST_FNAME.
 RST_FNAME = "sfincs.spinup.rst"
 
-_SPINUP_CFG = config["sfincs"]["spinup"]
-_SPINUP_OVERRIDES = {
-    int(_b): float(_d) for _b, _d in (_SPINUP_CFG.get("spinup_overrides_days") or {}).items()
-}
-
-def spinup_days(basin_id):
-    """Return a basin's spin-up length (days), which is also its forcing lead-in (lead_days)."""
-    return _SPINUP_OVERRIDES.get(int(basin_id), _SPINUP_CFG["spinup_days"])
-
-def spinup_slr_m():
-    """Return the SLR (m, global mean) of the spin-up scenario; 0 with SLR disabled."""
+def scenario_slr_m(scenario):
+    """Return a scenario's global-mean SLR (m); 0 with SLR disabled."""
     if not config["boundary_forcings"]["surge"]["slr"]["enabled"]:
         return 0.0
-    return float(scenario_params(_SPINUP_CFG["scenario"])["slr_m"])
+    return float(SCENARIO_DEFS[scenario]["slr_m"])
 
-_spinup_scenario = SCENARIO_DEFS.get(_SPINUP_CFG["scenario"])
-if _spinup_scenario is None:
-    raise ValueError(f"sfincs.spinup.scenario {_SPINUP_CFG['scenario']!r} not defined in {config['scenarios_file']}")
-if str(_spinup_scenario.get("river_rp_yr")).lower() != "mean" or str(_spinup_scenario.get("surge_rp_yr")).lower() not in ("tide", "none"):
+def slr_tag(scenario):
+    """Return the folder tag of a scenario's spin-up (spin_up/slr_<tag>/)."""
+    return f"{scenario_slr_m(scenario):g}"
+
+SPINUP_SLR_TAGS = sorted({slr_tag(s) for s in SCENARIOS})
+
+def spinup_path(basin_id, scenario, name):
+    """Return a file of the spin-up the scenario's event restarts from."""
+    return results_path(f"{basin_id}/spin_up/slr_{slr_tag(scenario)}/{name}")
+
+if config["sfincs"]["spinup"]["enabled"] and not config["boundary_forcings"]["surge"]["hydrograph"]["enabled"]:
     raise ValueError(
-        f"sfincs.spinup.scenario {_SPINUP_CFG['scenario']!r} must be a mean-conditions scenario "
-        f"(river_rp_yr: Mean, surge_rp_yr: Tide or null); the spin-up holds the sea calm (tide-averaged)"
+        "sfincs.spinup.enabled needs boundary_forcings.surge.hydrograph.enabled: rule 14 starts the "
+        "event at the spin-up's end only on the storm-tide hydrograph timeline"
+    )
+
+if 2 * float(config["river_processing"]["river_depth_modelling"]["steady_check"]["window_hr"]) > float(
+    config["sfincs"]["spinup"]["chunk_hr"]
+):
+    raise ValueError(
+        "sfincs.spinup.chunk_hr must be at least 2 x river_depth_modelling.steady_check.window_hr: "
+        "each chunk's steady test compares its last two windows"
     )
 
 _COMPOUND_LAG = config["sfincs"]["boundary_setup"]["compound"]["lag_hr"]
@@ -368,25 +374,10 @@ def alpha_candidates(basin_id):
     return [float(a) for a in config["sfincs"]["alpha"]]
 
 def spinup_stability_input(wildcards):
-    """Return the basin's spin-up stability.csv, or nothing with the spin-up disabled."""
+    """Return the stability.csv of the scenario's spin-up, or nothing with the spin-up disabled."""
     if not config["sfincs"]["spinup"]["enabled"]:
         return []
-    return results_path(f"{wildcards.basin_id}/spin_up/stability.csv")
-
-# The event run starts from the restart at spinup_days on the forcing's own time
-# axis, so the forcing's calm lead-in must last exactly as long: a shorter
-# lead-in cuts off the start of the event window and starts the run from a calm
-# state on a rising boundary.
-if (
-    config["sfincs"]["spinup"]["enabled"]
-    and float(config["boundary_forcings"]["lead_days"]) != float(config["sfincs"]["spinup"]["spinup_days"])
-):
-    raise ValueError(
-        f"boundary_forcings.lead_days ({config['boundary_forcings']['lead_days']}) must equal "
-        f"sfincs.spinup.spinup_days ({config['sfincs']['spinup']['spinup_days']}): the event run "
-        f"starts at the spin-up restart, at the end of the forcing's lead-in"
-    )
-
+    return spinup_path(wildcards.basin_id, wildcards.scenario, "stability.csv")
 
 
 # ---- Adaptation strategies: families x scales, see src.adaptation_strategies
@@ -495,8 +486,6 @@ def build_sfincs_params():
         storevelmax        = config["sfincs"]["simulation"]["storevelmax"],
         storetwet          = config["sfincs"]["simulation"]["storetwet"],
         include_rstart     = config["sfincs"]["spinup"]["enabled"],
-        spinup_days        = lambda wildcards: spinup_days(wildcards.basin_id),
-        spinup_slr_m       = spinup_slr_m(),
         rst_fname          = RST_FNAME,
         # river_only boundary 0.5 m below terrain.gebco_max_depth_m (the deepest
         # clamped bed), so the coastal boundary is always dry.
@@ -513,8 +502,6 @@ def build_sfincs_params():
         # slr_fingerprint; per-scenario and applied here only.
         slr_enabled        = config["boundary_forcings"]["surge"]["slr"]["enabled"],
         slr_m              = lambda wildcards: scenario_params(wildcards.scenario)["slr_m"],
-        # SLR ramps over the event's first hours from the spin-up's SLR to the scenario's.
-        slr_ramp_hr        = config["sfincs"]["boundary_setup"]["slr_ramp_hr"],
         flat_boundary_point_spacing_m = config["sfincs"]["boundary_setup"]["flat_boundary_point_spacing_m"],
         water_level_buffer_m = config["sfincs"]["boundary_setup"]["water_level_buffer_m"],
     )

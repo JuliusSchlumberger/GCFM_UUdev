@@ -6,7 +6,7 @@ rule run_event:
         sfincs_inp           = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs.inp"),
         # Only when spin-up is enabled; build_sfincs sets rstfile to match.
         rstart               = lambda wildcards: (
-            results_path(f"{wildcards.basin_id}/spin_up/" + RST_FNAME)
+            spinup_path(wildcards.basin_id, wildcards.scenario, RST_FNAME)
             if config["sfincs"]["spinup"]["enabled"] else []
         ),
         # Plot background.

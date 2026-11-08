@@ -53,9 +53,20 @@ def basin_paths(basin_id: str) -> dict[str, Path]:
         "water_level_r1": prep
         / "diagnostics"
         / f"{basin_id}_calibration_water_level_r1.csv",
-        "spin_up": root / "spin_up",
         "skeleton": root / "sfincs_skeleton",
     }
+
+
+def spinup_dir(basin_id: str, scenario: str) -> Path:
+    """Return the spin-up a scenario's event restarts from (rule 13a, spin_up/slr_<slr_m>/)."""
+    cfg = load_config()
+    slr_m = 0.0
+    if cfg["boundary_forcings"]["surge"]["slr"]["enabled"]:
+        scenarios = yaml.safe_load(
+            (REPO_ROOT / cfg["scenarios_file"]).read_text(encoding="utf-8")
+        )
+        slr_m = float(scenarios[scenario]["slr_m"])
+    return site_path("results_dir") / basin_id / "spin_up" / f"slr_{slr_m:g}"
 
 
 def calm_sea_level_m(basin_id: str) -> float:

@@ -47,6 +47,7 @@ from _basin_inputs import (
     raster_at,
     reach_q_dict,
     round0,
+    spinup_dir,
 )
 from _common import REPO_ROOT, script_parser, site_path
 from _figure_style import add_land, map_axes, panel_letters, save_figure, write_caption
@@ -217,7 +218,7 @@ def compute_nodes(basin_id: str, cfg: dict, river: str) -> pd.DataFrame:
                 grid_dem, crs, net.node_x, net.node_y, tx, ty, bed.width_m, dx
             ),
             "spinup_end_m": _last_frame_at(
-                p["spin_up"] / "sfincs_map.nc", net.node_x, net.node_y
+                spinup_dir(basin_id, river) / "sfincs_map.nc", net.node_x, net.node_y
             ),
         }
     )

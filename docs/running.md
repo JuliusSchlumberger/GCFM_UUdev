@@ -72,14 +72,16 @@ The forcing mode follows from the two return periods: both set (including `Tide`
 or `Mean`) is `compound`, one set is `coastal_only` or `river_only`, both null is
 an error. Return periods and `slr_m` are applied when the
 scenario is built (rule 14), so adding or changing a scenario reruns only that
-scenario's build, event run and metrics, never preprocessing or the spin-up.
+scenario's build, event run and metrics, never preprocessing; a new `slr_m`
+also adds its spin-up.
 
 ## Spin-up
 
-`sfincs.spinup.enabled` (default `true`) runs one basin-level spin-up (rule 13a)
-of `spinup_days` at constant mean discharge and calm sea; every scenario's event
-run starts from its restart file at `tref + spinup_days`, which must equal
-`boundary_forcings.lead_days`. With
+`sfincs.spinup.enabled` (default `true`) runs one spin-up (rule 13a) per basin
+and `slr_m` of the requested scenarios, at constant mean discharge and calm sea
+plus that `slr_m`, in 48 h chunks until the river network has settled (at most
+14 days); every event run starts from the restart of its `slr_m` at the
+spin-up's end. It needs `boundary_forcings.surge.hydrograph.enabled`. With
 `enabled: false`, rules 13a and 13b are skipped and each event run starts at
 `tref` from the skeleton's initial water level (sea cells at the calm-sea level,
 land dry). The `adapt` target requires `enabled: true`: its rules read the
@@ -165,7 +167,7 @@ runs, and the run label is the same in file names and titles:
 | run | label |
 |---|---|
 | calibration round 1 (round 2 with `verify_crests: true`) | `calib_r1`, `calib_r2` |
-| spin-up | `spinup` |
+| spin-up | `spinup_slr{slr_m}` |
 | event run | `{scenario}` |
 | adaptation run | `{scenario}__pre_{strategy}`, `{scenario}__post_{strategy}` |
 

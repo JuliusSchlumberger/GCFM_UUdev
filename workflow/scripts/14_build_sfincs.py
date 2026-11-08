@@ -24,7 +24,8 @@ forcing_mode (from scenario river_rp_yr/surge_rp_yr, scenario_params in 00_commo
 slr_m (default 0.0, global-mean SLR in m scaled by each station's
 slr_fingerprint) is applied here at build time, never baked into
 surge_forcing.nc, so changing it reruns only this scenario's build and event
-run.
+run. With the spin-up the event restarts from the spin-up of the same slr_m
+at its end (stability.csv spinup_hr), which sets the event's start.
 """
 
 import logging
@@ -49,6 +50,7 @@ from src.sfincs_run import (
     event_timeline,
     parse_sfincs_inp,
     place_discharge_points,
+    read_stability,
     write_sfincs_inp,
 )
 from src.surge import build_design_surge_matrix
@@ -103,20 +105,16 @@ river_fall_max_hr = float(snakemake.params.river_fall_max_hr)
 river_event = snakemake.params.river_event
 # Target global-mean SLR (m); 0.0 when SLR is disabled, leaving the MDT-only fields.
 effective_slr_m = float(snakemake.params.slr_m) if snakemake.params.slr_enabled else 0.0
-# The spin-up restart has the spin-up scenario's SLR: the SLR term goes from
-# it to the scenario's over the event's first hours instead of stepping at the
-# event start (src.surge._ramp_in_slr).
-slr_ramp_hr = float(snakemake.params.slr_ramp_hr)
-spinup_slr_m = (
-    float(snakemake.params.spinup_slr_m)
-    if bool(snakemake.params.include_rstart)
-    else 0.0
-)
 flat_boundary_point_spacing_m = snakemake.params.flat_boundary_point_spacing_m
 water_level_buffer_m = snakemake.params.water_level_buffer_m
 include_rstart = snakemake.params.include_rstart
-spinup_days = snakemake.params.spinup_days
 rst_fname = snakemake.params.rst_fname
+# The spin-up's length is the event's restart time.
+spinup_hr = (
+    float(read_stability(snakemake.input.spinup_stability)["spinup_hr"])
+    if include_rstart
+    else None
+)
 
 sfincs_root.mkdir(parents=True, exist_ok=True)
 log.info(f"Forcing mode: {forcing_mode!r}")
@@ -157,9 +155,14 @@ active = river_ds.has_glofas.values.astype(bool) & ~outflow_crossing_mask(
 hydrograph_mode = "hg_peak_hr" in surge_ds.attrs
 if hydrograph_mode:
     dt_hr = float(surge_ds.attrs.get("dt_hr", np.median(np.diff(surge_ds.time.values))))
-    start_hr = float(surge_ds.attrs["lead_days"]) * 24.0
+    lead_hr = float(surge_ds.attrs["lead_days"]) * 24.0
+    # The event starts at the restart (the spin-up's end), else at rule 07d's
+    # lead-in; rule 07d's river peak keeps its distance from that start.
+    start_hr = spinup_hr if spinup_hr is not None else lead_hr
     river_period_hr = float(river_ds.attrs["period_hr"])
-    river_peak_07d_hr = float(river_ds.attrs["lead_days"]) * 24.0 + river_period_hr / 2.0
+    river_peak_07d_hr = (
+        float(river_ds.attrs["lead_days"]) * 24.0 + river_period_hr / 2.0 + start_hr - lead_hr
+    )
     # A river event runs until its main inflow falls below bankfull (measured
     # on the scenario's own hydrograph, at most river_fall_max_hr after the
     # peak), then for as long as that peak needs to reach the main mouth.
@@ -168,6 +171,7 @@ if hydrograph_mode:
         probe_hr = np.arange(0.0, river_peak_07d_hr + river_fall_max_hr + dt_hr, dt_hr)
         probe = river_ds.drop_dims("time").assign_coords(time=probe_hr)
         probe.attrs["event_start_hr"] = start_hr
+        probe.attrs["lead_days"] = (river_peak_07d_hr - river_period_hr / 2.0) / 24.0
         q_probe = build_design_discharge_matrix(probe, active, river_rp_yr, event=river_event)
         main = int(np.nanargmax(river_ds["bankfull_discharge_m3s"].values[active]))
         fall_hr = falling_limb_hr(
@@ -197,6 +201,7 @@ if hydrograph_mode:
     # The builders read only the time axis, the attrs and non-time variables.
     surge_ds = surge_ds.drop_dims("time").assign_coords(time=event_times_hr)
     surge_ds.attrs["hg_peak_hr"] = surge_peak_hr
+    surge_ds.attrs["lead_days"] = start_hr / 24.0
     river_ds = river_ds.drop_dims("time").assign_coords(time=event_times_hr)
     river_ds.attrs["lead_days"] = (river_peak_hr - river_period_hr / 2.0) / 24.0
     river_ds.attrs["event_start_hr"] = start_hr
@@ -263,13 +268,7 @@ else:
     )
 
     wl_df = pd.DataFrame(
-        data=build_design_surge_matrix(
-            surge_ds,
-            surge_rp_yr,
-            slr_m=effective_slr_m,
-            slr_ramp_hr=slr_ramp_hr,
-            spinup_slr_m=spinup_slr_m,
-        ).T,
+        data=build_design_surge_matrix(surge_ds, surge_rp_yr, slr_m=effective_slr_m).T,
         index=surge_times,
         columns=range(n_stations),
     )
@@ -281,8 +280,7 @@ else:
     )
     log.info(
         f"Water-level forcing: {n_stations} stations, {len(surge_times)} time steps "
-        f"(SLR: {effective_slr_m:+.3f} m target × per-station fingerprint, "
-        f"ramped from the spin-up's {spinup_slr_m:+.3f} m over {slr_ramp_hr:g} h after the event start)"
+        f"(SLR: {effective_slr_m:+.3f} m target × per-station fingerprint, as its spin-up)"
     )
 sf.water_level.write()
 
@@ -377,11 +375,12 @@ inp_settings: dict[str, object] = {}
 # sea), used by every forcing mode including river_only; a sibling tree of
 # sfincs_root, referenced by a computed relative path.
 if include_rstart:
-    tstart_event = tref + timedelta(days=spinup_days)
+    tstart_event = tref + timedelta(hours=spinup_hr)
     rst_rel = os.path.relpath(spin_up_root / rst_fname, start=sfincs_root)
     inp_settings["rstfile"] = rst_rel
     log.info(
-        f"tstart updated to {tstart_event} ({spinup_days} days after tref); rstfile = {rst_rel}"
+        f"tstart updated to {tstart_event} ({spinup_hr:g} h after tref, the spin-up's end); "
+        f"rstfile = {rst_rel}"
     )
 else:
     tstart_event = tref

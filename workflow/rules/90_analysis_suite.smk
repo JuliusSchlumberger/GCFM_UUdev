@@ -40,7 +40,7 @@ def _s_figures(folder, names):
 rule suite_gvf_setup_basin:
     input:
         depth_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
-        spinup_map    = results_path("{basin_id}/spin_up/sfincs_map.nc"),
+        spinup_map    = lambda wildcards: spinup_path(wildcards.basin_id, _S_RIVER, "sfincs_map.nc"),
         river_map     = _s_event(_S_RIVER),
     output:
         [f"{_S_DIR}/gvf_setup/{{basin_id}}/{n}" for n in ["nodes.csv", "surface_options.csv"]]
@@ -75,7 +75,7 @@ rule suite_travel_time:
 rule suite_upstream_boundary:
     input:
         [results_path(f"{b}/runs/{_S_COAST}/sfincs/sfincs_map.nc") for b in _S_BASINS],
-        [results_path(f"{b}/spin_up/sfincs_map.nc") for b in _S_BASINS],
+        [spinup_path(b, _S_COAST, "sfincs_map.nc") for b in _S_BASINS],
     output:
         summary = f"{_S_DIR}/upstream_boundary/summary.csv",
         figures = _s_figures("upstream_boundary", ["upstream_boundary"]),

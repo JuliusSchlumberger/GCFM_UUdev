@@ -12,6 +12,7 @@ from typing import cast
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import xarray as xr
 from shapely.geometry import Polygon
 from src.log import setup_logging
@@ -101,7 +102,7 @@ if hasattr(out, "plot_water_level"):
     zs = ds[zs_var].values
     zs = zs[:, np.newaxis] if zs.ndim == 1 else zs
     zs = zs.T if zs.shape[0] != len(t_days) else zs
-    spinup_days = params.spinup_days
+    spinup_days = float(pd.read_csv(inp.stability)["spinup_hr"].iloc[0]) / 24.0
     plot_water_level_timeseries(
         t_days,
         zs,

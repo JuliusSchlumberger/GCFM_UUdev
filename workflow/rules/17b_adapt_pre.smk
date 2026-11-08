@@ -17,7 +17,7 @@ rule adapt_apply_pre:
         measure_data       = lambda wildcards: strategy_measure_input_paths(wildcards.strategy, wildcards.basin_id),
         # Basin spin-up restart, copied into adapted_root (patched for
         # water_retention, whose zs was computed on the original terrain).
-        rstart = results_path("{basin_id}/spin_up/" + RST_FNAME),
+        rstart = lambda wildcards: spinup_path(wildcards.basin_id, wildcards.scenario, RST_FNAME),
         # For run-time-derived strategy params (src.adaptation_scaling): baseline
         # forcing (sfincs.bzs/.dis sit next to the declared sfincs.inp), baseline
         # zsmax, and the current-protection weir.
@@ -56,6 +56,8 @@ rule adapt_build_forcing_pre:
         river_forcing   = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
         # Strategy-local restart, so water_retention's adjusted water level is used.
         rstart          = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/" + RST_FNAME),
+        # The restart time (spinup_hr) of the spin-up that restart was copied from.
+        spinup_stability = spinup_stability_input,
     output:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs.inp"),
         plot_forcing = figure_path("20_forcing_timeseries__{scenario}__pre_{strategy}.png"),

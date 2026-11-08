@@ -83,8 +83,8 @@ _PREPROCESS_OUTPUTS = [
       if ANALYSIS else []),
 ]
 
-# Basin-level, scenario-independent: skeleton, spin-up (run_spinup, mean river
-# discharge + calm sea) and its sanity checks.
+# Basin-level, scenario-independent: skeleton; one spin-up (run_spinup, mean river
+# discharge + calm sea) per slr_m of the requested scenarios, and its sanity checks.
 _BUILD_OUTPUTS_BASIN = [
     expand(results_path("{basin_id}/sfincs_skeleton/sfincs.inp"), basin_id=BASINS),
     expand(results_path("{basin_id}/sfincs_skeleton/sfincs.weir"), basin_id=BASINS),
@@ -94,12 +94,12 @@ _BUILD_OUTPUTS_BASIN = [
         "10_build_grid.png", "11_build_elevation.png", "12_build_mask.png",
         "13_build_roughness.png", "14_build_zsini.png", "15_build_coastal_weir.png",
     ]),
-    *(expand(results_path("{basin_id}/spin_up/" + RST_FNAME), basin_id=BASINS)
-      + expand(results_path("{basin_id}/spin_up/sfincs_map.nc"), basin_id=BASINS)
-      + expand(figure_path("20_forcing_timeseries__spinup.png"), basin_id=BASINS)
-      + expand(figure_path("40_run_max_flood_depth__spinup.png"), basin_id=BASINS)
-      + (expand(analysis_figure_path("{name}"), basin_id=BASINS, name=[
-          "13_spinup_water_level.png", "13_spinup_inundation_ratio.png", "13_spinup_flood_progression.mp4",
+    *(expand(results_path("{basin_id}/spin_up/slr_{slr}/" + RST_FNAME), basin_id=BASINS, slr=SPINUP_SLR_TAGS)
+      + expand(results_path("{basin_id}/spin_up/slr_{slr}/sfincs_map.nc"), basin_id=BASINS, slr=SPINUP_SLR_TAGS)
+      + expand(figure_path("20_forcing_timeseries__spinup_slr{slr}.png"), basin_id=BASINS, slr=SPINUP_SLR_TAGS)
+      + expand(figure_path("40_run_max_flood_depth__spinup_slr{slr}.png"), basin_id=BASINS, slr=SPINUP_SLR_TAGS)
+      + (expand(analysis_figure_path("13_spinup_slr{slr}_{name}"), basin_id=BASINS, slr=SPINUP_SLR_TAGS, name=[
+          "water_level.png", "inundation_ratio.png", "flood_progression.mp4",
         ]) if ANALYSIS else [])
       if config["sfincs"]["spinup"]["enabled"] else []),
 ]
