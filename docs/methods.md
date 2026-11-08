@@ -666,8 +666,9 @@ existing 48 h and 144 h spin-ups were steady after 13 h (2433835) and 87 h
 (3279946). The restart at the end (`sfincs.spinup.rst`) and the spin-up length
 (`stability.csv` `spinup_hr`) set the event's start: rule 14 places the event
 there, whatever the forcing files' own lead-in (`boundary_forcings.lead_days`).
-`storevel` is 0 in the spin-up; its map is the last chunk's, its observation
-series cover all chunks.
+`storevel` is 0 in the spin-up; `sfincs_map.nc` is the last chunk's map, the
+earlier chunks' are kept as `sfincs_map_chunkNN.nc`, and the observation series
+(`sfincs_his.nc`) cover all chunks.
 
 The initial water level (`zsini`) is `calm_sea_level_m` on the sea cells of
 `zsini_sea_cells_on_grid.tif`, the steady GVF level of the routed mean discharge

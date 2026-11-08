@@ -17,7 +17,8 @@ steady test (steady_check window_hr / tol_m, both directions) passes on the
 river-network cells, at most max_days; a spin-up still not steady is kept and
 marked (stability.csv steady, "Check stability" banner). Writes, under
 spin_up/slr_<slr_m>/: sfincs.inp (last chunk), the restart at the end
-(sfincs.spinup.rst), the last chunk's sfincs_map.nc, the observation series
+(sfincs.spinup.rst), the last chunk's sfincs_map.nc (earlier chunks'
+sfincs_map_chunkNN.nc), the observation series
 of all chunks (sfincs_his.nc), stability.csv (spinup_hr, the events' restart
 time; steady test; river-network swing check over all chunks) and the
 forcing and max flood depth figures.
@@ -278,11 +279,12 @@ for k in range(1, n_chunks_max + 1):
     )
     if steady["steady"] or k == n_chunks_max:
         break
-    # A rerun in the same directory cannot recreate netCDF files SFINCS left
-    # behind on Windows; the map's readers above may still hold it open.
+    # Kept under the chunk's name, so the whole spin-up stays inspectable; SFINCS
+    # cannot recreate a netCDF file left in place on Windows, and the map's
+    # readers above may still hold it open.
     gc.collect()
     xr.backends.file_manager.FILE_CACHE.clear()
-    (spin_up_root / "sfincs_map.nc").unlink()
+    os.replace(spin_up_root / "sfincs_map.nc", spin_up_root / f"sfincs_map_chunk{k:02d}.nc")
 
 spinup_hr = k * chunk_hr
 rst_path = spin_up_root / rst_fname
