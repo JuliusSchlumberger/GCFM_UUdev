@@ -68,7 +68,7 @@ def test_unstable_spinup_taints_the_event_metrics(tmp_path):
     ).to_csv(path, index=False)
     m = stability_metrics(path)
     assert m["unstable"] and m["spinup_unstable"]
-    assert "SPIN-UP" in stability_note(pd.read_csv(path).iloc[0].to_dict())
+    assert "spin-up unstable" in stability_note(pd.read_csv(path).iloc[0].to_dict())
 
 
 def test_stamp_keeps_the_figure_size(tmp_path):
@@ -78,5 +78,5 @@ def test_stamp_keeps_the_figure_size(tmp_path):
     fig.savefig(png, dpi=100)
     plt.close(fig)
     before = plt.imread(str(png)).shape[:2]
-    stamp_unstable(png, "UNSTABLE: test")
+    stamp_unstable(png, "Check stability: test")
     assert plt.imread(str(png)).shape[:2] == before

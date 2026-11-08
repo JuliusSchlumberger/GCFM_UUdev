@@ -417,7 +417,7 @@ network (`src.sfincs_run.river_network_stability`) and write it to
 it restarts from was unstable. An unstable run is never stopped. It is marked:
 a warning in the log, the columns `unstable`, `spinup_unstable`, `max_swing_m`
 and `alpha` in `flood_metrics.csv` (and so in `metrics_comparison.csv`; `post`
-rows take the baseline run's), a red banner on the run's forcing, inundation
+rows take the baseline run's), a red "Check stability: ..." banner on the run's forcing, inundation
 and max-depth figures (`src.plots.stamp_unstable`), and a red footnote on the
 analysis figures drawn from it (`analysis/_figure_style.flag_unstable`).
 

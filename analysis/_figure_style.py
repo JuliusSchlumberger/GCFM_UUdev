@@ -102,7 +102,7 @@ def flag_unstable(fig, labels: list[str]) -> str | None:
     """Write a red footnote naming the unstable SFINCS runs a figure draws on; return it."""
     if not labels:
         return None
-    note = "UNSTABLE SFINCS runs (river-network level swings): " + ", ".join(labels)
+    note = "Check stability (river-network level swings): " + ", ".join(labels)
     # Inside the figure's bottom edge, so saves without bbox_inches="tight" keep it.
     fig.text(
         0.5,

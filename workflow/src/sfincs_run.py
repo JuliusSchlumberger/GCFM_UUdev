@@ -523,12 +523,12 @@ def stability_note(row: dict) -> str | None:
     notes = []
     if row.get("unstable", True):
         notes.append(
-            f"UNSTABLE: hourly level swing {row['max_swing_m']:.2f} m on the river network "
+            f"hourly level swing {row['max_swing_m']:.2f} m on the river network "
             f"({row['cells_over']} cells, alpha {row['alpha']:g})"
         )
     if row.get("spinup_unstable", False):
-        notes.append("UNSTABLE SPIN-UP")
-    return " | ".join(notes) or None
+        notes.append("spin-up unstable")
+    return "Check stability: " + " | ".join(notes) if notes else None
 
 
 def read_stability(path: str | Path) -> dict:
