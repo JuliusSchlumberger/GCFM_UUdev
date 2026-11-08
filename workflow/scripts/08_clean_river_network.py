@@ -170,7 +170,13 @@ _excluded = canal_excluded_arms(
 rivers_clean["zero_discharge_share"] = (
     rivers_clean["reach_id"].map(normalize_reach_id).isin(_excluded)
 )
-q_acc = accumulate_discharge(rivers_clean, seed_q, adjacency, excluded_arms=_excluded)
+q_acc = accumulate_discharge(
+    rivers_clean,
+    seed_q,
+    adjacency,
+    excluded_arms=_excluded,
+    share_override=dict(snakemake.params.split_override or {}),
+)
 rivers_clean["bankfull_discharge_acc_m3s"] = q_acc
 log.info(
     f"Discharge propagation: {(q_acc > 0).sum()} reaches with Q > 0, "

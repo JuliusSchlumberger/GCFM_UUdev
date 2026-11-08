@@ -10,8 +10,10 @@ config writer absolutizes any file reference outside the model root.
 forcing_mode (from scenario river_rp_yr/surge_rp_yr, scenario_params in 00_common.smk):
   "compound"     — surge/tide boundary + river discharge. With a surge and
                    a river RP, compound.lag_hr is the river peak minus the
-                   surge peak (positive = river peak later); in storm-tide
-                   mode the surge moves and the river keeps its place.
+                   surge peak (positive = river peak later); "auto" takes rule
+                   event_timing's lag, so both peaks reach the main mouth
+                   together. In storm-tide mode the surge moves and the river
+                   keeps its place.
   "coastal_only" — surge/tide boundary; discharge points kept with a zeroed
                    timeseries so the model structure matches other modes.
   "river_only"   — river discharge; flat boundary at river_only_flat_level_m,
@@ -38,6 +40,7 @@ from hydromt_sfincs import SfincsModel
 
 from src.log import setup_logging
 from src.plots import plot_run_forcing
+from src.event_timing import falling_limb_hr
 from src.river_burn import build_centerline_cells_regular
 from src.river_forcing import build_design_discharge_matrix
 from src.river_network import outflow_crossing_mask
@@ -89,8 +92,14 @@ if isinstance(surge_rp_yr, str) and surge_rp_yr.strip().lower() == "tide":
     pass
 elif surge_rp_yr is not None:
     surge_rp_yr = float(surge_rp_yr)
-compound_lag_hr = float(snakemake.params.compound_lag_hr)
-event_after_peak_hr = float(snakemake.params.event_after_peak_hr)
+event_timing = pd.read_csv(snakemake.input.event_timing).iloc[0]
+river_travel_hr = float(event_timing["river_travel_hr"])
+compound_lag_hr = (
+    float(event_timing["lag_hr"])
+    if snakemake.params.compound_lag_hr == "auto"
+    else float(snakemake.params.compound_lag_hr)
+)
+river_fall_max_hr = float(snakemake.params.river_fall_max_hr)
 river_event = snakemake.params.river_event
 # Target global-mean SLR (m); 0.0 when SLR is disabled, leaving the MDT-only fields.
 effective_slr_m = float(snakemake.params.slr_m) if snakemake.params.slr_enabled else 0.0
@@ -133,6 +142,14 @@ def _is_event(rp_yr) -> bool:
     return rp_yr is not None and not isinstance(rp_yr, str)
 
 
+# Only has_glofas=1 crossings have an EVA fit; the others carry zero discharge.
+# Crossings on a seed that flows out of the network (rule 08's
+# 'seed_flows_out') inject nothing -- they are free-outflow boundaries.
+active = river_ds.has_glofas.values.astype(bool) & ~outflow_crossing_mask(
+    river_ds, gpd.read_file(snakemake.input.river_network)
+)
+
+
 # Storm-tide hydrograph mode: the event timeline is set here, not in rule 07d,
 # so a new compound lag rebuilds the event runs only (rule 11's crests stay).
 # The river keeps rule 07d's place after the restart; the surge peak, the run
@@ -142,12 +159,35 @@ if hydrograph_mode:
     dt_hr = float(surge_ds.attrs.get("dt_hr", np.median(np.diff(surge_ds.time.values))))
     start_hr = float(surge_ds.attrs["lead_days"]) * 24.0
     river_period_hr = float(river_ds.attrs["period_hr"])
+    river_peak_07d_hr = float(river_ds.attrs["lead_days"]) * 24.0 + river_period_hr / 2.0
+    # A river event runs until its main inflow falls below bankfull (measured
+    # on the scenario's own hydrograph, at most river_fall_max_hr after the
+    # peak), then for as long as that peak needs to reach the main mouth.
+    river_after_peak_hr = 0.0
+    if _is_event(river_rp_yr) and active.any():
+        probe_hr = np.arange(0.0, river_peak_07d_hr + river_fall_max_hr + dt_hr, dt_hr)
+        probe = river_ds.drop_dims("time").assign_coords(time=probe_hr)
+        probe.attrs["event_start_hr"] = start_hr
+        q_probe = build_design_discharge_matrix(probe, active, river_rp_yr, event=river_event)
+        main = int(np.nanargmax(river_ds["bankfull_discharge_m3s"].values[active]))
+        fall_hr = falling_limb_hr(
+            probe_hr,
+            q_probe[main],
+            river_peak_07d_hr,
+            float(river_ds["bankfull_discharge_m3s"].values[active][main]),
+            river_fall_max_hr,
+        )
+        river_after_peak_hr = fall_hr + river_travel_hr
+        log.info(
+            f"River event: main inflow below bankfull {fall_hr:.0f} h after its peak "
+            f"(cap {river_fall_max_hr:.0f} h), peak travel to the main mouth {river_travel_hr:.1f} h"
+        )
     surge_peak_hr, river_peak_hr, sim_duration_hr = event_timeline(
         start_hr,
-        float(river_ds.attrs["lead_days"]) * 24.0 + river_period_hr / 2.0,
+        river_peak_07d_hr,
         float(surge_ds.attrs["hg_window_hr"]),
         float(surge_ds.attrs.get("hg_ramp_hr", 0.0)),
-        event_after_peak_hr,
+        river_after_peak_hr,
         compound_lag_hr if forcing_mode == "compound" else 0.0,
         surge_event=_is_event(surge_rp_yr),
         river_event=_is_event(river_rp_yr),
@@ -247,12 +287,6 @@ else:
 sf.water_level.write()
 
 # ── river discharge forcing ──
-# Only has_glofas=1 crossings have an EVA fit; the others carry zero discharge.
-# Crossings on a seed that flows out of the network (rule 08's
-# 'seed_flows_out') inject nothing -- they are free-outflow boundaries.
-active = river_ds.has_glofas.values.astype(bool) & ~outflow_crossing_mask(
-    river_ds, gpd.read_file(snakemake.input.river_network)
-)
 n_active = int(active.sum())
 n_total = len(active)
 log.info(f"River forcing: {n_active}/{n_total} crossings with valid GloFAS data")

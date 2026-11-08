@@ -215,10 +215,8 @@ scenario in `scenarios.yml` with a surge RP and the stress case
 where the rise of the river level falls below `max(level_tol_m,
 amplitude_threshold_fraction × A0)`; at mean discharge the forcing point
 passes if its rise is below `level_tol_m` and it lies `margin_km` beyond that
-end. `benchmark_upstream_boundary.py <basin> ...` reruns built models steady
-at mean discharge with the sea calm and at SWL_ext and compares SFINCS with
-GVF along the main arms (`figs/upstream_boundary_benchmark/`, with a
-generated README of method, results and parameter choice); in three basins
+end. Steady SFINCS runs of built models at mean discharge, with the sea calm
+and at SWL_ext, compared with GVF along the main arms: in three basins
 (low gradient with small and with 4 m surge, one steep) SFINCS put the
 influence end within 2.9 km of the GVF estimate, with no amplification along
 the channels, which sets `margin_km` 5. Bankfull discharge moves the end
@@ -363,8 +361,8 @@ them:
   lagoons and stands at the dike when the river peak arrives, independent of
   `T_walled`; the event runs' storm-tide wave touches its peak for about an
   hour at the boundary. The arrival time of the river at the
-  mouth is checked separately, on a copy of round 1 with the sea held at the
-  storm tide (`analysis/benchmark_peak_travel.py --run`);
+  mouth is checked on the river-only event run (`analysis/travel_time.py`,
+  docs/river_depth_gvf.md);
 - rivers: each crossing from its reach's mean discharge (the flow that holds the
   initial river level, below) to the discharge at the FLOPROS riverine return
   period (`river_protection_rp_yr`, log-RP interpolated from the discharge
@@ -393,6 +391,20 @@ about 4 h of `ramp_hr + T_walled` on 2433835 (64 km path, `T_walled` 6 h), and o
 last 3 h. Runs longer than `calibration_max_days` fail. After each round,
 `steady_check` warns when centreline cells still rose more than `tol_m` over the
 last `window_hr`.
+
+**Time-step factor (alpha check).** Round 1 runs with each `sfincs.alpha`
+candidate in turn (0.5, 0.35, 0.25) and keeps the first one whose run is
+stable. Unstable means SFINCS fails, or a river-centreline cell's hourly level
+step is undone in the next hour by more than `alpha_reversal_max_m` (1 m;
+`src.sfincs_run.level_reversal_m`). A steady rise, such as the flood front
+filling the channel (up to 1.3 m/h on 3279946), counts 0, and flooding outside
+the river network is not looked at. Stable runs swing at most 0.17 m; the Ebro
+at 0.5 swings 2.7-2.9 m at about 200 cells. The steady calibration discharge is
+the hardest flow the channel sees in rule 11, so the kept alpha goes into the
+skeleton (rule 12a) and every spin-up, event and adaptation run. Each attempt
+is logged and written to `diagnostics/{basin_id}_alpha_check.csv`; no stable
+candidate fails the rule. Event runs repeat the check on the river network
+(rule 15) and fail when an event swings more than the calibration did.
 
 Round 2 reports some overtopped edges even though its inputs equal round 1's
 except the crests: lowering the crests from 1000 m changes SFINCS's solution by
@@ -559,7 +571,7 @@ search radii 10-1000 km). Return levels are exact table lookups at the
 tabulated return periods; each station forces the nearest water-level boundary
 cell within `water_level_buffer_m`, and SFINCS interpolates between them. With
 hydrographs enabled the event is the average tide plus a surge shape peaking on
-tidal high water over ±`window_hr` (60 h; 168 h for `2433835`), shapes taken from
+tidal high water over ±`window_hr` (60 h), shapes taken from
 historic GTSM events near each return level (HGRAPHER, Dullaart et al., 2023;
 GTSMv3 hourly reanalysis 1950-2024). Outside the window the average tide
 repeats with its own period (the lag of its highest autocorrelation in 11-26 h).
@@ -567,16 +579,27 @@ From the restart the boundary blends from the spin-up's calm level into the
 event with a half-cosine weight over `hydrograph.ramp_hr`. In `river_only` the
 sea boundary is flat at `-(gebco_max_depth_m + 0.5)` m.
 
+**Peak travel times (rule `event_timing`).** Per basin, from the main inflow
+(largest bankfull discharge) to the mouth of its mainstem:
+- river: the walled travel time (`src.river_profile.walled_travel_time`) at
+  the routed bankfull discharge, with the sea at rule 11's calibration storm
+  tide. Above bankfull the extra flow spills onto the floodplain and the peak
+  travels at the bankfull channel speed; the estimate matched the SFINCS
+  mouth-discharge plateau on the Ebro and Chao Phraya
+  (`docs/river_depth_gvf.md`);
+- surge: `sqrt(g h)` along the fastest wet path from the water-level boundary
+  to that mouth.
+
 **Event timeline (rule 14).** The river peak keeps rule 07d's place, which
 leaves room for its rising limb after the restart. With a surge and a river
-return period, the surge peaks `compound.lag_hr` (per basin
-`lag_overrides_hr`, from `analysis/peak_lag.py`) before the river peak
-(positive = river later), so both peaks reach the main mouth together. A
-surge alone peaks right after its blend and half-window. Runs end
-`event_after_peak_hr` (per basin `event_after_peak_overrides_hr`) after the
-last design peak, and not before the surge
-window closes. The timeline is set in rule 14, so a new lag reruns the event
-runs only, not the crest calibration.
+return period, the river peaks `compound.lag_hr` after the surge peak
+(negative: before); `auto` sets it to surge minus river travel time, so both
+peaks reach the main mouth together. A surge alone peaks right after its blend and half-window. A river
+event runs until its main inflow falls below bankfull (at most
+`river_fall_max_hr`, 100 h, after its peak), then for the river travel time.
+Every run lasts at least to the end of the surge window. The timeline is set
+in rule 14, so a new lag reruns the event runs only, not the crest
+calibration.
 
 **No tide-gauge bias correction.** The surge forcing is not corrected against
 GESLA v4.1 tide-gauge records. That option was tested on the nine basins and

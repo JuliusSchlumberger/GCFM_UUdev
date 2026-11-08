@@ -32,7 +32,7 @@ def event_timeline(
     river_peak_hr: float,
     window_hr: float,
     ramp_hr: float,
-    after_peak_hr: float,
+    river_after_peak_hr: float,
     lag_hr: float,
     surge_event: bool,
     river_event: bool,
@@ -44,8 +44,8 @@ def event_timeline(
     With both events lag_hr = river peak - surge peak: the river keeps its
     place (or moves later for lag_hr > 0) and the surge moves. A surge alone
     peaks right after its blend from the restart and its half-window; a tide
-    surge (no surge event) takes the river peak. The run ends after_peak_hr
-    after the last design peak, and not before the surge window closes.
+    surge (no surge event) takes the river peak. The run ends when the surge
+    window closes, or river_after_peak_hr after a river event's peak if later.
     """
     if surge_event and river_event:
         river_hr = river_peak_hr + max(lag_hr, 0.0)
@@ -54,8 +54,9 @@ def event_timeline(
         river_hr = surge_hr = start_hr + ramp_hr + window_hr
     else:
         river_hr = surge_hr = river_peak_hr
-    peaks = [p for p, on in ((surge_hr, surge_event), (river_hr, river_event)) if on]
-    end_hr = max([surge_hr + window_hr] + [p + after_peak_hr for p in peaks])
+    end_hr = surge_hr + window_hr
+    if river_event:
+        end_hr = max(end_hr, river_hr + river_after_peak_hr)
     return surge_hr, river_hr, end_hr
 
 
@@ -425,4 +426,65 @@ def run_sfincs_subprocess(
     t_err.join()
 
     if proc.returncode != 0:
-        raise RuntimeError(f"{label} failed with exit code {proc.returncode}")
+        raise SfincsExitError(f"{label} failed with exit code {proc.returncode}")
+
+
+class SfincsExitError(RuntimeError):
+    """SFINCS ended with a non-zero exit code."""
+
+
+def level_reversal_m(zs: np.ndarray) -> np.ndarray:
+    """Return per cell the largest water-level step undone by the next output step (m).
+
+    zs is (time, cell). A step up followed by a step down (or the reverse)
+    counts with the smaller of the two, so a steady rise or fall, such as a
+    flood front filling the channel, counts 0. A cell whose level turns
+    non-finite after a finite start gets inf.
+    """
+    zs = np.asarray(zs, dtype=float)
+    d = np.diff(zs, axis=0)
+    flip = np.sign(d[1:]) * np.sign(d[:-1]) < 0
+    rev = np.where(flip, np.minimum(np.abs(d[1:]), np.abs(d[:-1])), 0.0)
+    out = np.nanmax(rev, axis=0, initial=0.0)
+    broke = np.isfinite(zs[0]) & ~np.isfinite(zs).all(axis=0)
+    return np.where(broke, np.inf, out)
+
+
+def river_cells_on_map(
+    x: np.ndarray, y: np.ndarray, rivers: gpd.GeoDataFrame, spacing_m: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the (n, m) indices of the map cells the river lines run through.
+
+    x, y are sfincs_map.nc's cell-centre coordinates (n, m), in the CRS of
+    ``rivers``. Lines are sampled every ``spacing_m``; a sample further than
+    one cell from any centre is dropped.
+    """
+    from scipy.spatial import cKDTree
+
+    pts = [
+        line.interpolate(d).coords[0]
+        for line in rivers.geometry
+        if line is not None and not line.is_empty
+        for d in np.arange(0.0, line.length, spacing_m)
+    ]
+    if not pts:
+        raise ValueError("river_cells_on_map: no river line inside the map")
+    centres = np.column_stack([np.ravel(x), np.ravel(y)])
+    ok = np.isfinite(centres).all(axis=1)
+    tree = cKDTree(centres[ok])
+    dist, k = tree.query(np.asarray(pts))
+    cell_m = float(np.nanmedian(np.abs(np.diff(x, axis=1))))
+    flat = np.unique(np.flatnonzero(ok)[k[dist < cell_m]])
+    return np.unravel_index(flat, np.shape(x))
+
+
+def selected_alpha(alpha_check_csv: str | Path) -> float:
+    """Return the alpha rule 11's calibration round kept (row with selected true)."""
+    df = pd.read_csv(alpha_check_csv)
+    row = df[df["selected"].astype(bool)]
+    if len(row) != 1:
+        raise ValueError(
+            f"{alpha_check_csv}: expected one selected alpha, found {len(row)} "
+            "(no candidate was stable: rule 11 should have failed)"
+        )
+    return float(row["alpha"].iloc[0])

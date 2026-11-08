@@ -84,7 +84,14 @@ SURFACE_KEYS = (
     "structures",
     "mouth_level_tol_m",
     "water_body",
+    "surface_source",
+    "swot_min_obs",
+    "swot_max_mad_m",
+    "surface_fit",
+    "single_smoothing_m",
 )
+SURFACE_SOURCES = ("fathom", "sword_swot")
+SURFACE_FITS = ("two_scale", "single")
 SWOT_RATIO_SPAN = 2.0  # a surface slope within this factor of SWOT counts as agreeing
 
 
@@ -94,7 +101,9 @@ class WaterSurface:
 
     net: GvfNetwork
     level_m: np.ndarray
-    level_raw_m: np.ndarray
+    level_raw_m: np.ndarray  # FathomDEM median
+    level_source_m: np.ndarray  # the fit's input: FathomDEM median or SWOT level
+    level_source: np.ndarray  # per node: fathom, swot, or filled (from SWOT neighbours)
     slope: np.ndarray  # m/m along the largest-Q path, not floored
     rising_edges: list[tuple[str, str, float]]
     samples: dict[
@@ -214,6 +223,44 @@ def node_medians(
                 cnt[nid] += 1.0
     raw = np.where(cnt > 0, acc / np.maximum(cnt, 1), np.nan)
     return _fill_from_neighbours(raw, net.node_edges())
+
+
+def swot_node_levels(
+    net: GvfNetwork,
+    swot_nodes: pd.DataFrame,
+    half_window_m: float,
+    min_obs: float,
+    max_mad_m: float,
+) -> np.ndarray:
+    """Return per node the median SWOT level of its reach's SWORD nodes within ``half_window_m``.
+
+    swot_nodes: src.sword.read_swot_node_levels, in the network's CRS. Nodes
+    with fewer than ``min_obs`` passes or a pass-to-pass spread above
+    ``max_mad_m`` are left out. NaN where no SWORD node qualifies; a node
+    shared by several reaches gets the mean of their medians.
+    """
+    ok = (swot_nodes["n_obs"].to_numpy(float) >= min_obs) & (
+        swot_nodes["mad_m"].to_numpy(float) <= max_mad_m
+    )
+    sw = swot_nodes[ok].assign(rid=swot_nodes["reach_id"][ok].map(normalize_reach_id))
+    acc = np.zeros(net.n_nodes)
+    cnt = np.zeros(net.n_nodes)
+    for r, g in sw.groupby("rid"):
+        if r not in net.reach_nodes:
+            continue
+        ids = np.asarray(net.reach_nodes[r])
+        tree = cKDTree(g[["x", "y"]].to_numpy(float))
+        level = g["level_m"].to_numpy(float)
+        for nid, near in zip(
+            ids,
+            tree.query_ball_point(
+                np.column_stack([net.node_x[ids], net.node_y[ids]]), half_window_m
+            ),
+        ):
+            if near:
+                acc[nid] += float(np.median(level[near]))
+                cnt[nid] += 1.0
+    return np.where(cnt > 0, acc / np.maximum(cnt, 1), np.nan)
 
 
 def _split_samples(raw: dict) -> tuple[dict, dict]:
@@ -340,6 +387,7 @@ def build_water_surface(
     sea_level_m: float | None = None,
     sample_nodes=None,
     gebco_floor_m: float = -np.inf,
+    swot_nodes: pd.DataFrame | None = None,
 ) -> tuple[WaterSurface, gpd.GeoDataFrame]:
     """Build the water surface and its slope on the node network.
 
@@ -356,6 +404,12 @@ def build_water_surface(
         sample_nodes: Callable (x, y, width_m) -> (dem_m, sea_fraction) per
             node (:func:`node_sampler`); None: every node is a river node.
         gebco_floor_m: Lowest level of the clamped GEBCO bathymetry.
+        swot_nodes: src.sword.read_swot_node_levels in the DEM's CRS; required
+            with ``surface_source: sword_swot``. The fit then starts from the
+            SWOT level per node (:func:`swot_node_levels`); nodes without one
+            take their SWOT neighbours' level, and reaches without any SWOT
+            node the FathomDEM median. Mouths and structures stay
+            FathomDEM-based.
 
     Returns:
         The surface and the reaches with downstream-running lines.
@@ -367,6 +421,14 @@ def build_water_surface(
         ("min_width_m", "sea_class_fraction"),
         "river_processing.water_surface.water_body",
     )
+    source, fit = str(cfg["surface_source"]), str(cfg["surface_fit"])
+    if source not in SURFACE_SOURCES or fit not in SURFACE_FITS:
+        raise ValueError(
+            f"water_surface: surface_source must be one of {SURFACE_SOURCES} and surface_fit one of "
+            f"{SURFACE_FITS}, got {source!r}, {fit!r}"
+        )
+    if source == "sword_swot" and swot_nodes is None:
+        raise ValueError("water_surface: surface_source sword_swot needs swot_nodes")
     downstream = build_downstream_adjacency(rivers)
     rivers, _ = orient_downstream(rivers, downstream)
     spacing = float(cfg["node_spacing_m"])
@@ -415,9 +477,36 @@ def build_water_surface(
             f"Water surface: {int(unset.sum())} node(s) without water pixels set to {fill:.2f} m"
         )
 
+    level_source_m = raw.copy()
+    level_source = np.full(net.n_nodes, "fathom", dtype=object)
+    if source == "sword_swot":
+        swot = swot_node_levels(
+            net,
+            swot_nodes,
+            half,
+            float(cfg["swot_min_obs"]),
+            float(cfg["swot_max_mad_m"]),
+        )
+        covered = {
+            r for r in net.reach_ids if np.isfinite(swot[net.reach_nodes[r]]).any()
+        }
+        on_covered = np.array([o in covered for o in net.owner])
+        level_source = np.where(
+            np.isfinite(swot), "swot", np.where(on_covered, "filled", "fathom")
+        ).astype(object)
+        level_source_m = _fill_from_neighbours(
+            np.where(np.isfinite(swot), swot, np.where(on_covered, np.nan, raw)),
+            net.node_edges(),
+        )
+        counts = pd.Series(level_source).value_counts().to_dict()
+        log.info(
+            f"Water surface source SWOT: {counts} node(s); SWOT - FathomDEM median "
+            f"{np.nanmedian((swot - raw)[np.isfinite(swot)]):+.2f} m"
+        )
+
     fixed = np.zeros(net.n_nodes, dtype=bool)
     mouths = np.array([], dtype=int)
-    target = raw.copy()
+    target = level_source_m.copy()
     if sea_level_m is not None:
         mouths = sea_mouths(
             net,
@@ -447,8 +536,11 @@ def build_water_surface(
         out = enforce_non_increasing(net, out, fixed=fixed)
         return out if sea_level_m is None else np.maximum(out, sea_level_m)
 
-    level = smoothed(float(cfg["smoothing_m"]))
-    slope_level = smoothed(float(cfg["slope_smoothing_m"]))
+    if fit == "single":
+        level = slope_level = smoothed(float(cfg["single_smoothing_m"]))
+    else:
+        level = smoothed(float(cfg["smoothing_m"]))
+        slope_level = smoothed(float(cfg["slope_smoothing_m"]))
     slope = main_path_slope(net, slope_level, _reach_discharge(rivers))
     swot = swot_check(net, rivers, slope_level)
     log.info(
@@ -477,6 +569,8 @@ def build_water_surface(
         net=net,
         level_m=level,
         level_raw_m=raw,
+        level_source_m=level_source_m,
+        level_source=level_source,
         slope=slope,
         rising_edges=rising,
         samples=samples,
@@ -534,6 +628,8 @@ def surface_table(surface: WaterSurface, crs) -> gpd.GeoDataFrame:
             "chainage_m": float(ch),
             "level_m": float(surface.level_m[nid]),
             "level_raw_m": float(surface.level_raw_m[nid]),
+            "level_source_m": float(surface.level_source_m[nid]),
+            "level_source": str(surface.level_source[nid]),
             "slope": float(surface.slope[nid]),
             "node_class": str(surface.node_class[nid]),
             "dem_m": float(surface.dem_m[nid]),

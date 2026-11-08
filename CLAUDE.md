@@ -15,6 +15,7 @@ Site paths: `config/site.yml` (gitignored; copy `config/site.example.yml`), keys
 - `snakemake build --cores N`: SFINCS build, spin-up, event run, flood metrics
 - `snakemake all --cores N`: preprocess + build; the default target (`default_target`), so a bare `snakemake` runs it; any target takes `--config target_basins="[ID]" target_scenarios="['name']"`
 - `snakemake adapt --cores N --config target_strategies="['advance_1']"`: needs `build` done; strategies with `auto/<name>` locations also run rule 12c `build_adaptation_lines` (writes `<results_dir>/{basin_id}/adaptation_lines/`)
+- `snakemake analysis_suite --cores N --rerun-triggers mtime`: cross-delta figures (bed set-up, travel time, upstream boundary, opt-in depth sensitivity) from finished runs; basins and events in `config/analysis_suite.yml`; see `docs/river_depth_gvf.md`
 - `python tools/<script>.py`: one-off data preparation
 - `python analysis/<script>.py [basin_id]`: stand-alone figures and checks on finished results, including the diagnostics that are not rules (river-network map, upstream-boundary check, bifurcation options, GRDC and GESLA screens); shared helpers in `analysis/_common.py`
 - `python plot_dag.py`: rule graph to `figs/dag/`
@@ -25,6 +26,13 @@ Site paths: `config/site.yml` (gitignored; copy `config/site.example.yml`), keys
 - `config/config.yml`, `config/scenarios.yml`, `config/data_catalogue.yml`, `config/adaptation_strategies*.yml`, `config/measures.yml`
 - `environment.yml`, `environment.win-64.lock.yml`, `.pre-commit-config.yaml` (pinned versions); `config/site.yml` (machine paths)
 - Local, gitignored: `config/site.yml`, `CLAUDE.local.md`
+
+## Figures
+
+- No titles or subtitles; annotations kept to a minimum (axis labels, colour bars).
+- Every panel is numbered (a), (b), ... just outside its top-left corner (`analysis/_figure_style.panel_letters`).
+- Every figure gets a description `<figure>.txt` next to it: what is shown and what each colour, line style and marker means (`write_caption`).
+- Maps always show land in light grey for orientation (`add_land`).
 
 ## Changelog
 
@@ -49,7 +57,7 @@ Basin `2433835` (Ebro delta), scenario `default`; adaptation: strategy `advance_
 | code health | `python tests/check_code_health.py` | OK, 82 files |
 | quick-look figures | `pytest -q tests/unit/test_quicklook.py` | 16 PNGs in `.baseline/figures/` (synthetic delta) |
 | preprocess DAG | `snakemake -n preprocess --forceall --cores 1 --config target_basins="[2433835]" target_scenarios="['default']"` | 15 jobs (17 with `analysis=True`) |
-| build DAG | same, target `build` | 21 jobs (23 with `analysis=True`) |
+| build DAG | same, target `build` | 22 jobs (24 with `analysis=True`) |
 
 CI does not use `environment.yml`: `.github/workflows/ci.yml` pip-installs its own list for `tests/unit`.
 When a test, or a `src` module a test imports, gains a module-level third-party import, add it there.

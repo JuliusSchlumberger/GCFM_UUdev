@@ -34,6 +34,58 @@ def test_bifurcation_splits_by_width(network):
     assert q["3"] == pytest.approx(25.0)
 
 
+def test_share_override_replaces_width_share_and_conserves_mass(network):
+    net = network(
+        {
+            "1": {"dn": ["2", "3"]},
+            "2": {"dn": ["4"], "width": 300.0},
+            "3": {"dn": ["4"], "width": 100.0},
+            "4": {},
+        }
+    )
+    q = accumulate_discharge(
+        net,
+        {"1": 100.0},
+        build_downstream_adjacency(net),
+        share_override={"1": {"2": 0.4, "3": 0.6}},
+    )
+    q = dict(zip(net["reach_id"], q))
+    assert q["2"] == pytest.approx(40.0)
+    assert q["3"] == pytest.approx(60.0)
+    assert q["4"] == pytest.approx(100.0)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"1": {"2": 0.4}},  # arm missing
+        {"1": {"2": 0.4, "3": 0.4}},  # does not sum to 1
+        {"2": {"3": 1.0}},  # not a bifurcation
+    ],
+)
+def test_share_override_rejects_invalid_entries(network, override):
+    net = network(
+        {"1": {"dn": ["2", "3"]}, "2": {"width": 300.0}, "3": {"width": 100.0}}
+    )
+    with pytest.raises(ValueError, match="share_override"):
+        accumulate_discharge(
+            net, {"1": 100.0}, build_downstream_adjacency(net), share_override=override
+        )
+
+
+def test_share_override_for_another_basin_is_skipped(network):
+    net = network(
+        {"1": {"dn": ["2", "3"]}, "2": {"width": 300.0}, "3": {"width": 100.0}}
+    )
+    q = accumulate_discharge(
+        net,
+        {"1": 100.0},
+        build_downstream_adjacency(net),
+        share_override={"9": {"7": 0.5, "8": 0.5}},
+    )
+    assert dict(zip(net["reach_id"], q))["2"] == pytest.approx(75.0)
+
+
 def test_bifurcation_with_zero_widths_splits_equally(network):
     net = network({"1": {"dn": ["2", "3"]}, "2": {"width": 0.0}, "3": {"width": 0.0}})
     q = _accumulate(net, {"1": 100.0})

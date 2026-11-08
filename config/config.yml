@@ -95,6 +95,8 @@ river_processing:
     force_exclude:                  # reach ids always excluded when they are a bifurcation arm
       - 23261000641                 # 1248635: Amsterdam-Rijnkanaal leaving the Waal at Tiel (not canal-flagged in SWORD)
     force_include: []               # reach ids never excluded by the automatic rule
+  split_override: {}                # rules 08/11 discharge accumulation: {bifurcating reach id: {arm reach id: share}} replaces the width share there
+                                    # (every arm, shares summing to 1); the remedy when rule 11's bifurcation_check stops on a bifurcation the network cannot fix
   water_surface:  # rule 10: river water surface from FathomDEM and its slope (src/water_surface.py); conditions the DEM channels, sets the zsini river cells and the river bed's level and slope
     node_spacing_m: 500             # node spacing along each reach (rules 10 and 11 share the network)
     median_half_window_m: 1000      # median of the water centreline pixels (landuse.water_code) within this distance of each node (drops stray peaks and dips; islands are skipped)
@@ -106,14 +108,27 @@ river_processing:
     structure_min_drop_m: 0.2       # smallest drop that counts as a structure at a SWORD obstruction reach (obstr_type 1-4)
     use_sword_obstructions: true
     structures: []                  # reach ids with a structure at their downstream end (reported)
+    surface_source: fathom          # fathom | sword_swot: the fit starts from the FathomDEM medians or from SWORD v17c's SWOT node levels (wse_obs_p50, EGM2008 -> GOCO06s)
+    swot_min_obs: 10                # sword_swot: SWORD nodes with fewer SWOT passes are left out
+    swot_max_mad_m: 3.0             # sword_swot: SWORD nodes whose pass-to-pass spread (wse_obs_mad: seasonal and tidal range plus noise) exceeds this are left out;
+                                    # nodes > 1 m off their neighbours have a median spread of 2.8-3.6 m, the rest 1.1-1.3 m (2433835, 3279946)
+    surface_fit: two_scale          # two_scale: level from smoothing_m, slope from slope_smoothing_m; single: both from single_smoothing_m
+    single_smoothing_m: 20000       # surface_fit single: running-mean length of the one fit
   river_depth_modelling:  # rule modelled_depth_estimation (11): river bed below rule 10's surface, then two SFINCS runs that set and verify the dike crests
     bed:  # round-0 river bed (src/river_bed.py): Manning depth at the design discharge and rule 10's slope -> bed = surface - depth
-      design_discharge: bankfull    # bankfull | mean: GloFAS discharge the Manning depth is computed for, routed through the network. The depth hangs below the
+      period_start: "2023-07-01"    # design_discharge period_median: GloFAS daily median from this date (SWOT record start) to the series end
+      design_discharge: bankfull    # bankfull | mean | period_median: GloFAS discharge the Manning depth is computed for, routed through the network. The depth hangs below the
                                     # mean-flow level (FathomDEM), so bankfull treats that level as the bankfull stage: bed lower by h_bankfull - h_mean than with mean
       slope_floor: 1.0e-5           # m/m, lowest slope the depth is computed at (the surface keeps its own slope); normal depth diverges on a flat surface
       width_smoothing_m: 5000       # running median then mean of SWORD node widths along the network, across reach boundaries; raw node widths give +-5 m bed jumps (4267691: 172 steps > 3 m)
       bathymetry_handover_m: 5000   # river bed blends linearly into GEBCO bathymetry (wide sea-class nodes) over this distance
       q_min_m3s: 1.0                # at or below: depth from the width-depth fit of the other nodes
+      bathymetry_margin_m: 0.1      # a water-body node is GEBCO bathymetry where the DEM lies this far below GEBCO's shallowest clamp
+      froude_cap: 0.95              # GVF forward solve: depth held where the Froude number would exceed this (src.gvf_solver)
+      gvf_max_step_m: 50            # GVF forward solve: largest RK4 substep along the channel
+      bed_method: manning           # manning | manning_sea_inversion: on unresolved nodes that reach the sea, h = c * W^b with c set so the GVF level from the sea meets the surface
+      slope_resolved_min: 3.0e-5    # manning_sea_inversion: surface slope above which the Manning depth is used
+      inversion_width_exponent_fallback: 0.4  # manning_sea_inversion: b in h = c * W^b when fewer than 3 resolved nodes fit it
     # Rounds 1-2 run ramp_hr + T_walled + calibration_margin_hr: T_walled is the slowest
     # walled (no overtopping) travel time at the calibration discharge from a forcing point to
     # its network end (src.river_profile.walled_travel_time): per node the gravity speed
@@ -122,11 +137,20 @@ river_processing:
     wave_regime_rT: [0.3, 3.0]      # r * ramp_hr with r = g n^2 u / h^(4/3): below the first, inertial (gravity speed; wide, deep,
                                     # slow reaches, 1248635 Meuse ~0.15); from the first, kinematic (above the second frictional,
                                     # in between a transition taking the slower, kinematic speed; 1248635 Waal/Lek ~12)
-    calibration_max_days: 4         # longer runs fail: raise it or check the bed
-    steady_check: {window_hr: 3, tol_m: 0.05}  # warn when centreline cells still rise more than tol_m over the run's last window_hr
+    run_length:                     # walled: ramp_hr + T_walled + margin; settle: T_walled replaced by max(T_walled,
+      method: settle                # settle_factor x L^2/D), D = Q / (2 W S) the median hydraulic diffusivity on each
+      settle_factor: 1.75           # crossing's mainstem, S its walled surface slope floored at settle_slope_floor
+      settle_slope_floor: 1.0e-5    # (src.river_profile.settle_time_hr)
+    calibration_max_days: 10        # longer runs fail: raise it or check the bed
+    steady_check: {window_hr: 12, tol_m: 0.05, fail: false}  # centreline cells whose window_hr mean rose more than tol_m over the run's last
+                                    # window_hr: a warning, or an error with fail: true; numbers in round{i}/steady_check.csv
     verify_crests: false            # run round 2 (production crests, reports overtopped edges); false: round 1 only
     depth_scale: 1.0                # sensitivity only: the burned depth below rule 10's surface is multiplied by this (1.0 = the estimated bed)
-    crosssections: false            # true: SFINCS cross-sections (crsfile) across each arm of every bifurcation on the seeds' widest paths, discharge in each round's sfincs_his.nc (diagnostic, src.river_depth_calibration.bifurcation_cross_sections)
+    bifurcation_check:              # round 1 (walled, steady): SFINCS cross-sections across each arm of every bifurcation on the seeds' widest paths; end-of-run
+                                    # discharge share per arm against the routed share, in round1/bifurcation_split.csv
+      max_share_error: 0.05         # larger |SFINCS share - routed share| stops rule 11: fix the river network (arm alignment, widths), or set river_processing.split_override
+      accepted: [44306300275]       # parent reaches whose mismatch is known and accepted until the network is revised. 3279946: a 60 km loop whose
+                                    # SWORD arms are misaligned at the junction, so SFINCS sends 0.55 down the 84 m arm against a width share of 0.37
     ramp_hr: 6.0                    # half-cosine ramp, then held to the run end: every crossing from its mean discharge (the flow that holds zsini's river level, src.river_bed mean_level_m) to the calibration discharge, and every sea station from the calm level (where the sea starts) to its storm tide at the coastal protection RP. A step to the full (often many-times-bankfull) discharge sends a front that can oscillate for the whole run.
     weir_crest_m: 1000.0            # confinement weir crest (m) for round 1 -- effectively never overtopped
     # ── weir-building params (used by modelled_depth_estimation every round)
@@ -154,10 +178,9 @@ boundary_forcings:
       # half-cosine of period_hr after the lead-in, and surge_rp_yr "Tide" is unavailable.
       enabled: true
       window_hr: 60          # event = -60..+60 h around the peak -> 120 h event window; also the length of the surge shapes
-      window_overrides_hr:   # optional per-basin window (h), keyed by basin id -- surges last hours on
-        2433835: 168         # some coasts and days on others. Changing a basin's window reruns its
+      window_overrides_hr: {}  # optional per-basin window (h), keyed by basin id -- surges last hours on
+                             # some coasts and days on others. Changing a basin's window reruns its
                              # storm_tide_hydrographs and rule 07d onward, not the GTSM extraction.
-      # KGL: Changed from 70 to 168 to ensure the whole falling limb is included in the timerseires
 
       ramp_hr: 6.0        # boundary blends from the calm lead-in level into the tide over the window's first hours (surge is still 0 there)
       max_match_km: 0.1      # coincidence tolerance: COAST-RP's coastal stations ARE GTSM output stations
@@ -262,15 +285,13 @@ sfincs:
     # driver alone (river_only/coastal_only); both null -> invalid.
     flat_boundary_point_spacing_m: 5000   # boundary-point spacing along the water-level mask, used only when mode="river_only"
     compound:
-      lag_hr: 0 # river peak minus surge peak (h) in compound runs with both a surge and a river RP
-                # (> 0 delays the river); the river keeps its place after the restart and the surge moves
-      lag_overrides_hr: {2433835: -21, 3279946: -41}  # per basin id, from analysis/lag_plateau.py: puts the surge peak
-                            # inside the river's discharge plateau at the main mouth (coast and river runs
-                            # of one RP/SLR); Ebro at its midpoint, Chao Phraya inside it (midpoint <= -47)
-    event_after_peak_hr: 60  # event runs go on at least this long after the last design peak (the surge
-                             # window may end later); the average tide carries on to the end
-    event_after_peak_overrides_hr: {3279946: 150}  # per basin id: long deltas drain the river flood
-                             # to the mouths more slowly (the CP mouth discharge still rises 60 h after the inflow peak)
+      lag_hr: auto  # river peak minus surge peak (h) at the forcing in compound runs with both a surge and a river RP
+                    # (> 0 delays the river); the river keeps its place after the restart and the surge moves.
+                    # auto: surge minus river travel time to the main mouth (rule event_timing), so both peaks
+                    # reach it together; a number sets it for every basin
+    river_fall_max_hr: 100  # river events run until the main inflow falls below bankfull, at most this long after
+                            # its peak, plus the river travel time to the main mouth (rule event_timing); runs end no
+                            # earlier than the surge window; the average tide carries on to the end
     slr_ramp_hr: 24  # the spin-up is shared by all scenarios and has the spin-up scenario's SLR, so a
                         # scenario with another slr_m would otherwise hit the restart as a step at the event
                         # start (a 0.34 m step overtopped ~1670 of 1789 coastal weir segments in basin
@@ -290,6 +311,17 @@ sfincs:
       elevation_buffer_m: 20.0  # active-cell elevation ceiling = river_elevation_max.json's own
                                  # river_elevation_max_m (rule river_surface, 10, max conditioned centerline
                                  # elevation, always attained at a seed reach) + this buffer
+  advection: 0                   # SFINCS momentum advection (0 off, 1 on); rules 11 and 12a, so calibration
+                                 # and events match. On, steady channel levels stand up to 7 m above a 1D GVF
+                                 # profile along deep sub-cell trenches (Chao Phraya); off, the gap median is
+                                 # 0.19 m (Ebro) and 0.25 m (Chao Phraya)
+  alpha: [0.5, 0.35, 0.25]       # SFINCS time-step factor (fraction of the CFL limit), tried in this order in rule 11's
+                                 # calibration round 1; the first stable one is the basin's (12a skeleton: spin-up, events,
+                                 # adaptation). With advection off, 0.5 goes unstable where deep fast flow runs through a
+                                 # narrow subgrid trench (Ebro: inflow level swings 5-9 m per hour)
+  alpha_reversal_max_m: 1.0      # unstable: a river-network cell's hourly level step undone by more than this in the next
+                                 # hour (src.sfincs_run.level_reversal_m); stable runs stay below 0.2 m, Ebro at 0.5 reaches
+                                 # 2.7-2.9 m. Rule 11 then tries the next alpha; an event run fails
   subgrid:                       # always built -- the model relies on it for channels narrower than a cell
     nr_subgrid_pixels: 10        # subgrid pixels per grid cell (must be multiple of 2)
     nr_levels: 20                 # water-level bins for subgrid tables; memory scales linearly with this (default: 20)
@@ -307,7 +339,7 @@ sfincs:
     dtmapout:     3600           # spatial map output interval (s) -- MAIN EVENT run only
     dtmaxout:     3600           # max-value envelope output interval (s)
     dthisout:      600           # time-series output at observation points (s) -- MAIN EVENT run only
-    storevelmax:     0           # write maximum flow velocity (0=off, 1=on)
+    storevelmax:     1           # write maximum flow velocity (0=off, 1=on); the Froude check of the analysis suite reads it
     storetwet:       0           # write inundation duration / time-wet (0=off, 1=on)
     # SFINCS executable: sfincs_exe in config/site.yml (see config/site.example.yml)
     timeout_s: 68400             # max wall-clock time for a SFINCS subprocess (s, 19 h) --
@@ -352,6 +384,7 @@ resources:
     modelled_depth_estimation:            all
     build_sfincs_skeleton:                1
     land_bed_level:                       1
+    event_timing:                         1
     build_adaptation_lines:               1
     build_sfincs:                         1
     run_spinup:                           all

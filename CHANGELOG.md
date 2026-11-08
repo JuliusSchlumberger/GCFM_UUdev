@@ -3,6 +3,264 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-06: SFINCS alpha per basin from rule 11's calibration round (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW: adaptation runs take the basin's alpha.**
+> The adaptation `pre` runs inherit alpha from the skeleton's `sfincs.inp`,
+> now rule 11's choice per basin instead of the fixed 0.25, and
+> `adapt_run_event_pre` runs the new river-network swing check of
+> `15_run_event.py`, so an unstable adaptation run now fails instead of
+> finishing.
+
+**What changed:**
+- **`sfincs.alpha`** is the candidate list `[0.5, 0.35, 0.25]` (was 0.25). Rule 11's calibration round 1 runs with each in turn and keeps the first stable one; rule 12a writes it into the skeleton, so spin-up, event and adaptation runs use it. Every attempt is logged and written to `diagnostics/{basin_id}_alpha_check.csv`; no stable candidate fails rule 11.
+- **Instability test** (`alpha_reversal_max_m: 1.0`, `src.sfincs_run.level_reversal_m`): a river-network cell's hourly level step undone in the next hour by more than 1 m, or a non-zero SFINCS exit (`SfincsExitError`). Floodplain cells off the network are not looked at.
+- **Event runs** (`15_run_event.py`, also `adapt_run_event_pre`) run the same test on the cells along the clean river network and fail above the threshold.
+
+**Why:** 0.25 was set for every basin because the Ebro river event went unstable at 0.5; basins stable at 0.5 run about twice as fast.
+
+**Threshold, from existing runs (no new SFINCS run):** the largest hourly change does not separate stable from unstable runs (the stable Chao Phraya calibration round rises 1.34 m/h while the flood front fills the channel), the up-down swing does:
+
+| run | alpha | largest hourly change | largest swing | cells > 1 m |
+|---|---|---|---|---|
+| Ebro calibration round 1, `river_100`, `coast_100` | 0.25 | 0.89 / 0.27 / 0.04 m | 0.00 / 0.02 / 0.01 m | 0 |
+| Chao Phraya calibration round 1, `river_100`, `coast_100` | 0.25 | 1.34 / 0.42 / 0.61 m | 0.02 / 0.13 / 0.17 m | 0 |
+| Ebro split test, 1 / 5 inflow points | 0.5 | 10.2 / 7.9 m | 2.73 / 2.91 m | 194 / 234 |
+
+**Reruns:** rule 11 onward for every basin (new output `alpha_check.csv`, and the skeleton's alpha may change).
+
+# 2026-11-06: compound lag and event-run length from peak travel times (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW: adaptation `pre` runs share this timeline.**
+> `adapt_build_forcing_pre` runs `14_build_sfincs.py` with the same params, so
+> its runs change length like the baseline runs (coast-only runs shorter, river
+> runs shorter for the Ebro and slightly longer for the Chao Phraya) and need the new `event_timing` output. The Ebro surge window
+> also drops from 168 h to 60 h (KGL's `window_overrides_hr`).
+
+**What changed:**
+- **New rule `event_timing` (`12d`, `src/event_timing.py`):** per basin, the time the river peak needs from the main inflow (largest bankfull discharge) to its mouth, as the walled travel time at routed bankfull discharge, and the surge peak's time from the water-level boundary to that mouth (`sqrt(g h)`). It writes `<results_dir>/{basin_id}/event_timing/{basin_id}_event_timing.csv`, from rule 11's outputs and the skeleton, with no SFINCS run.
+- **Compound lag:** `sfincs.boundary_setup.compound.lag_hr: auto` sets it to surge minus river travel time, so both peaks reach the main mouth together. A number still fixes it for every basin. The per-basin `lag_overrides_hr` (Ebro −21 h, Chao Phraya −41 h, read off finished runs) is removed.
+- **Event-run length:** a river event runs until its main inflow falls below bankfull (measured on the scenario's own hydrograph; `river_fall_max_hr`, at most 100 h after the peak), plus the river travel time. Every run lasts at least to the end of the surge window (60 h after the surge peak). In a compound run both forcings share one time axis and the run ends at the later of the two ends. This replaces `event_after_peak_hr` (60 h) and `event_after_peak_overrides_hr` (Chao Phraya 150 h).
+- **Surge window:** `window_overrides_hr` is now empty; the Ebro's 168 h existed to keep the river's falling limb in the run, which the river tail now does.
+- **Code moves:** `gravity_wave_travel` moves from `analysis/check_event_timing.py` to `src/event_timing.py`. `analysis/estimate_peak_travel.py` and its test are deleted; the rule replaces them. `analysis/lag_plateau.py` reads the lag the build uses. `flood_wave_travel_time_methods.md` describes the rule as the implemented first version and lists the run-length cap as an open item.
+
+**Why:** the lags and tails were hand-set per basin from finished runs, so a new basin started with lag 0 and a 60 h tail. The walled bankfull estimate matched the SFINCS mouth-discharge plateau in both test deltas (`docs/river_depth_gvf.md`).
+
+**Effect (from the existing forcing; nothing rerun):**
+
+| | Ebro | Chao Phraya |
+|---|---|---|
+| river travel / surge travel | 15.8 h / 0.15 h | 58.9 h / 0.19 h |
+| compound lag | −15.6 h (was −21 h) | −58.7 h (was −41 h) |
+| `river_100_03SLR` run end after tref | about 332 h (was 384 h) | 471 h (was 462 h) |
+| `coast_100_03SLR` run end after tref | about 174 h (was 390 h) | 270 h (was 360 h) |
+
+- Both 100-year river events stay above bankfull beyond 200 h after the peak, so the 100 h cap sets their tails; flooding that drains after the cap is not modelled (TODO B41).
+- The Chao Phraya estimate follows the main inflow. The suite's 65.5 h is the slower second inflow.
+- Ebro values are approximate until rule 07d places the river peak again with the 60 h surge window.
+- **Reruns:** for the Ebro, rules 07a/07d onward, including rule 11's crest calibration, which reads `surge_forcing.nc`; then every event run of both deltas.
+
+# 2026-11-06: unused river-bed checks and switches removed (- JS)
+
+No production result changes; each removed item was at its no-op value or reported only.
+- `river_depth_modelling.calibration_q_scale` and `calibration_sfincs_settings` (sensitivity hooks for a deleted sweep, at 1.0 and `{}`): removed from the config, rule 11 and its script.
+- `river_depth_modelling.bed.forward_bands_m`: removed; the forward check logs and reports p5/median/p95 only (`surface_options.csv` loses `forward_within_0.5m`).
+- `src.gvf_solver.forward_network(return_capped=...)`: removed with its test; the Froude cap itself stays.
+
+**Inflow split test (no code change):** the Ebro `river_100_03SLR` event at `alpha` 0.5, from the spin-up restart to 12 h after the river peak, once with one discharge point and once with the discharge split over five points along the first 800 m. Both blow up at the same time (inflow about 2500 m³/s). The inflow level reaches 54 m with one point and 48 m with five, the upper 7 km of gorge (1D Froude 0.3-0.5) stand at about 24 m in both, and the largest hourly step is 10.2 m and 10.8 m. Production at 0.25 stays below 16.7 m, with a largest hourly step of 0.27 m along the first 15 km. Splitting the inflow is not pursued; `alpha` 0.25 stays. Runs in `D:/GCFM_UU/scratch/discharge_split/`.
+
+# 2026-11-06: analysis suite for the river bed, timing and boundary; analysis scripts consolidated (- JS)
+
+**New target `analysis_suite`** (`workflow/rules/90_analysis_suite.smk`, `config/analysis_suite.yml`):
+- Cross-delta figures from finished runs for the basins and coast/river events listed in the config, in `<results_dir>/figures/analysis/`.
+- Every figure comes with a description `<figure>.txt`, panel letters and, on maps, land in light grey, with no titles (`analysis/_figure_style.py`; the rule is in CLAUDE.md).
+- `gvf_setup/` (`analysis/gvf_setup.py`): the concept of the bed method, 1D and SFINCS Froude numbers (river event), one long profile per basin, and a scorecard of ten bed alternatives against production (`surface_options.py` gains the sea-inversion variants, depth p95/max, the crest height above the river-centre DEM and the peak Froude number; the suite no longer runs `channel_capacity.py`).
+- `travel_time/` (`analysis/travel_time.py`): river peak reference points and the walled estimates at calibration and bankfull discharge.
+- `upstream_boundary/` (`analysis/upstream_boundary.py`): sea reach of the SFINCS event against the steady GVF at the event and the extreme sea level.
+- `depth_sensitivity/` (`analysis/depth_sensitivity.py`): opt-in, since it runs rule 11 and the build per basin and scale. The runs live in `<results_dir>/../depth_sensitivity_runs`.
+- Smoke tests: `tests/unit/test_analysis_suite.py`.
+
+**Findings on the current production runs (advection 0, `alpha` 0.25):**
+- **1D Froude number:** Chao Phraya is below 0.3 everywhere except 0.4 % of nodes at Q_mean. On the Ebro, 8-12 % of nodes (the upper gorge) are between 0.3 and 0.5, and none is above 0.5.
+- **Walled estimate at bankfull discharge:** 15.8 h (Ebro) and 65.5 h (Chao Phraya), against SFINCS plateau midpoints of 17.8 h and at least 54.6 h. At the calibration discharge it gives 6.2 and 40.8 h.
+- **Sea reach:** the steady GVF and the SFINCS event agree within 1 km on both deltas.
+- **Bed alternatives:** scored on consistency, crest demand (crest minus river-centre DEM), Froude band at the event peak and depth (worse when over 1.5 times production's). Each of the ten is worse than production somewhere, so production stays. The closest, SWOT single 20 km at bankfull (E), needs lower crests but raises the Chao Phraya peak Froude number from 0.22 to 0.46.
+
+**Config:** `sfincs.simulation.storevelmax: 1`, so event maps carry `vmax` for the SFINCS Froude check. Existing event runs have none (TODO B40).
+
+**Analysis scripts:**
+- Renamed to topic names: `_basin_inputs`, `bank_freeboard`, `gvf_gap`, `slope_floor`, `surface_options` (surfaces now in `figures/analysis/surfaces/`), `surface_stages`, `depth_sensitivity`, `lag_cooccurrence`.
+- Deleted: the one-off phase scripts, `mc_peak_travel.py`, `benchmark_peak_travel.py` with its test, `channel_capacity.py` (overflow at Q_mean is no longer a criterion; TODO B38 with it), the synthetic trench `advection_channel.py` with its test and `alpha_stability.py` (an `alpha` check in rule 11 is to replace it), and `benchmark_upstream_boundary.py` (the suite's GVF-vs-SFINCS-event comparison replaces it; TODO B31 closed).
+- The phase reports, the test-and-implementation plan and `docs/readout_river_depth_gvf.md` are merged into `docs/river_depth_gvf.md`.
+
+**Review summary:** `docs/river_depth_review_summary.md`: a self-contained summary of the method, findings, weaknesses and open questions, for an outside review against the literature.
+
+**TODO:** B34 removed (resolved by the settling-time run length; 0 cells still rising); B38 repointed; B40 added.
+
+# 2026-11-06: river peak travel and surge reach on the production model (- JS)
+
+**Analysis only; pipeline code, config and results unchanged.** Report: analysis/timing_boundary_report.md.
+
+**Calibration settling with advection 0** (rule 11 `steady_check.csv`): round 1 settles by 21 h (Ebro, 65 h run) and 171 h (Chao Phraya, 219 h run), with no cells still rising. `settle_factor` 1.75, measured with advection 1, still holds.
+
+**River peak travel** (`peak_lag.py`, `lag_plateau.py`, `estimate_peak_travel.py` on the advection-0 runs):
+- **Ebro:** inflow to mouth 16.3 h in SFINCS, against 6.2 h walled (rule 11) and 1.5-5.6 h from 1D celerities. Plateau-midpoint lag -17.7 h against the configured -21 h (tau95 10 h).
+- **Chao Phraya:** the mouth discharge plateau is open-ended. The lag is -54 h or later, against the configured -41 h (tau95 36 h). Only 1237 of 9206 m3/s leaves through the main mouth at its peak.
+- Both configured lags stay. The walled estimate's error does not reach production, since the settling time sets the calibration run length.
+
+**Surge reach** (new `analysis/surge_reach.py`): coastal run zsmax against the spin-up end level along each forcing mainstem, with `testing.upstream_boundary_check` thresholds.
+- **Ebro:** reach 53 km; forcing point at 65 km, margin 12 km.
+- **Chao Phraya:** reach 198 and 275 km; forcing points at 265 and 294 km, margins 66 and 18 km.
+- No rise at any forcing point. The reach is within 2-4 km of the earlier steady SFINCS benchmark.
+
+**TODO B32** reworded: the Chao Phraya river run ends on the mouth plateau.
+
+# 2026-11-05: depth sensitivity on the advection-0 baseline, alpha stability search, GESLA check (- JS)
+
+**Analysis only; pipeline code, config and results unchanged.**
+
+**Depth sensitivity rerun** (`phase1_depth_sensitivity.py`, analysis/phase1_report.md 1.9). Beds × 0.7 and × 1.3 against the advection 0 / `alpha` 0.25 baseline, scenarios `coast_100_03SLR` and `river_100_03SLR`:
+- **Ebro river:** flooded area +4 % / **−64 %** (178.6 → 63.4 km² at × 1.3); urban exposed 4.9 / 3.4 / 0.5 km².
+- **Ebro coast:** area unchanged, volume −6 % / +6 %.
+- **Chao Phraya coast:** area −5 % / +6 %, volume −13 % / +13 %, urban exposed 603 / 650 / 720 km².
+- **Chao Phraya river:** +1 % / −3 %. The −30 % / −26 % against the advection-1 baseline was that baseline's backwater.
+- Bifurcation splits stay within 0.05 at both scales, apart from the accepted 44306300275.
+
+**Alpha stability search** (new `analysis/phase2c_alpha_stability.py`, analysis/phase2_report.md 2c):
+- `phase2_advection_channel.build_case` gains options for the ramp time, bed drops, inflow position and spread, and extra `sfincs.inp` keywords. Its defaults build byte-identical models.
+- On the synthetic trench, no ramp, bed-step, inflow, cell-size, `theta`, `wiggle_suppression` or `viscosity` setting replaces the small `alpha`.
+- `alpha` 0.35 is stable in every 100 m case, one step below the first failure (0.4). It is untested on a real event, so `sfincs.alpha` stays 0.25.
+- `event` and `event-compare` rerun a finished event with other `sfincs.inp` keywords, for that test.
+
+**GESLA storm-tide check** (analysis/phase6_report.md 6.2): GTSM matches the Tarragona gauge (13 years) within 0.03 m on the median annual maximum and the 10-year level. Chao Phraya has no usable gauge.
+
+**TODO B39:** coast-only scenarios carry the river's rising limb in their forcing length; the storm tide crosses the delta within hours, so their event runs could be several times shorter.
+
+# 2026-11-04: sea inversion of the river bed as an option (- JS)
+
+**New option:** `river_depth_modelling.bed.bed_method: manning | manning_sea_inversion` (default `manning`), with `slope_resolved_min: 3.0e-5` and `inversion_width_exponent_fallback: 0.4`.
+- On connected nodes with a slope at or below `slope_resolved_min` that reach the sea, the depth becomes c·W^b.
+- c is set so that the GVF level from the sea meets the surface at the resolved nodes next to them.
+- `RiverBed.inverted` and the node table's `inverted` column mark those nodes.
+
+**Why the default stays** (analysis/phase4_report.md, `analysis/phase4_capacity.py`). Channel capacity (Q_cap, the discharge at which the GVF level reaches the bank top) and the inversion settle Phase 4:
+- **Bankfull discharge:** the inversion needs a channel 35–40 m deep in the flat lower reaches. A 1.5-year flood cannot sit below the mean-stage surface.
+- **Period-median discharge:** the depths are plausible (3 m and 8.5 m), but on Chao Phraya 428–629 nodes cannot carry the mean discharge within their banks.
+- **Result:** both gates fail, and `design_discharge: bankfull` and `bed_method: manning` stay.
+
+**Results unchanged:** the defaults are the old behaviour.
+
+# 2026-11-04: SWOT surface source, single fit and period-median discharge as options (- JS)
+
+**New rule-10 options** under `river_processing.water_surface`; the defaults are unchanged:
+- `surface_source: fathom | sword_swot`, with `swot_min_obs: 10` and `swot_max_mad_m: 3.0`;
+- `surface_fit: two_scale | single`, with `single_smoothing_m: 20000`.
+
+With `sword_swot`, the fit starts from SWORD v17c's SWOT node levels (`wse_obs_p50` + rule 06's EGM2008 → GOCO06s offset), via `sword.read_swot_node_levels`. The node table gains `level_source_m` and `level_source`. Rule 10 takes the SWORD regions, the geoid offset and the domain as new inputs.
+
+**New design discharge:** `design_discharge: period_median`, the GloFAS daily median from `period_start: 2023-07-01` to the series end (`river_bed.period_median_discharge`).
+
+**Why the defaults stay** (analysis/phase3_report.md):
+- Ebro's 1 m offset from SWOT is in FathomDEM's raw medians on the incised upper reaches: +1.7 m in the gorge, +0.9 m on reach 051.
+- On the Chao Phraya main stem, FathomDEM stands 2–5 m above SWOT over 130 km.
+- Even so, no SWOT option halves the share of nodes on the slope floor (Ebro 0.29 → 0.26–0.43, Chao Phraya 0.25 → 0.36–0.40).
+- The forward check passes on both basins only with the SWOT single fit and the period-median discharge: median 0.02 / 0.17 m at 40 km.
+- That combination goes to Phase 4.
+- The 0.5 m spread threshold proposed in the plan would reject 65 % of Ebro's SWOT nodes and 99 % of Chao Phraya's.
+
+**Results unchanged:** the defaults are the old behaviour, and 397 unit tests pass.
+
+# 2026-11-04: rule 11 checks the discharge split at bifurcations (- JS)
+
+**Bifurcation check.** Rule 11's round 1 now always sets SFINCS cross-sections across each arm of every bifurcation on the seeds' widest paths. This replaces the `crosssections` diagnostic key with `river_depth_modelling.bifurcation_check`.
+- It compares SFINCS's end-of-run share per arm with the share the calibration discharge was routed with, and writes `round1/bifurcation_split.csv`.
+- It stops when the two differ by more than `max_share_error: 0.05`.
+- The fix is to correct the river network there, or to set the new `river_processing.split_override`. That key holds `{reach: {arm: share}}` and is applied in rule 08, the river bed and rule 11's routing.
+
+**Why.** On the steady Chao Phraya round 1 with advection off (analysis/phase5_report.md), three of the four bifurcations match the width share to within 0.02; under advection 1 two were reversed. The fourth, 44306300275, is off by 0.18: SFINCS gives 0.55 / 0.45, the width rule 0.37 / 0.63.
+- Its two arms form a 60 km loop whose SWORD alignment at the junction sends the flow straight into the narrow arm.
+- That reach is listed in `bifurcation_check.accepted` until the network is revised (TODO B37).
+- The planned hydraulic split was dropped. The round-0 bed is hung below the observed surface at whatever share an arm gets, so the 1D model accepts any split.
+
+**Results unchanged.** The override is empty and the check only reads output, so round 0's node table is byte-identical on 2433835 and 3279946.
+
+# 2026-11-04: river-bed solver constants in config (- JS)
+
+- `river_processing.river_depth_modelling.bed` gains four keys that were hard-coded in `src/river_bed.py` and `src/gvf_solver.py`, all at their old values:
+  - `bathymetry_margin_m: 0.1`
+  - `froude_cap: 0.95`
+  - `gvf_max_step_m: 50`
+  - `forward_bands_m: [0.5, 1.0]`
+- `gvf_solver.forward_network` passes `max_step_m` through to the reach integration.
+- Results unchanged: rule 11's round-0 node table and forward-check summary are byte-identical before and after on 2433835 and 3279946.
+- Two constants from the plan's list stay in code because the pipeline never reaches them:
+  - `h_dry_m` only acts on reaches without discharge, which `forward_network` does not integrate;
+  - `burn_river_channel`'s `margin_m` is ignored when a target grid is given, and rule 11 always gives one.
+- Rule 11's `bed` params changed, so Snakemake reruns rule 11 on its next run.
+
+# 2026-11-03: SFINCS advection off, time-step factor 0.25 (- JS)
+
+- **What changed:** new keys `sfincs.advection` (default 0) and `sfincs.alpha` (default 0.25), set by rules 11 and 12a. Spin-up, events and adaptation inherit both from the skeleton. Before, nothing set them and SFINCS's defaults applied (advection 1, alpha 0.5).
+- **Why alpha 0.25:** with advection off and alpha 0.5, the Ebro `river_100_03SLR` event went unstable above about 2500 m³/s. The level at the inflow cell swung 5-9 m per hour up to 54 m, and the backwater raised the upper gorge to a flat 24 m. At alpha 0.25 the inflow level rises smoothly to 16.7 m (largest hourly step 0.19 m). Moving the inflow 1.6 km into the domain changes nothing at alpha 0.25 and does not cure the swings at 0.5. The synthetic trench is stable at 0.25 and reaches normal depth within 0.01 m. Events take about twice as long.
+- **Why:** with advection on, steady channel levels stood well above the 1D GVF profile. Of the settings tested in the Ebro sweep (`analysis/phase2_ebro_sweep.py`), only advection off closes the gap:
+  - Ebro median 0.76 → 0.19 m.
+  - Steady Chao Phraya median 3.43 → 0.25 m.
+  - The Chao Phraya central-branch constriction (+7 m) disappears, and with it the backwater into the narrow arms.
+- **Check against an exact answer:** a synthetic trench at normal depth (`analysis/phase2_advection_channel.py`) settles at the same level with advection on or off when aligned with the grid. With advection on it stands +2.3 m too high on a 45° staircase and +8.7 m on a meander at 3000 m³/s; with advection off, +0.8 and +1.1 m. The added head comes from the cell path turning, not from physics.
+- New pytest marker `needs_sfincs` for tests that run the SFINCS binary; off by default.
+- **Results moved** (100-year, 0.3 m SLR, against advection 1 / alpha 0.5; `analysis/phase2_report.md`):
+  - Calibrated crests, median: Ebro 4.27 → 3.73 m, Chao Phraya 11.15 → 9.58 m.
+  - Ebro coast: unchanged (area 260.4 km², volume −0.1 %).
+  - Ebro river: area 173.1 → 178.6 km² (+3.2 %), volume −10.1 %. Max depth 26.8 → 11.4 m; the old maximum was a pile-up at the inflow.
+  - Chao Phraya coast: area 1866 → 1937 km² (+3.8 %), volume +1.0 %.
+  - Chao Phraya river: area 1553 → 1099 km² (−29.3 %), volume −28.6 %; the advection backwater no longer floods the upper delta.
+  - Main-path gap at the upstream 20 %: Ebro 0.97 → 0.24 m, Chao Phraya 6.59 → 0.07 m.
+
+# 2026-11-02: 1D-2D gap per reach and branch (- JS)
+
+- **What changed:** new `analysis/phase2_gap_slope.py`. Per reach it computes the slope excess (SFINCS minus 1D level against distance to the sea), the path ratio and the width in cells. It plots the gap per centreline cell on a map, and the gap and levels along the network as one line per reach, with each cell's distance taken from its own reach's nodes. Diagnostic only.
+- **Why:** to test whether the grid staircase causes the steady 1D-2D gap.
+- **Result:**
+  - No staircase: slope excess does not correlate with path ratio (Spearman −0.05 on Chao Phraya).
+  - On Chao Phraya the gap follows the discharge each branch gets in SFINCS relative to its width share. A constriction on the central branch at 222-255 km raises the junction at 280 km by 7 m. The narrow western and middle arms carry 1.9-2.0 times their 1D discharge and stand 6-7 m high. The separate eastern inflow stands +1 m, like Ebro.
+
+# 2026-11-02: observed surge-river peak timing (- JS)
+
+- **What changed:** new `analysis/phase7_lag_cooccurrence.py`. It pairs GTSM surge peaks with GloFAS discharge peaks (1979-2024) within ±7 days and compares the lag with the configured compound lag. Diagnostic only; no config or rule change.
+- **Why:** to see whether the configured lags describe observed events or a design worst case.
+- **Result:**
+  - Chao Phraya: surge peaks fall in Nov-Mar and river peaks in Aug-Oct, with no pair in 46 years.
+  - Ebro: 20 % of surge peaks are followed by a river peak, median +89 h later, beyond the hydrograph's 95 % half-width of 14 h.
+  - The configured lags (-21, -41 h) are therefore the aligned worst case (`analysis/phase7_report.md`).
+
+# 2026-11-02: calibration run length from the diffusive settling time (- JS)
+
+- **What changed:** rule 11's calibration run length is now
+  `ramp_hr + max(T_walled, settle_factor x L^2/D) + calibration_margin_hr`
+  (`run_length.method: settle`, `settle_factor: 1.75`). Before, it was
+  `ramp_hr + T_walled + margin` (method `walled`, still available).
+  - L^2/D is the diffusive settling time of the walled profile, with
+    D = Q/(2 W S) (`src.river_profile.settle_time_hr`).
+  - `steady_check` compares 12 h mean levels (`window_hr: 12`, was 3) and
+    writes `round{i}/steady_check.csv` with the time each cell took to settle.
+- **Why:** T_walled is when the wave front reaches the coast, not when the
+  levels behind it stop rising. In 362 h test runs, Chao Phraya's river-bed
+  nodes settled at 177/203 h (p50/p90). The 59 h walled run stopped 1.87 m
+  (median) and 5.18 m (p90) below the steady levels, and the crests were set
+  from those levels. Ebro settles at 24 h. The factor 1.75 is set by Chao Phraya;
+  Ebro alone would need 0.67. Single-hour snapshots flagged the ±0.5-2 m hourly
+  noise on Chao Phraya's steep upstream reach as rising, hence the 12 h means.
+- **Effect** (scenarios 100_03SLR, plan results root; `analysis/phase6_report.md`):
+  - Ebro: unchanged (crests identical, coast flooding identical, river +2 %).
+    The run length goes from 25 to 65 h.
+  - Chao Phraya: the run length goes from 59 to 219 h; rule 11 takes 98.5 min
+    instead of 33.4 min. Crest median rises from 6.7 to 9.1 m. Flooded area
+    falls by 8 % for coast (2037 to 1866 km²) and by 34 % for river (2366 to
+    1553 km²). The 1D-2D gap median rises from 0.56 to 3.43 m: the steady 2D
+    channel stands well above the 1D GVF profile.
+  - The main-mouth discharge plateau now closes (315-391 h). Its midpoint lag of
+    -40.7 h matches the configured -41 h.
+
 # 2026-10-31: calibration sea ramped to the storm tide and held (- JS)
 
 - **What changed:** rule 11's rounds 1-2 now ramp every sea station from the

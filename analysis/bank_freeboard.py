@@ -1,4 +1,4 @@
-"""Phase 1.1: bankfull freeboard = bank top minus the GVF level at Q_bankfull, for two bed options.
+"""Bankfull freeboard = bank top minus the GVF level at Q_bankfull, for two bed options.
 
 Bank top per node: 90th percentile of rule 06's merged DEM (FathomDEM on
 GOCO06s, before rule-10 conditioning) in a band from W/2 to W/2 + 200 m on
@@ -8,11 +8,11 @@ are skipped. Options: (a) the stored bed (design_discharge: bankfull), level =
 forward_level_m; (b) a mean-Q bed (design_discharge: mean), level =
 forward_network at Q_bankfull on that bed.
 
-Writes per basin 90_phase1_freeboard_nodes.csv and _profile_{a,b}.png to
-<results_dir>/<basin>/figures/analysis/, and phase1_freeboard_summary.csv to
+Writes per basin 90_bank_freeboard_nodes.csv and _profile_{a,b}.png to
+<results_dir>/<basin>/figures/analysis/, and bank_freeboard_summary.csv to
 <results_dir>/figures/analysis/.
 
-Usage: python analysis/phase1_freeboard.py [basin_id ...]
+Usage: python analysis/bank_freeboard.py [basin_id ...]
 """
 
 import logging
@@ -24,9 +24,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio
-from _common import analysis_path, script_parser
-from _phase1 import (
-    PHASE1_BASINS,
+from _basin_inputs import (
+    DEFAULT_BASINS,
     basin_paths,
     git_hash,
     load_config,
@@ -37,6 +36,7 @@ from _phase1 import (
     round0,
     write_summary,
 )
+from _common import analysis_path, script_parser
 from pyproj import Transformer
 
 log = logging.getLogger(__name__)
@@ -235,7 +235,7 @@ def freeboard_basin(basin_id: str, cfg: dict, tag: str) -> list[dict]:
             t,
             f"level_{opt}_m",
             f"bed_{opt}_m",
-            f"phase1 1.1 freeboard | {basin_id} | option {opt}: {label} | main path | {tag}",
+            f"bank_freeboard | {basin_id} | option {opt}: {label} | main path | {tag}",
             analysis_path(basin_id, __file__, f"profile_{opt}.png"),
         )
     return rows
@@ -249,7 +249,7 @@ def net_crs(basin_id: str):
 
 def main() -> int:
     parser = script_parser(__doc__)
-    parser.add_argument("basin_ids", nargs="*", default=PHASE1_BASINS)
+    parser.add_argument("basin_ids", nargs="*", default=DEFAULT_BASINS)
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"

@@ -33,10 +33,18 @@ from peak_lag import DEFAULT_BASINS, _his, _table, godin, peak_hr
 
 
 def configured_lag_hr(basin_id: str) -> float:
+    """Return the compound lag the build uses: rule event_timing's for lag_hr auto, else the configured number."""
     with open(REPO_ROOT / "config" / "config.yml", encoding="utf-8") as f:
-        compound = yaml.safe_load(f)["sfincs"]["boundary_setup"]["compound"]
-    overrides = {str(b): h for b, h in (compound.get("lag_overrides_hr") or {}).items()}
-    return float(overrides.get(basin_id, compound["lag_hr"]))
+        lag = yaml.safe_load(f)["sfincs"]["boundary_setup"]["compound"]["lag_hr"]
+    if lag != "auto":
+        return float(lag)
+    timing = (
+        site_path("results_dir")
+        / basin_id
+        / "event_timing"
+        / f"{basin_id}_event_timing.csv"
+    )
+    return float(pd.read_csv(timing)["lag_hr"].iloc[0])
 
 
 def plateau_basin(

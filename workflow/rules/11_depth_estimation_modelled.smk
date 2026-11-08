@@ -76,6 +76,8 @@ rule modelled_depth_estimation:
         ocean_wetland_mask = diagnostics_path("ocean_wetland_mask.tif"),
         crest_on_grid      = diagnostics_path("crest_on_grid.tif"),
         calibration_rounds = diagnostics_path("calibration_rounds.json"),
+        # One row per alpha tried in round 1; the selected one is the basin's (rule 12a).
+        alpha_check        = diagnostics_path("alpha_check.csv"),
         ocean_mask_on_grid = results_path("{basin_id}/preprocessing_inputs/depth_crest_calibration/ocean_mask_on_grid.tif"),
     params:
         calib_root  = lambda wildcards: results_path(f"{wildcards.basin_id}/preprocessing_inputs/depth_crest_calibration"),
@@ -96,8 +98,10 @@ rule modelled_depth_estimation:
         wave_regime_rT               = config["river_processing"]["river_depth_modelling"]["wave_regime_rT"],
         calibration_max_days         = config["river_processing"]["river_depth_modelling"]["calibration_max_days"],
         steady_check                 = config["river_processing"]["river_depth_modelling"]["steady_check"],
+        run_length                   = config["river_processing"]["river_depth_modelling"]["run_length"],
         verify_crests                = config["river_processing"]["river_depth_modelling"]["verify_crests"],
-        crosssections                = config["river_processing"]["river_depth_modelling"]["crosssections"],
+        bifurcation_check            = config["river_processing"]["river_depth_modelling"]["bifurcation_check"],
+        split_override               = config["river_processing"]["split_override"],
         depth_scale                  = config["river_processing"]["river_depth_modelling"]["depth_scale"],
         ramp_hr                      = config["river_processing"]["river_depth_modelling"]["ramp_hr"],
         weir_crest_m                  = config["river_processing"]["river_depth_modelling"]["weir_crest_m"],
@@ -109,6 +113,9 @@ rule modelled_depth_estimation:
         nr_subgrid_pixels  = config["sfincs"]["subgrid"]["nr_subgrid_pixels"],
         nr_levels          = config["sfincs"]["subgrid"]["nr_levels"],
         nrmax              = config["sfincs"]["subgrid"]["nrmax"],
+        advection          = config["sfincs"]["advection"],
+        alpha              = config["sfincs"]["alpha"],
+        alpha_reversal_max_m = config["sfincs"]["alpha_reversal_max_m"],
     threads: rule_threads("modelled_depth_estimation")
     log:
         "logs/{basin_id}/11_depth_estimation_modelled.log"

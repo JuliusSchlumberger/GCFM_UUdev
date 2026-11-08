@@ -24,6 +24,7 @@ include: "rules/11_depth_estimation_modelled.smk"
 include: "rules/12a_build_sfincs_skeleton.smk"
 include: "rules/12b_land_bed_level.smk"
 include: "rules/12c_build_adaptation_lines.smk"
+include: "rules/12d_event_timing.smk"
 include: "rules/13a_run_spinup.smk"
 include: "rules/13b_sanity_checks.smk"
 include: "rules/14_build_sfincs.smk"
@@ -34,6 +35,7 @@ include: "rules/17b_adapt_pre.smk"
 include: "rules/17c_adapt_post.smk"
 include: "rules/18_adapt_compare.smk"
 include: "rules/19_analysis_figures.smk"
+include: "rules/90_analysis_suite.smk"
 
 # ── Output lists for the named targets ──
 

@@ -115,9 +115,11 @@ def read_sword_nodes(
     paths: Sequence[str | Path],
     wgs84_bounds: tuple[float, float, float, float],
     reach_ids,
+    extra_columns: Sequence[str] = (),
 ) -> pd.DataFrame:
-    """Return the SWORD nodes (reach_id, x, y in WGS84, width) of the given reaches."""
+    """Return the SWORD nodes (reach_id, x, y in WGS84, width, extra_columns) of the given reaches."""
     ids = {int(float(r)) for r in reach_ids}
+    columns = ["reach_id", "x", "y", "width", *extra_columns]
     parts = []
     for path in paths:
         if not Path(path).exists():
@@ -127,13 +129,51 @@ def read_sword_nodes(
             layer=SWORD_NODE_LAYER,
             bbox=tuple(wgs84_bounds),
             read_geometry=False,
-            columns=["reach_id", "x", "y", "width"],
+            columns=columns,
         )
         parts.append(nodes[nodes["reach_id"].astype("int64").isin(ids)])
     return (
-        pd.concat(parts, ignore_index=True)
-        if parts
-        else pd.DataFrame(columns=["reach_id", "x", "y", "width"])
+        pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=columns)
+    )
+
+
+def read_swot_node_levels(
+    paths: Sequence[str | Path],
+    wgs84_bounds: tuple[float, float, float, float],
+    reach_ids,
+    geoid_offset_path: str | Path,
+    crs,
+) -> pd.DataFrame:
+    """Return SWOT node levels from SWORD v17c in the model datum and CRS.
+
+    Columns: reach_id, x, y (``crs``), level_m (``wse_obs_p50`` + the
+    EGM2008 -> GOCO06s geoid offset of rule 06), mad_m (``wse_obs_mad``, the
+    spread over passes, which includes the seasonal and tidal range), n_obs.
+    Nodes without a finite ``wse_obs_p50`` are dropped.
+    """
+    import rasterio
+    from pyproj import Transformer
+
+    nodes = read_sword_nodes(
+        paths, wgs84_bounds, reach_ids, ("wse_obs_p50", "wse_obs_mad", "n_obs")
+    )
+    wse = pd.to_numeric(nodes["wse_obs_p50"], errors="coerce").to_numpy(float)
+    nodes = nodes[np.isfinite(wse)]
+    lon, lat = nodes["x"].to_numpy(float), nodes["y"].to_numpy(float)
+    with rasterio.open(geoid_offset_path) as src:
+        offset = np.array([v[0] for v in src.sample(zip(lon, lat))], dtype=float)
+    x, y = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(lon, lat)
+    return pd.DataFrame(
+        {
+            "reach_id": nodes["reach_id"].to_numpy(),
+            "x": x,
+            "y": y,
+            "level_m": pd.to_numeric(nodes["wse_obs_p50"]).to_numpy(float) + offset,
+            "mad_m": pd.to_numeric(nodes["wse_obs_mad"], errors="coerce").to_numpy(
+                float
+            ),
+            "n_obs": pd.to_numeric(nodes["n_obs"], errors="coerce").to_numpy(float),
+        }
     )
 
 
