@@ -4,6 +4,8 @@
 rule compute_flood_metrics:
     input:
         sfincs_map_nc = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"),
+        # Swing check of the run: unstable flag in the metrics, banner on the map.
+        stability     = results_path("{basin_id}/runs/{scenario}/sfincs/stability.csv"),
         # Raw landuse for the urban_code (50) check.
         landuse       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_channels.tif"),
         land_bed_level = results_path("{basin_id}/sfincs_skeleton/land_bed_level.nc"),

@@ -26,6 +26,7 @@ from _common import (  # noqa: E402
     script_parser,
     site_path,
 )
+from _figure_style import flag_unstable, unstable_flood_maps
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
@@ -151,6 +152,12 @@ def main() -> None:
             framealpha=0.9,
         )
         fig.tight_layout()
+        flag_unstable(
+            fig,
+            unstable_flood_maps(
+                {scen: basin_root / "runs" / scen / "visuals" / "max_flood_depth.tif"}
+            ),
+        )
         out_path = analysis_path(BASIN_ID, __file__, f"flood_map_{scen}.png")
         fig.savefig(out_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
@@ -216,6 +223,15 @@ def main() -> None:
 
     # fig.suptitle(f"Flood depth and source attribution by event -- basin {BASIN_ID}", fontsize=14)
     fig.tight_layout()
+    flag_unstable(
+        fig,
+        unstable_flood_maps(
+            {
+                s: basin_root / "runs" / s / "visuals" / "max_flood_depth.tif"
+                for s in SCENARIOS
+            }
+        ),
+    )
     out_path = analysis_path(BASIN_ID, __file__, "attribution_comparison.png")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)

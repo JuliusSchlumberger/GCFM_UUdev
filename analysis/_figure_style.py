@@ -49,6 +49,74 @@ def write_caption(figure_path, text: str) -> None:
     )
 
 
+def run_stability_path(flood_map_tif) -> Path:
+    """Return the stability.csv of the SFINCS run a max_flood_depth.tif comes from.
+
+    Baseline maps (runs/<scenario>/visuals/) and post maps (derived from the
+    baseline run) point at runs/<scenario>/sfincs/; pre maps at their own run.
+    """
+    folder = Path(flood_map_tif).parent
+    if folder.name == "visuals":
+        return folder.parent / "sfincs" / "stability.csv"
+    if folder.parent.name == "pre":
+        return folder / "sfincs" / "stability.csv"
+    if folder.parent.name == "post":
+        return folder.parents[2] / "sfincs" / "stability.csv"
+    raise ValueError(f"not a run's max_flood_depth.tif: {flood_map_tif}")
+
+
+def unstable_flood_maps(flood_maps: dict) -> list[str]:
+    """Return the labels of {label: max_flood_depth.tif} whose run (or spin-up) is unstable.
+
+    Runs without a stability.csv (made before the check) are reported on stdout.
+    """
+    import pandas as pd
+
+    unstable = []
+    for name, tif in flood_maps.items():
+        path = run_stability_path(tif)
+        if not path.exists():
+            print(f"  stability unchecked (no {path})")
+            continue
+        row = pd.read_csv(path).iloc[0]
+        if bool(row["unstable"]) or bool(row.get("spinup_unstable", False)):
+            unstable.append(name)
+    return unstable
+
+
+def unstable_metric_rows(metrics) -> list[str]:
+    """Return 'scenario method strategy' of the unstable rows of a metrics_comparison table."""
+    if "unstable" not in metrics:
+        print("  stability unchecked (metrics without an 'unstable' column)")
+        return []
+    rows = metrics[metrics["unstable"].fillna(False).astype(bool)]
+    return [
+        " ".join(
+            str(v) for v in (r.scenario, r.method, r.strategy) if v != "no strategy"
+        )
+        for r in rows.itertuples()
+    ]
+
+
+def flag_unstable(fig, labels: list[str]) -> str | None:
+    """Write a red footnote naming the unstable SFINCS runs a figure draws on; return it."""
+    if not labels:
+        return None
+    note = "UNSTABLE SFINCS runs (river-network level swings): " + ", ".join(labels)
+    # Inside the figure's bottom edge, so saves without bbox_inches="tight" keep it.
+    fig.text(
+        0.5,
+        0.003,
+        note,
+        ha="center",
+        va="bottom",
+        color="#c0392b",
+        fontsize=9,
+        fontweight="bold",
+    )
+    return note
+
+
 def save_figure(fig, path, **kwargs) -> None:
     """Save the figure, replacing an existing file (a viewer may hold it open for writing)."""
     Path(path).unlink(missing_ok=True)

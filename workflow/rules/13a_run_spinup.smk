@@ -17,6 +17,8 @@ rule run_spinup:
         sfincs_his          = results_path("{basin_id}/spin_up/sfincs_his.nc"),
         plot_forcing        = figure_path("20_forcing_timeseries__spinup.png"),
         plot_max_depth      = figure_path("40_run_max_flood_depth__spinup.png"),
+        # River-network swing check (src.sfincs_run.river_network_stability).
+        stability           = results_path("{basin_id}/spin_up/stability.csv"),
     params:
         skeleton_root             = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         spin_up_root              = lambda wildcards: results_path(f"{wildcards.basin_id}/spin_up"),
@@ -31,6 +33,7 @@ rule run_spinup:
         timeout_s                 = config["sfincs"]["simulation"]["timeout_s"],
         water_level_buffer_m      = config["sfincs"]["boundary_setup"]["water_level_buffer_m"],
         boundary_ramp_hr          = config["sfincs"]["spinup"]["boundary_ramp_hr"],
+        alpha_reversal_max_m      = config["sfincs"]["alpha_reversal_max_m"],
     threads: rule_threads("run_spinup")
     log:
         "logs/{basin_id}/13a_run_spinup.log"

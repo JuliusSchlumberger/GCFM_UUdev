@@ -86,8 +86,10 @@ rule adapt_run_event_pre:
         land_bed_level      = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/land_bed_level.nc"),
         domain_gpkg         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
+        spinup_stability    = spinup_stability_input,
     output:
         sfincs_map_nc            = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),
+        stability                = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/stability.csv"),
         plot_inundation_ratio    = figure_path("62_adapt_inundation_ratio__{scenario}__pre_{strategy}.png"),
         # Diagnostics (analysis only), as in rule run_event.
         **({
@@ -107,6 +109,7 @@ rule adapt_run_event_pre:
 rule adapt_flood_metrics_pre:
     input:
         sfincs_map_nc = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),
+        stability     = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/stability.csv"),
         landuse       = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/retreat_landuse.tif"),
         land_bed_level = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/land_bed_level.nc"),
         **map_figure_inputs(),

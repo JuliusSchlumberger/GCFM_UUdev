@@ -114,7 +114,7 @@ rule modelled_depth_estimation:
         nr_levels          = config["sfincs"]["subgrid"]["nr_levels"],
         nrmax              = config["sfincs"]["subgrid"]["nrmax"],
         advection          = config["sfincs"]["advection"],
-        alpha              = config["sfincs"]["alpha"],
+        alpha              = lambda wildcards: alpha_candidates(wildcards.basin_id),
         alpha_reversal_max_m = config["sfincs"]["alpha_reversal_max_m"],
     threads: rule_threads("modelled_depth_estimation")
     log:

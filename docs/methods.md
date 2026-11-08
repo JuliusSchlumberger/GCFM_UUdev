@@ -402,12 +402,24 @@ the next hour by more than `alpha_reversal_max_m` (1 m;
 SFINCS run stops the rule with its error. A steady rise, such as the flood front
 filling the channel (up to 1.3 m/h on 3279946), counts 0, and flooding outside
 the river network is not looked at. Stable runs swing at most 0.17 m; the Ebro
-at 0.5 swings 2.7-2.9 m at about 200 cells. The steady calibration discharge is
-the hardest flow the channel sees in rule 11, so the kept alpha goes into the
+at 0.5 swings 2.7-2.9 m at about 200 cells. The kept alpha goes into the
 skeleton (rule 12a) and every spin-up, event and adaptation run. Each attempt
-is logged and written to `diagnostics/{basin_id}_alpha_check.csv`; no stable
-candidate fails the rule. Event runs repeat the check on the river network
-(rule 15) and fail when an event swings more than the calibration did.
+is logged and written to `diagnostics/{basin_id}_alpha_check.csv`; with no
+stable candidate the last (smallest) is kept and marked unstable.
+`sfincs.alpha_overrides` replaces the candidates of a basin by one alpha, for
+basins whose events swing at the alpha the calibration chose (the Ebro is
+stable at 0.5 in calibration but its 100-year river event is not).
+
+**Run stability marking.** The spin-up (rule 13a), every event run (rule 15)
+and every adaptation `pre` run repeat the check on the cells along the river
+network (`src.sfincs_run.river_network_stability`) and write it to
+`stability.csv` next to the run; an event run also records whether the spin-up
+it restarts from was unstable. An unstable run is never stopped. It is marked:
+a warning in the log, the columns `unstable`, `spinup_unstable`, `max_swing_m`
+and `alpha` in `flood_metrics.csv` (and so in `metrics_comparison.csv`; `post`
+rows take the baseline run's), a red banner on the run's forcing, inundation
+and max-depth figures (`src.plots.stamp_unstable`), and a red footnote on the
+analysis figures drawn from it (`analysis/_figure_style.flag_unstable`).
 
 Round 2 reports some overtopped edges even though its inputs equal round 1's
 except the crests: lowering the crests from 1000 m changes SFINCS's solution by

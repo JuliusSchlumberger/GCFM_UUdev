@@ -22,6 +22,7 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 from _common import REPO_ROOT, analysis_path, script_parser, site_path
+from _figure_style import flag_unstable, unstable_flood_maps
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.patches import Patch
 from pre_post_heatmap import (
@@ -245,6 +246,13 @@ def plot_event_measure(
     for artist in below:
         artist.set_in_layout(True)
 
+    flag_unstable(
+        fig,
+        unstable_flood_maps(
+            {"baseline": baseline_tif}
+            | {f"pre {s}": tif_path(runs, event, "PRE", s) for s in strategies}
+        ),
+    )
     out = analysis_path(BASIN_ID, __file__, f"{event}_{measure}.png")
     fig.savefig(out, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)

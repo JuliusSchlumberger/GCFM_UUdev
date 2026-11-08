@@ -3,6 +3,8 @@
 rule adapt_metrics_post:
     input:
         baseline_sfincs_map_nc = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"),
+        # The post map is derived from the baseline run: its swing check carries over.
+        stability = results_path("{basin_id}/runs/{scenario}/sfincs/stability.csv"),
         baseline_flood_map_tif = results_path("{basin_id}/runs/{scenario}/visuals/max_flood_depth.tif"),
         attribution_mask_tif = results_path("{basin_id}/runs/{scenario}/attribution_mask.tif"),
         # water_retention sizing reference, from rule attribution_mask like attribution_mask_tif.

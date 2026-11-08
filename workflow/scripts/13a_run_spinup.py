@@ -34,6 +34,7 @@ from src.log import setup_logging
 from src.plots import (
     plot_max_inundation_map,
     plot_run_forcing,
+    stamp_unstable,
 )
 from src.river_network import outflow_crossing_mask
 from src.postprocessing import compute_max_inundation, read_land_bed_level
@@ -42,7 +43,9 @@ from src.sfincs_run import (
     FORCING_FILE_KEYS,
     parse_sfincs_inp,
     place_discharge_points,
+    river_network_stability,
     run_sfincs_subprocess,
+    stability_note,
     write_sfincs_inp,
 )
 from src.surge import calm_sea_levels, read_calm_sea_level_m
@@ -264,3 +267,17 @@ plot_max_inundation_map(
     run_label="spinup",
 )
 log.info(f"Max inundation plot written: {plot_inundation_path}")
+
+# ── river-network swing check: marks the run, never stops it ──
+stability = river_network_stability(
+    spin_up_root,
+    gpd.read_file(river_network_path),
+    float(snakemake.params.alpha_reversal_max_m),
+)
+pd.DataFrame([stability]).to_csv(snakemake.output.stability, index=False)
+if stability["unstable"]:
+    log.warning(f"Spin-up {stability_note(stability)}")
+    for path in (snakemake.output.plot_forcing, snakemake.output.plot_max_depth):
+        stamp_unstable(path, stability_note(stability))
+else:
+    log.info(f"Spin-up stable: largest hourly level swing {stability['max_swing_m']:.2f} m")

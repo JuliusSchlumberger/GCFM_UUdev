@@ -3,6 +3,28 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-08: unstable SFINCS runs are marked, not stopped; alpha per-basin override (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW: adaptation outputs carry the stability flag.**
+> `adapt_run_event_pre` writes `stability.csv` and no longer fails on river-network
+> swings; `flood_metrics.csv` of baseline, `pre` and `post` runs gets the columns
+> `unstable`, `spinup_unstable`, `max_swing_m` and `alpha` (`post` rows take the
+> baseline run's), and so does `metrics_comparison.csv`. Their figures get a red
+> banner when the run is unstable.
+
+**What changed:**
+- **Spin-up, event and adaptation `pre` runs** (rules 13a, 15, `adapt_run_event_pre`) run the river-network swing check (`src.sfincs_run.river_network_stability`) and write `stability.csv` next to the run (alpha, largest swing, cells above `alpha_reversal_max_m`, worst cell, unstable; events also `spinup_unstable`). An unstable run logs a warning and continues; the event check no longer raises.
+- **Outputs:** `flood_metrics.csv` (rules 16, `adapt_flood_metrics_pre`, `adapt_metrics_post`) gets `unstable` (run or its spin-up), `spinup_unstable`, `max_swing_m` and `alpha`. Unstable runs get a red banner on their forcing, inundation-ratio and max-depth figures (`src.plots.stamp_unstable`); the analysis figures drawn from runs (`flood_maps`, `pre_post_floodmap`, `pre_post_heatmap`, `results_figures`) get a red footnote naming them (`analysis/_figure_style.flag_unstable`); `pre_post_heatmap`'s CSV gets an `unstable` column.
+- **Rule 11:** with no stable alpha candidate the last (smallest) is kept and marked unstable (warning, banner on the round-1 figures) instead of failing.
+- **`sfincs.alpha_overrides: {2433835: 0.25}`:** a basin's override is the only alpha rule 11 tries. The Ebro's calibration round is stable at 0.5, but its 100-year river event swings 2.7 m there.
+- **`sfincs.spinup.dtmapout_s`** must be 3600 s, like `simulation.dtmapout`: the check compares hourly steps.
+
+**Why:** an unstable run should be visible wherever its results are used, so it can be judged and rerun, instead of stopping the whole build.
+
+**Effect:** no flood result changes. On the existing runs the check gives Ebro `river_100_03SLR` 0.02 m and Chao Phraya `coast_100_03SLR` 0.17 m (stable, alpha 0.25), and the alpha 0.5 test run 2.73 m at 194 cells (unstable).
+
+**Reruns:** the Ebro from rule 11 (alpha 0.5 -> 0.25 by the override); every spin-up, event and metrics rule for the new `stability.csv`.
+
 # 2026-11-08: inland water at the channel's Manning n (- JS)
 
 **What changed:** rule 09 gives every land-use pixel of `landuse.water_code` (80: wide river reaches and side arms outside the channel polygons, lakes, lagoons, ponds) `river_processing.channel_manning_n` (0.03) instead of the lookup's 0.02 (`src.landuse.write_roughness_raster(water=...)`). The open sea (200) keeps 0.02.

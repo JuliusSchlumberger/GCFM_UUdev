@@ -1,20 +1,23 @@
 """Compute the max flood depth raster and risk metrics of one SFINCS event run.
 
 Run by rules compute_flood_metrics and adapt_flood_metrics_pre; also draws the
-max flood depth map.
+max flood depth map. The run's swing check (stability.csv) goes into the
+metrics (unstable, spinup_unstable, max_swing_m, alpha) and, for an unstable
+run, onto the map as a red banner.
 """
 
 from pathlib import Path
 import pandas as pd
 
 from src.domain import load_domain
-from src.plots import plot_max_inundation_map
+from src.plots import plot_max_inundation_map, stamp_unstable
 from src.postprocessing import (
     compute_max_inundation,
     compute_risk_metrics,
     read_land_bed_level,
 )
 from src.raster import FLOAT_GTIFF_COMPRESSION, FLOAT_NODATA
+from src.sfincs_run import read_stability, stability_metrics, stability_note
 
 sfincs_root = Path(snakemake.params.sfincs_root)
 # The subgrid reference raster lives here; sfincs_root only references it.
@@ -44,6 +47,9 @@ plot_max_inundation_map(
     basin_id=snakemake.wildcards.basin_id,
     run_label=snakemake.params.run_label,
 )
+stability = read_stability(snakemake.input.stability)
+if stability_note(stability):
+    stamp_unstable(snakemake.output.plot_max_depth, stability_note(stability))
 
 # A water_retention zone is excluded from the risk metrics: water stored there
 # is the measure working, not flood risk. strategy_def is only set by rule
@@ -68,6 +74,7 @@ row = {
     "basin_id": snakemake.wildcards.basin_id,
     "scenario": snakemake.wildcards.scenario,
     **metrics,
+    **stability_metrics(snakemake.input.stability),
 }
 
 pd.DataFrame([row]).to_csv(snakemake.output.metrics_csv, index=False)

@@ -16,8 +16,12 @@ rule run_event:
         land_bed_level       = results_path("{basin_id}/sfincs_skeleton/land_bed_level.nc"),
         domain_gpkg          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
+        # The spin-up's swing check, carried into this run's stability.csv.
+        spinup_stability     = spinup_stability_input,
     output:
         sfincs_map_nc              = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"),
+        # River-network swing check (src.sfincs_run.river_network_stability).
+        stability                  = results_path("{basin_id}/runs/{scenario}/sfincs/stability.csv"),
         # Diagnostics (analysis only): the time series rasterizes every map frame
         # onto the subgrid (~12 min per run); nothing downstream reads either.
         **({

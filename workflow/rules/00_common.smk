@@ -349,11 +349,29 @@ if _COMPOUND_LAG != "auto" and (isinstance(_COMPOUND_LAG, bool) or not isinstanc
 
 # The river-network swing check (alpha_reversal_max_m, rules 11 and 15) is
 # defined on hourly level steps, and rule 11 writes maps every hour.
-if int(config["sfincs"]["simulation"]["dtmapout"]) != 3600:
-    raise ValueError(
-        f"sfincs.simulation.dtmapout must be 3600 s, got {config['sfincs']['simulation']['dtmapout']}: "
-        "the river-network swing check (alpha_reversal_max_m) compares hourly level steps"
-    )
+for _key, _dt in [
+    ("sfincs.simulation.dtmapout", config["sfincs"]["simulation"]["dtmapout"]),
+    ("sfincs.spinup.dtmapout_s", config["sfincs"]["spinup"]["dtmapout_s"]),
+]:
+    if int(_dt) != 3600:
+        raise ValueError(
+            f"{_key} must be 3600 s, got {_dt}: the river-network swing check "
+            "(alpha_reversal_max_m) compares hourly level steps"
+        )
+
+_ALPHA_OVERRIDES = {int(_b): float(_a) for _b, _a in (config["sfincs"]["alpha_overrides"] or {}).items()}
+
+def alpha_candidates(basin_id):
+    """Return the alphas rule 11 tries in order: the basin's override alone, else sfincs.alpha."""
+    if int(basin_id) in _ALPHA_OVERRIDES:
+        return [_ALPHA_OVERRIDES[int(basin_id)]]
+    return [float(a) for a in config["sfincs"]["alpha"]]
+
+def spinup_stability_input(wildcards):
+    """Return the basin's spin-up stability.csv, or nothing with the spin-up disabled."""
+    if not config["sfincs"]["spinup"]["enabled"]:
+        return []
+    return results_path(f"{wildcards.basin_id}/spin_up/stability.csv")
 
 # The event run starts from the restart at spinup_days on the forcing's own time
 # axis, so the forcing's calm lead-in must last exactly as long: a shorter

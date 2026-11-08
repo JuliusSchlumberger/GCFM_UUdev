@@ -102,6 +102,7 @@ from src.plots import (
     plot_crest_profiles,
     plot_max_inundation_map,
     plot_run_forcing,
+    stamp_unstable,
 )
 from src.postprocessing import (
     compute_max_inundation,
@@ -145,6 +146,7 @@ from src.sfincs_run import (
     read_face_zmin,
     run_sfincs_subprocess,
     set_sea_and_outflow_boundaries,
+    stability_note,
     write_weir_file,
 )
 from src.river_forcing import cosine_ramp
@@ -1373,11 +1375,11 @@ def _clear_run_outputs(run_dir: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-# Round 1 is also the alpha check: the steady calibration discharge is the
-# hardest flow the channel sees, and the first candidate whose run keeps the
-# river centreline free of hourly level swings is the basin's alpha (rule 12a).
+# Round 1 is also the alpha check: the first candidate whose run keeps the
+# river centreline free of hourly level swings is the basin's alpha (rule
+# 12a). With none stable the last (smallest) is kept and marked unstable.
 alpha_rows = []
-for alpha in alpha_candidates:
+for i_alpha, alpha in enumerate(alpha_candidates):
     sf.config.set("alpha", alpha)
     # A failed SFINCS run raises: instability shows in the levels SFINCS
     # writes (swings, non-finite values), a failed run is a different problem.
@@ -1403,18 +1405,20 @@ for alpha in alpha_candidates:
         f"{alpha_rows[-1]['cells_over']}/{reversal.size} cell(s) above {alpha_reversal_max_m:g} m -- "
         f"{'stable' if stable else 'unstable'}"
     )
-    if stable:
+    if stable or i_alpha == len(alpha_candidates) - 1:
         break
     _clear_run_outputs(round_root)
 alpha_check = pd.DataFrame(alpha_rows)
-alpha_check["selected"] = alpha_check["stable"]
+alpha_check["selected"] = alpha_check.index == len(alpha_check) - 1
 alpha_check.to_csv(snakemake.output.alpha_check, index=False)
-if not alpha_check["stable"].any():
-    raise RuntimeError(
-        f"[{round_label}] no alpha in {alpha_candidates} ran stable "
+calibration_unstable = not bool(alpha_check["stable"].iloc[-1])
+if calibration_unstable:
+    log.warning(
+        f"[{round_label}] UNSTABLE: no alpha in {alpha_candidates} ran stable; alpha {alpha:g} kept "
         f"(details in {snakemake.output.alpha_check}): check the bed in the reaches listed there"
     )
-log.info(f"alpha {alpha:g} kept for basin {basin_id}")
+else:
+    log.info(f"alpha {alpha:g} kept for basin {basin_id}")
 _steady_check(round_label, final_zs, final_times_s)
 
 
@@ -1697,4 +1701,11 @@ with open(snakemake.output.calibration_rounds, "w") as _f:
         _f,
         indent=2,
     )
+if calibration_unstable:
+    _kept = alpha_rows[-1]
+    _note = stability_note(
+        {"max_swing_m": _kept["max_reversal_m"], "cells_over": _kept["cells_over"], "alpha": _kept["alpha"]}
+    )
+    for _name in ("plot_forcing_r1", "plot_max_depth_r1"):
+        stamp_unstable(getattr(snakemake.output, _name), _note)
 log.info("Done")

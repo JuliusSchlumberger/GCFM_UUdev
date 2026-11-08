@@ -474,13 +474,94 @@ def river_cells_on_map(
     return np.unravel_index(flat, np.shape(x))
 
 
+def river_network_stability(
+    run_dir: str | Path,
+    rivers: gpd.GeoDataFrame,
+    reversal_max_m: float,
+    spacing_m: float = 50.0,
+) -> dict:
+    """Return the hourly level-swing check of one finished run on the river-network cells.
+
+    Keys: alpha (from the run's sfincs.inp), max_swing_m, cells_over (cells
+    whose swing exceeds reversal_max_m), cells, x/y of the worst cell (model
+    CRS), unstable. Reads only the river cells of sfincs_map.nc, which must
+    hold hourly maps (sfincs.simulation.dtmapout 3600).
+    """
+    import xarray as xr
+
+    run_dir = Path(run_dir)
+    inp = parse_sfincs_inp(run_dir / "sfincs.inp")
+    rivers = rivers.to_crs(epsg=int(inp["epsg"]))
+    with xr.open_dataset(run_dir / "sfincs_map.nc") as ds:
+        n, m = river_cells_on_map(ds["x"].values, ds["y"].values, rivers, spacing_m)
+        zs = (
+            ds["zs"]
+            .isel(n=xr.DataArray(n, dims="cell"), m=xr.DataArray(m, dims="cell"))
+            .values
+        )
+        xs, ys = ds["x"].values[n, m], ds["y"].values[n, m]
+    reversal = level_reversal_m(zs)
+    worst = int(np.argmax(np.nan_to_num(reversal, nan=-1.0)))
+    cells_over = int((reversal > reversal_max_m).sum())
+    return {
+        "alpha": float(inp["alpha"]),
+        "max_swing_m": float(reversal[worst]),
+        "cells_over": cells_over,
+        "cells": int(reversal.size),
+        "x": float(xs[worst]),
+        "y": float(ys[worst]),
+        "unstable": bool(cells_over > 0),
+    }
+
+
+def stability_note(row: dict) -> str | None:
+    """Return the one-line warning stamped on figures of an unstable run, None if stable.
+
+    row: a stability.csv row (river_network_stability), optionally with
+    spinup_unstable, the verdict of the spin-up the run restarts from.
+    """
+    notes = []
+    if row.get("unstable", True):
+        notes.append(
+            f"UNSTABLE: hourly level swing {row['max_swing_m']:.2f} m on the river network "
+            f"({row['cells_over']} cells, alpha {row['alpha']:g})"
+        )
+    if row.get("spinup_unstable", False):
+        notes.append("UNSTABLE SPIN-UP")
+    return " | ".join(notes) or None
+
+
+def read_stability(path: str | Path) -> dict:
+    """Return the single row of a run's stability.csv (river_network_stability)."""
+    df = pd.read_csv(path)
+    if len(df) != 1:
+        raise ValueError(f"{path}: expected one row, found {len(df)}")
+    row = df.iloc[0].to_dict()
+    row["unstable"] = bool(row["unstable"])
+    return row
+
+
+def stability_metrics(path: str | Path) -> dict:
+    """Return the flood_metrics.csv columns of a run's stability.csv.
+
+    unstable is true when the run or the spin-up it restarts from is unstable.
+    """
+    row = read_stability(path)
+    spinup = bool(row.get("spinup_unstable", False))
+    return {
+        "unstable": bool(row["unstable"]) or spinup,
+        "spinup_unstable": spinup,
+        "max_swing_m": float(row["max_swing_m"]),
+        "alpha": float(row["alpha"]),
+    }
+
+
 def selected_alpha(alpha_check_csv: str | Path) -> float:
     """Return the alpha rule 11's calibration round kept (row with selected true)."""
     df = pd.read_csv(alpha_check_csv)
     row = df[df["selected"].astype(bool)]
     if len(row) != 1:
         raise ValueError(
-            f"{alpha_check_csv}: expected one selected alpha, found {len(row)} "
-            "(no candidate was stable: rule 11 should have failed)"
+            f"{alpha_check_csv}: expected one selected alpha, found {len(row)}"
         )
     return float(row["alpha"].iloc[0])

@@ -265,6 +265,30 @@ _SAVE_RETRY_WAIT_S = 1.0
 _LOCK_ERRNOS = (errno.EINVAL, errno.EACCES)
 
 
+def stamp_unstable(png_path: str | Path, note: str) -> None:
+    """Overlay a red warning banner on a saved figure of an unstable SFINCS run."""
+    img = plt.imread(str(png_path))
+    h, w = img.shape[:2]
+    dpi = 100
+    fig = plt.figure(figsize=(w / dpi, h / dpi), dpi=dpi)
+    ax = fig.add_axes((0, 0, 1, 1))
+    ax.imshow(img)
+    ax.set_axis_off()
+    ax.text(
+        0.5,
+        0.985,
+        note,
+        transform=ax.transAxes,
+        ha="center",
+        va="top",
+        fontsize=max(10, w // 70),
+        color="white",
+        fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.4", fc="#c0392b", ec="none"),
+    )
+    save_figure(fig, png_path, dpi=dpi)
+
+
 def save_figure(fig, output_path, *, close: bool = True, **savefig_kwargs) -> None:
     """Save fig, retrying while another process briefly locks the destination file.
 
