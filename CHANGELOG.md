@@ -3,6 +3,25 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-08: inland water at the channel's Manning n (- JS)
+
+**What changed:** rule 09 gives every land-use pixel of `landuse.water_code` (80: wide river reaches and side arms outside the channel polygons, lakes, lagoons, ponds) `river_processing.channel_manning_n` (0.03) instead of the lookup's 0.02 (`src.landuse.write_roughness_raster(water=...)`). The open sea (200) keeps 0.02.
+
+**Why:** the river bed is fitted with n = 0.03 (rule 11). River water outside the channel polygons ran at 0.02, so the same river had two frictions and the bed was too deep for the friction the model applied there.
+
+**Effect (model-grid roughness recomputed from the existing inputs; nothing rerun):**
+
+| | Ebro | Chao Phraya |
+|---|---|---|
+| active cells whose n changes | 2.2 % | 8.5 % |
+| mean change on those cells | +0.0043 | +0.0034 |
+| mean n of class-80 cells | 0.029 -> 0.034 | 0.032 -> 0.038 |
+| open sea | unchanged (0.020) | unchanged (0.021) |
+
+The Ebro change sits mostly in the delta lagoons and the river's side reaches, the Chao Phraya change in scattered ponds (much of it aquaculture near the coast) and river reaches.
+
+**Reruns:** every basin from rule 09 (`grid_align_landuse`) onward, including rule 11's calibration.
+
 # 2026-11-08: adaptation subgrid levels and post-measure dry threshold match the baseline (- JS)
 
 > **⚠ KIARA, PLEASE REVIEW: both fixes are in the adaptation methods.**

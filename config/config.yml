@@ -85,7 +85,7 @@ flopros_range:
 
 # ── River network processing (rules 02, 08, 10, 11) ──────────────────────
 river_processing:
-  channel_manning_n: 0.03           # channel Manning n: GVF solve (rule 11), roughness inside the river channel (rule 09), steady GVF of the upstream boundary check (analysis/check_upstream_boundary.py)
+  channel_manning_n: 0.03           # channel Manning n: GVF solve (rule 11), roughness inside the river channel and of all inland water (landuse.water_code; the open sea keeps the lookup's 0.02) (rule 09), steady GVF of the upstream boundary check (analysis/check_upstream_boundary.py)
   flow_accumulation:
     discharge_variable: bankfull_discharge_m3s
   width_qa:  # rule 08 (and 07): SWORD width checks

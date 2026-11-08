@@ -201,6 +201,24 @@ def test_channel_roughness_is_channel_n_inside_and_lookup_outside(tmp_path):
     np.testing.assert_array_equal(right, n_plain[:, 4:])  # fully outside
 
 
+def test_water_class_takes_the_given_n_and_other_classes_keep_the_lookup(tmp_path):
+    lc100, _ = _lc100(tmp_path, nodata_corner=False)
+    source = tmp_path / "landuse_source.tif"
+    write_landuse_source("copernicus_lc100", _bounds(), lc100, source)
+    ref = _utm_ref_meta()
+    plain, water = tmp_path / "plain.tif", tmp_path / "water.tif"
+    write_roughness_raster(source, _lookup_csv(tmp_path), ref, plain)
+    code = 80  # water: 0.02 in the lookup, the channel n here
+    write_roughness_raster(
+        source, _lookup_csv(tmp_path), ref, water, water=(code, 0.03)
+    )
+    with rasterio.open(plain) as a, rasterio.open(water) as b:
+        n_plain, n_water = a.read(1), b.read(1)
+    valid = n_plain != ROUGHNESS_NODATA
+    assert np.all(n_water[valid] >= n_plain[valid] - 1e-6)
+    assert np.any(n_water[valid] > n_plain[valid] + 1e-3)
+
+
 def test_channel_landuse_turns_land_into_water_and_keeps_sea(tmp_path):
     ref = _utm_ref_meta(n=10, res_m=30.0)
     lu = np.full((10, 10), 50, dtype=np.uint8)  # built-up

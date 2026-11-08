@@ -64,8 +64,10 @@ count neither as exposed nor as dry land; `roughness.tif` on the elevation grid
 subdivided to about the land-use pixel size, area-averaged from the land-use
 source rather than taken from the dominant class
 (`landuse.roughness_aggregation`: `area_mean` or `conveyance`, the harmonic
-mean), every channel pixel at `river_processing.channel_manning_n`, the n the
-river bed is fitted with (rule 11); and land use (mode) and Manning's n
+mean), every channel pixel and every inland-water pixel (`landuse.water_code`:
+wide reaches, side arms, lakes) at `river_processing.channel_manning_n`, the n
+the river bed is fitted with (rule 11), the open sea at the lookup's 0.02; and
+land use (mode) and Manning's n
 (area-averaged, same channel n) on the model grid, the only grid-level land-use
 and roughness fields downstream, with the grid-aligned land mask.
 
