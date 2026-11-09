@@ -6,7 +6,7 @@ rule run_event:
         sfincs_inp           = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs.inp"),
         # Only when spin-up is enabled; build_sfincs sets rstfile to match.
         rstart               = lambda wildcards: (
-            results_path(f"{wildcards.basin_id}/spin_up/" + RST_FNAME)
+            spinup_path(wildcards.basin_id, wildcards.scenario, RST_FNAME)
             if config["sfincs"]["spinup"]["enabled"] else []
         ),
         # Plot background.
@@ -16,13 +16,21 @@ rule run_event:
         land_bed_level       = results_path("{basin_id}/sfincs_skeleton/land_bed_level.nc"),
         domain_gpkg          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
+        # The spin-up's swing check, carried into this run's stability.csv.
+        spinup_stability     = spinup_stability_input,
+        # sfincs.obs order: kind and distance from the mouth of every series.
+        obs_points           = results_path("{basin_id}/sfincs_skeleton/{basin_id}_obs_points.gpkg"),
     output:
         sfincs_map_nc              = results_path("{basin_id}/runs/{scenario}/sfincs/sfincs_map.nc"),
+        # River-network swing check (src.sfincs_run.river_network_stability).
+        stability                  = results_path("{basin_id}/runs/{scenario}/sfincs/stability.csv"),
         # Diagnostics (analysis only): the time series rasterizes every map frame
         # onto the subgrid (~12 min per run); nothing downstream reads either.
         **({
             "animation_flood_progress": figure_path("50_run_flood_progression__{scenario}.mp4"),
             "flood_timeseries_csv": results_path("{basin_id}/runs/{scenario}/visuals/flood_timeseries.csv"),
+            "plot_water_level": figure_path("52_run_water_level__{scenario}.png"),
+            "caption_water_level": figure_path("52_run_water_level__{scenario}.txt"),
         } if ANALYSIS else {}),
     params:
         sfincs_root                = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),

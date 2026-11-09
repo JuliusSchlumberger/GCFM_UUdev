@@ -171,20 +171,17 @@ def forward_network(
     n: float,
     end_levels: dict[int, float],
     froude_cap: float = 0.95,
-    return_capped: bool = False,
-) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    max_step_m: float = 50.0,
+) -> np.ndarray:
     """Return the steady water level per node of ``net`` (src.gvf_target.GvfNetwork).
 
     Bed and width are per node; the width of a segment is the mean of its two
     nodes. ``end_levels`` gives the level at every downstream network end.
     Reaches without discharge take the level at their downstream end.
-    return_capped: also return a bool per node, True where the depth was held
-    at the Froude-cap depth (the upstream node of a capped segment).
     """
     level = np.full(net.n_nodes, np.nan)
     start: dict[str, float] = {}
     per_reach: dict[str, np.ndarray] = {}
-    capped_reach: dict[str, np.ndarray] = {}
     for r in reversed(net.reach_ids):
         ids = np.asarray(net.reach_nodes[r])
         ch = net.reach_chainage[r]
@@ -200,7 +197,6 @@ def forward_network(
                 f"forward_network: no level for the downstream end of reach {r}"
             )
         eta_r = np.empty(len(ids))
-        cap_r = np.zeros(len(ids), dtype=bool)
         eta_r[-1] = max(eta, bed_m[ids[-1]])
         for k in range(len(ids) - 2, -1, -1):
             if q <= 0:
@@ -214,16 +210,12 @@ def forward_network(
                 n,
                 eta_r[k + 1],
                 froude_cap=froude_cap,
+                max_step_m=max_step_m,
             )
             eta_r[k] = seg.eta[0]
-            cap_r[k] = bool(seg.capped[0])
-            cap_r[k + 1] |= bool(seg.capped[-1])
         start[r] = float(eta_r[0])
         per_reach[r] = eta_r
-        capped_reach[r] = cap_r
     # A shared node takes a flowing reach's level over a dry one's.
-    capped = np.zeros(net.n_nodes, dtype=bool)
     for r in sorted(per_reach, key=lambda r: reach_q.get(r, 0.0) > 0):
         level[np.asarray(net.reach_nodes[r])] = per_reach[r]
-        capped[np.asarray(net.reach_nodes[r])] = capped_reach[r]
-    return (level, capped) if return_capped else level
+    return level

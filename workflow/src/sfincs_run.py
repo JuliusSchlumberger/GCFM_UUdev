@@ -29,33 +29,41 @@ logger = logging.getLogger(__name__)
 
 def event_timeline(
     start_hr: float,
-    river_peak_hr: float,
-    window_hr: float,
-    ramp_hr: float,
-    after_peak_hr: float,
+    surge_ramp_hr: float,
+    surge_window_hr: float,
+    surge_travel_hr: float,
+    river_lead_hr: float,
+    river_tail_hr: float,
     lag_hr: float,
     surge_event: bool,
     river_event: bool,
 ) -> tuple[float, float, float]:
     """Return (surge peak, river peak, end) in hours of an event run's forcing.
 
-    start_hr: the event start (restart); river_peak_hr: rule 07d's river
-    peak, which leaves room for the river's rising limb after the restart.
-    With both events lag_hr = river peak - surge peak: the river keeps its
-    place (or moves later for lag_hr > 0) and the surge moves. A surge alone
-    peaks right after its blend from the restart and its half-window; a tide
-    surge (no surge event) takes the river peak. The run ends after_peak_hr
-    after the last design peak, and not before the surge window closes.
+    start_hr: the restart. Surge part: the boundary blends from the calm level
+    over surge_ramp_hr, then surge_window_hr each side of the peak, then
+    surge_travel_hr for that peak to reach the main mouth. River part:
+    river_lead_hr from the start of its ramp from the mean to its peak at the
+    inflow, river_tail_hr from that peak until the event has passed the mouth
+    (falling limb + travel). With both events lag_hr = river peak - surge peak,
+    so both peaks reach the main mouth together; the part that needs more time
+    before its peak starts at the restart, the other is padded with mean
+    conditions (mean discharge; tide). The run ends when the later part ends.
+    Without either event the surge part's timing holds (tide, mean discharge).
     """
+    surge_lead_hr = surge_ramp_hr + surge_window_hr
     if surge_event and river_event:
-        river_hr = river_peak_hr + max(lag_hr, 0.0)
-        surge_hr = river_hr - lag_hr
-    elif surge_event:
-        river_hr = surge_hr = start_hr + ramp_hr + window_hr
+        surge_hr = start_hr + max(surge_lead_hr, river_lead_hr - lag_hr)
+        river_hr = surge_hr + lag_hr
+    elif river_event:
+        river_hr = surge_hr = start_hr + river_lead_hr
     else:
-        river_hr = surge_hr = river_peak_hr
-    peaks = [p for p, on in ((surge_hr, surge_event), (river_hr, river_event)) if on]
-    end_hr = max([surge_hr + window_hr] + [p + after_peak_hr for p in peaks])
+        river_hr = surge_hr = start_hr + surge_lead_hr
+    end_hr = start_hr
+    if surge_event or not river_event:
+        end_hr = surge_hr + surge_window_hr + surge_travel_hr
+    if river_event:
+        end_hr = max(end_hr, river_hr + river_tail_hr)
     return surge_hr, river_hr, end_hr
 
 
@@ -426,3 +434,209 @@ def run_sfincs_subprocess(
 
     if proc.returncode != 0:
         raise RuntimeError(f"{label} failed with exit code {proc.returncode}")
+
+
+def level_reversal_m(zs: np.ndarray) -> np.ndarray:
+    """Return per cell the largest water-level step undone by the next output step (m).
+
+    zs is (time, cell). A step up followed by a step down (or the reverse)
+    counts with the smaller of the two, so a steady rise or fall, such as a
+    flood front filling the channel, counts 0. A cell whose level turns
+    non-finite after a finite start gets inf.
+    """
+    zs = np.asarray(zs, dtype=float)
+    d = np.diff(zs, axis=0)
+    flip = np.sign(d[1:]) * np.sign(d[:-1]) < 0
+    rev = np.where(flip, np.minimum(np.abs(d[1:]), np.abs(d[:-1])), 0.0)
+    out = np.nanmax(rev, axis=0, initial=0.0)
+    broke = np.isfinite(zs[0]) & ~np.isfinite(zs).all(axis=0)
+    return np.where(broke, np.inf, out)
+
+
+def river_cells_on_map(
+    x: np.ndarray, y: np.ndarray, rivers: gpd.GeoDataFrame, spacing_m: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the (n, m) indices of the map cells the river lines run through.
+
+    x, y are sfincs_map.nc's cell-centre coordinates (n, m), in the CRS of
+    ``rivers``. Lines are sampled every ``spacing_m``; a sample further than
+    one cell from any centre is dropped.
+    """
+    from scipy.spatial import cKDTree
+
+    pts = [
+        line.interpolate(d).coords[0]
+        for line in rivers.geometry
+        if line is not None and not line.is_empty
+        for d in np.arange(0.0, line.length, spacing_m)
+    ]
+    if not pts:
+        raise ValueError("river_cells_on_map: no river line inside the map")
+    centres = np.column_stack([np.ravel(x), np.ravel(y)])
+    ok = np.isfinite(centres).all(axis=1)
+    tree = cKDTree(centres[ok])
+    dist, k = tree.query(np.asarray(pts))
+    cell_m = float(np.nanmedian(np.abs(np.diff(x, axis=1))))
+    flat = np.unique(np.flatnonzero(ok)[k[dist < cell_m]])
+    return np.unravel_index(flat, np.shape(x))
+
+
+def river_network_stability(
+    run_dir: str | Path,
+    rivers: gpd.GeoDataFrame,
+    reversal_max_m: float,
+    spacing_m: float = 50.0,
+) -> dict:
+    """Return the hourly level-swing check of one finished run on the river-network cells.
+
+    Keys: alpha (from the run's sfincs.inp), max_swing_m, cells_over (cells
+    whose swing exceeds reversal_max_m), cells, x/y of the worst cell (model
+    CRS), unstable. Reads only the river cells of sfincs_map.nc, which must
+    hold hourly maps (sfincs.simulation.dtmapout 3600).
+    """
+    import xarray as xr
+
+    run_dir = Path(run_dir)
+    inp = parse_sfincs_inp(run_dir / "sfincs.inp")
+    rivers = rivers.to_crs(epsg=int(inp["epsg"]))
+    with xr.open_dataset(run_dir / "sfincs_map.nc") as ds:
+        n, m = river_cells_on_map(ds["x"].values, ds["y"].values, rivers, spacing_m)
+        zs = (
+            ds["zs"]
+            .isel(n=xr.DataArray(n, dims="cell"), m=xr.DataArray(m, dims="cell"))
+            .values
+        )
+        xs, ys = ds["x"].values[n, m], ds["y"].values[n, m]
+    reversal = level_reversal_m(zs)
+    worst = int(np.argmax(np.nan_to_num(reversal, nan=-1.0)))
+    cells_over = int((reversal > reversal_max_m).sum())
+    return {
+        "alpha": float(inp["alpha"]),
+        "max_swing_m": float(reversal[worst]),
+        "cells_over": cells_over,
+        "cells": int(reversal.size),
+        "x": float(xs[worst]),
+        "y": float(ys[worst]),
+        "unstable": bool(cells_over > 0),
+    }
+
+
+def river_network_steady(
+    run_dir: str | Path,
+    rivers: gpd.GeoDataFrame,
+    window_hr: float,
+    tol_m: float,
+    spacing_m: float = 50.0,
+) -> dict:
+    """Return whether the river-network levels of a finished run have settled at its end.
+
+    Per river-network cell the window_hr mean level at the run's end is
+    compared with the window_hr mean just before it (rule 11's steady_check,
+    in both directions); a change above tol_m in any cell is not steady.
+    Keys: max_level_change_m, cells_changing, steady. The map must span at
+    least 2 x window_hr.
+    """
+    import xarray as xr
+
+    run_dir = Path(run_dir)
+    inp = parse_sfincs_inp(run_dir / "sfincs.inp")
+    rivers = rivers.to_crs(epsg=int(inp["epsg"]))
+    with xr.open_dataset(run_dir / "sfincs_map.nc") as ds:
+        n, m = river_cells_on_map(ds["x"].values, ds["y"].values, rivers, spacing_m)
+        zs = (
+            ds["zs"]
+            .isel(n=xr.DataArray(n, dims="cell"), m=xr.DataArray(m, dims="cell"))
+            .values
+        )
+        t_hr = (ds["time"].values - ds["time"].values[0]) / np.timedelta64(1, "h")
+    end = t_hr[-1]
+    last = t_hr > end - window_hr
+    before = (t_hr > end - 2 * window_hr) & ~last
+    if not before.any():
+        raise ValueError(
+            f"river_network_steady: run of {end:g} h is shorter than 2 x window_hr ({window_hr:g} h)"
+        )
+    change = np.abs(np.nanmean(zs[last], axis=0) - np.nanmean(zs[before], axis=0))
+    cells = int(np.nansum(change > tol_m))
+    return {
+        "max_level_change_m": float(np.nanmax(change)),
+        "cells_changing": cells,
+        "steady": cells == 0,
+    }
+
+
+def stability_note(row: dict) -> str | None:
+    """Return the one-line warning stamped on figures of an unstable run, None if stable.
+
+    row: a stability.csv row (river_network_stability), optionally with
+    spinup_unstable, the verdict of the spin-up the run restarts from.
+    """
+    notes = []
+    if row.get("unstable", True):
+        notes.append(
+            f"hourly level swing {row['max_swing_m']:.2f} m on the river network "
+            f"({row['cells_over']} cells, alpha {row['alpha']:g})"
+        )
+    if not row.get("steady", True):
+        notes.append(f"spin-up not steady after {row['spinup_hr']:.0f} h")
+    if row.get("spinup_unstable", False):
+        notes.append("spin-up unstable or not steady")
+    return "Check stability: " + " | ".join(notes) if notes else None
+
+
+def read_stability(path: str | Path) -> dict:
+    """Return the single row of a run's stability.csv (river_network_stability)."""
+    df = pd.read_csv(path)
+    if len(df) != 1:
+        raise ValueError(f"{path}: expected one row, found {len(df)}")
+    row = df.iloc[0].to_dict()
+    for key in ("unstable", "steady", "spinup_unstable"):
+        if key in row:
+            row[key] = bool(row[key])
+    return row
+
+
+def spinup_flagged(spinup_stability_csv: str | Path) -> bool:
+    """Return whether a spin-up is unstable or did not settle (its stability.csv)."""
+    row = read_stability(spinup_stability_csv)
+    return row["unstable"] or not row.get("steady", True)
+
+
+def stability_metrics(path: str | Path) -> dict:
+    """Return the flood_metrics.csv columns of a run's stability.csv.
+
+    unstable is true when the run or the spin-up it restarts from is unstable.
+    """
+    row = read_stability(path)
+    spinup = bool(row.get("spinup_unstable", False))
+    return {
+        "unstable": bool(row["unstable"]) or spinup,
+        "spinup_unstable": spinup,
+        "max_swing_m": float(row["max_swing_m"]),
+        "alpha": float(row["alpha"]),
+    }
+
+
+def read_observation_levels(run_dir: str | Path) -> tuple[np.ndarray, np.ndarray]:
+    """Return (hours since tref, water level (n_time, n_points)) of a run's sfincs_his.nc."""
+    import xarray as xr
+
+    run_dir = Path(run_dir)
+    tref = pd.to_datetime(
+        parse_sfincs_inp(run_dir / "sfincs.inp")["tref"], format="%Y%m%d %H%M%S"
+    )
+    with xr.open_dataset(run_dir / "sfincs_his.nc") as ds:
+        t_hr = (pd.to_datetime(ds["time"].values) - tref) / pd.Timedelta(hours=1)
+        zs = ds["point_zs"].transpose("time", ...).values
+    return np.asarray(t_hr, dtype=float), zs.reshape(len(t_hr), -1)
+
+
+def selected_alpha(alpha_check_csv: str | Path) -> float:
+    """Return the alpha rule 11's calibration round kept (row with selected true)."""
+    df = pd.read_csv(alpha_check_csv)
+    row = df[df["selected"].astype(bool)]
+    if len(row) != 1:
+        raise ValueError(
+            f"{alpha_check_csv}: expected one selected alpha, found {len(row)}"
+        )
+    return float(row["alpha"].iloc[0])

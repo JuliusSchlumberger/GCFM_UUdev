@@ -38,6 +38,8 @@ rule build_sfincs_skeleton:
         # Rule 11's round-1 subgrid table, copied when this model's mask is identical.
         calibration_subgrid = calibration_subgrid_files(),
         river_bed_nodes   = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_bed/{basin_id}_river_bed_nodes.csv"),
+        # The alpha rule 11's calibration round ran stable with.
+        alpha_check       = diagnostics_path("alpha_check.csv"),
         # Only calm_sea_level_m/coastal_protection_crest_m and bankfull_discharge_m3s/
         # has_glofas (observation points); no forcing timeseries.
         surge_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
@@ -46,6 +48,9 @@ rule build_sfincs_skeleton:
         # Mouth obs points (index into sfincs.obs) and cross-sections (sfincs.crs)
         # every event run inherits; read by analysis/peak_lag.py.
         mouths         = results_path("{basin_id}/sfincs_skeleton/{basin_id}_mouths.gpkg"),
+        # Every observation point in sfincs.obs order: kind (inflow, river, mouth,
+        # sea), reach_id, dist_from_mouth_m; for the water-level figures.
+        obs_points     = results_path("{basin_id}/sfincs_skeleton/{basin_id}_obs_points.gpkg"),
         sfincs_inp     = results_path("{basin_id}/sfincs_skeleton/sfincs.inp"),
         sfincs_subgrid = results_path("{basin_id}/sfincs_skeleton/sfincs_subgrid.nc"),
         sfincs_weir    = results_path("{basin_id}/sfincs_skeleton/sfincs.weir"),
@@ -62,13 +67,13 @@ rule build_sfincs_skeleton:
         nr_subgrid_pixels  = config["sfincs"]["subgrid"]["nr_subgrid_pixels"],
         nr_levels          = config["sfincs"]["subgrid"]["nr_levels"],
         nrmax              = config["sfincs"]["subgrid"]["nrmax"],
-        inputs_dir         = lambda wildcards: results_path(f"{wildcards.basin_id}/preprocessing_inputs"),
+        advection          = config["sfincs"]["advection"],
+        inputs_dir        = lambda wildcards: results_path(f"{wildcards.basin_id}/preprocessing_inputs"),
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         active_mask_enabled        = config["sfincs"]["grid"]["active_mask"]["enabled"],
         active_mask_elevation_buffer_m = config["sfincs"]["grid"]["active_mask"]["elevation_buffer_m"],
         outflow_buffer_m  = config["sfincs"]["boundary_setup"]["outflow_buffer_m"],
-        n_top_crossings    = config["sfincs"]["observation_points"]["n_top_crossings"],
-        n_per_crossing     = config["sfincs"]["observation_points"]["n_per_crossing"],
+        obs_spacing_m      = config["sfincs"]["observation_points"]["spacing_m"],
         max_downstream_hops = config["sfincs"]["observation_points"]["max_downstream_hops"],
         mouth_upstream_m   = config["sfincs"]["observation_points"]["mouth_upstream_m"],
         mouth_section_margin_m = config["sfincs"]["observation_points"]["mouth_section_margin_m"],

@@ -16,7 +16,8 @@ from src.adaptation_scaling import resolve_forcing_params
 from src.adaptation_strategies import FILE_PARAMS
 from src.domain import load_domain
 from src.log import setup_logging
-from src.plots import plot_inundation_check, plot_max_inundation_map
+from src.plots import plot_inundation_check, plot_max_inundation_map, stamp_unstable
+from src.sfincs_run import read_stability, stability_metrics, stability_note
 from src.postprocessing import (
     compute_max_inundation,
     compute_risk_metrics,
@@ -62,6 +63,9 @@ for measure_type, raw_params in strategy_def["measures"].items():
         # From rule attribution_mask, the same reference the pre method reads.
         with open(snakemake.input.baseline_excess_volume) as fh:
             resolved["baseline_excess_volume"] = json.load(fh)["baseline_excess_volume"]
+    if measure_type in ("nbs_land_reclamation", "water_retention", "pumps"):
+        # Cells lowered to hmin or below are dry, as in the baseline map.
+        resolved["hmin"] = hmin
     log.info(f"Applying measure {measure_type} with params {resolved}")
 
     result = dispatch_rules(
@@ -126,6 +130,11 @@ plot_max_inundation_map(
     basin_id=snakemake.wildcards.basin_id,
     run_label=snakemake.params.run_label,
 )
+# The post map is derived from the baseline run: its swing check carries over.
+stability = read_stability(snakemake.input.stability)
+if stability_note(stability):
+    for _png in (snakemake.output.plot_inundation_ratio, snakemake.output.plot_max_depth):
+        stamp_unstable(_png, stability_note(stability))
 
 row = {
     "basin_id": snakemake.wildcards.basin_id,
@@ -133,5 +142,6 @@ row = {
     "strategy": snakemake.wildcards.strategy,
     "method": "post",
     **metrics,
+    **stability_metrics(snakemake.input.stability),
 }
 pd.DataFrame([row]).to_csv(snakemake.output.metrics_csv, index=False)

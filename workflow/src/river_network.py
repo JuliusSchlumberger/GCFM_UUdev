@@ -388,6 +388,7 @@ def accumulate_discharge(
     seed_q: dict[str, float],
     adjacency: dict[str, list[str]],
     excluded_arms: set[str] | None = None,
+    share_override: dict[str, dict[str, float]] | None = None,
 ) -> np.ndarray:
     """Return accumulated discharge (m3 s-1) per reach, width-split at bifurcations.
 
@@ -399,6 +400,10 @@ def accumulate_discharge(
     inflow from outside the cycle. excluded_arms get no share at a
     bifurcation unless every arm is excluded. 0.0 for reaches not downstream
     of any seed.
+
+    share_override: {bifurcating reach: {arm: share}} replaces the width (and
+    exclusion) shares there; it must name every arm, with shares summing to 1.
+    Entries for reaches outside this network are skipped.
     """
     reach_ids = [normalize_reach_id(r) for r in rivers["reach_id"]]
     if len(reach_ids) == 0:
@@ -414,6 +419,7 @@ def accumulate_discharge(
         i: [reach_to_idx[d] for d in adjacency.get(reach_id, []) if d in reach_to_idx]
         for i, reach_id in enumerate(reach_ids)
     }
+    override = _validated_share_override(share_override or {}, reach_to_idx, down)
     n_up = np.zeros(len(reach_ids), dtype=int)
     for dns in down.values():
         for d in dns:
@@ -454,6 +460,8 @@ def accumulate_discharge(
                     w_dn = keep.astype(float)
         total_w = w_dn.sum()
         shares = w_dn / total_w if total_w > 0 else np.full(len(dns), 1.0 / len(dns))
+        if i in override:
+            shares = override[i]
         for d, share in zip(dns, shares):
             q[d] += q[i] * share
             inflow[d] += q[i] * share
@@ -472,6 +480,33 @@ def accumulate_discharge(
         f"max Q = {q.max():.2f} m3 s-1"
     )
     return q
+
+
+def _validated_share_override(
+    share_override: dict[str, dict[str, float]],
+    reach_to_idx: dict[str, int],
+    down: dict[int, list[int]],
+) -> dict[int, np.ndarray]:
+    out = {}
+    idx_to_reach = {i: r for r, i in reach_to_idx.items()}
+    for parent, arm_shares in share_override.items():
+        parent = normalize_reach_id(parent)
+        if parent not in reach_to_idx:
+            continue  # the override list covers every basin
+        dns = down[reach_to_idx[parent]]
+        arms = {normalize_reach_id(a): float(s) for a, s in arm_shares.items()}
+        if len(dns) < 2 or set(arms) != {idx_to_reach[d] for d in dns}:
+            raise ValueError(
+                f"share_override: reach {parent} has downstream arms "
+                f"{sorted(idx_to_reach[d] for d in dns)}, override names {sorted(arms)}"
+            )
+        shares = np.array([arms[idx_to_reach[d]] for d in dns])
+        if (shares < 0).any() or not np.isclose(shares.sum(), 1.0, atol=1e-6):
+            raise ValueError(
+                f"share_override: shares at reach {parent} must be >= 0 and sum to 1, got {arms}"
+            )
+        out[reach_to_idx[parent]] = shares
+    return out
 
 
 def identify_delta_outflow_points(

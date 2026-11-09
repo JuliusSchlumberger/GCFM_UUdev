@@ -33,10 +33,10 @@ rule select_surge_stations:
 rule extract_gtsm_series:
     input:
         surge_stations = results_path("{basin_id}/preprocessing_inputs/forcing/surge_stations.json"),
+        gtsm_station_subset = raw_input("gtsm_station_subset"),
     output:
         gtsm_hourly = results_path("{basin_id}/preprocessing_inputs/forcing/gtsm_hourly.nc"),
     params:
-        gtsm_station_subset = catalogue_path("gtsm_station_subset"),
         max_match_km        = config["boundary_forcings"]["surge"]["hydrograph"]["max_match_km"],
     threads: rule_threads("extract_gtsm_series")
     log:

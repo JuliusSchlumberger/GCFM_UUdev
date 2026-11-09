@@ -1,4 +1,4 @@
-"""Phase 1.2: slope-floor census and the depth change for other slope floors.
+"""Slope-floor census and the depth change for other slope floors.
 
 Share of nodes with on_floor in the stored node table (rule 11), then the bed
 re-estimated (rule 11 round 0, design_discharge as configured) at slope_floor
@@ -6,16 +6,23 @@ re-estimated (rule 11 round 0, design_discharge as configured) at slope_floor
 over flowing nodes (q > q_min_m3s), and over the flowing nodes on the
 floor at either value (the only ones whose depth changes).
 
-Writes phase1_slope_floor_summary.csv to <results_dir>/figures/analysis/.
+Writes slope_floor_summary.csv to <results_dir>/figures/analysis/.
 
-Usage: python analysis/phase1_slope_floor.py [basin_id ...]
+Usage: python analysis/slope_floor.py [basin_id ...]
 """
 
 import logging
 
 import pandas as pd
+from _basin_inputs import (
+    DEFAULT_BASINS,
+    basin_paths,
+    load_config,
+    pct,
+    round0,
+    write_summary,
+)
 from _common import analysis_path, script_parser
-from _phase1 import PHASE1_BASINS, basin_paths, load_config, pct, round0, write_summary
 
 FLOORS = (5e-6, 1e-5, 2e-5)
 REFERENCE_FLOOR = 1e-5
@@ -57,7 +64,7 @@ def floor_basin(basin_id: str, cfg: dict) -> list[dict]:
 
 def main() -> int:
     parser = script_parser(__doc__)
-    parser.add_argument("basin_ids", nargs="*", default=PHASE1_BASINS)
+    parser.add_argument("basin_ids", nargs="*", default=DEFAULT_BASINS)
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"

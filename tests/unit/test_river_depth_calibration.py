@@ -2,9 +2,14 @@
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import pytest
 from shapely.geometry import LineString, Point
-from src.river_depth_calibration import bifurcation_cross_sections, mouth_sections
+from src.river_depth_calibration import (
+    bifurcation_cross_sections,
+    bifurcation_split_table,
+    mouth_sections,
+)
 
 CRS = "EPSG:32631"
 
@@ -52,3 +57,19 @@ def test_bifurcation_sections_cross_each_arm_once():
     arm2 = crs[crs["arm_reach"] == "2"].geometry.iloc[0]
     assert arm2.length == pytest.approx(200.0 + 2 * 100.0)
     assert arm2.intersects(rivers.geometry.iloc[1])
+
+
+def test_split_table_shares_sum_to_one_and_error_is_symmetric():
+    sections = pd.DataFrame(
+        {
+            "name": ["bif_1_2", "bif_1_3"],
+            "parent_reach": ["1", "1"],
+            "arm_reach": ["2", "3"],
+        }
+    )
+    t = bifurcation_split_table(
+        sections, {"bif_1_2": 55.0, "bif_1_3": 45.0}, {"2": 37.0, "3": 63.0}
+    )
+    assert t["share_sfincs"].sum() == pytest.approx(1.0)
+    assert t["share_routed"].tolist() == pytest.approx([0.37, 0.63])
+    assert t["abs_error"].tolist() == pytest.approx([0.18, 0.18])

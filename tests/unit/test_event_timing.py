@@ -1,56 +1,78 @@
-"""Smoke tests for the late-compartment helpers in analysis/check_event_timing.py."""
-
-import sys
-from pathlib import Path
+"""Tests for the peak travel times and the river tail of src.event_timing."""
 
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "analysis"))
-
-from check_event_timing import _compartment_table, _label_compartments  # noqa: E402
-
-CELL_AREA_M2 = 100.0 * 100.0
-
-
-def _grid():
-    """Channel in row 0, a filling 4x5 compartment next to it, a full one away from it, a 2-cell speck."""
-    zb = np.zeros((10, 12))
-    wet0 = np.zeros(zb.shape, bool)
-    wet0[0, :] = True
-    late = np.zeros(zb.shape, bool)
-    late[1:5, 0:5] = True
-    late[7:10, 8:12] = True
-    late[8, 2:4] = True
-    return zb, wet0, late
+import pytest
+import xarray as xr
+from src.event_timing import (
+    G_MS2,
+    event_start_discharge,
+    event_window,
+    scenario_sea_level_m,
+    sea_travel_hr,
+)
 
 
-def _frames(zb, labels, t_hr):
-    """Compartment 1 rises 0.1 m/h throughout; compartment 2 fills in the first 10 h, then holds."""
-    for t in t_hr:
-        zs = zb.copy()
-        zs[labels == 1] = 0.1 * t
-        zs[labels == 2] = 0.1 * min(t, 10.0)
-        yield zs
+def _flood():
+    t = np.arange(0.0, 400.0)
+    return t, 100.0 + 900.0 * np.exp(-(((t - 200.0) / 40.0) ** 2))
 
 
-def test_small_patches_are_dropped():
-    _, _, late = _grid()
-    labels, n = _label_compartments(late, min_cells=10)
-    assert n == 2
-    assert labels[8, 2] == 0
+def test_event_window_starts_and_ends_where_the_flow_crosses_q_start():
+    t, q = _flood()
+    start, end = event_window(t, q, 200.0, 550.0, 168.0, 100.0)
+    half = 40.0 * np.sqrt(np.log(2.0))  # q = 550 at 200 +- half
+    assert start == pytest.approx(200.0 - half, abs=0.5)
+    assert end == float(np.ceil(200.0 + half))
 
 
-def test_filling_compartment_has_inflow_at_run_end():
-    zb, wet0, late = _grid()
-    labels, n = _label_compartments(late, min_cells=10)
-    t_hr = np.arange(0.0, 25.0)
-    comp = _compartment_table(
-        labels, n, zb, wet0, _frames(zb, labels, t_hr), t_hr, 12.0, CELL_AREA_M2
-    ).set_index("compartment")
-    filling, full = comp.loc[labels[2, 2]], comp.loc[labels[8, 9]]
-    assert filling["inflow_last6h_m3s"] > 0
-    assert np.isclose(filling["mean_rise_last6h_cm_hr"], 10.0)
-    assert 0 < filling["share_gained_after_surge"] < 1
-    assert full["inflow_last6h_m3s"] == 0
-    assert full["share_gained_after_surge"] == 0
-    assert filling["borders_initial_water"] and not full["borders_initial_water"]
+def test_event_window_is_capped_before_and_after_the_peak():
+    t = np.arange(0.0, 400.0)
+    start, end = event_window(t, np.full(t.size, 900.0), 200.0, 500.0, 50.0, 100.0)
+    assert (start, end) == (150.0, 300.0)
+
+
+def test_q_start_is_the_protection_discharge_unless_the_event_stays_below_it():
+    assert event_start_discharge(100.0, 1100.0, 400.0, 0.5) == 400.0
+    assert (
+        event_start_discharge(100.0, 1100.0, 1000.0, 0.5) == 1000.0
+    )  # above halfway too
+    assert event_start_discharge(100.0, 500.0, 800.0, 0.5) == 300.0
+    assert event_start_discharge(100.0, 500.0, None, 0.5) == 300.0
+
+
+def test_sea_travel_is_distance_over_shallow_water_speed():
+    bed = np.full((3, 50), -10.0)
+    mask = np.ones(bed.shape, dtype=int)
+    mask[:, 0] = 2
+    hours, km = sea_travel_hr(bed, mask, 0.0, (1, 49), 100.0)
+    assert km == 4.9
+    assert np.isclose(hours, 4900.0 / np.sqrt(G_MS2 * 10.0) / 3600.0)
+
+
+def test_sea_travel_snaps_a_dry_mouth_to_the_nearest_wet_cell():
+    bed = np.full((3, 20), -5.0)
+    bed[1, 19] = 2.0
+    mask = np.ones(bed.shape, dtype=int)
+    mask[:, 0] = 2
+    hours, _ = sea_travel_hr(bed, mask, 0.0, (1, 19), 100.0)
+    assert np.isfinite(hours) and hours > 0
+
+
+def _surge_ds():
+    return xr.Dataset(
+        {
+            "station_calm_sea_level_m": ("station", [0.1, 0.3]),
+            "slr_fingerprint": ("station", [1.0, 1.2]),
+            "storm_tide_rp_table": (("station", "rp"), [[1.0, 2.0], [1.4, 2.2]]),
+        },
+        coords={"rp_yr": ("rp", [10.0, 100.0])},
+    )
+
+
+def test_surge_scenario_sea_is_the_storm_tide_peak_and_others_the_calm_sea():
+    ds = _surge_ds()
+    calm = scenario_sea_level_m(ds, "Tide", 0.5)
+    assert calm == pytest.approx(np.mean([0.1 + 0.5, 0.3 + 0.6]))
+    storm = scenario_sea_level_m(ds, 100, 0.5)
+    assert storm == pytest.approx(np.mean([2.0 + 0.6, 2.2 + 0.9]))
+    assert scenario_sea_level_m(ds, None, 0.0) < storm

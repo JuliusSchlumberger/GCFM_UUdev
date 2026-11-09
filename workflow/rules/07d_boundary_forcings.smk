@@ -35,15 +35,14 @@ rule get_boundary_forcings:
         max_width_fill_m = config["river_processing"]["width_qa"]["max_width_fill_m"],
         # shared surge + river timeseries axis
         # The basin's spin-up length: the event run starts at its restart.
-        lead_days = lambda wildcards: spinup_days(wildcards.basin_id),
+        lead_days = config["boundary_forcings"]["lead_days"],
         dt_hr = config["boundary_forcings"]["dt_hr"],
         # surge
-        # Diagnostic-preview RP only (storm_tide_at_rp_m/storm_tide_at_rp_raw_m, 07_forcing_surge_correction.png),
-        # taken from the "default" scenario so this basin-level rule stays off
-        # the scenario axis; rule 14 uses the requested scenario's surge_rp_yr.
-        # 'Tide' or null: storm_tide_at_rp_m at RP1 (src.surge.preview_station_rp_yr)
-        # and a water_level preview of that boundary.
-        surge_rp_yr = scenario_params("default")["surge_rp_yr"],
+        # Diagnostic-preview RP only (storm_tide_at_rp_m/storm_tide_at_rp_raw_m,
+        # the water_level preview, 07_forcing_surge_correction.png): the fixed
+        # eva.preview_rp_yr, so no scenario reruns this basin-level rule; rule 14
+        # uses the requested scenario's surge_rp_yr.
+        surge_rp_yr = int(config["boundary_forcings"]["river"]["eva"]["preview_rp_yr"]),
         surge_period_hr = config["boundary_forcings"]["surge"]["period_hr"],
         # Only the keys read here: the block also holds window_overrides_hr, and
         # passing it whole would rerun every basin when one basin's window changes.
@@ -71,7 +70,13 @@ rule get_boundary_forcings:
         bias_correction            = config["boundary_forcings"]["river"]["bias_correction"],
         # Sets where the surge peak sits (room for a GloFAS event's rise); the
         # scenario's river event is built in rule build_sfincs.
-        river_event                = config["boundary_forcings"]["river"]["event_hydrograph"],
+        # Only the keys read here: the rest of the block shapes the event in
+        # rule 14, and passing it whole would rerun this rule (and rule 11's
+        # calibration) when one of them changes.
+        river_event                = {
+            k: config["boundary_forcings"]["river"]["event_hydrograph"][k]
+            for k in ("source", "max_rising_days")
+        },
     threads: rule_threads("get_boundary_forcings")
     resources:
         raw_io=1,

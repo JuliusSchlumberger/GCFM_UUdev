@@ -1,4 +1,4 @@
-"""Shared inputs of the Phase 1 diagnostic scripts (analysis/phase1_*.py): basin paths and a rule-11 round-0 bed."""
+"""Shared inputs of the river-bed analysis scripts: basin paths and a rule-11 round-0 bed."""
 
 import json
 import sys
@@ -11,7 +11,7 @@ from _common import REPO_ROOT, site_path
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
 
-PHASE1_BASINS = ["2433835", "3279946"]  # Ebro first, then Chao Phraya
+DEFAULT_BASINS = ["2433835", "3279946"]  # Ebro first, then Chao Phraya
 
 
 def load_config() -> dict:
@@ -22,7 +22,7 @@ def load_config() -> dict:
 
 
 def basin_paths(basin_id: str) -> dict[str, Path]:
-    """Return the rule 06-11 outputs of a basin the Phase 1 scripts read."""
+    """Return the rule 06-11 outputs of a basin the analysis scripts read."""
     root = site_path("results_dir") / basin_id
     prep = root / "preprocessing_inputs"
     dom, frc = prep / "domain", prep / "forcing"
@@ -53,9 +53,20 @@ def basin_paths(basin_id: str) -> dict[str, Path]:
         "water_level_r1": prep
         / "diagnostics"
         / f"{basin_id}_calibration_water_level_r1.csv",
-        "spin_up": root / "spin_up",
         "skeleton": root / "sfincs_skeleton",
     }
+
+
+def spinup_dir(basin_id: str, scenario: str) -> Path:
+    """Return the spin-up a scenario's event restarts from (rule 13a, spin_up/slr_<slr_m>/)."""
+    cfg = load_config()
+    slr_m = 0.0
+    if cfg["boundary_forcings"]["surge"]["slr"]["enabled"]:
+        scenarios = yaml.safe_load(
+            (REPO_ROOT / cfg["scenarios_file"]).read_text(encoding="utf-8")
+        )
+        slr_m = float(scenarios[scenario]["slr_m"])
+    return site_path("results_dir") / basin_id / "spin_up" / f"slr_{slr_m:g}"
 
 
 def calm_sea_level_m(basin_id: str) -> float:
@@ -69,12 +80,13 @@ def calm_sea_level_m(basin_id: str) -> float:
         return float(read_calm_sea_level_m(ds))
 
 
-def round0(basin_id: str, cfg: dict, **bed_overrides):
+def round0(basin_id: str, cfg: dict, water_surface=None, **bed_overrides):
     """Re-run rule 11's round 0 on the stored rule 08-10 outputs; return (bed, rivers, q_design, q_mean).
 
     bed_overrides replace keys of river_depth_modelling.bed (e.g.
     design_discharge="mean", slope_floor=5e-6). Same call as rule 11
-    (src.river_bed.estimate_river_bed_from_files), on the stored water surface.
+    (src.river_bed.estimate_river_bed_from_files), on the stored water surface
+    or on the rule-10 table at ``water_surface``.
     """
     import geopandas as gpd
     from src.domain import load_domain
@@ -96,7 +108,7 @@ def round0(basin_id: str, cfg: dict, **bed_overrides):
     bed, q_design, _seeds, q_mean = estimate_river_bed_from_files(
         rivers,
         p["river_forcing"],
-        p["water_surface"],
+        water_surface or p["water_surface"],
         sword,
         wgs84_bounds,
         crs,
@@ -105,6 +117,7 @@ def round0(basin_id: str, cfg: dict, **bed_overrides):
         manning_n=rp["channel_manning_n"],
         surface_cfg=rp["water_surface"],
         cfg=bed_cfg,
+        share_override=rp["split_override"],
     )
     return bed, rivers, q_design, q_mean
 

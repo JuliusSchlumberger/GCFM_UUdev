@@ -226,24 +226,11 @@ def test_surge_preview_without_storm_tide_rp_builds_valid_dataset(
             build_design_surge_matrix(ds, default_surge_rp_yr)
 
 
-def test_slr_lead_in_holds_the_spinup_slr_and_ramps_to_the_scenario():
+def test_lead_in_starts_at_the_calm_level_of_its_own_slr():
     ds = _surge_ds()
-    start = int(np.searchsorted(ds["time"].values, _LEAD_DAYS * 24.0))
-    same = build_design_surge_matrix(
-        ds, 10, slr_m=0.3, slr_ramp_hr=4.0, spinup_slr_m=0.3
-    )
-    full = build_design_surge_matrix(ds, 10, slr_m=0.3)
-    np.testing.assert_allclose(
-        same, full
-    )  # spin-up already at the scenario's SLR: no ramp
-    up = build_design_surge_matrix(ds, 10, slr_m=0.6, slr_ramp_hr=4.0, spinup_slr_m=0.3)
-    np.testing.assert_allclose(
-        up[:, 0], calm_sea_levels(ds, 0.3)
-    )  # lead-in = spin-up level
-    np.testing.assert_allclose(
-        up[:, -1], build_design_surge_matrix(ds, 10, slr_m=0.6)[:, -1]
-    )
-    assert start > 0
+    for slr_m in (0.0, 0.3):
+        wl = build_design_surge_matrix(ds, 10, slr_m=slr_m)
+        np.testing.assert_allclose(wl[:, 0], calm_sea_levels(ds, slr_m))
 
 
 def test_periodic_tide_repeats_outside_the_window():

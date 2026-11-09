@@ -14,7 +14,7 @@ Everything is written under `<results_dir>/{basin_id}/`:
 | `preprocessing_inputs/domain/` | delta polygon, model domain, elevation, land use, roughness, river network (raw, cleaned, depth-calibrated), coastal protection weir, SFINCS grid definition |
 | `preprocessing_inputs/forcing/` | storm-tide hydrographs, surge and river forcing (`surge_forcing.nc`, `river_forcing.nc`) |
 | `sfincs_skeleton/` | per-basin SFINCS model (`sfincs.inp`, `sfincs.weir`, `sfincs_subgrid.nc`) and `land_bed_level.nc`, the bed level every flood depth is computed on (open sea masked) |
-| `spin_up/` | spin-up run and restart file (when `sfincs.spinup.enabled`) |
+| `spin_up/slr_<slr_m>/` | spin-up runs and restart files, one per `slr_m` (when `sfincs.spinup.enabled`) |
 | `runs/{scenario}/sfincs/` | event run (`sfincs_map.nc`) |
 | `runs/{scenario}/visuals/` | maximum flood depth (`max_flood_depth.tif`) and flood time series |
 | `runs/{scenario}/metrics/flood_metrics.csv` | flood-risk metrics (flooded shares of the land and urban area, depths) |
@@ -69,17 +69,17 @@ Everything is written under `<results_dir>/{basin_id}/`:
    how to unset them: [docs/install.md](docs/install.md#site-settings).
 
 4. Check the job graph with a dry run on the smallest case (Ebro delta, basin
-   `2433835`, scenario `default`); it lists 15 jobs:
+   `2433835`, scenario `compound_100_0SLR`); it lists 15 jobs:
 
    ```bash
-   snakemake -n preprocess --cores 1 --config target_basins="[2433835]" target_scenarios="['default']"
+   snakemake -n preprocess --cores 1 --config target_basins="[2433835]" target_scenarios="['compound_100_0SLR']"
    ```
 
 5. Run it. Without a target Snakemake runs `all` (preprocess + build).
 
    ```bash
-   snakemake preprocess --cores 4 --config target_basins="[2433835]" target_scenarios="['default']"
-   snakemake build      --cores 4 --config target_basins="[2433835]" target_scenarios="['default']"
+   snakemake preprocess --cores 4 --config target_basins="[2433835]" target_scenarios="['compound_100_0SLR']"
+   snakemake build      --cores 4 --config target_basins="[2433835]" target_scenarios="['compound_100_0SLR']"
    ```
 
 ### Targets
@@ -145,4 +145,5 @@ git clone and a one-time `pre-commit install`
 | [docs/data.md](docs/data.md) | every input dataset: version, source, licence, how to obtain it, where it goes (generated from `config/data_catalogue.yml`) |
 | [docs/running.md](docs/running.md) | targets, `--config` keys, scenarios, adaptation runs, reruns, outputs |
 | [docs/methods.md](docs/methods.md) | how the model is built: datums, grid, river depth and crest calibration, forcing, adaptation |
+| [docs/river_depth_gvf.md](docs/river_depth_gvf.md) | river bed, advection and timing choices with their evidence; the `analysis_suite` target |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | branching, pull requests, code and docstring style, pre-commit |

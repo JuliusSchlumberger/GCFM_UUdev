@@ -23,7 +23,8 @@ exclude = [
 # Only the synthetic unit tests: the scripts under analysis/ are stand-alone
 # analysis/plotting scripts that need real pipeline results, not pytest tests.
 testpaths = ["tests/unit"]
-addopts = "-m 'not needs_data'"
+addopts = "-m 'not needs_data and not needs_sfincs'"
 markers = [
     "needs_data: needs raw data or pipeline results (site settings raw_data_root / results_dir); run with -m needs_data",
+    "needs_sfincs: runs the SFINCS binary (site setting sfincs_exe); run with -m needs_sfincs",
 ]

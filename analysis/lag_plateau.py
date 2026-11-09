@@ -32,11 +32,16 @@ from check_river_bed import _git_hash
 from peak_lag import DEFAULT_BASINS, _his, _table, godin, peak_hr
 
 
-def configured_lag_hr(basin_id: str) -> float:
+def configured_lag_hr(basin_id: str, scenario: str) -> float:
+    """Return the compound lag a scenario's build uses: rule event_timing's for lag_hr auto, else the configured number."""
     with open(REPO_ROOT / "config" / "config.yml", encoding="utf-8") as f:
-        compound = yaml.safe_load(f)["sfincs"]["boundary_setup"]["compound"]
-    overrides = {str(b): h for b, h in (compound.get("lag_overrides_hr") or {}).items()}
-    return float(overrides.get(basin_id, compound["lag_hr"]))
+        lag = yaml.safe_load(f)["sfincs"]["boundary_setup"]["compound"]["lag_hr"]
+    if lag != "auto":
+        return float(lag)
+    timing = (
+        site_path("results_dir") / basin_id / "runs" / scenario / "event_timing.csv"
+    )
+    return float(pd.read_csv(timing)["lag_hr"].iloc[0])
 
 
 def plateau_basin(
@@ -79,7 +84,8 @@ def plateau_basin(
     mid = 0.5 * (start + end)
     t_surge_mouth = peak_hr(tc, zs_coast)
     surge_travel = t_surge_mouth - t_surge_boundary
-    lag_cfg = configured_lag_hr(basin_id)
+    # The coastal run's sea level, as in its compound counterpart.
+    lag_cfg = configured_lag_hr(basin_id, coast)
     return {
         "basin_id": basin_id,
         "mouth": m["name"],

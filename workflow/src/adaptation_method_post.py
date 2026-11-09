@@ -189,6 +189,7 @@ def apply_nbs_land_reclamation(
     output_dir: str,
     distance: float,
     attenuation_rate: float,
+    hmin: float,
     attribution_codes: tuple = (2, 3),
     **kwargs,
 ) -> dict:
@@ -239,13 +240,14 @@ def apply_nbs_land_reclamation(
 
     is_coastal_flood = np.isin(attr, attribution_codes) & valid
 
-    # Apply the reduction. Cells drained to zero or below take the same "dry"
-    # value the baseline map uses, so the two are directly comparable.
+    # Apply the reduction. Cells drained to hmin or below take the same "dry"
+    # value the baseline map uses (flooded = depth > hmin), so the two are
+    # directly comparable.
     dry = src_nodata if src_nodata is not None else np.nan
     reduced_depth = flood - reduction
     flood = np.where(
         is_coastal_flood,
-        np.where(reduced_depth <= 0, dry, reduced_depth),
+        np.where(reduced_depth <= hmin, dry, reduced_depth),
         flood,
     )
 
@@ -262,6 +264,7 @@ def apply_water_retention(
     storage_fraction: float,
     scenario_root: str,
     baseline_excess_volume: float,
+    hmin: float,
     **kwargs,
 ) -> dict:
     """Remove storage_fraction * baseline_excess_volume from river and compound flooding.
@@ -327,12 +330,12 @@ def apply_water_retention(
     reduction_depth = _uniform_layer_depth(depths, target_volume, cell_area)
     remaining = np.maximum(depths - reduction_depth, 0.0)
 
-    # Fully drained cells must become NODATA, not 0.0: downstream metrics
-    # (17c_adapt_post.py's inundation-ratio plot, compute_risk_metrics'
-    # flooded_area_km2) count "flooded" via da_hmax.notnull(), so a literal 0.0
-    # would still count as flooded.
+    # Cells drained to hmin or below must become NODATA, not their depth:
+    # downstream metrics (17c_adapt_post.py's inundation-ratio plot,
+    # compute_risk_metrics' flooded_area_km2) count "flooded" via
+    # da_hmax.notnull(), and baseline maps keep only depth > hmin.
     flood_new = flood.copy()
-    flood_new[target_mask] = np.where(remaining <= 0, prof["nodata"], remaining)
+    flood_new[target_mask] = np.where(remaining <= hmin, prof["nodata"], remaining)
     realized_volume = (
         current_volume - float(remaining.sum() * cell_area) if depths.size else 0.0
     )
@@ -487,7 +490,12 @@ def _unpumped_river_volume_m3(scenario_root: str, discharge: float) -> float:
 
 # Advance/ Protect-closed
 def apply_pumps(
-    flood_map_path: str, scenario_root: str, output_dir: str, discharge: float, **kwargs
+    flood_map_path: str,
+    scenario_root: str,
+    output_dir: str,
+    discharge: float,
+    hmin: float,
+    **kwargs,
 ) -> dict:
     """Limit river and compound flooding to the river volume the pumps cannot discharge.
 
@@ -528,10 +536,9 @@ def apply_pumps(
     reduction_depth = _uniform_layer_depth(depths, removed_volume, cell_area)
     remaining = np.maximum(depths - reduction_depth, 0.0)
 
-    # Drained cells -> NODATA, not 0.0: downstream metrics count "flooded" via
-    # notnull (see apply_water_retention).
+    # Cells drained to hmin or below -> NODATA (see apply_water_retention).
     flood_new = flood.copy()
-    flood_new[target_mask] = np.where(remaining <= 0, prof["nodata"], remaining)
+    flood_new[target_mask] = np.where(remaining <= hmin, prof["nodata"], remaining)
     remaining_volume = float(remaining.sum() * cell_area)
 
     prof.update(dtype="float32")

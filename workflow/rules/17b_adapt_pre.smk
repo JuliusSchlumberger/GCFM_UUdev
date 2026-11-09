@@ -17,7 +17,7 @@ rule adapt_apply_pre:
         measure_data       = lambda wildcards: strategy_measure_input_paths(wildcards.strategy, wildcards.basin_id),
         # Basin spin-up restart, copied into adapted_root (patched for
         # water_retention, whose zs was computed on the original terrain).
-        rstart = results_path("{basin_id}/spin_up/" + RST_FNAME),
+        rstart = lambda wildcards: spinup_path(wildcards.basin_id, wildcards.scenario, RST_FNAME),
         # For run-time-derived strategy params (src.adaptation_scaling): baseline
         # forcing (sfincs.bzs/.dis sit next to the declared sfincs.inp), baseline
         # zsmax, and the current-protection weir.
@@ -34,6 +34,8 @@ rule adapt_apply_pre:
     params:
         strategy_def       = basin_strategy_def,
         measures_def       = MEASURES_DEFS,
+        # Subgrid measures rebuild the tables with the baseline's settings.
+        subgrid_table      = {k: config["sfincs"]["subgrid"][k] for k in ("nr_levels", "nrmax")},
         baseline_sfincs_root = lambda wildcards: results_path(f"{wildcards.basin_id}/runs/{wildcards.scenario}/sfincs"),
         adaptation_root    = lambda wildcards: adaptation_data_root(),
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
@@ -49,10 +51,14 @@ rule adapt_build_forcing_pre:
     input:
         skeleton_inp    = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/sfincs.inp"),
         river_network   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_depth_estimated.gpkg"),
+        event_timing    = results_path("{basin_id}/runs/{scenario}/event_timing.csv"),
         surge_forcing   = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
         river_forcing   = results_path("{basin_id}/preprocessing_inputs/forcing/river_forcing.nc"),
+        protection_levels = results_path("{basin_id}/preprocessing_inputs/domain/protection_levels.json"),
         # Strategy-local restart, so water_retention's adjusted water level is used.
         rstart          = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/" + RST_FNAME),
+        # The restart time (spinup_hr) of the spin-up that restart was copied from.
+        spinup_stability = spinup_stability_input,
     output:
         sfincs_inp = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs.inp"),
         plot_forcing = figure_path("20_forcing_timeseries__{scenario}__pre_{strategy}.png"),
@@ -83,13 +89,18 @@ rule adapt_run_event_pre:
         land_bed_level      = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/land_bed_level.nc"),
         domain_gpkg         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
+        spinup_stability    = spinup_stability_input,
+        obs_points          = results_path("{basin_id}/sfincs_skeleton/{basin_id}_obs_points.gpkg"),
     output:
         sfincs_map_nc            = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),
+        stability                = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/stability.csv"),
         plot_inundation_ratio    = figure_path("62_adapt_inundation_ratio__{scenario}__pre_{strategy}.png"),
         # Diagnostics (analysis only), as in rule run_event.
         **({
             "animation_flood_progress": figure_path("63_adapt_flood_progression__{scenario}__pre_{strategy}.mp4"),
             "flood_timeseries_csv": results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/flood_timeseries.csv"),
+            "plot_water_level": figure_path("52_run_water_level__{scenario}__pre_{strategy}.png"),
+            "caption_water_level": figure_path("52_run_water_level__{scenario}__pre_{strategy}.txt"),
         } if ANALYSIS else {}),
     params:
         sfincs_root   = lambda wildcards: results_path(
@@ -104,6 +115,7 @@ rule adapt_run_event_pre:
 rule adapt_flood_metrics_pre:
     input:
         sfincs_map_nc = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),
+        stability     = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/stability.csv"),
         landuse       = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/retreat_landuse.tif"),
         land_bed_level = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/land_bed_level.nc"),
         **map_figure_inputs(),

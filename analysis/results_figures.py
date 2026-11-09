@@ -17,6 +17,7 @@ import xarray as xr
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from _common import analysis_dir, analysis_path, label, script_parser, site_path
+from _figure_style import flag_unstable, unstable_metric_rows
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
@@ -94,6 +95,10 @@ MEASURE_STYLE = dict(
 COMPARE_BASINS = ["2433835", "3279946"]
 BASIN_LABELS = {"3279946": "Chao Phraya (3279946)"}  # default: basin_id
 BASIN_COLORS = ["#2a9d8f", "#e76f51", "#8338ec", "#ffb703"]  # cycled if > 4 basins
+
+
+# Unstable runs in metrics_comparison.csv (set in main), footnoted on its figures.
+UNSTABLE_RUNS: list[str] = []
 
 
 def pretty(s):
@@ -275,6 +280,7 @@ def plot_scale_response(d, baselines, events, measures):
             fontsize=11,
         )
         plt.tight_layout(rect=[0, 0, right, top])
+        flag_unstable(fig, UNSTABLE_RUNS)
         fig.savefig(
             analysis_path(BASIN_ID, __file__, f"scale_response_{metric}.png"), dpi=150
         )
@@ -444,6 +450,7 @@ def plot_rank_scatter(d, events):
         fig.text(0.5, 0.01, note, ha="center", fontsize=7, color="gray")
         fig.subplots_adjust(left=0.08, right=0.82, bottom=0.10, top=0.94)
         out = analysis_path(BASIN_ID, __file__, f"rank_scatter_{e}_{RANK_METRIC}.png")
+        flag_unstable(fig, UNSTABLE_RUNS)
         fig.savefig(out, dpi=150, facecolor="white")
         plt.close(fig)
         print(f"Wrote {out.name} to {out.parent}")
@@ -572,6 +579,7 @@ def plot_rank_bump(d, baselines, events, measures):
     )
     plt.tight_layout(rect=[0, 0.03, 1, 1 - 0.45 / fig_h])
     out = analysis_path(BASIN_ID, __file__, f"rank_bump_metrics_{BUMP_SCALE}.png")
+    flag_unstable(fig, UNSTABLE_RUNS)
     fig.savefig(out, dpi=150, facecolor="white")
     plt.close(fig)
     print(f"Wrote {out.name} to {out.parent}")
@@ -588,8 +596,10 @@ def main():
 
     # results_dir is a site setting; see config/site.example.yml.
     results_root = site_path("results_dir")
-    baselines, d = load_comparison(
-        results_root / BASIN_ID / "runs" / "metrics_comparison.csv"
+    csv = results_root / BASIN_ID / "runs" / "metrics_comparison.csv"
+    baselines, d = load_comparison(csv)
+    UNSTABLE_RUNS.extend(
+        unstable_metric_rows(pd.read_csv(csv, sep=None, engine="python"))
     )
 
     print(
