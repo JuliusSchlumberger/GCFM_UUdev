@@ -8,6 +8,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import xarray as xr
 from shapely.geometry import Point, Polygon
 from src.extreme_values import EVAResult
@@ -83,7 +84,6 @@ def resolve_inside_domain_reaches(
     Reach lines are oriented downstream first (a no-op on rule 02's network),
     so the entry is the upstream end of the part inside the domain.
     """
-    import pandas as pd
     from src.gvf_target import orient_downstream
     from src.river_network import build_downstream_adjacency
 
@@ -152,7 +152,10 @@ def resolve_inside_domain_reaches(
 
     result = crossings.copy()
     result["geometry"] = new_geoms
-    result["inside_reach_id"] = inside_reach_ids
+    # object dtype keeps None for unresolved crossings (pandas 3 would store NaN)
+    result["inside_reach_id"] = pd.Series(
+        inside_reach_ids, index=result.index, dtype=object
+    )
     for a in topo_attrs:
         result[a] = inside_attr_vals[a]
     return result

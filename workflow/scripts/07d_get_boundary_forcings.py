@@ -30,7 +30,7 @@ from src.river_forcing import (
     resolve_inside_domain_reaches,
 )
 from src.raster import latlon_dims
-from src.river_network import normalize_channel_widths
+from src.river_network import normalize_channel_widths, normalize_reach_id
 from src.surge import (
     apply_mdt_correction,
     apply_slr_fingerprint,
@@ -530,7 +530,9 @@ else:
 
         pt_lon = row.geometry.x
         pt_lat = row.geometry.y
-        inside_id = getattr(row, "inside_reach_id", None) or getattr(row, "reach_id", i)
+        inside_id = normalize_reach_id(
+            getattr(row, "inside_reach_id", None)
+        ) or getattr(row, "reach_id", i)
         label = f"crossing{i}_reach{inside_id}"
 
         match = find_best_glofas_cell(

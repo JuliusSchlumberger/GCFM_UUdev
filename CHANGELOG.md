@@ -3,6 +3,16 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-09: unresolved inflow reach ids stay None under pandas 3 (- JS)
+
+**What changed:**
+- `src.river_forcing.resolve_inside_domain_reaches` stores `inside_reach_id` as an object column, so a crossing with no reach inside the domain keeps `None`. pandas 3 turns a list of strings into its string dtype and stores the gap as `NaN`.
+- Rule 07d labels an unresolved crossing by its own reach id: the fallback now tests the id with `normalize_reach_id` instead of `or`, which took `NaN` as a value (label `reachnan`).
+
+**Why:** CI pip-installs unpinned packages and got pandas 3.1, so `test_boundary_crossing_resolves_to_first_reach_entering_domain` failed (`nan != None`). The pipeline environment pins pandas 2.3.
+
+**Effect:** none on results under pandas 2.3. Unit tests: 413 pass under pandas 2.3 and under pandas 3.1 (Python 3.11 with CI's pip list).
+
 # 2026-11-08: event timeline from the protection discharge, both peaks at the mouth (- JS)
 
 > **⚠ KIARA, PLEASE REVIEW: adaptation `pre` runs use the same timeline.**
