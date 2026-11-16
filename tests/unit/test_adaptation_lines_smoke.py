@@ -26,7 +26,11 @@ CLOSURE = {
     "max_tilt_deg": 60.0,
     "max_half_length_m": 5000.0,
     "ext_cells": 2,
-    "pump_upstream_m": 200.0,
+    "max_width_factor": 1.5,
+    "max_walk_m": 10000.0,
+    "refine_m": 1000.0,
+    "pump_half_length_m": 200.0,
+    "pumps_per_mouth": 1,
 }
 TRANSFORM = Affine(CELL_M, 0.0, 0.0, 0.0, -CELL_M, N * CELL_M)
 

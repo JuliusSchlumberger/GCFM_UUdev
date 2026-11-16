@@ -75,6 +75,7 @@ for measure_type, raw_params in strategy_def["measures"].items():
         measure_def=measure_def,
         catalog_path=None,  # TODO - remove? accepted but never used/forwarded by dispatch_rules
         output_dir=str(output_dir),
+        hmin=hmin,
         landuse_path=landuse_path,
         method="postprocessing",
         strategy_measures=strategy_def["measures"],

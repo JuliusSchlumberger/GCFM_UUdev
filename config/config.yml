@@ -8,7 +8,11 @@ adaptation:
     max_tilt_deg: 60.0         # max angle (deg) between closure and the across-flow direction
     max_half_length_m: 5000.0  # max closure length (m) on each side of the river centreline
     ext_cells: 2               # cells the closure extends past the bank into land
-    pump_upstream_m: 200.0     # pump line starts this far (m) upstream of the closure
+    max_width_factor: 1.5      # no crossing at the outlet: walk upstream to one <= this x reach width
+    max_walk_m: 10000.0        # how far (m) the closure may walk upstream from the SWORD outlet
+    refine_m: 1000.0           # then take the narrowest crossing within this far (m) beyond it
+    pump_half_length_m: 200.0  # pump line reaches this far (m) either side of the closure
+    pumps_per_mouth: 1         # pump lines spread along each closure; discharge split over them
 
 profiling:
   enabled: false   # set to true to write line-level timing reports next to each log file

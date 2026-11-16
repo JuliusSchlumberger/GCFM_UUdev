@@ -1,18 +1,20 @@
 """Plot POST vs PRE agreement of adaptation measures for the results section.
 
 Reads metrics_comparison.csv; risk reduction is relative to the matching event's
-baseline row. Also plots measure rankings and a basin comparison of return-period
-curves (the single-basin curves and forced hydrographs are in domain_figures.py).
-Writes to <results_dir>/2433835/figures/analysis/ (90_results_figures_<quantity>.png);
-the basin comparison of return-period curves to <results_dir>/figures/analysis/.
+baseline row. Also tabulates the urban risk reduction PRE vs POST, plots measure
+rankings and tabulates Kendall's tau-b between them. Only the events in
+EVENT_ORDER are used.
+Writes to <results_dir>/2433835/figures/analysis/
+(90_pre_post_response_figures_<quantity>_<EVENT_TAG>.png and .csv; the rank
+scatter is named by its event).
 """
 
 import textwrap
+from itertools import combinations
 
 import matplotlib
 import numpy as np
 import pandas as pd
-import xarray as xr
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -20,16 +22,23 @@ from _common import analysis_dir, analysis_path, label, script_parser, site_path
 from _figure_style import flag_unstable, unstable_metric_rows
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from scipy.stats import kendalltau
 
 BASIN_ID = "2433835"
 METRICS = ["flooded_area_km2", "urban_exposed_km2", "mean_depth_m", "volume_m3"]
 SCALES = ["04", "09", "1"]  # strategy-name suffix, low -> high implementation scale
 
+# events to plot, in column order; other events in metrics_comparison.csv are skipped
 EVENT_ORDER = ["coast_100_03SLR", "river_100_03SLR", "compound_100_03SLR"]
+# RP and SLR of the plotted events in the output names, e.g. "100_03SLR"
+EVENT_TAG = "_".join(dict.fromkeys(e.split("_", 1)[1] for e in EVENT_ORDER))
 EVENT_LABELS = {
     "coast_100_03SLR": "Coastal flood",
-    "river_100_03SLR": "River flood",
+    "river_100_03SLR": "Fluvial flood",
     "compound_100_03SLR": "Compound flood",
+    "coast_500_03SLR": "Coastal flood",
+    "river_500_03SLR": "Fluvial flood",
+    "compound_500_03SLR": "Compound flood",
 }
 MEASURE_ORDER = [
     "advance",
@@ -73,28 +82,29 @@ TIE_DECIMALS = 2  # residual ratios equal at this precision share a rank ("=")
 NO_EFFECT_TOL = 0.05
 SCALE_MARKER = {"04": ("s", "#d62728"), "09": ("^", "#f0a30a"), "1": ("o", "#2ca02c")}
 
-SCATTER_EVENTS = ["coast_100_03SLR"]
+SCATTER_EVENTS = [e for e in EVENT_ORDER if e.startswith("coast_")]
 SCATTER_BAND = 1
 SCATTER_DOT_SIZES = (40, 90, 150)  # one per scale in SCALES: small (04) -> big (1)
 
-BUMP_METRICS = ["flooded_area_km2", "urban_exposed_km2", "volume_m3", "mean_depth_m"]
+BUMP_METRICS = ["urban_exposed_km2", "flooded_area_km2", "volume_m3", "mean_depth_m"]
 BUMP_SCALE = "1"
-BUMP_APPROACHES = {"PRE": "Modelled rank", "POST": "Postprocessed rank"}
+BUMP_APPROACHES = {"POST": "Post-processed rank", "PRE": "Modelled rank"}
 BUMP_NUDGE = 0.12  # rank units between tied lines
-# categorical slots 1-6 of the dataviz reference palette, in MEASURE_ORDER
+# strategy colours of the adaptation wheel (adaptation_wheel_individ_colors.py), in
+# MEASURE_ORDER
 MEASURE_STYLE = dict(
     zip(
         MEASURE_ORDER,
         zip(
-            ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"],
+            ["#E3C03D", "#009c82", "#87898C", "#9dbf17", "#0c5aa0", "#cc4c29"],
             ["o", "s", "^", "D", "v", "P"],
         ),
     )
 )
-
-COMPARE_BASINS = ["2433835", "3279946"]
-BASIN_LABELS = {"3279946": "Chao Phraya (3279946)"}  # default: basin_id
-BASIN_COLORS = ["#2a9d8f", "#e76f51", "#8338ec", "#ffb703"]  # cycled if > 4 basins
+METRIC_SHORT = {
+    m: textwrap.fill(lbl.removeprefix("residual ").capitalize(), 10)
+    for m, lbl, _ in METRIC_INFO
+}
 
 
 # Unstable runs in metrics_comparison.csv (set in main), footnoted on its figures.
@@ -180,15 +190,16 @@ def rank_by_residual(resid):
     return out
 
 
-def kendalls_w(vals):
-    """Return the tie-corrected Kendall's W of a measures x metrics table."""
-    vals = vals.dropna()
-    n, m = vals.shape
-    r = vals.rank(method="average")
-    s = ((r.sum(axis=1) - m * (n + 1) / 2) ** 2).sum()
-    t = sum((c**3 - c).sum() for c in (vals[col].value_counts() for col in vals))
-    denom = m**2 * (n**3 - n) - m * t
-    return 12 * s / denom if denom > 0 else np.nan
+def tau_b(a, b):
+    """Return Kendall's tau-b between two rankings of the same measures.
+
+    Over every pair of measures, C = pairs both rankings order the same way, D =
+    pairs they order oppositely: tau_b = (C - D) / sqrt((n0 - t1) * (n0 - t2)),
+    with n0 = n(n-1)/2 pairs and t1 / t2 the pairs tied in either ranking.
+    1 = same order, -1 = reversed, 0 = unrelated; NaN when a ranking is all tied.
+    """
+    ab = pd.concat([a, b], axis=1).dropna()
+    return kendalltau(ab.iloc[:, 0], ab.iloc[:, 1], variant="b").statistic
 
 
 def load_comparison(csv):
@@ -208,6 +219,42 @@ def load_comparison(csv):
     # a fully-protected run has flooded_area == 0 and NaN depth; depth is 0 by definition
     d[["mean_depth_m", "max_depth_m"]] = d[["mean_depth_m", "max_depth_m"]].fillna(0)
     return baselines, d
+
+
+def urban_risk_reduction(d, baselines):
+    """Tabulate the % reduction in urban exposure, PRE vs POST, per event, measure and scale.
+
+    POST_minus_PRE is in percentage points; > 0 = POST overestimates the reduction.
+    """
+    b = d.event.map(baselines["urban_exposed_km2"])
+    wide = d.assign(red=100 * (b - d["urban_exposed_km2"]) / b).pivot_table(
+        index=["event", "short", "scale"],
+        columns="approach",
+        values="red",
+        observed=True,
+    )
+    urban = pd.DataFrame(
+        {
+            "PRE": wide["PRE"],
+            "POST": wide["POST"],
+            "POST_minus_PRE": wide["POST"] - wide["PRE"],
+        }
+    ).round(1)
+    urban.to_csv(
+        analysis_path(
+            BASIN_ID, __file__, f"urban_risk_reduction_pre_post_{EVENT_TAG}.csv"
+        )
+    )
+    print("\n# % reduction in urban exposure, modelled (PRE) vs postprocessed (POST)")
+    print(urban.to_string())
+    print("\n# POST - PRE [percentage points] at scale 09, per measure and event")
+    print(urban.xs("09", level="scale")["POST_minus_PRE"].unstack("event").to_string())
+    print("\n# Largest |POST - PRE| per scale")
+    for sc, g in urban.groupby(level="scale", observed=True):
+        e, ms, _ = g["POST_minus_PRE"].abs().idxmax()
+        print(
+            f"  scale {sc}: {g.loc[(e, ms, sc), 'POST_minus_PRE']:+.1f} pp ({ms}, {e})"
+        )
 
 
 def plot_scale_response(d, baselines, events, measures):
@@ -282,72 +329,17 @@ def plot_scale_response(d, baselines, events, measures):
         plt.tight_layout(rect=[0, 0, right, top])
         flag_unstable(fig, UNSTABLE_RUNS)
         fig.savefig(
-            analysis_path(BASIN_ID, __file__, f"scale_response_{metric}.png"), dpi=150
+            analysis_path(
+                BASIN_ID, __file__, f"scale_response_{metric}_{EVENT_TAG}.png"
+            ),
+            dpi=150,
         )
         plt.close(fig)
 
     print(
         f"\nWrote outputs to {analysis_dir(BASIN_ID)}: "
-        "90_results_figures_scale_response_<metric>.png"
+        f"90_pre_post_response_figures_scale_response_<metric>_{EVENT_TAG}.png"
     )
-
-
-def plot_return_period_comparison(results_root):
-    """Overlay every COMPARE_BASINS basin's return-period curves, one colour each."""
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5), facecolor="white")
-
-    for basin_id, color in zip(COMPARE_BASINS, BASIN_COLORS * len(COMPARE_BASINS)):
-        forcing_dir = results_root / basin_id / "preprocessing_inputs" / "forcing"
-        basin_label = BASIN_LABELS.get(basin_id, basin_id)
-
-        # decode_times=False: units "hours since simulation start" have no
-        # reference date for xarray's CF-time decoder.
-        with xr.open_dataset(
-            forcing_dir / "river_forcing.nc", decode_times=False
-        ) as rds:
-            active = rds["has_glofas"].values.astype(bool)
-            rp_table = rds["discharge_rp_table"].values[active]
-            i_main = np.nanargmax(rp_table[:, -1])
-            ax1.plot(
-                rds["rp_yr"].values, rp_table[i_main], color=color, label=basin_label
-            )
-
-        with xr.open_dataset(
-            forcing_dir / "surge_forcing.nc", decode_times=False
-        ) as sds:
-            rp_yr = sds["rp_yr"].values
-            for row in sds["storm_tide_rp_table"].values:
-                ax2.plot(
-                    rp_yr, row, color=color, lw=1, alpha=0.6, marker="o", markersize=2
-                )
-        # one legend entry per basin, not per station
-        ax2.plot([], [], color=color, label=basin_label)
-
-    ax1.set_xscale("log")
-    ax1.set_xlabel("Return period (years)")
-    ax1.set_ylabel("Discharge (m3/s)")
-    ax1.set_title("River discharge (dominant crossing)")
-    ax1.legend(fontsize=8)
-
-    ax2.set_xscale("log")
-    ax2.set_xlabel("Return period (years)")
-    ax2.set_ylabel("Water level (m)")
-    ax2.set_title("Coastal water level (per station)")
-    ax2.legend(fontsize=8)
-
-    for ax in (ax1, ax2):
-        ax.grid(alpha=0.3)
-
-    fig.suptitle("Flood hazard return-period curves -- basin comparison")
-    fig.tight_layout()
-    out = analysis_path(
-        None,
-        __file__,
-        "return_period_curves_comparison_" + "_vs_".join(COMPARE_BASINS) + ".png",
-    )
-    fig.savefig(out, dpi=150, facecolor="white")
-    plt.close(fig)
-    print(f"Wrote {out}")
 
 
 def plot_rank_scatter(d, events):
@@ -456,65 +448,37 @@ def plot_rank_scatter(d, events):
         print(f"Wrote {out.name} to {out.parent}")
 
 
-def plot_rank_bump(d, baselines, events, measures):
-    """Plot each measure's rank at BUMP_SCALE under every metric, approaches x events.
+def add_nudge(bump, by):
+    """Return bump with plot position y = rank, tied lines nudged apart in MEASURE_ORDER.
 
-    Crossing lines show where the choice of metric reorders the strategies.
-    Tied measures share a rank and are nudged apart by BUMP_NUDGE. Each panel
-    notes Kendall's W across the metrics (1 = every metric gives the same order).
+    The nudge follows MEASURE_ORDER, so a tie held over several steps of `by`
+    stays parallel.
     """
-    frames = []
-    for e in events:
-        for ap in BUMP_APPROACHES:
-            g = d[(d.event == e) & (d.scale == BUMP_SCALE) & (d.approach == ap)]
-            g = g.set_index("short")
-            for m in BUMP_METRICS if not g.empty else []:
-                r = rank_by_residual((g[m] / baselines.loc[e, m]).dropna())
-                frames.append(
-                    r.assign(event=e, approach=ap, metric=m)
-                    .rename_axis("measure")
-                    .reset_index()
-                )
-    if not frames:
-        print(f"\n# no runs at scale {BUMP_SCALE} -- rank bump chart skipped")
-        return
-    bump = pd.concat(frames, ignore_index=True)
-    # nudge tied lines apart in MEASURE_ORDER, so a tie held over several metrics
-    # stays parallel
-    bump["order"] = bump.measure.map(MEASURE_ORDER.index)
-    bump = bump.sort_values("order")
-    tie = bump.groupby(["event", "approach", "metric", "rank"])["order"]
+    bump = bump.assign(order=bump.measure.map(MEASURE_ORDER.index)).sort_values("order")
+    tie = bump.groupby(["event", "approach", by, "rank"])["order"]
     bump["y"] = (
         bump["rank"] + (tie.cumcount() - (tie.transform("size") - 1) / 2) * BUMP_NUDGE
     )
+    return bump
 
-    ranks = bump.pivot_table(
-        index=["event", "measure"], columns=["metric", "approach"], values="rank"
-    )[BUMP_METRICS]
-    print(
-        f"\n# Rank per metric at scale {BUMP_SCALE} (1 = lowest residual), "
-        "modelled (PRE) vs postprocessed (POST)"
-    )
-    print(ranks.to_string())
-    same = ranks.xs("PRE", axis=1, level=1) == ranks.xs("POST", axis=1, level=1)
-    print("\n# Measures whose POST rank equals the PRE rank, per event and metric")
-    print(same.groupby("event").sum().astype(int).to_string())
 
-    metric_short = {
-        m: textwrap.fill(lbl.removeprefix("residual ").capitalize(), 10)
-        for m, lbl, _ in METRIC_INFO
-    }
-    fig_h = 2.9 * len(BUMP_APPROACHES) + 0.9
+def plot_bump(bump, by, order, ticklabels, note, out, events, measures):
+    """Plot a bump chart, approaches (rows, BUMP_APPROACHES) x events (columns).
+
+    x = the `by` column in `order`, y = rank, one line per measure; `note` goes
+    in the footer.
+    """
+    fig_w, fig_h = 3.4 * len(events), 2.9 * len(BUMP_APPROACHES) + 0.9
     fig, axes = plt.subplots(
         len(BUMP_APPROACHES),
         len(events),
-        figsize=(3.4 * len(events), fig_h),
+        figsize=(fig_w, fig_h),
         sharex=True,
         sharey=True,
         squeeze=False,
         facecolor="white",
     )
-    x = np.arange(len(BUMP_METRICS))
+    x = np.arange(len(order))
     for i, (ap, ap_label) in enumerate(BUMP_APPROACHES.items()):
         for j, e in enumerate(events):
             ax = axes[i, j]
@@ -526,7 +490,7 @@ def plot_rank_bump(d, baselines, events, measures):
                 color, marker = MEASURE_STYLE[ms]
                 ax.plot(
                     x,
-                    g.set_index("metric").reindex(BUMP_METRICS)["y"],
+                    g.set_index(by).reindex(order)["y"],
                     color=color,
                     lw=2,
                     marker=marker,
@@ -535,14 +499,12 @@ def plot_rank_bump(d, baselines, events, measures):
                     mew=1,
                     zorder=3,
                 )
-            w = kendalls_w(p.pivot(index="measure", columns="metric", values="val"))
-            ax.set_title(f"W = {w:.2f}", loc="right", fontsize=8, color="#52514e")
             if i == 0:
                 ax.set_title(event_label(e), loc="left", fontsize=11)
             if j == 0:
                 ax.set_ylabel(ap_label, fontsize=10)
             ax.set_xticks(x)
-            ax.set_xticklabels([metric_short[m] for m in BUMP_METRICS], fontsize=9)
+            ax.set_xticklabels(ticklabels, fontsize=9)
             ax.set_ylim(len(measures) + 0.5, 0.5)  # rank 1 on top
             ax.set_yticks(range(1, len(measures) + 1))
             ax.grid(color="#e6e6e6", lw=0.6)
@@ -560,11 +522,9 @@ def plot_rank_bump(d, baselines, events, measures):
         loc="upper center",
         ncol=len(measures),
         frameon=False,
-        fontsize=9,
-    )
-    note = (
-        f"{SCALE_LABELS[BUMP_SCALE]} scale; rank 1 = lowest residual. Ties share the"
-        " lowest rank. W = Kendall's coefficient of concordance across metrics."
+        fontsize=11,
+        handlelength=1.6,
+        columnspacing=1.0,
     )
     if NO_EFFECT_TOL > 0:
         note += f" Reductions below {NO_EFFECT_TOL:.0%} of baseline count as no effect."
@@ -578,11 +538,107 @@ def plot_rank_bump(d, baselines, events, measures):
         color="gray",
     )
     plt.tight_layout(rect=[0, 0.03, 1, 1 - 0.45 / fig_h])
-    out = analysis_path(BASIN_ID, __file__, f"rank_bump_metrics_{BUMP_SCALE}.png")
     flag_unstable(fig, UNSTABLE_RUNS)
     fig.savefig(out, dpi=150, facecolor="white")
     plt.close(fig)
     print(f"Wrote {out.name} to {out.parent}")
+
+
+def plot_rank_bump(d, baselines, events, measures):
+    """Plot each measure's rank at BUMP_SCALE under every metric, approaches x events.
+
+    Crossing lines show where the choice of metric reorders the strategies.
+    Tied measures share a rank and are nudged apart by BUMP_NUDGE. Also
+    tabulates Kendall's tau-b between the metric rankings and between PRE and
+    POST (tables only, not in the figure).
+    """
+    frames = []
+    for e in events:
+        for ap in BUMP_APPROACHES:
+            g = d[(d.event == e) & (d.scale == BUMP_SCALE) & (d.approach == ap)]
+            g = g.set_index("short")
+            for m in BUMP_METRICS if not g.empty else []:
+                r = rank_by_residual((g[m] / baselines.loc[e, m]).dropna())
+                frames.append(
+                    r.assign(event=e, approach=ap, metric=m)
+                    .rename_axis("measure")
+                    .reset_index()
+                )
+    if not frames:
+        print(f"\n# no runs at scale {BUMP_SCALE} -- rank bump chart skipped")
+        return
+    bump = add_nudge(pd.concat(frames, ignore_index=True), "metric")
+
+    ranks = bump.pivot_table(
+        index=["event", "measure"], columns=["metric", "approach"], values="rank"
+    )[BUMP_METRICS]
+    print(
+        f"\n# Rank per metric at scale {BUMP_SCALE} (1 = lowest residual), "
+        "modelled (PRE) vs postprocessed (POST)"
+    )
+    print(ranks.to_string())
+    same = ranks.xs("PRE", axis=1, level=1) == ranks.xs("POST", axis=1, level=1)
+    print("\n# Measures whose POST rank equals the PRE rank, per event and metric")
+    print(same.groupby("event").sum().astype(int).to_string())
+
+    # tau-b on the tie-rounded values ("val") the figure ranks on, so
+    # TIE_DECIMALS / NO_EFFECT_TOL ties count as ties
+    metric_name = {m: METRIC_SHORT[m].replace("\n", " ") for m in BUMP_METRICS}
+    vals = bump.pivot_table(
+        index=["event", "measure"], columns=["approach", "metric"], values="val"
+    )
+    tau_metrics = pd.DataFrame(
+        {
+            (BUMP_APPROACHES[ap].removesuffix(" rank"), event_label(e)): {
+                f"{metric_name[m1]} vs {metric_name[m2]}": tau_b(
+                    vals.loc[e, (ap, m1)], vals.loc[e, (ap, m2)]
+                )
+                for m1, m2 in combinations(BUMP_METRICS, 2)
+            }
+            for ap in BUMP_APPROACHES
+            for e in events
+        }
+    ).round(2)
+    tau_approaches = pd.DataFrame(
+        {
+            event_label(e): {
+                metric_name[m]: tau_b(vals.loc[e, ("PRE", m)], vals.loc[e, ("POST", m)])
+                for m in BUMP_METRICS
+            }
+            for e in events
+        }
+    ).round(2)
+    print(f"\n# Kendall's tau-b between the metric rankings at scale {BUMP_SCALE}")
+    print(tau_metrics.to_string())
+    print(
+        "\n# Kendall's tau-b between the modelled and post-processed ranking at "
+        f"scale {BUMP_SCALE}"
+    )
+    print(tau_approaches.to_string())
+    tau_metrics.to_csv(
+        analysis_path(
+            BASIN_ID, __file__, f"kendall_tau_metrics_{BUMP_SCALE}_{EVENT_TAG}.csv"
+        )
+    )
+    tau_approaches.to_csv(
+        analysis_path(
+            BASIN_ID, __file__, f"kendall_tau_pre_post_{BUMP_SCALE}_{EVENT_TAG}.csv"
+        )
+    )
+
+    plot_bump(
+        bump,
+        "metric",
+        BUMP_METRICS,
+        [METRIC_SHORT[m] for m in BUMP_METRICS],
+        f"{SCALE_LABELS[BUMP_SCALE]} scale; rank 1 = lowest residual. Ties share the"
+        " lowest rank.",
+        analysis_path(
+            BASIN_ID, __file__, f"rank_bump_metrics_{BUMP_SCALE}_{EVENT_TAG}.png"
+        ),
+        events,
+        measures,
+    )
 
 
 def build_parser():
@@ -601,6 +657,8 @@ def main():
     UNSTABLE_RUNS.extend(
         unstable_metric_rows(pd.read_csv(csv, sep=None, engine="python"))
     )
+    d = d[d.event.isin(EVENT_ORDER)].copy()
+    d = d[d.event.isin(EVENT_ORDER)]
 
     print(
         "\n# Rows sharing an identical metric vector (i.e. the approach cannot "
@@ -613,8 +671,8 @@ def main():
     events = sorted(d.event.unique(), key=EVENT_ORDER.index)
     measures = sorted(d.short.unique(), key=MEASURE_ORDER.index)
 
+    urban_risk_reduction(d, baselines)
     plot_scale_response(d, baselines, events, measures)
-    plot_return_period_comparison(results_root)
 
     d["resid"] = d[RANK_METRIC] / d.event.map(baselines[RANK_METRIC])  # 1 = no change
     plot_rank_scatter(d, events)

@@ -77,6 +77,7 @@ def read_polyline(locations: Path | gpd.GeoDataFrame, crs) -> gpd.GeoDataFrame:
     return gdf[["geometry"]].to_crs(crs)
 
 
+# Finds baseline weir segments that lie on the measure's line
 def _matched_weir_segments(
     locations: Path, skeleton_weir: Path, crs, where: str
 ) -> tuple[gpd.GeoDataFrame, shapely.Geometry]:
@@ -97,6 +98,7 @@ def _matched_weir_segments(
     return weir[matched].reset_index(drop=True), line
 
 
+# takes existing heights on the line.
 def _current_protection(
     locations: Path, skeleton_weir: Path, crs, where: str, log
 ) -> dict:
@@ -106,7 +108,9 @@ def _current_protection(
         [g.buffer(MAX_MATCH_DISTANCE_M) for g in segs.geometry.values]
     )
     unmatched_length = line.difference(covered).length
-    fill_crest = float(crests.max())
+    fill_crest = float(
+        crests.max()
+    )  # fill crests go to stretches without exisitng levee
     log.info(
         f"{where} = current_protection: {len(segs)} baseline weir segments on "
         f"{locations.name}, crest min/median/max {crests.min():.2f}/{np.median(crests):.2f}/"
@@ -116,6 +120,7 @@ def _current_protection(
     return {"current": True, "fill_crest": fill_crest}
 
 
+# highest zsmax amoung wet cells within 1.5 cells of the line
 def _max_river_water_level(
     locations: Path,
     map_nc: Path,
@@ -142,6 +147,7 @@ def _max_river_water_level(
     return float(vals[k])
 
 
+# max water level per cell over all output steps, except the first.
 def _read_zsmax(map_nc: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return the run's max water level per cell (NaN = never wet) and cell centres, flattened."""
     with xr.open_dataset(map_nc) as ds:
@@ -154,6 +160,7 @@ def _read_zsmax(map_nc: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return zsmax.ravel(), x.ravel(), y.ravel()
 
 
+# computes target minus crest for each matches segment and returns largest
 def _levee_shortfall(
     kind: str,
     base: float,

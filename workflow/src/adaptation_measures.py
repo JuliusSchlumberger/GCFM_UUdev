@@ -1,6 +1,7 @@
 """Shared helpers for the pre- and post-processing adaptation measure modules."""
 
 
+# Check whether the levee's elevation is the "keep tofay's leveel" marker that adaptation_scaling produces for current_protection
 def _is_current_protection(elevation) -> bool:
     """True for the {"current": True, "fill_crest": ...} form of `current_protection`.
 
@@ -10,6 +11,7 @@ def _is_current_protection(elevation) -> bool:
     return isinstance(elevation, dict) and bool(elevation.get("current"))
 
 
+# dispatch_rules calls this before each run to check the resolved parameters against measures.yml
 def validate_measure_params(
     measure_type: str, params: dict, method: str, measure_def: dict
 ) -> None:

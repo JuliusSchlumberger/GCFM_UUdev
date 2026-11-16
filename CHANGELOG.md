@@ -13,6 +13,84 @@ the pipeline works; this file only describes *what changed and why*.
 
 **Effect:** the `adapt` rule graph (Ebro, `advance_1`) shows 28 rules with 33 arrows instead of 115; `all` shows 21 rules. The job DAG (`--dag`) is unchanged.
 
+# 2026-11-16: main merged into adaptation_modelling; rule 12c lines in auto/ (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW: the subgrid fix is main's version, and rule 12c
+> writes to a new subfolder.**
+> - Both branches made the adapted `pre` subgrid rebuild use the baseline's
+>   `nr_levels`/`nrmax`. The merge keeps main's interface (one `subgrid_table`
+>   param); behaviour is the same (20 levels, `nrmax` from `config.yml`).
+> - Rule 12c `build_adaptation_lines` writes to
+>   `<adaptation_data_root>/{basin_id}/auto/` instead of
+>   `<adaptation_data_root>/{basin_id}/`. Move or delete the generated files
+>   already in your basin folders (`coastal_protection_weir_PC/PO.geojson`,
+>   `river_protection_weir_PO.geojson`, `pump_river_mouth.geojson`,
+>   `adaptation_lines.gpkg/.png`, `build_info.json`); 12c rebuilds them in
+>   `auto/` on the next `adapt` run.
+
+**Merge conflicts and how they were resolved** (branch = adaptation_modelling):
+
+| file | conflict | resolution |
+|---|---|---|
+| `workflow/src/adaptation_method_pre.py` | same subgrid fix on both sides: branch `_rebuild_subgrid(mod, dep, elevation, roughness, nr_subgrid_pixels, nr_levels, nrmax)`, main `_rebuild_subgrid(mod, elevation, roughness, dep, nr_subgrid_pixels, subgrid_table)`; 10 hunks in the helper, the four measures' signatures and their calls | main's side in all hunks |
+| `workflow/scripts/17b_adapt_pre.py` | branch passes `nr_levels`/`nrmax`, main `subgrid_table` | main's side |
+| `workflow/rules/17b_adapt_pre.smk` | auto-merged, but carried both sides' params | branch's `nr_levels`/`nrmax` params removed; main's `subgrid_table` kept |
+| `workflow/src/adaptation_method_post.py` | same hmin-dry fix on both sides; 3 comment-only hunks | branch's comments (also say the reported volumes stay physical) |
+| `tests/unit/test_adaptation_method_post_smoke.py` | branch's lagoon-storage tests and main's `test_nbs_reduction_dries_cells_at_or_below_hmin` added at the same place | both kept |
+| `analysis/pre_post_response_figures.py` (`results_figures.py` on main) | branch made `out` a parameter of `plot_bump`; main added `flag_unstable` after the hard-coded `out` | `out` stays a parameter; main's `flag_unstable(fig, UNSTABLE_RUNS)` added |
+| `CLAUDE.md` | branch changed the rule 12c output path in the `adapt` line; main added the `analysis_suite` line | both, with the `auto/` path above |
+| `CHANGELOG.md` | both sides added entries at the top | entries of both sides ordered by date, newest first |
+
+**Rule 12c folder:** `adaptation_lines_dir` (`workflow/rules/00_common.smk`)
+returns `<adaptation_data_root>/{basin_id}/auto`, so generated lines are kept
+apart from the hand-drawn measure files and the folder name matches the
+`auto/<name>` location syntax. Without `adaptation_data_root` it is still
+`<results_dir>/{basin_id}/adaptation_lines`. Docs, `CLAUDE.md`, README, the
+comment in `config/adaptation_strategies.yml` and `tools/make_data_table.py`
+follow.
+
+**Effect:** no result changes beyond those in the entries of both branches.
+Rule 12c reruns once (its outputs moved); the adapt jobs of `auto/` strategies
+rerun because their input paths changed.
+
+# 2026-11-10: post measures count a cell left at or below metrics.hmin as dry (-KL)
+
+- The four post measures that lower depths part-way (`nbs_land_reclamation`,
+  `water_retention`, `pumps`, `lagoon_storage` in `src/adaptation_method_post.py`)
+  dried a cell only at depth <= 0. The baseline flood map they start from, and
+  the baseline and pre metrics, keep only depth > `metrics.hmin` (0.05 m), so a
+  cell lowered to 0-0.05 m still counted as flooded in post but would be dry in
+  pre. Post therefore overstated flooded area and urban exposure against pre
+  and baseline. In the Ebro post maps (`2433835_V9`) these cells were up to 17%
+  of the flooded cells: river_100 `protect_closed_09` 221,720 of 1,306,800,
+  `NbS_protect_open_04` 225,038 of 1,341,287, `advance_04` 259,654 of
+  1,865,120; compound_500 `advance_09` 9.6%; coastal `NbS_protect_open_*`
+  1-2%. Strategies without these measures had none.
+- They now dry a cell at depth <= `hmin`. `17c_adapt_post.py` passes `hmin`
+  through `dispatch_rules`. The removed and remaining volumes they report stay
+  physical; only the flooded/dry test changes.
+- New unit test: `lagoon_storage` leaves 0.03 m in a cell and it comes out dry.
+- Post metrics need rerunning (rule `adapt_metrics_post`, no SFINCS).
+
+# 2026-11-10: adapted pre models rebuild the subgrid with the baseline's 20 water-level bins (-KL)
+
+- The four pre measures that rebuild the subgrid (`nbs_land_reclamation`,
+  `water_retention`, `urban_raising`, `retreat` in
+  `src/adaptation_method_pre.py`) called `subgrid.create` without `nr_levels`.
+  hydromt-sfincs 2.0.0rc2 then uses 10 water-level bins per cell, while the
+  baseline skeleton (rule 12a) and the calibration (rule 11) use 20 from
+  `config.yml` `sfincs.subgrid.nr_levels`. The rebuild covers the whole domain,
+  so every adapted pre run differed from its baseline in table resolution as
+  well as in the measure. All 54 existing Ebro pre models (`accommodate_*`,
+  `NbS_protect_open_*`, `retreat_*` x 6 scenarios) have 10 levels; the
+  baseline has 20.
+- The four measures now share one `_rebuild_subgrid` helper that passes
+  `nr_levels` and `nrmax`, read from `config.yml` by rule `adapt_apply_pre`. It
+  raises an error if they are missing, instead of falling back to the library
+  default.
+- Existing adapted pre results are out of date: `adapt_apply_pre` reruns on
+  the changed params, and the adapted event runs and pre metrics downstream of it.
+
 # 2026-11-09: unresolved inflow reach ids stay None under pandas 3 (- JS)
 
 **What changed:**
@@ -308,6 +386,21 @@ No production result changes; each removed item was at its no-op value or report
 
 **TODO B32** reworded: the Chao Phraya river run ends on the mouth plateau.
 
+# 2026-11-05: pre/post response figures plot the events chosen in EVENT_ORDER (-KL)
+
+- `analysis/pre_post_response_figures.py`: `EVENT_ORDER` now selects the events
+  to plot, and other events in `metrics_comparison.csv` are dropped. Before,
+  any event missing from the list (the new `*_100_03SLR` runs) stopped the
+  script with `ValueError: 'coast_100_03SLR' is not in list`.
+- Outputs computed over the selected events add their return period and SLR
+  to their names (`EVENT_TAG`, e.g. `_100_03SLR`): the scale-response
+  figures, the urban risk-reduction table, both Kendall tau-b tables and the
+  bump chart. 100-yr and 500-yr selections no longer overwrite each other.
+  `EVENT_LABELS` gains the 100-yr events.
+- `SCATTER_EVENTS` is the coastal event in `EVENT_ORDER` instead of a fixed
+  `coast_500_03SLR`, which stopped the script when only 100-yr events were
+  selected.
+
 # 2026-11-05: depth sensitivity on the advection-0 baseline, alpha stability search, GESLA check (- JS)
 
 **Analysis only; pipeline code, config and results unchanged.**
@@ -391,6 +484,54 @@ With `sword_swot`, the fit starts from SWORD v17c's SWOT node levels (`wse_obs_p
   - `burn_river_channel`'s `margin_m` is ignored when a target grid is given, and rule 11 always gives one.
 - Rule 11's `bed` params changed, so Snakemake reruns rule 11 on its next run.
 
+# 2026-11-03: NbS pre runs: retention inlet snapped onto the levee; metrics on baseline land (-KL)
+
+- **Retention inlet (`adaptation_method_pre.apply_water_retention`):** the
+  inlet trace lies 2-80 m (mostly 15-30 m) beside the river levee, beyond
+  `apply_river_levee`'s 2 m match, so no levee segment was lowered: a 2.57 m
+  weir was added next to the 2.82-4.02 m levee, which still held the river
+  back. The existing levee segments whose midpoint lies within the new
+  `inlet_snap_distance` (default 100 m) of the trace are now lowered by
+  `inlet_sill_below_crest` instead (Ebro: 31 segments on both banks, 3.1 km,
+  for the 2.7 km trace, which follows both banks; crest 2.82-4.50 ->
+  2.62-4.30 m). Raises when no levee is near the zone or the trace.
+- **Pre metrics on baseline land (`16_flood_metrics.py`, rule
+  `adapt_flood_metrics_pre`):** land `nbs_land_reclamation` reclaims from the
+  sea counted as land, and it floods: `NbS_protect_open_1` grew the land area
+  from 353 to 443 km2 and added ~103 km2 / 0.078 km3 of flooding on the new
+  foreshore (coast and compound). Metrics of every `pre` run are now masked to
+  the skeleton's `land_bed_level.nc`; the `water_retention` zone stays
+  excluded as before. The written `max_flood_depth.tif` is unchanged.
+- **Results:** not yet rerun; `NbS_protect_open` `pre` needs `adapt_apply_pre`
+  onwards for the inlet, every other `pre` strategy only
+  `adapt_flood_metrics_pre`.
+
+# 2026-11-03: lagoon storage behind the advance barrier in post-processing (-KL)
+
+- **Why:** the PRE advance run models the lagoon between the offshore barrier
+  and the coast, which holds river water the pumps cannot discharge and coastal
+  water overtopping the barrier before either reaches land. POST sent all of it
+  onto land.
+- **What changed:** new measure `lagoon_storage` (`config/measures.yml`,
+  postprocessing only; unscaled `locations`, `width` [m], `depth` [m]), added to
+  `advance` after `pumps` with `{basin_id}/coastline_for_lagoon.geojson`,
+  2000 m and 0.1 m (measured barrier-to-coast distance in the Ebro: mean
+  2.1 km, median 1.7 km). `adaptation_method_post.apply_lagoon_storage` takes
+  coastline length x width x depth off the class 1-3 flooding that
+  `offshore_barrier` and `pumps` leave, as one uniform layer, so river and
+  overtopping water share one storage. The PRE function returns the model
+  unchanged (the barrier's weir already encloses the lagoon). `docs/methods.md`
+  describes it; `docs/data.md` regenerated (also adds the missing
+  `water_retention_inlet.geojson` row).
+- **Results (Ebro, 50.1 km coastline -> 10.0 Mm3; class 1-3 volume left after
+  POST, Mm3):** `coast_100_03SLR` `_04`/`_09` (barrier overtopped) 262.2 ->
+  252.2; `river_100_03SLR` `_04` 63.0 -> 53.0, `_09` 36.9 -> 26.9;
+  `compound_100_03SLR` `_04` 271.6 -> 261.6, `_09` 126.2 -> 116.1. `_1`
+  unchanged at 0 (barrier holds, pumps match the peak discharge). At `_04` the
+  unpumped river volume (~920 Mm3) is far above what the open-mouth flood map
+  holds, so the lagoon there reduces the map's capped volume, not the real
+  excess.
+
 # 2026-11-03: SFINCS advection off, time-step factor 0.25 (- JS)
 
 - **What changed:** new keys `sfincs.advection` (default 0) and `sfincs.alpha` (default 0.25), set by rules 11 and 12a. Spin-up, events and adaptation inherit both from the skeleton. Before, nothing set them and SFINCS's defaults applied (advection 1, alpha 0.5).
@@ -453,6 +594,38 @@ With `sword_swot`, the fit starts from SWORD v17c's SWOT node levels (`wse_obs_p
     channel stands well above the 1D GVF profile.
   - The main-mouth discharge plateau now closes (315-391 h). Its midpoint lag of
     -40.7 h matches the configured -41 h.
+
+# 2026-10-31: mouth closure walks upstream; pumps across the closure; analysis scripts (-KL)
+
+- **Mouth closure (rule 12c, `src.adaptation_lines.mouth_closures`):** where
+  SWORD carries the river on past the coastline, no crossing at the outlet
+  reaches land, and the mouth was left open (Chao Phraya). The anchor now walks
+  upstream (up to `adaptation.lines.max_walk_m`) to the first crossing no wider
+  than `max_width_factor` x the reach width, then takes the narrowest within
+  `refine_m` beyond it. The report gains `anchor_moved_upstream_m`.
+- **Pump lines:** `pumps_per_mouth` straight lines perpendicular to the
+  closure, spread evenly along it, `pump_half_length_m` either side, instead of
+  the river centreline from `pump_upstream_m` upstream. `apply_pumps` already
+  splits the discharge over the lines. Rule 12c and the protect_closed runs
+  rebuild on every basin; the Ebro's pump line changes shape.
+- **Rule 12c active mask:** read from the skeleton's grid instead of
+  `gis/mask.tif`. hydromt_sfincs writes the GIS copy north-up, while
+  `landuse_on_grid.tif` and the model grid are y-ascending, so the grid check
+  failed and rule 12c never ran (Ebro: same 87,115 active cells; one mouth,
+  closed and sealed with a 600 m closure, 1 pump).
+- **Rule 12c output folder:** the `auto/<name>` lines, `adaptation_lines.gpkg`
+  and `build_info.json` now go to `<adaptation_data_root>/{basin_id}/`, next to
+  the basin's hand-drawn measure files, instead of
+  `<results_dir>/{basin_id}/adaptation_lines/` (still used when
+  `adaptation_data_root` is not set, so preprocess/build do not require it).
+  `figures/60_adapt_lines.png` stays under results.
+- **Analysis:** `results_figures.py` adds the urban risk-reduction table PRE vs
+  POST and Kendall's tau-b tables (replacing Kendall's W in the bump chart),
+  new bump-chart order and adaptation-wheel colours, and drops the basin
+  comparison of return-period curves. `domain_figures.py` adds a 1 m
+  elevation-class map. New `flood_depth_maps.py`: one depth map per event for
+  the no-adaptation runs.
+
 
 # 2026-10-31: calibration sea ramped to the storm tide and held (- JS)
 

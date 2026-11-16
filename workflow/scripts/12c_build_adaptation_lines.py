@@ -22,27 +22,41 @@ from src.adaptation_lines import (
 )
 from src.grid import load_grid_def
 from src.log import setup_logging
-from src.raster import read_on_grid
 
+# Sends the logging to the rile's log file 
 log = setup_logging(snakemake.log[0])
 basin_id = snakemake.wildcards.basin_id
 skeleton_root = Path(snakemake.params.skeleton_root)
 
+# Load land use 
 with rasterio.open(snakemake.input.landuse_on_grid) as src:
     landuse, transform, crs = src.read(1), src.transform, src.crs
-# gis/mask.tif is written by build_sfincs_skeleton next to its declared sfincs.inp.
-mask = read_on_grid(skeleton_root / "gis" / "mask.tif", landuse.shape, transform)
 
-# The weir as the model holds it (and as levee measures merge against):
-# hydromt_sfincs drops rule-10 segments outside the model region.
+# Loads the skeleton and takes the active-cell mask. Then checks that the mask and land 
+# use have the same shape and same transform 
 sf = SfincsModel(root=str(skeleton_root), mode="r")
+sf.grid.read()
+mask = sf.grid.data["mask"].values
+if mask.shape != landuse.shape or not sf.grid.data.raster.transform.almost_equals(
+    transform, precision=1e-6
+):
+    raise ValueError(
+        f"skeleton grid {mask.shape} does not match landuse_on_grid {landuse.shape} "
+        "-- expected pixel-identical grids."
+    )
+
+# Load the baseline weir as the model holds it. 
+# c[:2] removes the Z value to give flat 2D lines
 sf.weirs.read()
 weir = gpd.GeoDataFrame(
     geometry=[LineString([c[:2] for c in g.coords]) for g in sf.weirs.data.geometry],
     crs=sf.crs,
 ).to_crs(crs)
+
+# Load rivers 
 rivers = gpd.read_file(snakemake.input.river_network).to_crs(crs)
 
+# This passes everything from above to the function 
 lines = build_adaptation_lines(
     weir,
     landuse,
@@ -54,6 +68,7 @@ lines = build_adaptation_lines(
     closure=dict(snakemake.params.closure),
 )
 
+# Writes the output 
 for name, gdf in measure_line_layers(lines).items():
     gdf.to_file(snakemake.output[name], driver="GeoJSON")
     log.info(f"Written: {snakemake.output[name]} ({len(gdf)} feature(s))")
