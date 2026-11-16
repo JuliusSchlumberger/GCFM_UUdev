@@ -2,9 +2,11 @@
 
 Reads metrics_comparison.csv; risk reduction is relative to the matching event's
 baseline row. Also tabulates the urban risk reduction PRE vs POST, plots measure
-rankings and tabulates Kendall's tau-b between them.
-Writes to <results_dir>/2433835/figures/analysis/ (90_results_figures_<quantity>.png
-and .csv).
+rankings and tabulates Kendall's tau-b between them. Only the events in
+EVENT_ORDER are used.
+Writes to <results_dir>/2433835/figures/analysis/
+(90_pre_post_response_figures_<quantity>_<EVENT_TAG>.png and .csv; the rank
+scatter is named by its event).
 """
 
 import textwrap
@@ -25,11 +27,17 @@ BASIN_ID = "2433835"
 METRICS = ["flooded_area_km2", "urban_exposed_km2", "mean_depth_m", "volume_m3"]
 SCALES = ["04", "09", "1"]  # strategy-name suffix, low -> high implementation scale
 
+# events to plot, in column order; other events in metrics_comparison.csv are skipped
 EVENT_ORDER = ["coast_100_03SLR", "river_100_03SLR", "compound_100_03SLR"]
+# RP and SLR of the plotted events in the output names, e.g. "100_03SLR"
+EVENT_TAG = "_".join(dict.fromkeys(e.split("_", 1)[1] for e in EVENT_ORDER))
 EVENT_LABELS = {
     "coast_100_03SLR": "Coastal flood",
-    "river_100_03SLR": "River flood",
+    "river_100_03SLR": "Fluvial flood",
     "compound_100_03SLR": "Compound flood",
+    "coast_500_03SLR": "Coastal flood",
+    "river_500_03SLR": "Fluvial flood",
+    "compound_500_03SLR": "Compound flood",
 }
 MEASURE_ORDER = [
     "advance",
@@ -73,7 +81,7 @@ TIE_DECIMALS = 2  # residual ratios equal at this precision share a rank ("=")
 NO_EFFECT_TOL = 0.05
 SCALE_MARKER = {"04": ("s", "#d62728"), "09": ("^", "#f0a30a"), "1": ("o", "#2ca02c")}
 
-SCATTER_EVENTS = ["coast_100_03SLR"]
+SCATTER_EVENTS = [e for e in EVENT_ORDER if e.startswith("coast_")]
 SCATTER_BAND = 1
 SCATTER_DOT_SIZES = (40, 90, 150)  # one per scale in SCALES: small (04) -> big (1)
 
@@ -227,7 +235,11 @@ def urban_risk_reduction(d, baselines):
             "POST_minus_PRE": wide["POST"] - wide["PRE"],
         }
     ).round(1)
-    urban.to_csv(analysis_path(BASIN_ID, __file__, "urban_risk_reduction_pre_post.csv"))
+    urban.to_csv(
+        analysis_path(
+            BASIN_ID, __file__, f"urban_risk_reduction_pre_post_{EVENT_TAG}.csv"
+        )
+    )
     print("\n# % reduction in urban exposure, modelled (PRE) vs postprocessed (POST)")
     print(urban.to_string())
     print("\n# POST - PRE [percentage points] at scale 09, per measure and event")
@@ -311,13 +323,16 @@ def plot_scale_response(d, baselines, events, measures):
         )
         plt.tight_layout(rect=[0, 0, right, top])
         fig.savefig(
-            analysis_path(BASIN_ID, __file__, f"scale_response_{metric}.png"), dpi=150
+            analysis_path(
+                BASIN_ID, __file__, f"scale_response_{metric}_{EVENT_TAG}.png"
+            ),
+            dpi=150,
         )
         plt.close(fig)
 
     print(
         f"\nWrote outputs to {analysis_dir(BASIN_ID)}: "
-        "90_results_figures_scale_response_<metric>.png"
+        f"90_pre_post_response_figures_scale_response_<metric>_{EVENT_TAG}.png"
     )
 
 
@@ -593,10 +608,14 @@ def plot_rank_bump(d, baselines, events, measures):
     )
     print(tau_approaches.to_string())
     tau_metrics.to_csv(
-        analysis_path(BASIN_ID, __file__, f"kendall_tau_metrics_{BUMP_SCALE}.csv")
+        analysis_path(
+            BASIN_ID, __file__, f"kendall_tau_metrics_{BUMP_SCALE}_{EVENT_TAG}.csv"
+        )
     )
     tau_approaches.to_csv(
-        analysis_path(BASIN_ID, __file__, f"kendall_tau_pre_post_{BUMP_SCALE}.csv")
+        analysis_path(
+            BASIN_ID, __file__, f"kendall_tau_pre_post_{BUMP_SCALE}_{EVENT_TAG}.csv"
+        )
     )
 
     plot_bump(
@@ -606,7 +625,9 @@ def plot_rank_bump(d, baselines, events, measures):
         [METRIC_SHORT[m] for m in BUMP_METRICS],
         f"{SCALE_LABELS[BUMP_SCALE]} scale; rank 1 = lowest residual. Ties share the"
         " lowest rank.",
-        analysis_path(BASIN_ID, __file__, f"rank_bump_metrics_{BUMP_SCALE}.png"),
+        analysis_path(
+            BASIN_ID, __file__, f"rank_bump_metrics_{BUMP_SCALE}_{EVENT_TAG}.png"
+        ),
         events,
         measures,
     )
@@ -626,6 +647,8 @@ def main():
     baselines, d = load_comparison(
         results_root / BASIN_ID / "runs" / "metrics_comparison.csv"
     )
+    d = d[d.event.isin(EVENT_ORDER)].copy()
+    d = d[d.event.isin(EVENT_ORDER)]
 
     print(
         "\n# Rows sharing an identical metric vector (i.e. the approach cannot "

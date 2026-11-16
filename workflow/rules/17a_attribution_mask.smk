@@ -12,8 +12,7 @@ rule attribution_mask:
             f"{{basin_id}}/preprocessing_inputs/depth_crest_calibration/round{CALIB_ROUNDS[-1]}/sfincs_map.nc"
         ),
         land_bed_level = results_path("{basin_id}/sfincs_skeleton/land_bed_level.nc"),
-        skeleton_inp  = results_path("{basin_id}/sfincs_skeleton/sfincs.inp"),  # mod_ref, for the diagnostic plot's own basemap
-        # Plot background.
+        skeleton_inp  = results_path("{basin_id}/sfincs_skeleton/sfincs.inp"),
         land_mask_on_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_land_mask_on_grid.gpkg"),
         # Unadapted flood map, source of baseline_excess_volume.
         baseline_flood_map = results_path("{basin_id}/runs/{scenario}/visuals/max_flood_depth.tif"),

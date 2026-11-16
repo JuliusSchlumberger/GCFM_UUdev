@@ -58,6 +58,12 @@ coast_100_03SLR:
   slr_m: 0.3
   event: coastal
 
+coast_500_03SLR:
+  surge_rp_yr: 500
+  river_rp_yr: Mean
+  slr_m: 0.3
+  event: coastal
+
 # ----------------------------------------------------------------------------------------
 # River flood
 river_100_03SLR:
@@ -66,11 +72,23 @@ river_100_03SLR:
   slr_m: 0.3
   event: river
 
+river_500_03SLR:
+  surge_rp_yr: Tide
+  river_rp_yr: 500
+  slr_m: 0.3
+  event: river
+
 # ----------------------------------------------------------------------------------------
 # Compound flood
 compound_100_03SLR:
   surge_rp_yr: 100
   river_rp_yr: 100
+  slr_m: 0.3
+  event: compound
+
+compound_500_03SLR:
+  surge_rp_yr: 500
+  river_rp_yr: 500
   slr_m: 0.3
   event: compound
 

@@ -76,6 +76,41 @@ def _infer_nr_subgrid_pixels(mod: SfincsModel, dep: xr.DataArray) -> int:
     return nr
 
 
+def _rebuild_subgrid(
+    mod: SfincsModel,
+    dep: xr.DataArray,
+    elevation,
+    roughness: str,
+    nr_subgrid_pixels: int | None,
+    nr_levels: int | None,
+    nrmax: int | None,
+) -> None:
+    """Rebuild the subgrid table with the baseline's settings (config sfincs.subgrid).
+
+    nr_levels and nrmax are required: hydromt-sfincs' own default (10 levels) would
+    give a coarser table than the baseline's, so the pre-vs-baseline difference
+    would mix the measure's effect with the table resolution.
+    """
+    if nr_levels is None or nrmax is None:
+        raise ValueError(
+            "Subgrid rebuild needs nr_levels and nrmax (config sfincs.subgrid, "
+            "passed by rule adapt_apply_pre)."
+        )
+    mod.subgrid.create(
+        elevation_list=[{"elevation": elevation}],
+        roughness_list=[{"manning": roughness}],
+        nr_subgrid_pixels=(
+            _infer_nr_subgrid_pixels(mod, dep)
+            if nr_subgrid_pixels is None
+            else nr_subgrid_pixels
+        ),
+        nr_levels=nr_levels,
+        nrmax=nrmax,
+        write_man_tif=True,
+        write_dep_tif=True,
+    )
+
+
 def _offshore_buffer(
     locations: gpd.GeoDataFrame,
     distance: float,
@@ -321,6 +356,8 @@ def apply_NbS_land_reclamation(
     manning_n: float | None = None,
     max_depth: float | None = None,
     nr_subgrid_pixels: int | None = None,
+    nr_levels: int | None = None,
+    nrmax: int | None = None,
     elevation: float | None = None,
     min_elevation: float | None = None,
     max_elevation: float | None = None,
@@ -518,16 +555,14 @@ def apply_NbS_land_reclamation(
     roughness_out_path = Path(mod.root.path) / "foreshore_roughness.tif"
     roughness_new.rio.to_raster(roughness_out_path)
 
-    mod.subgrid.create(
-        elevation_list=[{"elevation": str(dep_out_path)}],
-        roughness_list=[{"manning": str(roughness_out_path)}],
-        nr_subgrid_pixels=(
-            _infer_nr_subgrid_pixels(mod, dep)
-            if nr_subgrid_pixels is None
-            else nr_subgrid_pixels
-        ),
-        write_man_tif=True,
-        write_dep_tif=True,
+    _rebuild_subgrid(
+        mod,
+        dep,
+        str(dep_out_path),
+        str(roughness_out_path),
+        nr_subgrid_pixels,
+        nr_levels,
+        nrmax,
     )
 
     # compute_max_inundation masks flood depth to NaN where the sea mask reads 1.0;
@@ -563,6 +598,8 @@ def apply_water_retention(
     dep_subgrid: str | None = None,
     roughness_native_path: str | None = None,
     nr_subgrid_pixels: int | None = None,
+    nr_levels: int | None = None,
+    nrmax: int | None = None,
     flat_floor: bool = False,
     weir_par1: float = 0.6,
     weir_buffer: float | None = None,
@@ -802,16 +839,14 @@ def apply_water_retention(
     # subgrid.create rebuilds the tables from scratch: pass the native roughness
     # raster through unchanged. dep_new already carries the river bathymetry
     # burn-in, so no river_list re-burn is needed.
-    mod.subgrid.create(
-        elevation_list=[{"elevation": dep_new}],
-        roughness_list=[{"manning": str(roughness_native_path)}],
-        nr_subgrid_pixels=(
-            _infer_nr_subgrid_pixels(mod, dep)
-            if nr_subgrid_pixels is None
-            else nr_subgrid_pixels
-        ),
-        write_dep_tif=True,
-        write_man_tif=True,
+    _rebuild_subgrid(
+        mod,
+        dep,
+        dep_new,
+        str(roughness_native_path),
+        nr_subgrid_pixels,
+        nr_levels,
+        nrmax,
     )
 
     cap_note = " [CAPPED by max_lowering, target not fully met]" if capped else ""
@@ -1005,6 +1040,8 @@ def apply_urban_raising(
     flood_map_path: str | None = None,
     flood_threshold: float = 0.05,
     nr_subgrid_pixels: int | None = None,
+    nr_levels: int | None = None,
+    nrmax: int | None = None,
     out_path: str = "urban_raising_dep_subgrid.tif",
     **kwargs,
 ) -> SfincsModel:
@@ -1087,16 +1124,14 @@ def apply_urban_raising(
         f"max +{np.nanmax(raised_by) if raised_by.size else 0.0:.2f} m)."
     )
 
-    mod.subgrid.create(
-        elevation_list=[{"elevation": dep_new}],
-        roughness_list=[{"manning": str(roughness_native_path)}],
-        nr_subgrid_pixels=(
-            _infer_nr_subgrid_pixels(mod, dep)
-            if nr_subgrid_pixels is None
-            else nr_subgrid_pixels
-        ),
-        write_man_tif=True,
-        write_dep_tif=True,
+    _rebuild_subgrid(
+        mod,
+        dep,
+        dep_new,
+        str(roughness_native_path),
+        nr_subgrid_pixels,
+        nr_levels,
+        nrmax,
     )
 
     return mod
@@ -1116,6 +1151,8 @@ def apply_retreat(
     flood_map_path: str | None = None,
     flood_threshold: float = 0.05,
     nr_subgrid_pixels: int | None = None,
+    nr_levels: int | None = None,
+    nrmax: int | None = None,
     out_path: str = "retreat_landuse.tif",  # written under mod.root; read by rule adapt_flood_metrics_pre
     **kwargs,
 ) -> SfincsModel:
@@ -1221,16 +1258,14 @@ def apply_retreat(
     roughness_out_path = Path(mod.root.path) / "retreat_roughness.tif"
     roughness_new.rio.to_raster(roughness_out_path)
 
-    mod.subgrid.create(
-        elevation_list=[{"elevation": dep_subgrid}],
-        roughness_list=[{"manning": str(roughness_out_path)}],
-        nr_subgrid_pixels=(
-            _infer_nr_subgrid_pixels(mod, dep)
-            if nr_subgrid_pixels is None
-            else nr_subgrid_pixels
-        ),
-        write_man_tif=True,
-        write_dep_tif=True,
+    _rebuild_subgrid(
+        mod,
+        dep,
+        dep_subgrid,
+        str(roughness_out_path),
+        nr_subgrid_pixels,
+        nr_levels,
+        nrmax,
     )
     return mod
 

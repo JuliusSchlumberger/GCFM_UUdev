@@ -108,26 +108,27 @@ def test_lagoon_storage_is_coastline_length_times_width_times_depth(tmp_path):
     assert _lagoon_storage_m3(str(path), 2000.0, 0.0) == 0.0
 
 
-def test_lagoon_storage_removes_its_volume_from_river_coastal_and_compound(tmp_path):
+LAGOON_NODATA = -9999.0
+
+
+def _run_lagoon_storage(tmp_path, flood, attr, depth, hmin=0.05):
+    """Run apply_lagoon_storage on a 1-row raster of 100 m2 cells, 100 m coastline x 10 m."""
     import geopandas as gpd
     import rasterio
     from rasterio.transform import from_origin
     from shapely.geometry import LineString
     from src.adaptation_method_post import apply_lagoon_storage
 
-    nodata = -9999.0
-    flood = np.array([[0.5, 1.0, 2.0, nodata, 0.3]], dtype="float32")
-    attr = np.array([[1, 2, 3, 2, 4]], dtype="uint8")  # 4: embanked water, kept
     prof = dict(
         driver="GTiff",
         height=1,
-        width=5,
+        width=flood.shape[1],
         count=1,
         crs="EPSG:32631",
         transform=from_origin(0, 10, 10, 10),
-    )  # 100 m2 cells
+    )
     with rasterio.open(
-        tmp_path / "flood.tif", "w", dtype="float32", nodata=nodata, **prof
+        tmp_path / "flood.tif", "w", dtype="float32", nodata=LAGOON_NODATA, **prof
     ) as dst:
         dst.write(flood, 1)
     with rasterio.open(
@@ -139,20 +140,39 @@ def test_lagoon_storage_removes_its_volume_from_river_coastal_and_compound(tmp_p
         geometry=[LineString([(0, 0), (100, 0)])], crs="EPSG:32631"
     ).to_file(coast)
 
-    # 100 m coastline x 10 m x 0.1 m = 100 m3 -> a 1/3 m layer off the 3 cells
     out = apply_lagoon_storage(
         str(tmp_path / "flood.tif"),
         str(tmp_path / "sfincs"),
         str(tmp_path / "out"),
         str(coast),
         10.0,
-        0.1,
+        depth,
+        hmin=hmin,
     )
     with rasterio.open(out["out_raster"]) as src:
-        new = src.read(1)
+        return src.read(1)
+
+
+def test_lagoon_storage_removes_its_volume_from_river_coastal_and_compound(tmp_path):
+    flood = np.array([[0.5, 1.0, 2.0, LAGOON_NODATA, 0.3]], dtype="float32")
+    attr = np.array([[1, 2, 3, 2, 4]], dtype="uint8")  # 4: embanked water, kept
+
+    # 100 m coastline x 10 m x 0.1 m = 100 m3 -> a 1/3 m layer off the 3 cells
+    new = _run_lagoon_storage(tmp_path, flood, attr, depth=0.1)
     np.testing.assert_allclose(new[0, :3], flood[0, :3] - 1 / 3, rtol=1e-5)
-    assert new[0, 3] == nodata and new[0, 4] == pytest.approx(0.3)
+    assert new[0, 3] == LAGOON_NODATA and new[0, 4] == pytest.approx(0.3)
     assert (flood[0, :3] - new[0, :3]).sum() * 100 == pytest.approx(100.0, rel=1e-5)
+
+
+def test_lagoon_storage_counts_cells_left_at_or_below_hmin_as_dry(tmp_path):
+    # 100 m x 10 m x 0.074 m = 74 m3 -> a 0.37 m layer off both cells: 0.03 m
+    # is left in the first (dry at hmin = 0.05 m, as the baseline map), 0.63 m
+    # in the second.
+    flood = np.array([[0.4, 1.0]], dtype="float32")
+    attr = np.array([[1, 2]], dtype="uint8")
+    new = _run_lagoon_storage(tmp_path, flood, attr, depth=0.074, hmin=0.05)
+    assert new[0, 0] == LAGOON_NODATA
+    assert new[0, 1] == pytest.approx(0.63, rel=1e-5)
 
 
 def test_bool_param_rejects_non_bool_value():

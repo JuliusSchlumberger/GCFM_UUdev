@@ -11,8 +11,6 @@ rule adapt_apply_pre:
         roughness_native   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"),
         lu_roughness_lookup = raw_input("lu_to_roughness_lookup"),
         sea_mask           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
-        # water_retention sizing reference from rule attribution_mask (17a);
-        # only required by strategies that use water_retention.
         baseline_excess_volume = water_retention_excess_volume_input,
         measure_data       = lambda wildcards: strategy_measure_input_paths(wildcards.strategy, wildcards.basin_id),
         # Basin spin-up restart, copied into adapted_root (patched for
@@ -39,6 +37,9 @@ rule adapt_apply_pre:
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         adapted_root       = lambda wildcards: results_path(
             f"{wildcards.basin_id}/runs/{wildcards.scenario}/adaptation/pre/{wildcards.strategy}/sfincs_skeleton"),
+        # Same table settings as rule build_sfincs_skeleton (12a) for subgrid rebuilds.
+        nr_levels          = config["sfincs"]["subgrid"]["nr_levels"],
+        nrmax              = config["sfincs"]["subgrid"]["nrmax"],
     threads: rule_threads("adapt_apply_pre")
     log: "logs/{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/17b_adapt_pre.log"
     script: "../scripts/17b_adapt_pre.py"

@@ -75,6 +75,7 @@ _STRUCT8 = generate_binary_structure(2, 2)
 _NEIGHBOURS4 = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 
+# Takes one weir segment and returns the two grid cells on either side of it
 def _edge_cells(seg: LineString, inv_transform) -> tuple[tuple, tuple]:
     """`seg` is a 2-point segment along a cell edge, as the weir builder writes them."""
     (x0, y0), (x1, y1) = seg.coords[0][:2], seg.coords[-1][:2]
@@ -87,14 +88,17 @@ def _edge_cells(seg: LineString, inv_transform) -> tuple[tuple, tuple]:
     return (r, c0 - 1), (r, c0)
 
 
+# Puts a cell pair in a fixed order, so (A,B) and (B,A) count as the same edge
 def _edge_key(a: tuple, b: tuple) -> tuple:
     return (a, b) if a <= b else (b, a)
 
 
+# Checks whether a (row,col) is inside the grid to avoid indexing outside the array at the grid border
 def _in_grid(rc: tuple, shape: tuple) -> bool:
     return 0 <= rc[0] < shape[0] and 0 <= rc[1] < shape[1]
 
 
+# groups cells that water can reach from each other.
 def _components(valid: np.ndarray, blocked: set) -> np.ndarray:
     """4-neighbour links only (SFINCS exchanges water across shared cell edges);
     never across a blocked (weir) edge. Label -1 = invalid cell.
@@ -118,6 +122,7 @@ def _components(valid: np.ndarray, blocked: set) -> np.ndarray:
     return labels
 
 
+# converts the whole weir into a set of blocked cell edges
 def _weir_edges(weir_gdf: gpd.GeoDataFrame, transform) -> set:
     inv = ~transform
     return {_edge_key(*_edge_cells(g, inv)) for g in weir_gdf.geometry}
@@ -141,6 +146,7 @@ def protected_land(
     return valid & (labels != _open_sea_label(labels, seaward, valid))
 
 
+# ----------- Label the weir as either coast or river) -------------------
 def centrelines_off_sea(
     rivers: gpd.GeoDataFrame, seaward: np.ndarray, transform
 ) -> gpd.GeoDataFrame:
@@ -291,11 +297,13 @@ def label_weir_kinds(
     return kinds, counts
 
 
+# -------------------- Close river mouth -------------------------
 def _reach_ids(value) -> list[int]:
     """SWORD rch_id_up/rch_id_dn as stored in the gpkg (e.g. "[21604100013]")."""
     return [int(x) for x in re.findall(r"\d+", str(value)) if int(x) != 0]
 
 
+# Gives the river's direction and point to start searching from. Finds anchor where river meets the sea (i.e. where to close)
 def _outlet_centreline(
     rivers: gpd.GeoDataFrame, outlet
 ) -> tuple[LineString, Point, float]:
@@ -544,6 +552,8 @@ def mouth_closures(
     return closures, pumps, report
 
 
+# ------------------ estuary and seal check ------------------------
+# confirms that closure works and the water behind it is sheltered (i.e. cut off)
 def estuary_and_seal(
     weir_gdf: gpd.GeoDataFrame,
     closures: list[dict],
@@ -606,6 +616,8 @@ class AdaptationLines:
     report: list[dict]
 
 
+# ----------------- Putting it all together ------------------
+# Builds the maks and then runs the above steps in order
 def build_adaptation_lines(
     weir_gdf: gpd.GeoDataFrame,
     landuse: np.ndarray,
@@ -682,6 +694,7 @@ def build_adaptation_lines(
     return AdaptationLines(weir, closure, pump, seaward, estuary, kind_counts, report)
 
 
+# Splits the results into 4 strategy layers: PC coast, PO coast, PO river, pumps
 def measure_line_layers(lines: AdaptationLines) -> dict[str, gpd.GeoDataFrame]:
     """Return the measure line files, keyed by ADAPTATION_LINE_NAMES."""
     weir = lines.weir[["kind", "geometry"]]
@@ -717,6 +730,7 @@ def require_sealed(report: list[dict]) -> None:
         )
 
 
+# Writes the report to the json file
 def build_info(
     lines: AdaptationLines, basin_id: str, built: str, source_weir: str, grid_def: dict
 ) -> dict:
@@ -742,6 +756,7 @@ def build_info(
     }
 
 
+# Draws an overview of the lines
 def plot_adaptation_lines(path, lines: AdaptationLines, transform, basin_id) -> None:
     """Plot the weir by kind with closures and pumps: overview + zoom per mouth."""
     weir, closure, pump = lines.weir, lines.closure, lines.pump

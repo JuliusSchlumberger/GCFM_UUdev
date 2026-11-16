@@ -3,6 +3,59 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-10: post measures count a cell left at or below metrics.hmin as dry (-KL)
+
+- The four post measures that lower depths part-way (`nbs_land_reclamation`,
+  `water_retention`, `pumps`, `lagoon_storage` in `src/adaptation_method_post.py`)
+  dried a cell only at depth <= 0. The baseline flood map they start from, and
+  the baseline and pre metrics, keep only depth > `metrics.hmin` (0.05 m), so a
+  cell lowered to 0-0.05 m still counted as flooded in post but would be dry in
+  pre. Post therefore overstated flooded area and urban exposure against pre
+  and baseline. In the Ebro post maps (`2433835_V9`) these cells were up to 17%
+  of the flooded cells: river_100 `protect_closed_09` 221,720 of 1,306,800,
+  `NbS_protect_open_04` 225,038 of 1,341,287, `advance_04` 259,654 of
+  1,865,120; compound_500 `advance_09` 9.6%; coastal `NbS_protect_open_*`
+  1-2%. Strategies without these measures had none.
+- They now dry a cell at depth <= `hmin`. `17c_adapt_post.py` passes `hmin`
+  through `dispatch_rules`. The removed and remaining volumes they report stay
+  physical; only the flooded/dry test changes.
+- New unit test: `lagoon_storage` leaves 0.03 m in a cell and it comes out dry.
+- Post metrics need rerunning (rule `adapt_metrics_post`, no SFINCS).
+
+# 2026-11-10: adapted pre models rebuild the subgrid with the baseline's 20 water-level bins (-KL)
+
+- The four pre measures that rebuild the subgrid (`nbs_land_reclamation`,
+  `water_retention`, `urban_raising`, `retreat` in
+  `src/adaptation_method_pre.py`) called `subgrid.create` without `nr_levels`.
+  hydromt-sfincs 2.0.0rc2 then uses 10 water-level bins per cell, while the
+  baseline skeleton (rule 12a) and the calibration (rule 11) use 20 from
+  `config.yml` `sfincs.subgrid.nr_levels`. The rebuild covers the whole domain,
+  so every adapted pre run differed from its baseline in table resolution as
+  well as in the measure. All 54 existing Ebro pre models (`accommodate_*`,
+  `NbS_protect_open_*`, `retreat_*` x 6 scenarios) have 10 levels; the
+  baseline has 20.
+- The four measures now share one `_rebuild_subgrid` helper that passes
+  `nr_levels` and `nrmax`, read from `config.yml` by rule `adapt_apply_pre`. It
+  raises an error if they are missing, instead of falling back to the library
+  default.
+- Existing adapted pre results are out of date: `adapt_apply_pre` reruns on
+  the changed params, and the adapted event runs and pre metrics downstream of it.
+
+# 2026-11-05: pre/post response figures plot the events chosen in EVENT_ORDER (-KL)
+
+- `analysis/pre_post_response_figures.py`: `EVENT_ORDER` now selects the events
+  to plot, and other events in `metrics_comparison.csv` are dropped. Before,
+  any event missing from the list (the new `*_100_03SLR` runs) stopped the
+  script with `ValueError: 'coast_100_03SLR' is not in list`.
+- Outputs computed over the selected events add their return period and SLR
+  to their names (`EVENT_TAG`, e.g. `_100_03SLR`): the scale-response
+  figures, the urban risk-reduction table, both Kendall tau-b tables and the
+  bump chart. 100-yr and 500-yr selections no longer overwrite each other.
+  `EVENT_LABELS` gains the 100-yr events.
+- `SCATTER_EVENTS` is the coastal event in `EVENT_ORDER` instead of a fixed
+  `coast_500_03SLR`, which stopped the script when only 100-yr events were
+  selected.
+
 # 2026-11-03: NbS pre runs: retention inlet snapped onto the levee; metrics on baseline land (-KL)
 
 - **Retention inlet (`adaptation_method_pre.apply_water_retention`):** the
