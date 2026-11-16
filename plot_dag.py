@@ -94,10 +94,25 @@ def stage_of(number: str) -> str:
 
 
 def styled_rulegraph(
-    rules: set[str], edges: set[tuple[str, str]], numbers: dict[str, str]
+    rules: set[str],
+    edges: set[tuple[str, str]],
+    numbers: dict[str, str],
+    second_column: str | None = None,
 ) -> str:
-    """Return DOT source: rules clustered by stage, numbered labels, SFINCS runs outlined twice."""
+    """Return DOT source: rules clustered by stage, numbered labels, SFINCS runs outlined twice.
+
+    second_column: the stage that starts a second column; its top rule sits level
+    with the first rule, arrows into it from the first column do not set rank, and
+    all arrows are drawn with right angles.
+    """
     style = {name: (fill, border) for _, name, fill, border in STAGES}
+    order = [name for _, name, _, _ in STAGES]
+    col2 = set()
+    if second_column is not None:
+        start = order.index(second_column)
+        col2 = {
+            r for r in rules if order.index(stage_of(numbers.get(r, "99"))) >= start
+        }
     by_stage: dict[str, list[str]] = {}
     for rule in sorted(rules, key=lambda r: (numbers.get(r, "99"), r)):
         by_stage.setdefault(stage_of(numbers.get(rule, "99")), []).append(rule)
@@ -125,7 +140,20 @@ def styled_rulegraph(
             label = f'<<FONT POINT-SIZE="9" COLOR="{border}">{numbers.get(rule, "")}</FONT> {rule}>'
             lines.append(f'    "{rule}" [label={label}, color="{border}"{extra}];')
         lines.append("  }")
-    lines += [f'  "{a}" -> "{b}";' for a, b in sorted(edges)]
+    for a, b in sorted(edges):
+        if a not in col2 and b in col2:
+            # written downward with the head at its tail: with orthogonal splines dot
+            # then runs it up the gap between the columns
+            lines.append(f'  "{b}" -> "{a}" [dir=back, constraint=false];')
+        else:
+            lines.append(f'  "{a}" -> "{b}";')
+    if col2 and col2 != rules:
+        has_pred = {b for _, b in edges}
+        has_col2_pred = {b for a, b in edges if a in col2}
+        level = sorted(r for r in rules - col2 if r not in has_pred)[:1]
+        level += sorted(r for r in col2 if r not in has_col2_pred)
+        lines.append("  {rank=same; " + " ".join(f'"{r}";' for r in level) + "}")
+        lines.insert(1, "  graph [splines=ortho];")
     lines.append("}")
     return "\n".join(lines) + "\n"
 
@@ -205,6 +233,13 @@ def main() -> None:
         help="Skip the full per-job DAG (only generate rulegraph)",
     )
     parser.add_argument(
+        "--columns",
+        type=int,
+        default=1,
+        choices=[1, 2],
+        help="Rule-graph columns; 2 starts a second column at the Model set-up stage (default: 1)",
+    )
+    parser.add_argument(
         "--config",
         nargs="+",
         default=[],
@@ -234,7 +269,9 @@ def main() -> None:
             rules = set(ids.values()) - {target}
             edges = {(a, b) for a, b in edges if a != target and b != target}
             reduced = transitive_reduction(edges)
-            dot = styled_rulegraph(rules, reduced, numbers)
+            dot = styled_rulegraph(
+                rules, reduced, numbers, "Model set-up" if args.columns == 2 else None
+            )
             if render(dot, out_file, args.format):
                 stages = [
                     s

@@ -7,7 +7,7 @@ the pipeline works; this file only describes *what changed and why*.
 
 **What changed:**
 - `plot_dag.py` draws the rule graph itself instead of passing Snakemake's DOT straight to Graphviz: rules grouped into coloured stage panels by rule-file number (domain and input data, boundary forcing, river bed and dike crests, model set-up, simulation, flood metrics, adaptation, analysis), each labelled with its number (07d, 12a, ...); rules that run SFINCS outlined twice; the target rule and every arrow implied by a longer path left out. Each rule graph gets a `.txt` caption.
-- New option `--config`, passed to `snakemake --config`.
+- New options `--config`, passed to `snakemake --config`, and `--columns 2`, which starts a second column at model set-up (simulation, flood metrics and adaptation below it) with right-angled arrows, so the graph fits a slide (about 1:1 instead of 1:2.4).
 - Snakemake is called with `--cores 1`; without it `00_common.smk` stops the graph, so the script failed for every target.
 - `docs/running.md` describes the figure and the option; smoke tests in `tests/unit/test_plot_dag.py`.
 

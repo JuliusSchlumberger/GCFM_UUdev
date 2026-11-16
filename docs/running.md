@@ -207,12 +207,14 @@ The rule graph (`<target>_rulegraph.<fmt>`, with a `.txt` caption) groups the
 rules into pipeline stages by their rule-file number (`plot_dag.STAGES`), labels
 each with that number, outlines the rules that run SFINCS twice, and leaves out
 the target rule and every arrow a longer path already implies, so an arrow means
-"directly after". The job DAG (`<target>_dag.<fmt>`) is Snakemake's own, one
-node per job.
+"directly after". `--columns 2` puts model set-up, simulation, flood metrics
+and adaptation in a second column next to the first three stages, with
+right-angled arrows (for slides). The job DAG (`<target>_dag.<fmt>`) is
+Snakemake's own, one node per job.
 
 Options: `--targets` (default `preprocess build`), `--out-dir` (default
 `figs/dag`), `--format` (`svg`, `png` or `pdf`), `--no-dag` (rule graph only),
-`--config` (passed to `snakemake --config`); `python plot_dag.py --help` lists
+`--columns` (`1` or `2`, default `1`), `--config` (passed to `snakemake --config`); `python plot_dag.py --help` lists
 them. Without `--config` the graphs cover the defaults: every basin in the
 delta-polygon dataset and the `default_scenarios`. The rule graph does not
 depend on the basin count; the job DAG grows with it, so give one basin for a

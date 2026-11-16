@@ -53,3 +53,20 @@ def test_styled_rulegraph_clusters_rules_and_marks_sfincs_runs():
     assert dot.count("subgraph cluster_") == 3
     assert '"determine_model_domain" -> "run_event"' not in dot
     assert "peripheries=2" in dot.split('"run_event" [')[1].split("\n")[0]
+
+
+def test_second_column_starts_level_with_the_first_rule():
+    edges = {
+        ("determine_model_domain", "build_sfincs_skeleton"),
+        ("build_sfincs_skeleton", "run_event"),
+    }
+    rules = {"determine_model_domain", "build_sfincs_skeleton", "run_event"}
+    dot = plot_dag.styled_rulegraph(
+        rules, edges, plot_dag.rule_numbers(), "Model set-up"
+    )
+    assert (
+        '"build_sfincs_skeleton" -> "determine_model_domain" [dir=back, constraint=false]'
+        in dot
+    )
+    assert '{rank=same; "determine_model_domain"; "build_sfincs_skeleton";}' in dot
+    assert '"build_sfincs_skeleton" -> "run_event";' in dot
