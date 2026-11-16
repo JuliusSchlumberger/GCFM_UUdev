@@ -200,19 +200,26 @@ several basins go to `<results_dir>/figures/analysis/`.
 
 ```bash
 python plot_dag.py --targets preprocess build
-python plot_dag.py --targets preprocess --format png --no-dag
+python plot_dag.py --targets adapt --format png --no-dag --config target_basins="[2433835]" target_strategies="['advance_1']"
 ```
 
+The rule graph (`<target>_rulegraph.<fmt>`, with a `.txt` caption) groups the
+rules into pipeline stages by their rule-file number (`plot_dag.STAGES`), labels
+each with that number, outlines the rules that run SFINCS twice, and leaves out
+the target rule and every arrow a longer path already implies, so an arrow means
+"directly after". The job DAG (`<target>_dag.<fmt>`) is Snakemake's own, one
+node per job.
+
 Options: `--targets` (default `preprocess build`), `--out-dir` (default
-`figs/dag`), `--format` (`svg`, `png` or `pdf`), `--no-dag` (rule graph only);
-`python plot_dag.py --help` lists them. The script passes no `--config`, so the
-graphs cover the defaults: every basin in the delta-polygon dataset and the
-`default_scenarios`. The rule graph does not depend on the basin count; the job
-DAG has one node per job and grows with it (use `--no-dag` for a quick look).
-For one basin, call Snakemake directly:
+`figs/dag`), `--format` (`svg`, `png` or `pdf`), `--no-dag` (rule graph only),
+`--config` (passed to `snakemake --config`); `python plot_dag.py --help` lists
+them. Without `--config` the graphs cover the defaults: every basin in the
+delta-polygon dataset and the `default_scenarios`. The rule graph does not
+depend on the basin count; the job DAG grows with it, so give one basin for a
+quick look:
 
 ```bash
-snakemake preprocess --dag --forceall --config target_basins="[2433835]" | dot -Tsvg -o figs/dag/preprocess_2433835.svg
+python plot_dag.py --targets preprocess --config target_basins="[2433835]"
 ```
 
 ## Analysis scripts
