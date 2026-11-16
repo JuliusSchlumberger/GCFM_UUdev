@@ -7,6 +7,7 @@ rectangle with valid classes, so unclipped panels would differ in extent.
 
 Output, in <results_dir>/<BASIN_ID>/figures/analysis/ (BASIN_ID = 2433835):
   90_domain_figures_input_data.png            elevation | land use, 1x2
+  90_domain_figures_elevation_classes.png     elevation only, in 1 m classes (<0 .. >5 m)
   90_domain_figures_return_period_curves.png  river discharge | coastal water level
   90_domain_figures_forced_hydrograph.png     built forcing per scenario, 2 x SCENARIOS
 """
@@ -22,7 +23,7 @@ import shapely
 import xarray as xr
 from _common import REPO_ROOT, analysis_path, script_parser, site_path  # noqa: E402
 from hydromt_sfincs import SfincsModel
-from matplotlib.colors import BoundaryNorm, ListedColormap, TwoSlopeNorm
+from matplotlib.colors import BoundaryNorm, ListedColormap, TwoSlopeNorm, to_hex
 from matplotlib.patches import Patch
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
@@ -38,6 +39,15 @@ BASIN_ID = "2433835"
 # Capped well below the basin's full elevation range so the lowlands keep
 # contrast; values above VMAX take the max colour (colorbar extend="max").
 ELEV_VMIN, ELEV_VMAX = -10.0, 50.0
+
+# Discrete classes for the classified elevation map: the flood-relevant lowlands
+# sit within a few metres of sea level, which the continuous -10..50 m ramp
+# washes out -- 1 m bins up to 5 m make those differences readable.
+ELEV_CLASS_BOUNDS = [0, 1, 2, 3, 4, 5]
+ELEV_CLASS_LABELS = ["< 0 m", "0–1 m", "1–2 m", "2–3 m", "3–4 m", "4–5 m", "> 5 m"]
+ELEV_CLASS_COLORS = ["#2c7fb8"] + [
+    to_hex(c) for c in plt.get_cmap("YlOrBr")(np.linspace(0.1, 0.95, 6))
+]
 
 # Forced-hydrograph columns, left to right.
 SCENARIOS = ["coast_100_03SLR", "river_100_03SLR", "compound_100_03SLR"]
@@ -101,8 +111,11 @@ def _finish_panel(ax, margin, domain_poly):
     ax.grid(True, alpha=0.3, linewidth=0.5)
 
 
-def draw_elevation_panel(ax, domain_dir, domain_poly):
-    """Draw the domain-clipped elevation map on ax and return the image."""
+def draw_elevation_panel(ax, domain_dir, domain_poly, classified=False):
+    """Draw the domain-clipped elevation map on ax and return the image.
+
+    classified: ELEV_CLASS_BOUNDS classes instead of the continuous ramp.
+    """
     data, extent = read_raster_reprojected_for_plot(
         str(domain_dir / f"{BASIN_ID}_elevation_conditioned_sfincs_grid.tif"),
         dst_bounds=domain_poly.bounds,
@@ -110,12 +123,19 @@ def draw_elevation_panel(ax, domain_dir, domain_poly):
     data = _mask_to_domain(data, extent, domain_poly)
     land, rivers, margin = _panel_context(domain_dir, domain_poly)
 
+    if classified:
+        cmap = ListedColormap(ELEV_CLASS_COLORS)
+        norm = BoundaryNorm(ELEV_CLASS_BOUNDS, ncolors=cmap.N, extend="both")
+    else:
+        cmap = _BATHY_CMAP
+        norm = TwoSlopeNorm(vmin=ELEV_VMIN, vcenter=0.0, vmax=ELEV_VMAX)
+
     if not land.empty:
         land.plot(ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
     im = ax.imshow(
         data,
-        cmap=_BATHY_CMAP,
-        norm=TwoSlopeNorm(vmin=ELEV_VMIN, vcenter=0.0, vmax=ELEV_VMAX),
+        cmap=cmap,
+        norm=norm,
         extent=extent,
         origin="upper",
         aspect="auto",
@@ -270,6 +290,26 @@ def main() -> None:
         )
 
     out_path = analysis_path(BASIN_ID, __file__, "input_data.png")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote {out_path}")
+
+    # classified elevation
+    fig, ax = plt.subplots(figsize=(8, 7), constrained_layout=True)
+    draw_elevation_panel(ax, domain_dir, domain_poly, classified=True)
+    ax.set_xlabel("Longitude (°)")
+    ax.set_ylabel("Latitude (°)")
+    ax.legend(
+        handles=[
+            Patch(color=c, label=lbl)
+            for c, lbl in zip(ELEV_CLASS_COLORS, ELEV_CLASS_LABELS)
+        ],
+        title="Elevation",
+        loc="lower right",
+        fontsize=9,
+        framealpha=0.9,
+    )
+    out_path = analysis_path(BASIN_ID, __file__, "elevation_classes.png")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Wrote {out_path}")

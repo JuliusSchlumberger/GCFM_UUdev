@@ -1,6 +1,6 @@
 """Plot how the flooding depth threshold (hmin) moves each strategy's residual risk.
 
-Reads hmin_sensitivity.py's CSV. Same layout as results_figures.py's scale-response
+Reads hmin_sensitivity.py's CSV. Same layout as pre_post_response_figures.py's scale-response
 figures (strategies x flood types, residual against implementation scale): the
 lines are the pipeline's own threshold (config metrics.hmin), and a red bar at
 each point spans the residual over every threshold. Residual = metric of the
@@ -30,7 +30,7 @@ from _common import (
 )
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
-from results_figures import (
+from pre_post_response_figures import (
     EVENT_LABELS,
     MEASURE_ORDER,
     METRIC_INFO,

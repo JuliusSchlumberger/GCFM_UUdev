@@ -11,8 +11,6 @@ rule adapt_apply_pre:
         roughness_native   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_roughness.tif"),
         lu_roughness_lookup = raw_input("lu_to_roughness_lookup"),
         sea_mask           = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
-        # water_retention sizing reference from rule attribution_mask (17a);
-        # only required by strategies that use water_retention.
         baseline_excess_volume = water_retention_excess_volume_input,
         measure_data       = lambda wildcards: strategy_measure_input_paths(wildcards.strategy, wildcards.basin_id),
         # Basin spin-up restart, copied into adapted_root (patched for
@@ -118,6 +116,8 @@ rule adapt_flood_metrics_pre:
         stability     = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/stability.csv"),
         landuse       = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/retreat_landuse.tif"),
         land_bed_level = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/land_bed_level.nc"),
+        # Baseline land footprint: the metrics leave out land reclaimed from the sea.
+        baseline_land_bed_level = results_path("{basin_id}/sfincs_skeleton/land_bed_level.nc"),
         **map_figure_inputs(),
         delta_polygon = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_delta_polygon.gpkg"),
     output:

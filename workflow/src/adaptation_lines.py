@@ -23,16 +23,20 @@ Steps
    the reach's upstream end (where the channel meets the sea) that reaches
    land on both sides, within max_tilt_deg of perpendicular to the river,
    snapped onto the grid's cell edges and extended ext_cells into land so
-   it joins the coastal weir.
+   it joins the coastal weir. Where SWORD carries the river on past the
+   coastline (no crossing there), the anchor walks upstream, up to
+   max_walk_m, to the first crossing no wider than max_width_factor x the
+   reach width and then takes the narrowest within refine_m beyond it.
 3. With the baseline weir and the closures as barriers, sea-classified
    cells no longer connected to the open sea form the estuary; coast
    segments facing it become "estuary" (sheltered: they stay at baseline
    under protect-closed). The same connectivity check confirms the river
    behind every closure is cut off from the open sea.
-4. The pump line per mouth is the river centreline from pump_upstream_m
-   upstream of the closure to the outlet reach's seaward end, oriented
-   inland -> sea (hydromt_sfincs keeps only its two end points: first =
-   intake, last = outlet).
+4. The pump lines per mouth (pumps_per_mouth, spread evenly along the
+   closure; the measure's discharge is split over them) are straight lines
+   perpendicular to the closure, pump_half_length_m either side of it,
+   oriented inland -> sea (hydromt_sfincs keeps only their two end points:
+   first = intake, last = outlet).
 """
 
 from __future__ import annotations
@@ -71,6 +75,7 @@ _STRUCT8 = generate_binary_structure(2, 2)
 _NEIGHBOURS4 = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 
+# Takes one weir segment and returns the two grid cells on either side of it
 def _edge_cells(seg: LineString, inv_transform) -> tuple[tuple, tuple]:
     """`seg` is a 2-point segment along a cell edge, as the weir builder writes them."""
     (x0, y0), (x1, y1) = seg.coords[0][:2], seg.coords[-1][:2]
@@ -83,14 +88,17 @@ def _edge_cells(seg: LineString, inv_transform) -> tuple[tuple, tuple]:
     return (r, c0 - 1), (r, c0)
 
 
+# Puts a cell pair in a fixed order, so (A,B) and (B,A) count as the same edge
 def _edge_key(a: tuple, b: tuple) -> tuple:
     return (a, b) if a <= b else (b, a)
 
 
+# Checks whether a (row,col) is inside the grid to avoid indexing outside the array at the grid border
 def _in_grid(rc: tuple, shape: tuple) -> bool:
     return 0 <= rc[0] < shape[0] and 0 <= rc[1] < shape[1]
 
 
+# groups cells that water can reach from each other.
 def _components(valid: np.ndarray, blocked: set) -> np.ndarray:
     """4-neighbour links only (SFINCS exchanges water across shared cell edges);
     never across a blocked (weir) edge. Label -1 = invalid cell.
@@ -114,6 +122,7 @@ def _components(valid: np.ndarray, blocked: set) -> np.ndarray:
     return labels
 
 
+# converts the whole weir into a set of blocked cell edges
 def _weir_edges(weir_gdf: gpd.GeoDataFrame, transform) -> set:
     inv = ~transform
     return {_edge_key(*_edge_cells(g, inv)) for g in weir_gdf.geometry}
@@ -137,6 +146,7 @@ def protected_land(
     return valid & (labels != _open_sea_label(labels, seaward, valid))
 
 
+# ----------- Label the weir as either coast or river) -------------------
 def centrelines_off_sea(
     rivers: gpd.GeoDataFrame, seaward: np.ndarray, transform
 ) -> gpd.GeoDataFrame:
@@ -287,11 +297,13 @@ def label_weir_kinds(
     return kinds, counts
 
 
+# -------------------- Close river mouth -------------------------
 def _reach_ids(value) -> list[int]:
     """SWORD rch_id_up/rch_id_dn as stored in the gpkg (e.g. "[21604100013]")."""
     return [int(x) for x in re.findall(r"\d+", str(value)) if int(x) != 0]
 
 
+# Gives the river's direction and point to start searching from. Finds anchor where river meets the sea (i.e. where to close)
 def _outlet_centreline(
     rivers: gpd.GeoDataFrame, outlet
 ) -> tuple[LineString, Point, float]:
@@ -376,12 +388,44 @@ def _edge_line(a: tuple, b: tuple, transform) -> LineString:
     return LineString([transform * (cl, r), transform * (cl, r + 1)])
 
 
+def _narrowest_crossing(
+    full, d, land, inv, cell, direction_length_m, max_tilt_deg, max_half_length_m
+):
+    """Return the narrowest straight crossing through the centreline point at distance d.
+
+    Returns (crossing length, [left end, right end], tilt in degrees, unit
+    downstream tangent), or None if no crossing reaches land on both sides.
+    """
+    anchor = full.interpolate(d)
+    p_up = full.interpolate(max(d - direction_length_m, 0.0))
+    t = np.array([anchor.x - p_up.x, anchor.y - p_up.y])
+    t /= np.hypot(*t)
+    perp = np.arctan2(-t[1], t[0])  # bearing (from north) of the left-hand normal
+    best = None
+    for off in np.radians(np.arange(-max_tilt_deg, max_tilt_deg + 0.5, 1.0)):
+        v = np.array([np.sin(perp + off), np.cos(perp + off)])
+        ends = [
+            _first_land_point(anchor, s * v, land, inv, max_half_length_m, cell / 50)
+            for s in (1, -1)
+        ]
+        if any(e is None for e in ends):
+            continue
+        total = anchor.distance(ends[0]) + anchor.distance(ends[1])
+        if best is None or total < best[0]:
+            best = (total, ends, float(np.degrees(off)), t)
+    return best
+
+
 CLOSURE_KEYS = (
     "direction_length_m",
     "max_tilt_deg",
     "max_half_length_m",
     "ext_cells",
-    "pump_upstream_m",
+    "max_width_factor",
+    "max_walk_m",
+    "refine_m",
+    "pump_half_length_m",
+    "pumps_per_mouth",
 )
 
 
@@ -394,9 +438,13 @@ def mouth_closures(
     max_tilt_deg: float,
     max_half_length_m: float,
     ext_cells: int,
-    pump_upstream_m: float,
+    max_width_factor: float,
+    max_walk_m: float,
+    refine_m: float,
+    pump_half_length_m: float,
+    pumps_per_mouth: int,
 ) -> tuple[list[dict], list[dict], list[dict]]:
-    """Build closure edges and pump line per SWORD outlet reach (module docstring, steps 2, 4).
+    """Build closure edges and pump lines per SWORD outlet reach (module docstring, steps 2, 4).
 
     `land` = protected_land(). Returns (closure_rows, pump_rows, report);
     closure rows carry cell_a/cell_b for the connectivity check.
@@ -406,34 +454,45 @@ def mouth_closures(
     closures, pumps, report = [], [], []
     for _, outlet in rivers[rivers["n_rch_dn"] == 0].iterrows():
         reach_id = int(outlet["reach_id"])
-        full, anchor, d_anchor = _outlet_centreline(rivers, outlet)
-        p_up = full.interpolate(max(d_anchor - direction_length_m, 0.0))
-        t = np.array([anchor.x - p_up.x, anchor.y - p_up.y])
-        t /= np.hypot(*t)
-        perp = np.arctan2(-t[1], t[0])  # bearing (from north) of the left-hand normal
-        best = None
-        for off in np.radians(np.arange(-max_tilt_deg, max_tilt_deg + 0.5, 1.0)):
-            v = np.array([np.sin(perp + off), np.cos(perp + off)])
-            ends = [
-                _first_land_point(
-                    anchor, s * v, land, inv, max_half_length_m, cell / 50
-                )
-                for s in (1, -1)
-            ]
-            if any(e is None for e in ends):
-                continue
-            total = anchor.distance(ends[0]) + anchor.distance(ends[1])
-            if best is None or total < best[0]:
-                best = (total, ends, float(np.degrees(off)))
+        full, _, d_anchor = _outlet_centreline(rivers, outlet)
+        widths = rivers.loc[
+            rivers["reach_id"]
+            .astype("int64")
+            .isin([reach_id, *_reach_ids(outlet["rch_id_up"])]),
+            "width",
+        ]
+        max_cross = max(max_width_factor * float(widths.max()), 3 * cell)
+        args = (land, inv, cell, direction_length_m, max_tilt_deg, max_half_length_m)
+        d = d_anchor
+        best = _narrowest_crossing(full, d, *args)
+        if best is None:
+            # SWORD carries the river on past the coastline: walk upstream to
+            # where the banks close in, then take the narrowest crossing there
+            found = None
+            for d_try in np.arange(d_anchor - cell, d_anchor - max_walk_m, -cell):
+                if d_try <= 0:
+                    break
+                b = _narrowest_crossing(full, d_try, *args)
+                if b is not None and b[0] <= max_cross:
+                    found = d_try
+                    break
+            if found is not None:
+                d, best = found, None
+                for d_try in np.arange(found, max(found - refine_m, 0.0), -cell / 2):
+                    b = _narrowest_crossing(full, d_try, *args)
+                    if b is not None and (best is None or b[0] < best[0]):
+                        d, best = d_try, b
         if best is None:
             log.warning(
                 f"Outlet reach {reach_id}: no straight crossing within +-{max_tilt_deg:.0f} deg of "
-                f"perpendicular reaches land on both sides within {max_half_length_m:.0f} m -- "
+                f"perpendicular reaches land on both sides within {max_half_length_m:.0f} m, "
+                f"at the outlet or up to {max_walk_m:.0f} m upstream -- "
                 "no closure or pump written for this mouth"
             )
             report.append({"reach_id": reach_id, "closed": False})
             continue
-        _, ends, tilt = best
+        anchor = full.interpolate(d)
+        _, ends, tilt, t = best
         p0, p1 = ends[1].coords[0], ends[0].coords[0]
         edges, length = _crossing_edges(p0, p1, transform, land.shape, ext_cells * cell)
         n_kept = 0
@@ -452,30 +511,49 @@ def mouth_closures(
                 }
             )
             n_kept += 1
-        pump = substring(full, max(d_anchor - pump_upstream_m, 0.0), full.length)
-        pumps.append({"reach_id": reach_id, "geometry": pump})
+        # pumps: straight lines across the closure, perpendicular to it,
+        # spread evenly along it; intake on the river side, outlet seaward
+        u = (np.array(p1) - np.array(p0)) / length
+        n = np.array([-u[1], u[0]])
+        if n @ t < 0:
+            n = -n
+        for k in range(pumps_per_mouth):
+            c = np.array(p0) + u * length * (k + 0.5) / pumps_per_mouth
+            pumps.append(
+                {
+                    "reach_id": reach_id,
+                    "geometry": LineString(
+                        [c - n * pump_half_length_m, c + n * pump_half_length_m]
+                    ),
+                }
+            )
+        moved = d_anchor - d
         report.append(
             {
                 "reach_id": reach_id,
                 "closed": True,
                 "anchor": [round(anchor.x, 1), round(anchor.y, 1)],
+                "anchor_moved_upstream_m": round(moved, 1),
                 "crossing_m": round(length, 1),
                 "tilt_deg_from_perpendicular": round(tilt, 1),
                 "closure_edges": n_kept,
-                "pump_length_m": round(pump.length, 1),
+                "pumps": pumps_per_mouth,
                 "river_check_point": list(
-                    full.interpolate(max(d_anchor - 3 * cell, 0.0)).coords[0]
+                    full.interpolate(max(d - 3 * cell, 0.0)).coords[0]
                 ),
             }
         )
         log.info(
             f"Outlet reach {reach_id}: closure {length:.0f} m across the mouth at "
-            f"({anchor.x:.0f}, {anchor.y:.0f}), {tilt:+.0f} deg from perpendicular, "
-            f"{n_kept} grid edge(s); pump line {pump.length:.0f} m"
+            f"({anchor.x:.0f}, {anchor.y:.0f}), {moved:.0f} m upstream of the SWORD "
+            f"outlet, {tilt:+.0f} deg from perpendicular, {n_kept} grid edge(s); "
+            f"{pumps_per_mouth} pump(s) across it"
         )
     return closures, pumps, report
 
 
+# ------------------ estuary and seal check ------------------------
+# confirms that closure works and the water behind it is sheltered (i.e. cut off)
 def estuary_and_seal(
     weir_gdf: gpd.GeoDataFrame,
     closures: list[dict],
@@ -538,6 +616,8 @@ class AdaptationLines:
     report: list[dict]
 
 
+# ----------------- Putting it all together ------------------
+# Builds the maks and then runs the above steps in order
 def build_adaptation_lines(
     weir_gdf: gpd.GeoDataFrame,
     landuse: np.ndarray,
@@ -614,6 +694,7 @@ def build_adaptation_lines(
     return AdaptationLines(weir, closure, pump, seaward, estuary, kind_counts, report)
 
 
+# Splits the results into 4 strategy layers: PC coast, PO coast, PO river, pumps
 def measure_line_layers(lines: AdaptationLines) -> dict[str, gpd.GeoDataFrame]:
     """Return the measure line files, keyed by ADAPTATION_LINE_NAMES."""
     weir = lines.weir[["kind", "geometry"]]
@@ -649,6 +730,7 @@ def require_sealed(report: list[dict]) -> None:
         )
 
 
+# Writes the report to the json file
 def build_info(
     lines: AdaptationLines, basin_id: str, built: str, source_weir: str, grid_def: dict
 ) -> dict:
@@ -674,6 +756,7 @@ def build_info(
     }
 
 
+# Draws an overview of the lines
 def plot_adaptation_lines(path, lines: AdaptationLines, transform, basin_id) -> None:
     """Plot the weir by kind with closures and pumps: overview + zoom per mouth."""
     weir, closure, pump = lines.weir, lines.closure, lines.pump

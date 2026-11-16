@@ -38,10 +38,11 @@ ADAPTATION_LINE_NAMES = (
     "coastal_protection_weir_PC",  # protect_closed: coast + mouth closure(s)
     "coastal_protection_weir_PO",  # grey_protect_open coastal_levee: coast only
     "river_protection_weir_PO",  # grey_protect_open river_levee: river + estuary banks
-    "pump_river_mouth",  # pumps: river centreline across each closure, inland -> sea
+    "pump_river_mouth",  # pumps: lines perpendicular across each closure, inland -> sea
 )
 
 
+# Checks that the name of the strategy is one of 4 line names
 def auto_line_name(location: str) -> str | None:
     """Return <name> of an `auto/<name>` locations value, else None."""
     if not location.startswith(AUTO_LOCATIONS_PREFIX):
@@ -55,6 +56,7 @@ def auto_line_name(location: str) -> str | None:
     return name
 
 
+# Gives the file path for a locations value.
 def location_path(
     location: str, adaptation_data_root: str, lines_dir: str, basin_id: str
 ) -> str:
@@ -94,11 +96,13 @@ def resolve_locations(strategy_def: dict, lines_dir: str | Path, basin_id: str) 
     }
 
 
+# Changes the scale to a tag in the file name
 def scale_tag(scale: float) -> str:
     """Return the strategy-name suffix of a scale: 0.4 -> '04', 1.0 -> '1'."""
     return f"{scale:g}".replace(".", "")
 
 
+# Holds the results
 @dataclass(frozen=True)
 class StrategyExpansion:
     """Expanded strategies plus the definitions needed to resolve them per scenario."""
@@ -186,6 +190,8 @@ class StrategyExpansion:
         return value
 
 
+# Checks that the file name is all good and that the required keys are there. Collects which pairs are
+# scalable, then resolves every strategy for all three flood event types once
 def expand_strategies(
     strategies_raw: dict,
     measures_raw: dict,

@@ -240,8 +240,8 @@ def apply_nbs_land_reclamation(
 
     is_coastal_flood = np.isin(attr, attribution_codes) & valid
 
-    # Apply the reduction. Cells drained to hmin or below take the same "dry"
-    # value the baseline map uses (flooded = depth > hmin), so the two are
+    # Apply the reduction. Cells left at or below hmin take the same "dry" value
+    # the baseline map uses (it keeps only depth > hmin), so the two are
     # directly comparable.
     dry = src_nodata if src_nodata is not None else np.nan
     reduced_depth = flood - reduction
@@ -330,10 +330,11 @@ def apply_water_retention(
     reduction_depth = _uniform_layer_depth(depths, target_volume, cell_area)
     remaining = np.maximum(depths - reduction_depth, 0.0)
 
-    # Cells drained to hmin or below must become NODATA, not their depth:
+    # Cells left at or below hmin must become NODATA, not their depth or 0.0:
     # downstream metrics (17c_adapt_post.py's inundation-ratio plot,
     # compute_risk_metrics' flooded_area_km2) count "flooded" via
-    # da_hmax.notnull(), and baseline maps keep only depth > hmin.
+    # da_hmax.notnull(), and the baseline map keeps only depth > hmin.
+    # The volumes below stay physical (water in those cells is not removed).
     flood_new = flood.copy()
     flood_new[target_mask] = np.where(remaining <= hmin, prof["nodata"], remaining)
     realized_volume = (
@@ -488,6 +489,21 @@ def _unpumped_river_volume_m3(scenario_root: str, discharge: float) -> float:
     return float(np.maximum(q_tt - discharge, 0.0).sum() * 60.0)
 
 
+def _lagoon_storage_m3(coastline: str, width: float, depth: float) -> float:
+    """Return the storage [m3] of a lagoon `width` [m] wide and `depth` [m] deep along `coastline`.
+
+    Coastline length (features without geometry dropped, measured in UTM when
+    the file is geographic) x width x depth.
+    """
+    gdf = gpd.read_file(coastline)
+    gdf = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty]
+    if gdf.crs is None:
+        raise ValueError(f"lagoon coastline {coastline} has no CRS")
+    if gdf.crs.is_geographic:
+        gdf = gdf.to_crs(gdf.estimate_utm_crs())
+    return float(gdf.length.sum()) * width * depth
+
+
 # Advance/ Protect-closed
 def apply_pumps(
     flood_map_path: str,
@@ -536,7 +552,7 @@ def apply_pumps(
     reduction_depth = _uniform_layer_depth(depths, removed_volume, cell_area)
     remaining = np.maximum(depths - reduction_depth, 0.0)
 
-    # Cells drained to hmin or below -> NODATA (see apply_water_retention).
+    # Cells left at or below hmin -> NODATA (see apply_water_retention).
     flood_new = flood.copy()
     flood_new[target_mask] = np.where(remaining <= hmin, prof["nodata"], remaining)
     remaining_volume = float(remaining.sum() * cell_area)
@@ -550,6 +566,68 @@ def apply_pumps(
         f"unpumped river volume={unpumped_volume:.0f} m3 vs flood volume={current_volume:.0f} m3, "
         f"reduction depth={reduction_depth:.4f} m over {target_area / 1e6:.2f} km2, "
         f"remaining={remaining_volume:.0f} m3."
+    )
+
+    return {"method": "flood_map", "out_raster": str(out_path)}
+
+
+# Advance
+def apply_lagoon_storage(
+    flood_map_path: str,
+    scenario_root: str,
+    output_dir: str,
+    locations: str,
+    width: float,
+    depth: float,
+    hmin: float,
+    **kwargs,
+) -> dict:
+    """Remove the volume the lagoon behind an offshore barrier stores from all flooding left.
+
+    The lagoon (coastline `locations` x `width` [m] x `depth` [m],
+    _lagoon_storage_m3) takes river water the pumps cannot discharge and coastal
+    water that overtops the barrier alike, so its one volume comes off the class
+    1, 2 and 3 flooding the earlier measures (offshore_barrier, pumps) left, as a
+    uniform layer (_uniform_layer_depth). List it after them in the strategy.
+    scenario_root: sfincs/ root; attribution_mask.tif is in its parent.
+    """
+    out_path = Path(output_dir) / "max_flood_depth.tif"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lagoon_volume = _lagoon_storage_m3(locations, width, depth)
+
+    with rasterio.open(flood_map_path) as src:
+        flood, prof = src.read(1), src.profile
+        cell_area = cell_area_m2(src.transform)
+
+    mask_path = Path(scenario_root).parent / "attribution_mask.tif"
+    if not mask_path.exists():
+        raise FileNotFoundError(f"Attribution mask not found at {mask_path}")
+
+    with rasterio.open(mask_path) as attr_src:
+        attr = attr_src.read(1)
+
+    target_mask = (
+        np.isin(attr, [1, 2, 3]) & (flood > 0) & (flood != prof["nodata"])
+    )  # river, coastal and compound
+    depths = flood[target_mask].astype(np.float64)
+    current_volume = float(depths.sum() * cell_area)
+    reduction_depth = _uniform_layer_depth(depths, lagoon_volume, cell_area)
+    remaining = np.maximum(depths - reduction_depth, 0.0)
+
+    # Cells left at or below hmin -> NODATA (see apply_water_retention).
+    flood_new = flood.copy()
+    flood_new[target_mask] = np.where(remaining <= hmin, prof["nodata"], remaining)
+    remaining_volume = float(remaining.sum() * cell_area)
+
+    prof.update(dtype="float32")
+    with rasterio.open(out_path, "w", **prof) as dst:
+        dst.write(flood_new.astype("float32"), 1)
+
+    print(
+        f"  Lagoon storage: {width:.0f} m x {depth:.2f} m along {Path(locations).name} = "
+        f"{lagoon_volume:.0f} m3 vs flood volume={current_volume:.0f} m3, "
+        f"reduction depth={reduction_depth:.4f} m, remaining={remaining_volume:.0f} m3."
     )
 
     return {"method": "flood_map", "out_raster": str(out_path)}
@@ -787,6 +865,7 @@ selected_measures = {
     "river_levee": apply_river_levee,
     "coastal_levee": apply_coastal_levee,
     "pumps": apply_pumps,
+    "lagoon_storage": apply_lagoon_storage,
     "urban_raising": apply_urban_raising,
     # "dike_ring": apply_dike_ring,
     "retreat": apply_retreat,
@@ -800,6 +879,7 @@ def dispatch_rules(
     measure_def: dict,
     catalog_path: str,
     output_dir: str,
+    hmin: float,
     landuse_path: str = None,
     method: str = "postprocessing",
     strategy_measures: dict = None,
@@ -808,6 +888,8 @@ def dispatch_rules(
     """Validate params and call the post-processing function for `measure_type`.
 
     Entry point called by 17c_adapt_post.py for the post-processing method.
+    hmin: config metrics.hmin [m]; measures that lower depths part-way count a
+    cell left at or below it as dry, as the baseline flood map does.
     landuse_path: read only by apply_retreat.
     strategy_measures: the strategy's full measures dict
     (config/adaptation_strategies.yml), passed through unvalidated, so
@@ -828,6 +910,7 @@ def dispatch_rules(
         flood_map_path=flood_map_path,
         scenario_root=scenario_root,
         output_dir=output_dir,
+        hmin=hmin,
         landuse_path=landuse_path,
         strategy_measures=strategy_measures,
         **params,

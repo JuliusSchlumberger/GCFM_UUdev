@@ -80,15 +80,15 @@ def generate_attribution_maps(
         with rasterio.open(reference_tif) as src:
             reference = src.read(1)
 
-        r_flood = river > threshold
-        c_flood = coastal > threshold
-        s_flood = reference > threshold
+        r_flood = river > threshold  # wet in river-only run
+        c_flood = coastal > threshold  # wet in coast-only run
+        s_flood = reference > threshold  # wet in reference run
 
         attr_mask = np.zeros(river.shape, dtype=np.uint8)
-        attr_mask[r_flood & ~c_flood] = 1
-        attr_mask[~r_flood & c_flood] = 2
-        attr_mask[r_flood & c_flood] = 3
-        attr_mask[s_flood] = 4
+        attr_mask[r_flood & ~c_flood] = 1  # wet in river flood and NOT coastal
+        attr_mask[~r_flood & c_flood] = 2  # wet in coastal and NOT river
+        attr_mask[r_flood & c_flood] = 3  # wet in BOTH
+        attr_mask[s_flood] = 4  # wet in reference run
 
         out_folder.mkdir(parents=True, exist_ok=True)
 

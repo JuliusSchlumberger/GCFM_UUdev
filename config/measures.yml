@@ -29,6 +29,20 @@ adaptation_measures:
         max: null # path, data source name, or GeoDataFrame with the pump locations
         required_for: [preprocessing]
 
+  lagoon_storage: # postprocessing only: preprocessing models the lagoon behind the offshore barrier itself
+    params:
+      locations:
+        min: null
+        max: null # path, data source name, or GeoDataFrame with the coastline (polyline) the lagoon lies along
+        required_for: [postprocessing]
+      width: # coast-to-barrier distance [m]
+        min: 0
+        max: 20000 # 20km
+        required_for: [postprocessing]
+      depth: # water depth [m] the lagoon stores
+        min: 0
+        max: 5
+        required_for: [postprocessing]
 
   # NBS Protect-open
   nbs_land_reclamation:
@@ -54,7 +68,6 @@ adaptation_measures:
         min: 0
         max: 20
         required_for: [preprocessing]
-
 
   water_retention:
     params:
@@ -86,26 +99,6 @@ adaptation_measures:
         type: bool
         required_for: []
 
-  # storm_surge_barrier:
-  #     params:
-  #       sill_elevation:
-  #         min: 0.1
-  #         max: 20 # in m
-  #         required_for: [postprocessing, preprocessing]
-  #       zmin:
-  #         min: null
-  #         max: null # path, data source name, or GeoDataFrame with the barrier polyline(s)
-  #         required_for: [preprocessing]
-  #       zmax:
-  #         min: null
-  #         max: null # path, data source name, or GeoDataFrame with the barrier polyline(s)
-  #         required_for: [preprocessing]
-  #       locations:
-  #         min: null
-  #         max: null # path, data source name, or GeoDataFrame with the barrier polyline(s)
-  #         required_for: [preprocessing]
-
-
   # Protect-closed
   coastal_levee:
     params:
@@ -124,18 +117,6 @@ adaptation_measures:
         type: bool
         required_for: []
 
-  # Accommodate
-  # dike_ring:
-  #   params:
-  #     elevation:
-  #       min: 0.1
-  #       max: 20 # in m
-  #       required_for: [postprocessing, preprocessing]
-  #     locations:
-  #       min: null
-  #       max: null # path, data source name, or GeoDataFrame of the urban dike ring
-  #       required_for: [preprocessing, postprocessing]
-
   urban_raising:
     params:
       raise_fraction:
@@ -143,7 +124,6 @@ adaptation_measures:
         max: 1 # amount [m] added to eligible cells' own current ground elevation (additive, not an absolute target)
         scale : true
         required_for: [postprocessing, preprocessing]
-
 
   # Retreat
   retreat:
