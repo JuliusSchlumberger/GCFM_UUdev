@@ -21,6 +21,11 @@ rule river_surface:
         landuse_channels       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_landuse_channels.tif"),
         # Calm sea level in the model datum: the mouths are pinned at it.
         surge_forcing          = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
+        # SWOT node levels (surface_source: sword_swot), shifted EGM2008 -> GOCO06s.
+        sword_regions          = raw_region_inputs("river_network"),
+        geoid_offset           = diagnostics_path("geoid_offset.tif"),
+        domain_bbox            = results_path("{basin_id}/preprocessing_inputs/domain/domain_bbox.json"),
+        domain_gpkg            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
     output:
         elevation_conditioned  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned.tif"),
         elevation_conditioned_sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"),

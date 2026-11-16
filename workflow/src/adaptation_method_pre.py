@@ -78,34 +78,31 @@ def _infer_nr_subgrid_pixels(mod: SfincsModel, dep: xr.DataArray) -> int:
 
 def _rebuild_subgrid(
     mod: SfincsModel,
-    dep: xr.DataArray,
     elevation,
-    roughness: str,
+    roughness_path,
+    dep: xr.DataArray,
     nr_subgrid_pixels: int | None,
-    nr_levels: int | None,
-    nrmax: int | None,
+    subgrid_table: dict | None,
 ) -> None:
-    """Rebuild the subgrid table with the baseline's settings (config sfincs.subgrid).
+    """Rebuild the subgrid tables with the baseline model's settings (sfincs.subgrid).
 
-    nr_levels and nrmax are required: hydromt-sfincs' own default (10 levels) would
-    give a coarser table than the baseline's, so the pre-vs-baseline difference
-    would mix the measure's effect with the table resolution.
+    subgrid_table holds nr_levels and nrmax; hydromt_sfincs' own defaults
+    (10 levels) would change the table against the baseline run.
     """
-    if nr_levels is None or nrmax is None:
+    if subgrid_table is None:
         raise ValueError(
-            "Subgrid rebuild needs nr_levels and nrmax (config sfincs.subgrid, "
-            "passed by rule adapt_apply_pre)."
+            "subgrid_table (config sfincs.subgrid: nr_levels, nrmax) is required"
         )
     mod.subgrid.create(
         elevation_list=[{"elevation": elevation}],
-        roughness_list=[{"manning": roughness}],
+        roughness_list=[{"manning": str(roughness_path)}],
         nr_subgrid_pixels=(
             _infer_nr_subgrid_pixels(mod, dep)
             if nr_subgrid_pixels is None
             else nr_subgrid_pixels
         ),
-        nr_levels=nr_levels,
-        nrmax=nrmax,
+        nr_levels=int(subgrid_table["nr_levels"]),
+        nrmax=int(subgrid_table["nrmax"]),
         write_man_tif=True,
         write_dep_tif=True,
     )
@@ -248,6 +245,51 @@ def _levee_crests(
 
 
 # Grey protect-open: river_levee
+def _apply_levee(
+    name,
+    mod,
+    locations,
+    elevation,
+    par1,
+    dep,
+    buffer,
+    dz,
+    merge,
+    max_match_distance_m,
+    raise_by,
+):
+    # Shared by apply_river_levee and apply_coastal_levee; name labels the error.
+    if merge:
+        if _is_current_protection(elevation) or raise_by is not None:
+            raise ValueError(f"{name}: current_protection / raise_by need merge: false")
+        mod.weirs.create(
+            locations=locations,
+            elevation=elevation,
+            par1=par1,
+            dep=dep,
+            buffer=buffer,
+            dz=dz,
+            merge=True,
+        )
+        return mod
+
+    new_gdf = read_polyline(
+        mod.data_catalog.get_geodataframe(locations, geom=mod.region), mod.crs
+    )
+    new_gdf["elevation"] = _levee_crests(
+        new_gdf, elevation, mod.weirs.data, max_match_distance_m, raise_by
+    )
+    new_gdf["par1"] = par1
+
+    merged = merge_weir_preserve_unmatched(
+        mod.weirs.data, new_gdf, max_match_distance_m=max_match_distance_m
+    )
+    mod.weirs.set(merged, merge=False)
+    mod.config.set("weirfile", "sfincs.weir")
+
+    return mod
+
+
 def apply_river_levee(
     mod: SfincsModel,
     locations: Path,
@@ -283,37 +325,19 @@ def apply_river_levee(
     (_levee_crests).
     par1, dep, buffer, dz: as in apply_offshore_barrier.
     """
-    if merge:
-        if _is_current_protection(elevation) or raise_by is not None:
-            raise ValueError(
-                "river_levee: current_protection / raise_by need merge: false"
-            )
-        mod.weirs.create(
-            locations=locations,
-            elevation=elevation,
-            par1=par1,
-            dep=dep,
-            buffer=buffer,
-            dz=dz,
-            merge=True,
-        )
-        return mod
-
-    new_gdf = read_polyline(
-        mod.data_catalog.get_geodataframe(locations, geom=mod.region), mod.crs
+    return _apply_levee(
+        "river_levee",
+        mod,
+        locations,
+        elevation,
+        par1,
+        dep,
+        buffer,
+        dz,
+        merge,
+        max_match_distance_m,
+        raise_by,
     )
-    new_gdf["elevation"] = _levee_crests(
-        new_gdf, elevation, mod.weirs.data, max_match_distance_m, raise_by
-    )
-    new_gdf["par1"] = par1
-
-    merged = merge_weir_preserve_unmatched(
-        mod.weirs.data, new_gdf, max_match_distance_m=max_match_distance_m
-    )
-    mod.weirs.set(merged, merge=False)
-    mod.config.set("weirfile", "sfincs.weir")
-
-    return mod
 
 
 # # Grey protect-open: storm_surge_barrier
@@ -356,8 +380,7 @@ def apply_NbS_land_reclamation(
     manning_n: float | None = None,
     max_depth: float | None = None,
     nr_subgrid_pixels: int | None = None,
-    nr_levels: int | None = None,
-    nrmax: int | None = None,
+    subgrid_table: dict | None = None,
     elevation: float | None = None,
     min_elevation: float | None = None,
     max_elevation: float | None = None,
@@ -557,12 +580,11 @@ def apply_NbS_land_reclamation(
 
     _rebuild_subgrid(
         mod,
-        dep,
         str(dep_out_path),
-        str(roughness_out_path),
+        roughness_out_path,
+        dep,
         nr_subgrid_pixels,
-        nr_levels,
-        nrmax,
+        subgrid_table,
     )
 
     # compute_max_inundation masks flood depth to NaN where the sea mask reads 1.0;
@@ -598,8 +620,7 @@ def apply_water_retention(
     dep_subgrid: str | None = None,
     roughness_native_path: str | None = None,
     nr_subgrid_pixels: int | None = None,
-    nr_levels: int | None = None,
-    nrmax: int | None = None,
+    subgrid_table: dict | None = None,
     flat_floor: bool = False,
     weir_par1: float = 0.6,
     weir_buffer: float | None = None,
@@ -840,13 +861,7 @@ def apply_water_retention(
     # raster through unchanged. dep_new already carries the river bathymetry
     # burn-in, so no river_list re-burn is needed.
     _rebuild_subgrid(
-        mod,
-        dep,
-        dep_new,
-        str(roughness_native_path),
-        nr_subgrid_pixels,
-        nr_levels,
-        nrmax,
+        mod, dep_new, roughness_native_path, dep, nr_subgrid_pixels, subgrid_table
     )
 
     cap_note = " [CAPPED by max_lowering, target not fully met]" if capped else ""
@@ -891,37 +906,19 @@ def apply_coastal_levee(
     cell; too tight silently leaves old segments in place.
     raise_by: as in apply_river_levee.
     """
-    if merge:
-        if _is_current_protection(elevation) or raise_by is not None:
-            raise ValueError(
-                "coastal_levee: current_protection / raise_by need merge: false"
-            )
-        mod.weirs.create(
-            locations=locations,
-            elevation=elevation,  # adds absolute elevation
-            par1=par1,
-            dep=dep,
-            buffer=buffer,
-            dz=dz,  # Adds weir on top of dem
-            merge=True,
-        )
-        return mod
-
-    new_gdf = read_polyline(
-        mod.data_catalog.get_geodataframe(locations, geom=mod.region), mod.crs
+    return _apply_levee(
+        "coastal_levee",
+        mod,
+        locations,
+        elevation,
+        par1,
+        dep,
+        buffer,
+        dz,
+        merge,
+        max_match_distance_m,
+        raise_by,
     )
-    new_gdf["elevation"] = _levee_crests(
-        new_gdf, elevation, mod.weirs.data, max_match_distance_m, raise_by
-    )
-    new_gdf["par1"] = par1
-
-    merged = merge_weir_preserve_unmatched(
-        mod.weirs.data, new_gdf, max_match_distance_m=max_match_distance_m
-    )
-    mod.weirs.set(merged, merge=False)
-    mod.config.set("weirfile", "sfincs.weir")
-
-    return mod
 
 
 # Advance / Protect-closed: pumps
@@ -1040,8 +1037,7 @@ def apply_urban_raising(
     flood_map_path: str | None = None,
     flood_threshold: float = 0.05,
     nr_subgrid_pixels: int | None = None,
-    nr_levels: int | None = None,
-    nrmax: int | None = None,
+    subgrid_table: dict | None = None,
     out_path: str = "urban_raising_dep_subgrid.tif",
     **kwargs,
 ) -> SfincsModel:
@@ -1125,13 +1121,7 @@ def apply_urban_raising(
     )
 
     _rebuild_subgrid(
-        mod,
-        dep,
-        dep_new,
-        str(roughness_native_path),
-        nr_subgrid_pixels,
-        nr_levels,
-        nrmax,
+        mod, dep_new, roughness_native_path, dep, nr_subgrid_pixels, subgrid_table
     )
 
     return mod
@@ -1151,8 +1141,7 @@ def apply_retreat(
     flood_map_path: str | None = None,
     flood_threshold: float = 0.05,
     nr_subgrid_pixels: int | None = None,
-    nr_levels: int | None = None,
-    nrmax: int | None = None,
+    subgrid_table: dict | None = None,
     out_path: str = "retreat_landuse.tif",  # written under mod.root; read by rule adapt_flood_metrics_pre
     **kwargs,
 ) -> SfincsModel:
@@ -1259,13 +1248,7 @@ def apply_retreat(
     roughness_new.rio.to_raster(roughness_out_path)
 
     _rebuild_subgrid(
-        mod,
-        dep,
-        dep_subgrid,
-        str(roughness_out_path),
-        nr_subgrid_pixels,
-        nr_levels,
-        nrmax,
+        mod, dep_subgrid, roughness_out_path, dep, nr_subgrid_pixels, subgrid_table
     )
     return mod
 

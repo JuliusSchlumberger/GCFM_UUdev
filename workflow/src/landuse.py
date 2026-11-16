@@ -719,12 +719,16 @@ def write_roughness_raster(
     method: str = "area_mean",
     refine_to_source: bool = False,
     channel: tuple[list, object, float] | None = None,
+    water: tuple[int, float] | None = None,
 ) -> tuple[set[int], dict]:
     """Write Manning's n area-averaged from the land-use source onto ref_meta's grid.
 
     channel: (polygons, their CRS, n): every source pixel whose centre lies in
     a polygon takes n before the averaging (src.river_burn.channel_polygons and
     river_processing.channel_manning_n, the n the river bed was fitted with).
+    water: (land-use code, n): that class takes n instead of the lookup's
+    value, so inland water outside the channel polygons (wide reaches, side
+    arms, lakes) has the channel's n; the sea class keeps the lookup's.
 
     refine_to_source: write on ref_meta's grid subdivided by an integer
     factor to about the source pixel size (~10 m under WorldCover, since
@@ -734,6 +738,8 @@ def write_roughness_raster(
     Returns (codes missing from the lookup, NaN in the output; grid info).
     """
     lu_to_n = read_roughness_lookup(lookup_path)
+    if water is not None:
+        lu_to_n[int(water[0])] = float(water[1])
     ref_res_m = math.hypot(ref_meta["transform"].a, ref_meta["transform"].d)
 
     with rasterio.open(landuse_source_path) as src:

@@ -143,7 +143,7 @@ From the repository root, inside `<env>`:
 pytest -q                            # synthetic unit and smoke tests, no data needed
 python tests/check_code_health.py    # syntax and src-import check
 pre-commit run --all-files           # ruff, pyright, pydocstyle, lock-file sync
-snakemake -n preprocess --cores 1 --config target_basins="[2433835]" target_scenarios="['default']"
+snakemake -n preprocess --cores 1 --config target_basins="[2433835]" target_scenarios="['compound_100_0SLR']"
 ```
 
 `pytest -q` reports 274 passed in about 2 minutes. `pre-commit` needs a git
@@ -152,7 +152,7 @@ The tests and the health check need no input data. Quick-look figure titles carr
 commit hash; outside a git clone (for example an unpacked ZIP) they show `nogit`
 and the tests still pass. The dry run needs the site
 settings and the delta polygons under `<raw_data_root>`; for basin `2433835`
-(Ebro) and scenario `default` it lists 15 jobs for `preprocess` on an empty
+(Ebro) and scenario `compound_100_0SLR` it lists 15 jobs for `preprocess` on an empty
 `<results_dir>` (22 for `build`). Tests that need real data carry the
 `needs_data` marker and are excluded by default.
 

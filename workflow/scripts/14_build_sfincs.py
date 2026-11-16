@@ -10,8 +10,11 @@ config writer absolutizes any file reference outside the model root.
 forcing_mode (from scenario river_rp_yr/surge_rp_yr, scenario_params in 00_common.smk):
   "compound"     — surge/tide boundary + river discharge. With a surge and
                    a river RP, compound.lag_hr is the river peak minus the
-                   surge peak (positive = river peak later); in storm-tide
-                   mode the surge moves and the river keeps its place.
+                   surge peak (positive = river peak later); "auto" takes rule
+                   event_timing's lag, so both peaks reach the main mouth
+                   together. With a lag <= 0 the river keeps its distance
+                   from the event start and the surge moves; with a lag > 0
+                   the river moves later.
   "coastal_only" — surge/tide boundary; discharge points kept with a zeroed
                    timeseries so the model structure matches other modes.
   "river_only"   — river discharge; flat boundary at river_only_flat_level_m,
@@ -22,9 +25,11 @@ forcing_mode (from scenario river_rp_yr/surge_rp_yr, scenario_params in 00_commo
 slr_m (default 0.0, global-mean SLR in m scaled by each station's
 slr_fingerprint) is applied here at build time, never baked into
 surge_forcing.nc, so changing it reruns only this scenario's build and event
-run.
+run. With the spin-up the event restarts from the spin-up of the same slr_m
+at its end (stability.csv spinup_hr), which sets the event's start.
 """
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta
@@ -38,14 +43,20 @@ from hydromt_sfincs import SfincsModel
 
 from src.log import setup_logging
 from src.plots import plot_run_forcing
+from src.event_timing import event_start_discharge, event_window
 from src.river_burn import build_centerline_cells_regular
-from src.river_forcing import build_design_discharge_matrix
+from src.river_forcing import (
+    build_design_discharge_matrix,
+    interpolate_discharge_at_rp,
+    ramp_from_mean,
+)
 from src.river_network import outflow_crossing_mask
 from src.sfincs_run import (
     FORCING_FILE_KEYS,
     event_timeline,
     parse_sfincs_inp,
     place_discharge_points,
+    read_stability,
     write_sfincs_inp,
 )
 from src.surge import build_design_surge_matrix
@@ -89,25 +100,36 @@ if isinstance(surge_rp_yr, str) and surge_rp_yr.strip().lower() == "tide":
     pass
 elif surge_rp_yr is not None:
     surge_rp_yr = float(surge_rp_yr)
-compound_lag_hr = float(snakemake.params.compound_lag_hr)
-event_after_peak_hr = float(snakemake.params.event_after_peak_hr)
+event_timing = pd.read_csv(snakemake.input.event_timing).iloc[0]
+river_travel_hr = float(event_timing["river_travel_hr"])
+surge_travel_hr = float(event_timing["surge_travel_hr"])
+compound_lag_hr = (
+    float(event_timing["lag_hr"])
+    if snakemake.params.compound_lag_hr == "auto"
+    else float(snakemake.params.compound_lag_hr)
+)
+river_fall_max_hr = float(snakemake.params.river_fall_max_hr)
 river_event = snakemake.params.river_event
+# FLOPROS riverine protection RP (rule 03): its discharge starts a big event.
+with open(snakemake.input.protection_levels) as _f:
+    _river_protection_rp = json.load(_f).get("river_protection_rp_yr")
+river_protection_rp_yr = (
+    float(_river_protection_rp)
+    if _river_protection_rp is not None and np.isfinite(float(_river_protection_rp))
+    else None
+)
 # Target global-mean SLR (m); 0.0 when SLR is disabled, leaving the MDT-only fields.
 effective_slr_m = float(snakemake.params.slr_m) if snakemake.params.slr_enabled else 0.0
-# The spin-up restart has the spin-up scenario's SLR: the SLR term goes from
-# it to the scenario's over the event's first hours instead of stepping at the
-# event start (src.surge._ramp_in_slr).
-slr_ramp_hr = float(snakemake.params.slr_ramp_hr)
-spinup_slr_m = (
-    float(snakemake.params.spinup_slr_m)
-    if bool(snakemake.params.include_rstart)
-    else 0.0
-)
 flat_boundary_point_spacing_m = snakemake.params.flat_boundary_point_spacing_m
 water_level_buffer_m = snakemake.params.water_level_buffer_m
 include_rstart = snakemake.params.include_rstart
-spinup_days = snakemake.params.spinup_days
 rst_fname = snakemake.params.rst_fname
+# The spin-up's length is the event's restart time.
+spinup_hr = (
+    float(read_stability(snakemake.input.spinup_stability)["spinup_hr"])
+    if include_rstart
+    else None
+)
 
 sfincs_root.mkdir(parents=True, exist_ok=True)
 log.info(f"Forcing mode: {forcing_mode!r}")
@@ -133,33 +155,93 @@ def _is_event(rp_yr) -> bool:
     return rp_yr is not None and not isinstance(rp_yr, str)
 
 
+# Only has_glofas=1 crossings have an EVA fit; the others carry zero discharge.
+# Crossings on a seed that flows out of the network (rule 08's
+# 'seed_flows_out') inject nothing -- they are free-outflow boundaries.
+active = river_ds.has_glofas.values.astype(bool) & ~outflow_crossing_mask(
+    river_ds, gpd.read_file(snakemake.input.river_network)
+)
+
+
 # Storm-tide hydrograph mode: the event timeline is set here, not in rule 07d,
 # so a new compound lag rebuilds the event runs only (rule 11's crests stay).
-# The river keeps rule 07d's place after the restart; the surge peak, the run
-# length and so the time axis follow from the lag (src.sfincs_run.event_timeline).
+# River event: held at the mean, ramped up to Q_start, then the scaled GloFAS
+# event from its last upward crossing of Q_start before the peak until it falls
+# below Q_start (at most river_fall_max_hr after the peak), plus the travel to
+# the main mouth. Surge event: the blend from the calm sea, window_hr each side
+# of the peak, plus the travel to the main mouth. The peaks meet at the mouth
+# (lag); the part that needs more time before its peak starts at the restart
+# (src.sfincs_run.event_timeline).
 hydrograph_mode = "hg_peak_hr" in surge_ds.attrs
+river_ramp = None  # (start hour, length) of the river's ramp from the mean
 if hydrograph_mode:
     dt_hr = float(surge_ds.attrs.get("dt_hr", np.median(np.diff(surge_ds.time.values))))
-    start_hr = float(surge_ds.attrs["lead_days"]) * 24.0
+    # The event starts at the restart (the spin-up's end), else at rule 07d's lead-in.
+    start_hr = spinup_hr if spinup_hr is not None else float(surge_ds.attrs["lead_days"]) * 24.0
     river_period_hr = float(river_ds.attrs["period_hr"])
+    river_lead_hr = river_tail_hr = 0.0
+    if _is_event(river_rp_yr) and active.any():
+        # The event's shape around its peak, on a probe axis with the peak at peak_p.
+        max_before_hr = 24.0 * float(river_event["max_rising_days"])
+        peak_p = max_before_hr + 48.0
+        probe_hr = np.arange(0.0, peak_p + river_fall_max_hr + dt_hr, dt_hr)
+        probe = river_ds.drop_dims("time").assign_coords(time=probe_hr)
+        probe.attrs["lead_days"] = (peak_p - river_period_hr / 2.0) / 24.0
+        q_probe = build_design_discharge_matrix(probe, active, river_rp_yr, event=river_event)
+        main = int(np.nanargmax(river_ds["bankfull_discharge_m3s"].values[active]))
+        q_mean = float(river_ds["mean_discharge_m3s"].values[active][main])
+        q_peak = float(np.nanmax(q_probe[main]))
+        q_protection = (
+            float(
+                interpolate_discharge_at_rp(
+                    river_ds["discharge_rp_table"].values[active][[main]],
+                    river_ds["rp_yr"].values,
+                    river_protection_rp_yr,
+                )[0]
+            )
+            if river_protection_rp_yr is not None
+            else None
+        )
+        q_start = event_start_discharge(
+            q_mean, q_peak, q_protection, float(river_event["start_fraction"])
+        )
+        cross_hr, end_hr = event_window(
+            probe_hr, q_probe[main], peak_p, q_start, max_before_hr, river_fall_max_hr
+        )
+        ramp_hr = max(
+            float(river_event["min_ramp_hr"]),
+            0.5 * np.pi * max(q_start - q_mean, 0.0) / (float(river_event["max_rise_per_hr"]) * q_peak),
+        )
+        river_lead_hr = (peak_p - cross_hr) + ramp_hr
+        river_tail_hr = (end_hr - peak_p) + river_travel_hr
+        log.info(
+            f"River event: main inflow mean {q_mean:,.0f}, peak {q_peak:,.0f}, protection "
+            f"{'-' if q_protection is None else f'{q_protection:,.0f}'} m3/s -> Q_start {q_start:,.0f} m3/s; "
+            f"ramp {ramp_hr:.1f} h from the mean, reached {peak_p - cross_hr:.0f} h before the peak, "
+            f"below it again {end_hr - peak_p:.0f} h after (cap {river_fall_max_hr:.0f} h), "
+            f"then {river_travel_hr:.1f} h to the main mouth"
+        )
     surge_peak_hr, river_peak_hr, sim_duration_hr = event_timeline(
         start_hr,
-        float(river_ds.attrs["lead_days"]) * 24.0 + river_period_hr / 2.0,
-        float(surge_ds.attrs["hg_window_hr"]),
         float(surge_ds.attrs.get("hg_ramp_hr", 0.0)),
-        event_after_peak_hr,
+        float(surge_ds.attrs["hg_window_hr"]),
+        surge_travel_hr,
+        river_lead_hr,
+        river_tail_hr,
         compound_lag_hr if forcing_mode == "compound" else 0.0,
         surge_event=_is_event(surge_rp_yr),
         river_event=_is_event(river_rp_yr),
     )
+    if _is_event(river_rp_yr) and active.any():
+        river_ramp = (river_peak_hr - river_lead_hr, ramp_hr)
     sim_duration_hr = float(np.ceil(sim_duration_hr / dt_hr) * dt_hr)
     event_times_hr = np.arange(0.0, sim_duration_hr + dt_hr / 2.0, dt_hr)
     # The builders read only the time axis, the attrs and non-time variables.
     surge_ds = surge_ds.drop_dims("time").assign_coords(time=event_times_hr)
     surge_ds.attrs["hg_peak_hr"] = surge_peak_hr
+    surge_ds.attrs["lead_days"] = start_hr / 24.0
     river_ds = river_ds.drop_dims("time").assign_coords(time=event_times_hr)
     river_ds.attrs["lead_days"] = (river_peak_hr - river_period_hr / 2.0) / 24.0
-    river_ds.attrs["event_start_hr"] = start_hr
     log.info(
         f"Event timeline: restart at {start_hr:.0f} h, surge peak at {surge_peak_hr:.0f} h, "
         f"river peak at {river_peak_hr:.0f} h (lag {river_peak_hr - surge_peak_hr:+.0f} h), "
@@ -223,13 +305,7 @@ else:
     )
 
     wl_df = pd.DataFrame(
-        data=build_design_surge_matrix(
-            surge_ds,
-            surge_rp_yr,
-            slr_m=effective_slr_m,
-            slr_ramp_hr=slr_ramp_hr,
-            spinup_slr_m=spinup_slr_m,
-        ).T,
+        data=build_design_surge_matrix(surge_ds, surge_rp_yr, slr_m=effective_slr_m).T,
         index=surge_times,
         columns=range(n_stations),
     )
@@ -241,18 +317,11 @@ else:
     )
     log.info(
         f"Water-level forcing: {n_stations} stations, {len(surge_times)} time steps "
-        f"(SLR: {effective_slr_m:+.3f} m target × per-station fingerprint, "
-        f"ramped from the spin-up's {spinup_slr_m:+.3f} m over {slr_ramp_hr:g} h after the event start)"
+        f"(SLR: {effective_slr_m:+.3f} m target × per-station fingerprint, as its spin-up)"
     )
 sf.water_level.write()
 
 # ── river discharge forcing ──
-# Only has_glofas=1 crossings have an EVA fit; the others carry zero discharge.
-# Crossings on a seed that flows out of the network (rule 08's
-# 'seed_flows_out') inject nothing -- they are free-outflow boundaries.
-active = river_ds.has_glofas.values.astype(bool) & ~outflow_crossing_mask(
-    river_ds, gpd.read_file(snakemake.input.river_network)
-)
 n_active = int(active.sum())
 n_total = len(active)
 log.info(f"River forcing: {n_active}/{n_total} crossings with valid GloFAS data")
@@ -278,16 +347,16 @@ else:
         else [None] * n_active
     )
 
-    dis_df = pd.DataFrame(
-        data=build_design_discharge_matrix(
-            river_ds,
-            active,
-            river_rp_yr,
-            event=river_event,
-        ).T,
-        index=river_times,
-        columns=range(n_active),
-    )
+    discharge = build_design_discharge_matrix(river_ds, active, river_rp_yr, event=river_event)
+    if river_ramp is not None:
+        # Mean discharge (the spin-up's) until the ramp, then into the event.
+        discharge = ramp_from_mean(
+            discharge,
+            river_ds["mean_discharge_m3s"].values[active],
+            river_ds["time"].values.astype(float),
+            *river_ramp,
+        )
+    dis_df = pd.DataFrame(data=discharge.T, index=river_times, columns=range(n_active))
 
     if (
         not hydrograph_mode
@@ -339,15 +408,16 @@ sf.discharge_points.write()
 
 # ── sfincs.inp (hand-written; see module docstring) ──
 inp_settings: dict[str, object] = {}
-# rstfile: the basin-level run_spinup restart (mean river discharge + calm
-# sea), used by every forcing mode including river_only; a sibling tree of
-# sfincs_root, referenced by a computed relative path.
+# rstfile: the restart of the spin-up with the scenario's slr_m (mean river
+# discharge, calm sea + that SLR), used by every forcing mode including
+# river_only; a sibling tree of sfincs_root, referenced by a relative path.
 if include_rstart:
-    tstart_event = tref + timedelta(days=spinup_days)
+    tstart_event = tref + timedelta(hours=spinup_hr)
     rst_rel = os.path.relpath(spin_up_root / rst_fname, start=sfincs_root)
     inp_settings["rstfile"] = rst_rel
     log.info(
-        f"tstart updated to {tstart_event} ({spinup_days} days after tref); rstfile = {rst_rel}"
+        f"tstart updated to {tstart_event} ({spinup_hr:g} h after tref, the spin-up's end); "
+        f"rstfile = {rst_rel}"
     )
 else:
     tstart_event = tref

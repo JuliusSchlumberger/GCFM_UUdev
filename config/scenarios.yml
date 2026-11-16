@@ -24,14 +24,34 @@
 # per-event scale-1 values in adaptation_strategies.yml apply to this scenario.
 
 
-default:                  # what plain `snakemake build` runs (no target_scenarios given)
-  surge_rp_yr: 250
-  river_rp_yr: 50
-  slr_m: 0.3
+# Present-day 100-year events: the compound run and its attribution counterparts
+# (config.yml default_scenarios, what runs without --config target_scenarios).
+compound_100_0SLR:
+  surge_rp_yr: 100
+  river_rp_yr: 100
+  slr_m: 0
   event: compound
 
-# Mean conditions: average tide, mean river, SLR -- attribution counterpart
+river_100_0SLR:
+  surge_rp_yr: Tide
+  river_rp_yr: 100
+  slr_m: 0
+  event: river
+
+coast_100_0SLR:
+  surge_rp_yr: 100
+  river_rp_yr: Mean
+  slr_m: 0
+  event: coastal
+
+# Mean conditions: average tide, mean river, SLR -- attribution counterparts
 # (00_common.smk attribution_counterparts)
+mean_0SLR:
+  surge_rp_yr: Tide
+  river_rp_yr: Mean
+  slr_m: 0
+  event: compound
+
 mean_03SLR:
   surge_rp_yr: Tide
   river_rp_yr: Mean

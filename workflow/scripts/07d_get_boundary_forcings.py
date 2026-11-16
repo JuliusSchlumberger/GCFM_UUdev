@@ -30,7 +30,7 @@ from src.river_forcing import (
     resolve_inside_domain_reaches,
 )
 from src.raster import latlon_dims
-from src.river_network import normalize_channel_widths
+from src.river_network import normalize_channel_widths, normalize_reach_id
 from src.surge import (
     apply_mdt_correction,
     apply_slr_fingerprint,
@@ -98,13 +98,13 @@ surge_lead = snakemake.params.lead_days
 surge_period = snakemake.params.surge_period_hr
 surge_dt = snakemake.params.dt_hr
 # Diagnostic-preview RP only (storm_tide_at_rp_m columns, 07_forcing_surge_correction.png): the
-# "default" scenario's surge_rp_yr. Rule 13 uses the requested scenario's surge_rp_yr.
+# fixed eva.preview_rp_yr. Rule 14 uses the requested scenario's surge_rp_yr.
 surge_rp_yr = snakemake.params.surge_rp_yr
 station_rp_yr = preview_station_rp_yr(surge_rp_yr)
 surge_rp_is_numeric = station_rp_yr == surge_rp_yr
 if not surge_rp_is_numeric:
     log.info(
-        f"Default scenario surge_rp_yr={surge_rp_yr!r} has no storm-tide RP: "
+        f"Preview surge_rp_yr={surge_rp_yr!r} has no storm-tide RP: "
         f"storm_tide_at_rp_m holds RP{station_rp_yr}; the water_level preview is the "
         f"{surge_rp_yr!r} boundary"
     )
@@ -530,7 +530,9 @@ else:
 
         pt_lon = row.geometry.x
         pt_lat = row.geometry.y
-        inside_id = getattr(row, "inside_reach_id", None) or getattr(row, "reach_id", i)
+        inside_id = normalize_reach_id(
+            getattr(row, "inside_reach_id", None)
+        ) or getattr(row, "reach_id", i)
         label = f"crossing{i}_reach{inside_id}"
 
         match = find_best_glofas_cell(
@@ -625,7 +627,7 @@ else:
         log.info(
             f"  {label}: GloFAS ({lat_arr[i_lat]:.3f}°N, {lon_arr[i_lon]:.3f}°E)  "
             f"bankfull_discharge_m3s = {bankfull_discharge_m3s[i]:.1f} m³/s  "
-            f"Q_rp{eva_cfg['preview_rp_yr']:g} (diagnostic) = {eva.q_rp100:.1f} m³/s"
+            f"Q_rp{eva_cfg['preview_rp_yr']:g} (diagnostic) = {eva.q_preview:.1f} m³/s"
         )
 
         bc_diag = bias_cache.get((i_lat, i_lon))
@@ -703,7 +705,7 @@ crossings_out["glofas_cell_lat"] = cell_lat
 crossings_out["glofas_cell_lon"] = cell_lon
 # Size ranking at the fixed diagnostic RP (eva_cfg["preview_rp_yr"]).
 crossings_out["q_preview_m3s"] = [
-    r.q_rp100 if r is not None else np.nan for r in results
+    r.q_preview if r is not None else np.nan for r in results
 ]
 Path(snakemake.output.crossings).parent.mkdir(parents=True, exist_ok=True)
 crossings_out.to_file(snakemake.output.crossings, driver="GPKG")

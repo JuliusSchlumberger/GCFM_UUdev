@@ -49,10 +49,10 @@ an `adapt` job needs them; the others are drawn per basin.
 
 | file_path | strategy / measure | how to obtain |
 |---|---|---|
-| `auto/coastal_protection_weir_PC` | `protect_closed/coastal_levee` | built by rule `build_adaptation_lines` into `<adaptation_data_root>/{basin_id}/<name>.geojson` |
-| `auto/coastal_protection_weir_PO` | `grey_protect_open/coastal_levee` | built by rule `build_adaptation_lines` into `<adaptation_data_root>/{basin_id}/<name>.geojson` |
-| `auto/pump_river_mouth` | `protect_closed/pumps` | built by rule `build_adaptation_lines` into `<adaptation_data_root>/{basin_id}/<name>.geojson` |
-| `auto/river_protection_weir_PO` | `grey_protect_open/river_levee` | built by rule `build_adaptation_lines` into `<adaptation_data_root>/{basin_id}/<name>.geojson` |
+| `auto/coastal_protection_weir_PC` | `protect_closed/coastal_levee` | built by rule `build_adaptation_lines` into `<adaptation_data_root>/{basin_id}/auto/<name>.geojson` |
+| `auto/coastal_protection_weir_PO` | `grey_protect_open/coastal_levee` | built by rule `build_adaptation_lines` into `<adaptation_data_root>/{basin_id}/auto/<name>.geojson` |
+| `auto/pump_river_mouth` | `protect_closed/pumps` | built by rule `build_adaptation_lines` into `<adaptation_data_root>/{basin_id}/auto/<name>.geojson` |
+| `auto/river_protection_weir_PO` | `grey_protect_open/river_levee` | built by rule `build_adaptation_lines` into `<adaptation_data_root>/{basin_id}/auto/<name>.geojson` |
 | `{basin_id}/advance_pumps.geojson` | `advance/pumps` | project-specific; obtain from the project team |
 | `{basin_id}/coastline_for_lagoon.geojson` | `advance/lagoon_storage` | project-specific; obtain from the project team |
 | `{basin_id}/land_reclamation.geojson` | `NbS_protect_open/nbs_land_reclamation` | project-specific; obtain from the project team |

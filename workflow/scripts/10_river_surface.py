@@ -11,6 +11,7 @@ from rasterio.crs import CRS as RasterioCRS
 from rasterio.enums import Resampling
 from rasterio.transform import Affine
 from rasterio.warp import reproject
+from src.domain import load_domain
 from src.grid import load_grid_def
 from src.log import setup_logging
 from src.plots import water_surface_profile_tables
@@ -18,6 +19,7 @@ from src.profiling import ScriptProfiler
 from src.raster import FLOAT_NODATA
 from src.river_network import normalize_reach_id
 from src.surge import read_calm_sea_level_m
+from src.sword import read_swot_node_levels
 from src.water_surface import (
     build_water_surface,
     condition_channels_to_surface,
@@ -40,15 +42,30 @@ log.info(f"Loaded {len(rivers)} reaches from river_network_clean.gpkg")
 
 with xr.open_dataset(snakemake.input.surge_forcing, decode_times=False) as _surge_ds:
     calm_sea_level_m = read_calm_sea_level_m(_surge_ds)
+_surface_cfg = dict(snakemake.params.water_surface)
+swot_nodes = None
+if _surface_cfg["surface_source"] == "sword_swot":
+    _wgs84_bounds, _, _ = load_domain(
+        snakemake.input.domain_bbox, snakemake.input.domain_gpkg
+    )
+    swot_nodes = read_swot_node_levels(
+        snakemake.input.sword_regions,
+        _wgs84_bounds,
+        rivers["reach_id"],
+        snakemake.input.geoid_offset,
+        dem_crs,
+    )
+    log.info(f"Loaded {len(swot_nodes)} SWORD node(s) with a SWOT level")
 surface, rivers_oriented = build_water_surface(
     rivers,
     lambda lines: sample_centrelines(
         lines, merged_path, landuse_path, int(snakemake.params.water_code)
     ),
-    dict(snakemake.params.water_surface),
+    _surface_cfg,
     sea_level_m=calm_sea_level_m,
     sample_nodes=node_sampler(merged_path, snakemake.input.landuse_channels, dem_crs),
     gebco_floor_m=calm_sea_level_m - float(snakemake.params.gebco_max_depth_m),
+    swot_nodes=swot_nodes,
 )
 write_water_surface(surface, snakemake.output.water_surface, dem_crs)
 log.info(f"Written: {snakemake.output.water_surface}")

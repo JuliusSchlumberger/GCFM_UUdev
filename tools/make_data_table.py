@@ -32,7 +32,7 @@ FILE_PATTERN = re.compile(r"^(?:[^\s{}]|\{basin_id\})+\.[A-Za-z0-9]+$")
 AUTO_PREFIX = "auto/"
 AUTO_BUILT = (
     "built by rule `build_adaptation_lines` into "
-    "`<adaptation_data_root>/{basin_id}/<name>.geojson`"
+    "`<adaptation_data_root>/{basin_id}/auto/<name>.geojson`"
 )
 HAND_DRAWN = "project-specific; obtain from the project team"
 

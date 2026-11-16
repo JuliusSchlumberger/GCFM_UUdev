@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 import rasterio
 from _common import analysis_path, script_parser, site_path
+from _figure_style import flag_unstable, unstable_flood_maps
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from rasterio.warp import Resampling, reproject
 
@@ -205,6 +206,10 @@ def plot_heatmap(df, numbers, out):
         "▼ risk underestimated by postprocessed",
         fontsize=8.5,
     )
+    flag_unstable(
+        fig,
+        [f"{r.event} {r.measure}_{r.scale}" for r in df[df["unstable"]].itertuples()],
+    )
     fig.savefig(out, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Wrote {out}")
@@ -248,9 +253,15 @@ def score_all(paths):
                 print(
                     f"Land domain: {land.sum() * abs(tf_pre.a * tf_pre.e) / 1e6:.2f} km2"
                 )
+            # post maps derive from the baseline run, so its stability counts too
+            maps = {
+                "baseline": runs / event / "visuals" / "max_flood_depth.tif",
+                "pre": pre_dir / name / "max_flood_depth.tif",
+            }
             rows.append(
                 dict(event=event, scale=scale, measure=measure)
                 | contingency(wet_pre, wet_post, land & wet_base, tf_pre)
+                | dict(unstable=bool(unstable_flood_maps(maps)))
             )
     return pd.DataFrame(rows)
 

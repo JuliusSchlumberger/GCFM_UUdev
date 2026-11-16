@@ -20,12 +20,12 @@ Without a target Snakemake runs `all`.
 | `adapt` | 12c, 17a-18 | adaptation lines, adaptation strategies and their comparison | `build` outputs, adaptation geometries, `target_strategies` |
 
 ```bash
-snakemake preprocess --cores 4 --config target_basins="[2433835]" target_scenarios="['default']"
-snakemake build      --cores 4 --config target_basins="[2433835]" target_scenarios="['default']"
+snakemake preprocess --cores 4 --config target_basins="[2433835]" target_scenarios="['compound_100_0SLR']"
+snakemake build      --cores 4 --config target_basins="[2433835]" target_scenarios="['compound_100_0SLR']"
 ```
 
 Preview any run with `-n` (dry run). For basin `2433835` and scenario
-`default`, on an empty `<results_dir>`, `preprocess` has 15 jobs, `build` 22 and
+`compound_100_0SLR`, on an empty `<results_dir>`, `preprocess` has 15 jobs, `build` 22 and
 `all` 22. Threads per rule are set under `resources.threads` in
 `config/config.yml`: the SFINCS rules take the whole `--cores` budget as solver
 threads, so a SFINCS run occupies the machine while it runs.
@@ -49,7 +49,7 @@ are parsed as YAML.
 | key | default | example | effect |
 |---|---|---|---|
 | `target_basins` | every `BasinID2` in the delta-polygon dataset | `target_basins="[2433835]"` | basins to run; an unknown id stops the run before the DAG is built |
-| `target_scenarios` | `['default']` | `target_scenarios="['default','coast_100_03SLR']"` | scenarios from `config/scenarios.yml`; an unknown name stops the run |
+| `target_scenarios` | `default_scenarios` (config.yml: `compound_100_0SLR` and its counterparts) | `target_scenarios="['compound_100_0SLR','coast_100_03SLR']"` | scenarios from `config/scenarios.yml`; an unknown name stops the run |
 | `target_strategies` | `[]` (no adaptation runs) | `target_strategies="['advance_1','retreat']"` | strategy names or families from `config/adaptation_strategies.yml`; a family selects all its scales |
 | `target_method` | `['pre','post']` | `target_method="['post']"` | adaptation methods to run |
 
@@ -59,7 +59,9 @@ written `True` or `False` (`analysis=True`), as `false` arrives as a string.
 ## Scenarios
 
 `config/scenarios.yml` defines named scenarios; the name is the `{scenario}`
-wildcard. A `default` entry is required.
+wildcard. Without `target_scenarios`, `default_scenarios` (`config/config.yml`) runs:
+the present-day 100-year compound event `compound_100_0SLR` and its attribution
+counterparts `river_100_0SLR` and `coast_100_0SLR`.
 
 | key | required | values |
 |---|---|---|
@@ -72,14 +74,16 @@ The forcing mode follows from the two return periods: both set (including `Tide`
 or `Mean`) is `compound`, one set is `coastal_only` or `river_only`, both null is
 an error. Return periods and `slr_m` are applied when the
 scenario is built (rule 14), so adding or changing a scenario reruns only that
-scenario's build, event run and metrics, never preprocessing or the spin-up.
+scenario's build, event run and metrics, never preprocessing; a new `slr_m`
+also adds its spin-up.
 
 ## Spin-up
 
-`sfincs.spinup.enabled` (default `true`) runs one basin-level spin-up (rule 13a)
-of `spinup_days` at constant mean discharge and calm sea; every scenario's event
-run starts from its restart file at `tref + spinup_days`, which must equal
-`boundary_forcings.lead_days`. With
+`sfincs.spinup.enabled` (default `true`) runs one spin-up (rule 13a) per basin
+and `slr_m` of the requested scenarios, at constant mean discharge and calm sea
+plus that `slr_m`, in 48 h chunks until the river network has settled (at most
+14 days); every event run starts from the restart of its `slr_m` at the
+spin-up's end. It needs `boundary_forcings.surge.hydrograph.enabled`. With
 `enabled: false`, rules 13a and 13b are skipped and each event run starts at
 `tref` from the skeleton's initial water level (sea cells at the calm-sea level,
 land dry). The `adapt` target requires `enabled: true`: its rules read the
@@ -100,7 +104,7 @@ spin-up restart and the spin-up map.
   `accommodate` and `retreat` need none;
 - nothing extra for `locations: auto/<name>` (`grey_protect_open`,
   `protect_closed`): rule `build_adaptation_lines` (12c) derives these lines from
-  the basin's skeleton into `<adaptation_data_root>/{basin_id}/`, next to the
+  the basin's skeleton into `<adaptation_data_root>/{basin_id}/auto/`, apart from the
   hand-drawn files (`<results_dir>/{basin_id}/adaptation_lines/` when
   `adaptation_data_root` is not set), and reruns with the skeleton. Review `figures/60_adapt_lines.png`. The rule fails if
   a mouth closure does not seal its river; `--keep-incomplete` keeps the figure
@@ -166,7 +170,7 @@ runs, and the run label is the same in file names and titles:
 | run | label |
 |---|---|
 | calibration round 1 (round 2 with `verify_crests: true`) | `calib_r1`, `calib_r2` |
-| spin-up | `spinup` |
+| spin-up | `spinup_slr{slr_m}` |
 | event run | `{scenario}` |
 | adaptation run | `{scenario}__pre_{strategy}`, `{scenario}__post_{strategy}` |
 
@@ -204,7 +208,7 @@ Options: `--targets` (default `preprocess build`), `--out-dir` (default
 `figs/dag`), `--format` (`svg`, `png` or `pdf`), `--no-dag` (rule graph only);
 `python plot_dag.py --help` lists them. The script passes no `--config`, so the
 graphs cover the defaults: every basin in the delta-polygon dataset and the
-`default` scenario. The rule graph does not depend on the basin count; the job
+`default_scenarios`. The rule graph does not depend on the basin count; the job
 DAG has one node per job and grows with it (use `--no-dag` for a quick look).
 For one basin, call Snakemake directly:
 

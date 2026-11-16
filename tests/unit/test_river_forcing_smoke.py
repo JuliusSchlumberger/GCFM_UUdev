@@ -123,9 +123,7 @@ def _event_ds() -> xr.Dataset:
     peak_hr = lead_days * 24.0 + rising_hr
     ds = ds.assign_coords(time=np.arange(0.0, peak_hr + window_hr + 1.0), day=day)
     ds["discharge_daily"] = (("crossing", "day"), np.stack([base, 0.1 * base]))
-    ds.attrs.update(
-        lead_days=lead_days, period_hr=2.0 * rising_hr, event_start_hr=lead_days * 24.0
-    )
+    ds.attrs.update(lead_days=lead_days, period_hr=2.0 * rising_hr)
     return ds
 
 
@@ -139,24 +137,25 @@ EVENT = {
 }
 
 
-def test_glofas_event_starts_at_trough_peaks_on_target_with_continuous_slope():
+def test_glofas_event_peaks_on_target_with_continuous_slope():
     ds = _event_ds()
     q = build_design_discharge_matrix(ds, np.array([True, True]), 100.0, event=EVENT)
-    t = ds["time"].values
     peak_hr = 216.0
-    assert t[np.argmax(q[0])] == peak_hr
+    assert ds["time"].values[np.argmax(q[0])] == peak_hr
     np.testing.assert_allclose(q[0].max(), 400.0)
-
-    rise_hr = peak_hr - 5 * 24.0
-    before = t <= rise_hr - 6.0
-    np.testing.assert_allclose(
-        q[:, before],
-        ds["mean_discharge_m3s"].values[:, None] * np.ones((2, before.sum())),
-    )
-    assert q[0][t == rise_hr][0] < 0.2 * 400.0
-
     slope = np.diff(q[0])
     assert np.abs(np.diff(slope)).max() < 0.25 * np.abs(slope).max()
+
+
+def test_ramp_from_mean_holds_the_mean_then_joins_the_event():
+    from src.river_forcing import ramp_from_mean
+
+    t = np.arange(0.0, 100.0)
+    event = np.vstack([np.full(t.size, 300.0), np.full(t.size, 30.0)])
+    q = ramp_from_mean(event, np.array([50.0, 5.0]), t, 20.0, 10.0)
+    np.testing.assert_allclose(q[:, t <= 20.0], [[50.0], [5.0]] * np.ones((2, 21)))
+    np.testing.assert_allclose(q[:, t >= 30.0], event[:, t >= 30.0])
+    assert np.all(np.diff(q[0]) >= 0)
 
 
 def test_load_and_snap_crossings_keep_largest_discharge_per_reach(tmp_path):

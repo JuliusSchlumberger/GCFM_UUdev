@@ -65,7 +65,9 @@ def synthetic_run(monkeypatch):
         output=SimpleNamespace(data={"zs": zs, "zb": zb, "zsmax": zsmax}),
         data_catalog=SimpleNamespace(get_rasterdataset=lambda _p: da_sea),
     )
-    monkeypatch.setattr(postprocessing, "load_sfincs_output", lambda _d: mod)
+    monkeypatch.setattr(
+        postprocessing, "load_sfincs_output", lambda _d, _f="sfincs_map.nc": mod
+    )
     monkeypatch.setattr(postprocessing, "get_bed_level", lambda *_a, **_k: dep)
     monkeypatch.setattr(postprocessing, "DataCatalog", lambda: mod.data_catalog)
     land = land_bed_level("root", "sea.tif")
@@ -93,7 +95,9 @@ def test_max_depth_non_negative_and_sea_masked(synthetic_run):
 
 def test_max_inundation_returns_none_without_zsmax(synthetic_run, monkeypatch):
     mod = SimpleNamespace(output=SimpleNamespace(data={}))
-    monkeypatch.setattr(postprocessing, "load_sfincs_output", lambda _d: mod)
+    monkeypatch.setattr(
+        postprocessing, "load_sfincs_output", lambda _d, _f="sfincs_map.nc": mod
+    )
     assert compute_max_inundation("run", synthetic_run.land) == (None, None)
 
 

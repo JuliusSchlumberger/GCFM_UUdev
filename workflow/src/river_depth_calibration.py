@@ -176,6 +176,31 @@ def bifurcation_cross_sections(
     )
 
 
+def bifurcation_split_table(
+    cross_sections: pd.DataFrame,
+    q_sfincs_by_name: dict[str, float],
+    q_routed_by_reach: dict[str, float],
+) -> pd.DataFrame:
+    """Compare the SFINCS discharge share of each bifurcation arm with the routed share.
+
+    cross_sections: bifurcation_cross_sections's table. q_sfincs_by_name:
+    discharge through each section (absolute, m3/s). q_routed_by_reach: the
+    discharge accumulate_discharge gave each arm. Adds q_sfincs_m3s,
+    q_routed_m3s, share_sfincs, share_routed and abs_error (per arm, the same
+    for both arms of a two-way split).
+    """
+    t = pd.DataFrame(cross_sections.drop(columns="geometry", errors="ignore")).copy()
+    t["q_sfincs_m3s"] = t["name"].map(q_sfincs_by_name).astype(float)
+    t["q_routed_m3s"] = (
+        t["arm_reach"].map(normalize_reach_id).map(q_routed_by_reach).astype(float)
+    )
+    by_parent = t.groupby("parent_reach")
+    t["share_sfincs"] = t["q_sfincs_m3s"] / by_parent["q_sfincs_m3s"].transform("sum")
+    t["share_routed"] = t["q_routed_m3s"] / by_parent["q_routed_m3s"].transform("sum")
+    t["abs_error"] = (t["share_sfincs"] - t["share_routed"]).abs()
+    return t
+
+
 def mouth_sections(
     surface_nodes: gpd.GeoDataFrame,
     upstream_m: float = 1000.0,

@@ -97,6 +97,10 @@ def forward_levels(
     Rectangular section, node width averaged per segment, Manning friction,
     subcritical (Froude capped), RK4 as in rule 11's GVF solver.
     """
+    return _forward_levels_capped(profile, q_m3s, sea_level_m, manning_n, froude_cap)[0]
+
+
+def _forward_levels_capped(profile, q_m3s, sea_level_m, manning_n, froude_cap):
     from src.gvf_solver import integrate_reach
 
     z = profile["bed_m"].to_numpy(float)
@@ -105,6 +109,7 @@ def forward_levels(
     q = np.broadcast_to(np.asarray(q_m3s, float), z.shape)
     m = len(z)
     eta = np.empty(m)
+    capped = np.zeros(m, dtype=bool)
     last = integrate_reach(
         np.array([0.0]),
         z[-1:],
@@ -115,6 +120,7 @@ def forward_levels(
         froude_cap=froude_cap,
     )
     eta[-1] = last.eta[0]
+    capped[-1] = last.capped[0]
     for i in range(m - 2, -1, -1):
         seg = integrate_reach(
             np.array([0.0, x[i] - x[i + 1]]),
@@ -126,7 +132,8 @@ def forward_levels(
             froude_cap=froude_cap,
         )
         eta[i] = seg.eta[0]
-    return eta
+        capped[i] = seg.capped[0]
+    return eta, capped
 
 
 def walled_travel_time(
@@ -135,6 +142,7 @@ def walled_travel_time(
     sea_level_m: float,
     manning_n: float,
     forcing_hr: float,
+    froude_cap: float,
     regime_rT: tuple[float, float] = (0.3, 3.0),
     min_depth_m: float = 0.1,
 ) -> pd.DataFrame:
@@ -152,9 +160,13 @@ def walled_travel_time(
     r T 0.15); from ``regime_rT[0]`` on the kinematic speed, which is also the
     slower one in the transition below ``regime_rT[1]`` (1248635 Waal, r T 12).
     In inertial reaches the kinematic speed alone runs to weeks (1248635 Meuse:
-    516 h over 80 km).
+    516 h over 80 km). ``froude_cap`` (river_depth_modelling.bed.froude_cap)
+    holds the depth where the steady profile would pass it; ``froude_capped``
+    marks those nodes.
     """
-    eta = forward_levels(profile, q_m3s, sea_level_m, manning_n)
+    eta, capped = _forward_levels_capped(
+        profile, q_m3s, sea_level_m, manning_n, froude_cap
+    )
     z = profile["bed_m"].to_numpy(float)
     w = profile["width_m"].to_numpy(float)
     q = np.broadcast_to(np.asarray(q_m3s, float), z.shape)
@@ -164,6 +176,7 @@ def walled_travel_time(
     dx = -np.diff(profile["dist_from_mouth_m"].to_numpy(float))
     out = pd.DataFrame(
         {
+            "froude_capped": capped,
             "dist_from_mouth_m": profile["dist_from_mouth_m"].to_numpy(float),
             "level_m": eta,
             "depth_m": h,
@@ -189,3 +202,25 @@ def walled_travel_time(
                 / 3600.0
             )
     return out
+
+
+def settle_time_hr(
+    walled: pd.DataFrame,
+    q_m3s: np.ndarray,
+    width_m: np.ndarray,
+    slope_floor: float = 1e-5,
+) -> float:
+    """Return the diffusive settling time L^2 / D (h) of a walled profile.
+
+    D = Q / (2 W S) is the hydraulic diffusivity of a wide Manning channel
+    (Hayami), median over the profile's nodes, with S the walled water-surface
+    slope floored at ``slope_floor`` (a flat surface gives D -> infinity
+    otherwise); L is the profile length. A level change at the boundaries
+    reaches equilibrium over the reach after a few L^2 / D.
+    """
+    x = walled["dist_from_mouth_m"].to_numpy(float)
+    eta = walled["level_m"].to_numpy(float)
+    slope = np.maximum(np.abs(np.gradient(eta, x)), slope_floor)
+    diffusivity = np.asarray(q_m3s, float) / (2.0 * np.asarray(width_m, float) * slope)
+    length_m = float(x.max() - x.min())
+    return length_m**2 / float(np.nanmedian(diffusivity)) / 3600.0

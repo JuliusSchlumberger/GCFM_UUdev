@@ -22,6 +22,7 @@ Usage:
 """
 
 import logging
+import sys
 
 import matplotlib
 
@@ -30,14 +31,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
-from _common import analysis_path, script_parser, site_path
+from _common import REPO_ROOT, analysis_path, script_parser, site_path
 from scipy import ndimage
-from scipy.sparse import coo_matrix
-from scipy.sparse.csgraph import dijkstra
+
+if str(REPO_ROOT / "workflow") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "workflow"))
+from src.event_timing import gravity_wave_travel  # noqa: E402
 
 log = logging.getLogger(__name__)
 
-G_MS2 = 9.81
 LATE_HR = 6.0  # a maximum this close to the run end means the window may cut it off
 MIN_RISE_M = 0.05  # cells whose level rises less than this over the run have no meaningful peak time
 WET_M = 0.05
@@ -72,48 +74,6 @@ def _cell_centres(ds: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
     xc = 0.25 * (cx[:-1, :-1] + cx[1:, :-1] + cx[:-1, 1:] + cx[1:, 1:])
     yc = 0.25 * (cy[:-1, :-1] + cy[1:, :-1] + cy[:-1, 1:] + cy[1:, 1:])
     return xc, yc
-
-
-def gravity_wave_travel(
-    depth_m: np.ndarray,
-    wet: np.ndarray,
-    start: tuple[int, int],
-    targets: np.ndarray,
-    dx_m: float,
-):
-    """Return (hours, km) of the fastest wet 4-neighbour path from start to any target cell."""
-    idx = -np.ones(wet.shape, dtype=np.int64)
-    idx[wet] = np.arange(int(wet.sum()))
-    rows, cols, weights = [], [], []
-    for dr, dc in ((0, 1), (1, 0)):
-        a = wet[: wet.shape[0] - dr, : wet.shape[1] - dc] & wet[dr:, dc:]
-        r, c = np.nonzero(a)
-        h = 0.5 * (depth_m[r, c] + depth_m[r + dr, c + dc])
-        rows.append(idx[r, c])
-        cols.append(idx[r + dr, c + dc])
-        weights.append(dx_m / np.sqrt(G_MS2 * h))
-    rows, cols, weights = (
-        np.concatenate(rows),
-        np.concatenate(cols),
-        np.concatenate(weights),
-    )
-    n = int(wet.sum())
-    graph = coo_matrix((weights, (rows, cols)), shape=(n, n)).tocsr()
-    if idx[start] < 0:
-        return np.nan, np.nan
-    t_s, pred = dijkstra(
-        graph, directed=False, indices=int(idx[start]), return_predecessors=True
-    )
-    tgt = idx[targets & wet]
-    tgt = tgt[np.isfinite(t_s[tgt])]
-    if not tgt.size:
-        return np.nan, np.nan
-    best = int(tgt[np.argmin(t_s[tgt])])
-    steps, node = 0, best
-    while node != idx[start] and node >= 0:
-        node = pred[node]
-        steps += 1
-    return float(t_s[best] / 3600.0), steps * dx_m / 1e3
 
 
 def _label_compartments(mask: np.ndarray, min_cells: int) -> tuple[np.ndarray, int]:

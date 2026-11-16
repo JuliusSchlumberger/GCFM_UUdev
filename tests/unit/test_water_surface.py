@@ -2,6 +2,7 @@
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import pytest
 import rasterio
 from rasterio.transform import from_origin
@@ -82,6 +83,78 @@ def test_long_slope_smoothing_keeps_the_level_and_lifts_tread_slopes(water_surfa
     ]  # within the first tread, away from its riser
     assert np.max(short.slope[tread]) < 1e-5
     assert np.min(long_.slope[tread]) > 2e-5
+
+
+def _swot(xs, level, mad=0.5, n_obs=20, reach="1"):
+    return pd.DataFrame(
+        {
+            "reach_id": reach,
+            "x": xs,
+            "y": 0.0,
+            "level_m": level,
+            "mad_m": mad,
+            "n_obs": n_obs,
+        }
+    )
+
+
+def test_swot_source_replaces_the_fathom_staircase(water_surface_cfg):
+    rivers = _rivers({"1": {"xy": [(0, 0), (40000, 0)]}})
+    staircase = _sampler(lambda r, a: 8.0 - 2.0 * np.floor(a / 10000.0))
+    xs = np.arange(0.0, 40001.0, 200.0)
+    swot = _swot(xs, 4.0 - 1e-4 * xs)
+    surface, _ = build_water_surface(
+        rivers,
+        staircase,
+        dict(water_surface_cfg, surface_source="sword_swot"),
+        swot_nodes=swot,
+    )
+    ch, lvl = _reach_profile(surface, "1")
+    interior = (ch > 5000) & (ch < 35000)
+    assert np.max(np.abs(lvl - (4.0 - 1e-4 * ch))[interior]) < 0.1
+    assert set(surface.level_source) == {"swot"}
+    # FathomDEM medians are kept as level_raw_m
+    assert np.nanmax(surface.level_raw_m) == pytest.approx(8.0)
+
+
+def test_swot_nodes_failing_the_filters_are_filled_from_neighbours(water_surface_cfg):
+    rivers = _rivers({"1": {"xy": [(0, 0), (20000, 0)]}})
+    xs = np.arange(0.0, 20001.0, 200.0)
+    mad = np.where((xs > 8000) & (xs < 12000), 5.0, 0.5)  # rejected stretch
+    level = np.where(mad > 3, 50.0, 3.0 - 1e-4 * xs)  # its values are outliers
+    surface, _ = build_water_surface(
+        rivers,
+        _sampler(lambda r, a: 9.0 + 0 * a),
+        dict(water_surface_cfg, surface_source="sword_swot"),
+        swot_nodes=_swot(xs, level, mad=mad),
+    )
+    assert "filled" in set(surface.level_source)
+    assert np.nanmax(surface.level_m) < 3.5
+
+
+def test_sword_swot_without_swot_nodes_fails(water_surface_cfg):
+    rivers = _rivers({"1": {"xy": [(0, 0), (5000, 0)]}})
+    with pytest.raises(ValueError, match="swot_nodes"):
+        build_water_surface(
+            rivers,
+            _sampler(lambda r, a: 1.0 + 0 * a),
+            dict(water_surface_cfg, surface_source="sword_swot"),
+        )
+
+
+def test_single_fit_uses_one_length_for_level_and_slope(water_surface_cfg):
+    rivers = _rivers({"1": {"xy": [(0, 0), (40000, 0)]}})
+    sample = _sampler(lambda r, a: 4.0 - np.floor(a / 10000.0))
+    single, _ = build_water_surface(
+        rivers, sample, dict(water_surface_cfg, surface_fit="single")
+    )
+    long_, _ = build_water_surface(
+        rivers,
+        sample,
+        dict(water_surface_cfg, smoothing_m=20000, slope_smoothing_m=20000),
+    )
+    np.testing.assert_allclose(single.level_m, long_.level_m)
+    np.testing.assert_allclose(single.slope, long_.slope)
 
 
 def test_stepped_flat_surface_becomes_monotone_with_one_junction_value(

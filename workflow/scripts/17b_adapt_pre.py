@@ -98,8 +98,7 @@ for measure_type, raw_params in strategy_def["measures"].items():
         # Never strategy-configured.
         resolved["dep_subgrid"] = current_dep
         resolved["roughness_native_path"] = current_roughness
-        resolved["nr_levels"] = int(snakemake.params.nr_levels)
-        resolved["nrmax"] = int(snakemake.params.nrmax)
+        resolved["subgrid_table"] = dict(snakemake.params.subgrid_table)
 
     if measure_type in ("water_retention",):
         # baseline_excess_volume comes from rule attribution_mask, per basin x scenario.

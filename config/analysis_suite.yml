@@ -1,0 +1,20 @@
+# Analysis suite (snakemake analysis_suite): cross-delta figures of the river bed set-up,
+# river peak travel, upstream boundary and depth sensitivity, drawn from finished
+# production runs. Figures go to <results_dir>/figures/analysis/{gvf_setup,travel_time,
+# upstream_boundary,depth_sensitivity}/. Missing production outputs (rule 11, event
+# runs) are scheduled as usual. Another file: --config analysis_suite_file=<path>.
+
+basins: [2433835, 3279946]          # delta (basin) ids
+coast_scenario: coast_100_03SLR     # coastal-only event (scenarios.yml): surge reach, peak lag
+river_scenario: river_100_03SLR     # river-only event: peak travel, Froude numbers
+
+froude:
+  acceptable: 0.3                   # advection off (local inertia): error negligible below
+  limit: 0.5                        # and not acceptable above (de Almeida & Bates 2013)
+
+depth_sensitivity:
+  enabled: false                    # opt-in: per basin and scale a full rule 11 + build of both
+                                    # scenarios (Chao Phraya about 12 h per scale on 14 cores)
+  scales: [0.7, 1.3]                # river_depth_modelling.depth_scale of the scaled runs
+  runs_root: null                   # results roots of the scaled runs (depth_<scale>/ below it);
+                                    # null: <results_dir>/../depth_sensitivity_runs

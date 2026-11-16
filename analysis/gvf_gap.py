@@ -1,4 +1,4 @@
-"""Phase 1.7: 1D-2D gap per reach against channel angle, width and diagonal-only connectivity.
+"""1D-2D gap per reach against channel angle, width and diagonal-only connectivity.
 
 Gap = round-1 end-of-run SFINCS level minus the steady 1D level, median over
 the reach's centreline cells (round1/calibration_state.csv). The 1D level is
@@ -13,11 +13,11 @@ Connectivity: channel cells (finite in rule 11's burned DEM on the grid)
 whose only channel neighbours are diagonal, assigned to the nearest
 centreline cell's reach.
 
-Writes per basin 90_phase1_gvf_gap_reaches.csv and _scatter.png to
-<results_dir>/<basin>/figures/analysis/, and phase1_gvf_gap_summary.csv to
+Writes per basin 90_gvf_gap_reaches.csv and _scatter.png to
+<results_dir>/<basin>/figures/analysis/, and gvf_gap_summary.csv to
 <results_dir>/figures/analysis/.
 
-Usage: python analysis/phase1_gvf_gap.py [basin_id ...]
+Usage: python analysis/gvf_gap.py [basin_id ...]
 """
 
 import logging
@@ -30,9 +30,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio
-from _common import analysis_path, script_parser
-from _phase1 import (
-    PHASE1_BASINS,
+from _basin_inputs import (
+    DEFAULT_BASINS,
     basin_paths,
     calibration_sea_level_m,
     git_hash,
@@ -43,6 +42,7 @@ from _phase1 import (
     round0,
     write_summary,
 )
+from _common import analysis_path, script_parser
 from scipy.spatial import cKDTree
 
 WIDTH_CLASSES = [
@@ -60,7 +60,8 @@ def diagonal_only_cells(channel: np.ndarray) -> np.ndarray:
     return channel & ~orth & diag
 
 
-def gap_basin(basin_id: str, cfg: dict, tag: str) -> dict:
+def cell_gaps(basin_id: str, cfg: dict, q_scale: float = 1.0):
+    """Return the round-1 centreline cells with gap_m, and the grid, bed, rivers, q_calib and sea level."""
     from src.grid import load_grid_def
     from src.gvf_solver import forward_network
     from src.river_bed import values_at_points
@@ -68,8 +69,6 @@ def gap_basin(basin_id: str, cfg: dict, tag: str) -> dict:
 
     p = basin_paths(basin_id)
     grid = load_grid_def(p["sfincs_grid"])
-    dx = float(np.hypot(grid["transform"].a, grid["transform"].d))
-    rotation = float(grid.get("rotation", 0.0))
     bed, rivers, _, _ = round0(basin_id, cfg)
     net = bed.net
     depth_net = gpd.read_file(p["rivers_depth"])
@@ -89,7 +88,7 @@ def gap_basin(basin_id: str, cfg: dict, tag: str) -> dict:
         net,
         bed.bed_m,
         bed.width_m,
-        {r: q_calib.get(r, 0.0) for r in net.reach_ids},
+        {r: q_scale * q_calib.get(r, 0.0) for r in net.reach_ids},
         float(cfg["river_processing"]["channel_manning_n"]),
         ends,
     )
@@ -103,6 +102,16 @@ def gap_basin(basin_id: str, cfg: dict, tag: str) -> dict:
         net, level_1d, cells["reach_id"], cells["x"].to_numpy(), cells["y"].to_numpy()
     )
     cells["gap_m"] = cells["zs_end_m"] - cells["level_1d_m"]
+    return cells, grid, bed, rivers, q_calib, sea
+
+
+def gap_basin(basin_id: str, cfg: dict, tag: str) -> dict:
+    from src.river_network import normalize_reach_id
+
+    p = basin_paths(basin_id)
+    cells, grid, _bed, rivers, q_calib, sea = cell_gaps(basin_id, cfg)
+    dx = float(np.hypot(grid["transform"].a, grid["transform"].d))
+    rotation = float(grid.get("rotation", 0.0))
 
     with rasterio.open(p["burned_dem_grid"]) as src:
         burned = src.read(1).astype(float)
@@ -163,7 +172,7 @@ def gap_basin(basin_id: str, cfg: dict, tag: str) -> dict:
     ax.set_xlabel("reach angle to the grid (deg, 0-45)")
     ax.set_ylabel("SFINCS round-1 end level - 1D GVF level (m)")
     ax.set_title(
-        f"phase1 1.7 1D-2D gap | {basin_id} | calibration Q | dx {dx:.0f} m | {tag}",
+        f"gvf_gap | {basin_id} | calibration Q | dx {dx:.0f} m | {tag}",
         fontsize=9,
     )
     ax.grid(alpha=0.3)
@@ -193,7 +202,7 @@ def gap_basin(basin_id: str, cfg: dict, tag: str) -> dict:
 
 def main() -> int:
     parser = script_parser(__doc__)
-    parser.add_argument("basin_ids", nargs="*", default=PHASE1_BASINS)
+    parser.add_argument("basin_ids", nargs="*", default=DEFAULT_BASINS)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     cfg, tag = load_config(), git_hash()

@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 from src.gvf_solver import normal_depth
-from src.river_profile import G_MS2, walled_travel_time
+from src.river_profile import G_MS2, settle_time_hr, walled_travel_time
 
 SLOPE, WIDTH_M, Q_M3S, N = 1e-4, 200.0, 500.0, 0.03
 SPACING_M, N_NODES = 500.0, 101
@@ -20,7 +20,9 @@ def _uniform_channel():
 
 def test_kinematic_time_matches_five_thirds_velocity_at_normal_depth():
     prof, h_n = _uniform_channel()
-    t = walled_travel_time(prof, np.full(N_NODES, Q_M3S), 0.0, N, forcing_hr=6.0)
+    t = walled_travel_time(
+        prof, np.full(N_NODES, Q_M3S), 0.0, N, forcing_hr=6.0, froude_cap=0.95
+    )
     u_n = Q_M3S / (WIDTH_M * h_n)
     length_m = prof["dist_from_mouth_m"].iloc[0]
     assert np.isclose(
@@ -35,7 +37,9 @@ def test_kinematic_time_matches_five_thirds_velocity_at_normal_depth():
 
 def test_times_grow_downstream_and_gravity_is_the_fast_bound():
     prof, _ = _uniform_channel()
-    t = walled_travel_time(prof, np.full(N_NODES, Q_M3S), 0.0, N, forcing_hr=6.0)
+    t = walled_travel_time(
+        prof, np.full(N_NODES, Q_M3S), 0.0, N, forcing_hr=6.0, froude_cap=0.95
+    )
     assert t["t_kinematic_hr"].iloc[0] == 0.0
     assert np.all(np.diff(t["t_kinematic_hr"]) > 0)
     assert np.all(t["t_gravity_hr"].iloc[1:] < t["t_kinematic_hr"].iloc[1:])
@@ -43,12 +47,12 @@ def test_times_grow_downstream_and_gravity_is_the_fast_bound():
 
 def test_higher_sea_level_slows_the_kinematic_wave():
     prof, _ = _uniform_channel()
-    calm = walled_travel_time(prof, np.full(N_NODES, Q_M3S), 0.0, N, forcing_hr=6.0)[
-        "t_kinematic_hr"
-    ].iloc[-1]
-    raised = walled_travel_time(prof, np.full(N_NODES, Q_M3S), 3.0, N, forcing_hr=6.0)[
-        "t_kinematic_hr"
-    ].iloc[-1]
+    calm = walled_travel_time(
+        prof, np.full(N_NODES, Q_M3S), 0.0, N, forcing_hr=6.0, froude_cap=0.95
+    )["t_kinematic_hr"].iloc[-1]
+    raised = walled_travel_time(
+        prof, np.full(N_NODES, Q_M3S), 3.0, N, forcing_hr=6.0, froude_cap=0.95
+    )["t_kinematic_hr"].iloc[-1]
     assert raised > calm
 
 
@@ -62,7 +66,39 @@ def test_wave_time_takes_gravity_speed_only_where_friction_is_slower_than_the_fo
         (1.0, "transition", "kinematic"),
         (10.0, "frictional", "kinematic"),
     ):
-        t = walled_travel_time(prof, q, 0.0, N, forcing_hr=r_t / r / 3600.0)
+        t = walled_travel_time(
+            prof, q, 0.0, N, forcing_hr=r_t / r / 3600.0, froude_cap=0.95
+        )
         assert set(t["regime"]) == {regime}
         np.testing.assert_allclose(t["friction_rT"], r_t, rtol=0.05)
         np.testing.assert_allclose(t["t_wave_hr"], t[f"t_{speed}_hr"])
+
+
+def test_settle_time_matches_hayami_diffusivity_at_normal_depth():
+    prof, _ = _uniform_channel()
+    q = np.full(N_NODES, Q_M3S)
+    walled = walled_travel_time(prof, q, 0.0, N, forcing_hr=6.0, froude_cap=0.95)
+    length_m = prof["dist_from_mouth_m"].iloc[0]
+    expected_hr = length_m**2 / (Q_M3S / (2.0 * WIDTH_M * SLOPE)) / 3600.0
+    t = settle_time_hr(walled, q, prof["width_m"].to_numpy())
+    assert np.isclose(t, expected_hr, rtol=0.05)
+
+
+def test_settle_time_floors_a_flat_surface():
+    prof, _ = _uniform_channel()
+    q = np.full(N_NODES, Q_M3S)
+    flat = walled_travel_time(prof, q, 0.0, N, forcing_hr=6.0, froude_cap=0.95).assign(
+        level_m=1.0
+    )
+    t = settle_time_hr(flat, q, prof["width_m"].to_numpy(), slope_floor=1e-5)
+    length_m = prof["dist_from_mouth_m"].iloc[0]
+    assert np.isclose(t, length_m**2 / (Q_M3S / (2.0 * WIDTH_M * 1e-5)) / 3600.0)
+
+
+def test_froude_cap_is_reported_where_it_holds_the_depth():
+    prof, _ = _uniform_channel()
+    q = np.full(N_NODES, Q_M3S)
+    free = walled_travel_time(prof, q, 0.0, N, forcing_hr=6.0, froude_cap=0.95)
+    tight = walled_travel_time(prof, q, 0.0, N, forcing_hr=6.0, froude_cap=1e-3)
+    assert tight["froude_capped"].sum() > free["froude_capped"].sum()
+    assert (tight["level_m"] >= free["level_m"] - 1e-9).all()

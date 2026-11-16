@@ -15,7 +15,7 @@ from src.io import site_setting  # noqa: E402
 
 DATASET = "sis-water-level-change-timeseries-cmip6"
 VARIABLES = ["storm_surge_residual", "total_water_level"]
-YEARS = [str(y) for y in range(1950, 2025)]
+YEARS = [str(y) for y in range(1950, 2026)]
 MONTHS = [f"{m:02d}" for m in range(1, 13)]
 
 DELETE_ZIP_AFTER_EXTRACT = False

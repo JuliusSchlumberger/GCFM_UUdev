@@ -3,8 +3,8 @@
 # Strategies reference them as `locations: auto/<name>`
 # (config/adaptation_strategies.yml), which makes them inputs of the adapt
 # rules; nothing else requests them. figures/60_adapt_lines.png is for review.
-# The lines go to the basin's folder under adaptation_data_root (see
-# adaptation_lines_dir), next to its hand-made measure files.
+# The lines go to the auto/ subfolder of the basin's folder under
+# adaptation_data_root (see adaptation_lines_dir).
 _LINES_DIR = adaptation_lines_dir("{basin_id}")
 
 rule build_adaptation_lines:

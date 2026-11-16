@@ -19,9 +19,11 @@ calibration_margin_hr, with T_walled the slowest walled travel time at the
 calibration discharge (src.river_profile.walled_travel_time): per node the
 gravity speed where friction acts slower than the ramp (r ramp_hr below
 wave_regime_rT[0], r = g n^2 u / h^(4/3)), else the kinematic 5/3 u,
-from a crossing to its network end on round 0's bed, so the full discharge
-reaches the coast and the levels settle before the run ends (checked per
-round: steady_check).
+from a crossing to its network end on round 0's bed. run_length.method
+settle replaces T_walled by max(T_walled, settle_factor x L^2/D), the
+diffusive settling time of the walled profile (src.river_profile.settle_time_hr):
+the wave front arrives after T_walled, the levels behind it settle on L^2/D
+(checked per round: steady_check).
 
 Round 1 -- confined, excavated. With no overbank relief the held discharge and
 storm tide give the highest level reached, including coastal amplification
@@ -95,11 +97,13 @@ from src.hydromt_sfincs_patch import (
     raster_catalog_entry,
 )
 from src.landuse import LANDUSE_SEA_CODE
+from src.io import site_setting
 from src.log import setup_logging
 from src.plots import (
     plot_crest_profiles,
     plot_max_inundation_map,
     plot_run_forcing,
+    stamp_unstable,
 )
 from src.postprocessing import (
     compute_max_inundation,
@@ -120,6 +124,7 @@ from src.river_burn import (
 )
 from src.river_depth_calibration import (
     bifurcation_cross_sections,
+    bifurcation_split_table,
     build_calibration_seed_discharge,
     compute_period_max_zs,
     gather_calibration_round_profile,
@@ -137,14 +142,16 @@ from src.river_network import (
 )
 from src.sfincs_run import (
     create_active_mask,
+    level_reversal_m,
     place_discharge_points,
     read_face_zmin,
     run_sfincs_subprocess,
     set_sea_and_outflow_boundaries,
+    stability_note,
     write_weir_file,
 )
 from src.river_forcing import cosine_ramp
-from src.river_profile import mainstem_profile, walled_travel_time
+from src.river_profile import mainstem_profile, settle_time_hr, walled_travel_time
 from src.surge import (
     CREST_PRECISION_M,
     ceil_crest,
@@ -178,8 +185,10 @@ delta_outflow_points_path = Path(snakemake.input.delta_outflow_points)
 
 basin_id = str(snakemake.wildcards.basin_id)  # plot titles
 calib_root = Path(snakemake.params.calib_root)
-sfincs_exe = Path(snakemake.params.sfincs_exe)
-timeout_s = int(snakemake.params.timeout_s)
+# Not params: the SFINCS executable, the wall-clock timeout and plot settings do
+# not change results, and as params a new value would rerun every SFINCS run.
+sfincs_exe = Path(site_setting("sfincs_exe"))
+timeout_s = int(snakemake.config["sfincs"]["simulation"]["timeout_s"])
 
 bed_cfg = dict(snakemake.params.bed)
 gebco_min_depth_m = float(snakemake.params.gebco_min_depth_m)
@@ -189,8 +198,10 @@ calibration_margin_hr = float(snakemake.params.calibration_margin_hr)
 calibration_max_days = float(snakemake.params.calibration_max_days)
 wave_regime_rT = tuple(float(v) for v in snakemake.params.wave_regime_rT)
 steady_check_cfg = dict(snakemake.params.steady_check)
+run_length_cfg = dict(snakemake.params.run_length)
 verify_crests = bool(snakemake.params.verify_crests)
-crosssections = bool(snakemake.params.crosssections)
+bifurcation_check_cfg = dict(snakemake.params.bifurcation_check)
+split_override = dict(snakemake.params.split_override or {})
 depth_scale = float(snakemake.params.depth_scale)
 ramp_hr = float(snakemake.params.ramp_hr)
 weir_crest_m = float(snakemake.params.weir_crest_m)
@@ -204,6 +215,9 @@ min_component_cells = int(snakemake.params.min_component_cells)
 nr_subgrid_pixels = int(snakemake.params.nr_subgrid_pixels)
 nr_levels = int(snakemake.params.nr_levels)
 nrmax = int(snakemake.params.nrmax)
+advection = int(snakemake.params.advection)
+alpha_candidates = [float(a) for a in snakemake.params.alpha]
+alpha_reversal_max_m = float(snakemake.params.alpha_reversal_max_m)
 active_mask_enabled = snakemake.params.active_mask_enabled
 active_mask_elevation_buffer_m = float(snakemake.params.active_mask_elevation_buffer_m)
 outflow_buffer_m = float(snakemake.params.outflow_buffer_m)
@@ -250,7 +264,13 @@ _excluded_arms = (
     else set()
 )
 adjacency = build_downstream_adjacency(rivers)
-q_calib = accumulate_discharge(rivers, seed_q, adjacency, excluded_arms=_excluded_arms)
+q_calib = accumulate_discharge(
+    rivers,
+    seed_q,
+    adjacency,
+    excluded_arms=_excluded_arms,
+    share_override=split_override,
+)
 rivers["q_calib"] = q_calib
 log.info(
     f"Calibration discharge: {int((q_calib > 0).sum())}/{len(rivers)} reach(es) "
@@ -338,6 +358,8 @@ sf.config.update(
         "dtmapout": 3600,
         "dtrstout": 0,
         "zsini": -9999.0,
+        "advection": advection,
+        "alpha": alpha_candidates[0],
     }
 )
 
@@ -886,6 +908,7 @@ river_bed, q_design, _seed_q, q_mean = estimate_river_bed_from_files(
     manning_n=channel_manning_n,
     surface_cfg=water_surface_cfg,
     cfg=bed_cfg,
+    share_override=split_override,
 )
 rivers["q_design_m3s"] = q_design
 rivers["q_mean_m3s"] = q_mean
@@ -1143,37 +1166,66 @@ for _reach in sorted({normalize_reach_id(r) for r in inside_ids_valid} - {None})
         )
         continue
     _prof = mainstem_profile(_nodes, adjacency, _reach, reach_q=_q_calib_by_reach)
+    _q_prof = _prof["reach_id"].map(_q_calib_by_reach).to_numpy(float)
+    _w = walled_travel_time(
+        _prof,
+        _q_prof,
+        float(coastal_design_peaks.max()),
+        channel_manning_n,
+        forcing_hr=ramp_hr,
+        froude_cap=float(bed_cfg["froude_cap"]),
+        regime_rT=wave_regime_rT,
+    )
+    _t_settle = settle_time_hr(
+        _w,
+        _q_prof,
+        _prof["width_m"].to_numpy(float),
+        slope_floor=float(run_length_cfg["settle_slope_floor"]),
+    )
     _walled.append(
-        walled_travel_time(
-            _prof,
-            _prof["reach_id"].map(_q_calib_by_reach).to_numpy(float),
-            float(coastal_design_peaks.max()),
-            channel_manning_n,
-            forcing_hr=ramp_hr,
-            regime_rT=wave_regime_rT,
-        ).assign(crossing_reach_id=_reach, reach_id=_prof["reach_id"].to_numpy())
+        _w.assign(
+            crossing_reach_id=_reach,
+            reach_id=_prof["reach_id"].to_numpy(),
+            t_settle_hr=_t_settle,
+        )
     )
 if not _walled:
     raise RuntimeError(
         "No crossing reach has river-bed nodes -- cannot size the calibration run"
     )
 walled = pd.concat(_walled, ignore_index=True)
-walled.to_csv(_bed_dir / f"{basin_id}_walled_travel.csv", index=False)
+walled.to_csv(snakemake.output.walled_travel, index=False)
 _ends = walled.groupby("crossing_reach_id")[
-    ["t_wave_hr", "t_kinematic_hr", "t_gravity_hr"]
+    ["t_wave_hr", "t_kinematic_hr", "t_gravity_hr", "t_settle_hr"]
 ].last()
 t_walled_hr = float(_ends["t_wave_hr"].max())
-run_hr = float(np.ceil(ramp_hr + t_walled_hr + calibration_margin_hr))
+t_settle_hr = float(_ends["t_settle_hr"].max())
+settle_factor = float(run_length_cfg["settle_factor"])
+if run_length_cfg["method"] == "settle":
+    # The wave arrives after T_walled, but the levels along the reach settle
+    # diffusively over a few L^2 / D (2433835 steady after ramp + T_walled;
+    # 3279946 still rising 0.77 m in the last 3 h of a 59 h walled-length run).
+    t_run_hr = max(t_walled_hr, settle_factor * t_settle_hr)
+elif run_length_cfg["method"] == "walled":
+    t_run_hr = t_walled_hr
+else:
+    raise ValueError(
+        f"river_depth_modelling.run_length.method {run_length_cfg['method']!r}: expected walled or settle"
+    )
+run_hr = float(np.ceil(ramp_hr + t_run_hr + calibration_margin_hr))
 log.info(
-    f"Walled travel time to the network end per crossing reach (regime / all-kinematic / all-gravity, h): "
-    f"{ {r: (round(t, 1), round(k, 1), round(g, 1)) for r, (t, k, g) in _ends.iterrows()} }; "
-    f"inertial nodes {int((walled['regime'] == 'inertial').sum())} of {len(walled)}; run = {ramp_hr:g} h ramp + "
-    f"{t_walled_hr:.1f} h + {calibration_margin_hr:g} h margin = {run_hr:.0f} h"
+    f"Walled travel time to the network end per crossing reach (regime / all-kinematic / all-gravity / "
+    f"settle L^2/D, h): "
+    f"{ {r: (round(t, 1), round(k, 1), round(g, 1), round(s, 1)) for r, (t, k, g, s) in _ends.iterrows()} }; "
+    f"inertial nodes {int((walled['regime'] == 'inertial').sum())} of {len(walled)}, Froude-capped "
+    f"{int(walled['froude_capped'].sum())}; run "
+    f"({run_length_cfg['method']}) = {ramp_hr:g} h ramp + {t_run_hr:.1f} h + {calibration_margin_hr:g} h margin "
+    f"= {run_hr:.0f} h (T_walled {t_walled_hr:.1f} h, {settle_factor:g} x t_settle {settle_factor * t_settle_hr:.1f} h)"
 )
 if not np.isfinite(run_hr) or run_hr > calibration_max_days * 24.0:
     raise ValueError(
         f"calibration run of {run_hr} h exceeds calibration_max_days ({calibration_max_days:g} d): walled "
-        f"travel time {t_walled_hr:.1f} h (see {_bed_dir / f'{basin_id}_walled_travel.csv'}) -- "
+        f"travel time {t_walled_hr:.1f} h, settle time {t_settle_hr:.1f} h (see {_bed_dir / f'{basin_id}_walled_travel.csv'}) -- "
         f"raise river_depth_modelling.calibration_max_days or check the bed"
     )
 
@@ -1251,17 +1303,50 @@ def _steady_check(
 ) -> None:
     window_hr = float(steady_check_cfg["window_hr"])
     tol_m = float(steady_check_cfg["tol_m"])
-    i0 = int(np.searchsorted(final_times_s, final_times_s[-1] - window_hr * 3600.0))
-    rise = final_zs[-1] - final_zs[i0]
+    # Trailing means over window_hr: steep reaches carry hourly noise of up to
+    # metres around a settled mean, which single snapshots would flag.
+    dt_s = float(np.median(np.diff(final_times_s)))
+    k = max(1, int(round(window_hr * 3600.0 / dt_s)))
+    csum = np.cumsum(np.vstack([np.zeros((1, final_zs.shape[1])), final_zs]), axis=0)
+    zs_mean = (csum[k:] - csum[:-k]) / k
+    times_mean_s = final_times_s[k - 1 :]
+    rise = zs_mean[-1] - zs_mean[max(0, zs_mean.shape[0] - 1 - k)]
     rising = np.isfinite(rise) & (rise > tol_m)
     msg = (
-        f"[{round_label}] {int(rising.sum())}/{rise.size} centreline cell(s) rose more than {tol_m:g} m "
-        f"over the run's last {window_hr:g} h (max {np.nanmax(rise):+.2f} m)"
+        f"[{round_label}] {int(rising.sum())}/{rise.size} centreline cell(s): {window_hr:g} h mean level rose "
+        f"more than {tol_m:g} m over the run's last {window_hr:g} h (max {np.nanmax(rise):+.2f} m)"
     )
-    if rising.any():
-        log.warning(msg + " -- not steady at the run end: raise calibration_margin_hr")
-    else:
+    # Per cell, the last time its mean level was further than tol_m from the
+    # end mean: how long the run actually took to settle (0 if never off).
+    off = np.abs(zs_mean - zs_mean[-1]) > tol_m
+    last_off = np.where(
+        off.any(axis=0),
+        times_mean_s[off.shape[0] - 1 - np.argmax(off[::-1], axis=0)] / 3600.0,
+        0.0,
+    )
+    pd.DataFrame(
+        {
+            "t_steady_p95_hr": [float(np.nanpercentile(last_off, 95))],
+            "t_steady_max_hr": [float(np.nanmax(last_off))],
+            "run_hr": [run_hr],
+            "t_walled_hr": [t_walled_hr],
+            "t_settle_hr": [t_settle_hr],
+            "window_hr": [window_hr],
+            "tol_m": [tol_m],
+            "cells": [rise.size],
+            "cells_rising": [int(rising.sum())],
+            "share_rising": [float(rising.mean())],
+            "max_rise_m": [float(np.nanmax(rise))],
+        }
+    ).to_csv(round_root / "steady_check.csv", index=False)
+    if not rising.any():
         log.info(msg)
+    elif steady_check_cfg.get("fail", False):
+        raise RuntimeError(
+            msg + " -- not steady at the run end (steady_check.fail: true)"
+        )
+    else:
+        log.warning(msg + " -- not steady at the run end: raise calibration_margin_hr")
 
 
 # round 1: confined, excavated
@@ -1269,27 +1354,123 @@ def _steady_check(
 round_label = ROUND_TITLES[1]
 round_root = _start_round(1)
 _create_subgrid(excavated_subgrid_elevation_list, round_label)
-if crosssections:
-    # Discharge through each arm of the seeds' bifurcations (sfincs_his.nc),
-    # against the width-proportional split of accumulate_discharge.
-    _crs = bifurcation_cross_sections(
-        rivers_utm,
-        sorted(
-            {
-                normalize_reach_id(r)
-                for r, s in zip(rivers["reach_id"], rivers["is_seed"])
-                if bool(s)
-            }
-            - {None}
-        ),
-    )
-    sf.cross_sections.set(_crs[["name", "geometry"]], merge=False)
-    _crs.to_file(calib_root / "cross_sections.gpkg", driver="GPKG")
-    log.info(f"[{round_label}] {len(_crs)} bifurcation cross-section(s) set")
-period_max_zs_1, final_zs, final_times_s = _run_calibration_round(
-    round_label, round_root
+# Discharge through each arm of the seeds' bifurcations (sfincs_his.nc),
+# against the share accumulate_discharge routed q_calib with.
+_bif_crs = bifurcation_cross_sections(
+    rivers_utm,
+    sorted(
+        {
+            normalize_reach_id(r)
+            for r, s in zip(rivers["reach_id"], rivers["is_seed"])
+            if bool(s)
+        }
+        - {None}
+    ),
 )
+if not _bif_crs.empty:
+    sf.cross_sections.set(_bif_crs[["name", "geometry"]], merge=False)
+    _bif_crs.to_file(calib_root / "cross_sections.gpkg", driver="GPKG")
+log.info(f"[{round_label}] {len(_bif_crs)} bifurcation cross-section(s) set")
+
+
+def _clear_run_outputs(run_dir: Path) -> None:
+    # A rerun in the same directory cannot recreate netCDF files SFINCS
+    # left behind on Windows.
+    for path in [run_dir / "sfincs_map.nc", run_dir / "sfincs_his.nc", *run_dir.glob("sfincs.*.rst")]:
+        path.unlink(missing_ok=True)
+
+
+# Round 1 is also the alpha check: the first candidate whose run keeps the
+# river centreline free of hourly level swings is the basin's alpha (rule
+# 12a). With none stable the last (smallest) is kept and marked unstable.
+alpha_rows = []
+for i_alpha, alpha in enumerate(alpha_candidates):
+    sf.config.set("alpha", alpha)
+    # A failed SFINCS run raises: instability shows in the levels SFINCS
+    # writes (swings, non-finite values), a failed run is a different problem.
+    period_max_zs_1, final_zs, final_times_s = _run_calibration_round(
+        round_label, round_root
+    )
+    reversal = level_reversal_m(final_zs)
+    worst = int(np.argmax(np.nan_to_num(reversal, nan=-1.0)))
+    stable = bool(reversal[worst] <= alpha_reversal_max_m)
+    alpha_rows.append(
+        {
+            "alpha": alpha,
+            "max_reversal_m": float(reversal[worst]),
+            "cells_over": int((reversal > alpha_reversal_max_m).sum()),
+            "reach_id": str(cell_gdf["reach_id"].iloc[worst]),
+            "along_m": float(cell_gdf["along_m"].iloc[worst]),
+            "stable": stable,
+        }
+    )
+    log.info(
+        f"[{round_label}] alpha {alpha:g}: largest hourly level swing on the river centreline "
+        f"{reversal[worst]:.2f} m (reach {alpha_rows[-1]['reach_id']}, {alpha_rows[-1]['along_m']:.0f} m along), "
+        f"{alpha_rows[-1]['cells_over']}/{reversal.size} cell(s) above {alpha_reversal_max_m:g} m -- "
+        f"{'stable' if stable else 'unstable'}"
+    )
+    if stable or i_alpha == len(alpha_candidates) - 1:
+        break
+    _clear_run_outputs(round_root)
+alpha_check = pd.DataFrame(alpha_rows)
+alpha_check["selected"] = alpha_check.index == len(alpha_check) - 1
+alpha_check.to_csv(snakemake.output.alpha_check, index=False)
+calibration_unstable = not bool(alpha_check["stable"].iloc[-1])
+if calibration_unstable:
+    log.warning(
+        f"[{round_label}] UNSTABLE: no alpha in {alpha_candidates} ran stable; alpha {alpha:g} kept "
+        f"(details in {snakemake.output.alpha_check}): check the bed in the reaches listed there"
+    )
+else:
+    log.info(f"alpha {alpha:g} kept for basin {basin_id}")
 _steady_check(round_label, final_zs, final_times_s)
+
+
+def _bifurcation_check(round_label: str, round_root: Path) -> None:
+    if _bif_crs.empty:
+        return
+    with xr.open_dataset(round_root / "sfincs_his.nc", decode_times=False) as his:
+        q_end = np.abs(np.asarray(his["crosssection_discharge"].values, float)[-1])
+        names = [
+            str(n).strip()
+            for n in np.asarray(his["crosssection_name"].values).astype(str)
+        ]
+    split = bifurcation_split_table(
+        _bif_crs,
+        dict(zip(names, q_end)),
+        dict(zip(rivers["reach_id"].map(normalize_reach_id), q_calib)),
+    )
+    split.to_csv(round_root / "bifurcation_split.csv", index=False, float_format="%.4g")
+    max_err = float(bifurcation_check_cfg["max_share_error"])
+    accepted = {
+        normalize_reach_id(r) for r in bifurcation_check_cfg.get("accepted") or []
+    }
+    worst = split.groupby("parent_reach")["abs_error"].max()
+    for parent, err in worst.items():
+        arms = split[split["parent_reach"] == parent]
+        log.info(
+            f"[{round_label}] Bifurcation {parent}: SFINCS / routed share "
+            + ", ".join(
+                f"{a} {s:.2f}/{r:.2f}"
+                for a, s, r in zip(
+                    arms["arm_reach"], arms["share_sfincs"], arms["share_routed"]
+                )
+            )
+            + f" (|error| {err:.2f}{', accepted' if parent in accepted else ''})"
+        )
+    failed = [p for p, e in worst.items() if e > max_err and p not in accepted]
+    if failed:
+        raise RuntimeError(
+            f"[{round_label}] SFINCS splits the discharge at bifurcation(s) {failed} more than "
+            f"{max_err:g} away from the routed share (round1/bifurcation_split.csv). Fix the river "
+            "network there (arm alignment at the junction, widths), or set "
+            "river_processing.split_override for that reach, or list it in "
+            "river_depth_modelling.bifurcation_check.accepted"
+        )
+
+
+_bifurcation_check(round_label, round_root)
 zs_field_1 = _read_period_max_zs_field(round_root)
 
 # Production weir, exported as-is; round 2 verifies exactly this weir.
@@ -1525,4 +1706,11 @@ with open(snakemake.output.calibration_rounds, "w") as _f:
         _f,
         indent=2,
     )
+if calibration_unstable:
+    _kept = alpha_rows[-1]
+    _note = stability_note(
+        {"max_swing_m": _kept["max_reversal_m"], "cells_over": _kept["cells_over"], "alpha": _kept["alpha"]}
+    )
+    for _name in ("plot_forcing_r1", "plot_max_depth_r1"):
+        stamp_unstable(getattr(snakemake.output, _name), _note)
 log.info("Done")

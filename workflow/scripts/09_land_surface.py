@@ -6,9 +6,9 @@ Run by rule grid_align_landuse. Writes:
   the river channel (src.river_burn.channel_polygons) set to landuse.water_code;
 - roughness.tif: Manning's n on the elevation grid subdivided to about the
   land-use source's pixel size (~10 m under ESA WorldCover, the unchanged ~31 m
-  grid under LC100), area-averaged from the source, channel at
-  channel_manning_n. hydromt samples it per subgrid pixel and averages by
-  conveyance;
+  grid under LC100), area-averaged from the source, channel and inland water
+  (landuse.water_code) at channel_manning_n, the sea at the lookup's n.
+  hydromt samples it per subgrid pixel and averages by conveyance;
 - landuse_on_grid.tif, roughness_on_grid.tif, land_mask_on_grid.gpkg: the same on
   the SFINCS grid (rule build_sfincs_grid), in SfincsModel orientation (row 0 on
   the origin side), so every model assigns them to sf.grid.data cell for cell.
@@ -78,6 +78,7 @@ unmapped, info = write_roughness_raster(
         ref_meta["crs"],
         channel_n,
     ),
+    water=(water_code, channel_n),
 )
 if unmapped:
     log.warning(
@@ -154,6 +155,7 @@ unmapped, _info = write_roughness_raster(
     # The model's own "manning" field: stays on the model grid.
     refine_to_source=False,
     channel=(channel_polygons(rivers.to_crs(src_crs)), src_crs, channel_n),
+    water=(water_code, channel_n),
 )
 if unmapped:
     log.warning(

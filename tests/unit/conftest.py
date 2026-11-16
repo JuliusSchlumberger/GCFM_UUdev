@@ -55,6 +55,11 @@ def water_surface_cfg() -> dict:
         "structure_min_drop_m": 0.2,
         "use_sword_obstructions": True,
         "structures": [],
+        "surface_source": "fathom",
+        "swot_min_obs": 10,
+        "swot_max_mad_m": 3.0,
+        "surface_fit": "two_scale",
+        "single_smoothing_m": 20000,
     }
 
 
@@ -67,4 +72,11 @@ def bed_cfg() -> dict:
         "width_smoothing_m": 5000.0,
         "bathymetry_handover_m": 5000.0,
         "q_min_m3s": 1.0,
+        "bathymetry_margin_m": 0.1,
+        "froude_cap": 0.95,
+        "gvf_max_step_m": 50.0,
+        "period_start": "2023-07-01",
+        "bed_method": "manning",
+        "slope_resolved_min": 3.0e-5,
+        "inversion_width_exponent_fallback": 0.4,
     }

@@ -13,8 +13,8 @@ mouth_upstream_m up each mouth reach):
   level as a check.
 
 lag_hr = surge_travel_hr - river_travel_hr is the river peak minus the surge
-peak at the boundary (sfincs.boundary_setup.compound.lag_overrides_hr, > 0
-delays the river) that makes both peaks reach that mouth together in a
+peak at the boundary (sfincs.boundary_setup.compound.lag_hr, > 0 delays the
+river; auto takes rule event_timing's estimate) that makes both peaks reach that mouth together in a
 compound run; travel times do not depend on where each run places its peak.
 The basin's value is the main mouth's: the one with the largest filtered
 river-peak discharge. Times are hours from the forcing's tref.

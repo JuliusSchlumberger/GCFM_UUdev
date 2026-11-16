@@ -2,9 +2,13 @@
 
 Run by rule run_event (and adapt_run_event_pre). Executes the sfincs.inp from
 build_sfincs in sfincs_root: tstop = end of forcing; with spin-up, tstart =
-spin-up end and rstfile = the basin-level restart; without, tstart = tref from
-a dry bed.
+spin-up end and rstfile = the restart of the spin-up with the scenario's
+slr_m; without, tstart = tref from the skeleton's initial levels (sea at the
+calm level, channels at the steady mean-flow level; river_only starts dry).
 
+Writes stability.csv: the river-network swing check of rule 11's alpha check
+(src.sfincs_run.river_network_stability) plus the spin-up's verdict; an
+unstable run is marked (warning, red banner on its figures), never stopped.
 Writes the inundation-ratio map (zsmax envelope, as rule sanity_checks) and,
 when the rule declares them (analysis), the flood animation and
 flood_timeseries.csv. flood_volume_m3 is the total volume at each output step
@@ -17,10 +21,17 @@ from pathlib import Path
 from typing import cast
 
 import geopandas as gpd
+import pandas as pd
 from shapely.geometry import Polygon
 
+from src.io import site_setting
 from src.log import setup_logging
-from src.plots import animate_flood_progression, plot_inundation_check
+from src.plots import (
+    animate_flood_progression,
+    plot_inundation_check,
+    plot_observation_levels,
+    stamp_unstable,
+)
 from src.postprocessing import (
     compute_flood_progression,
     compute_flood_timeseries_stats,
@@ -28,16 +39,25 @@ from src.postprocessing import (
     inundation_stats,
     read_land_bed_level,
 )
-from src.sfincs_run import run_sfincs_subprocess
+from src.sfincs_run import (
+    read_observation_levels,
+    spinup_flagged,
+    river_network_stability,
+    run_sfincs_subprocess,
+    stability_note,
+)
 
 log = setup_logging(snakemake.log[0])
 
 # ── params ──
 sfincs_root = Path(snakemake.params.sfincs_root)
-sfincs_exe = Path(snakemake.params.sfincs_exe)
-timeout_s = int(snakemake.params.timeout_s)
-min_inundation_depth_m = float(snakemake.params.min_inundation_depth_m)
-animation_fps = int(snakemake.params.animation_fps)
+# Not params: the SFINCS executable, the wall-clock timeout and plot settings do
+# not change results, and as params a new value would rerun every SFINCS run.
+sfincs_exe = Path(site_setting("sfincs_exe"))
+timeout_s = int(snakemake.config["sfincs"]["simulation"]["timeout_s"])
+min_inundation_depth_m = float(snakemake.config["sfincs"]["sanity_checks"]["min_inundation_depth_m"])
+animation_fps = int(snakemake.config["sfincs"]["sanity_checks"]["animation_fps"])
+alpha_reversal_max_m = float(snakemake.params.alpha_reversal_max_m)
 land_polygons_path = Path(snakemake.input.land_mask_on_grid)  # plot background
 sea_mask_path = Path(snakemake.input.sea_mask)
 da_land_dep = read_land_bed_level(snakemake.input.land_bed_level)
@@ -73,6 +93,26 @@ if not sfincs_map_path.exists():
 log.info(
     f"Event map output written: {sfincs_map_path} ({sfincs_map_path.stat().st_size / 1e6:.1f} MB)"
 )
+
+# ── Check 0: hourly level swings on the river network; marks the run, never stops it ──
+stability = river_network_stability(
+    sfincs_root, gpd.read_file(river_network_path), alpha_reversal_max_m
+)
+# An unstable spin-up taints every event that restarts from it.
+spinup_stability = getattr(snakemake.input, "spinup_stability", None)
+stability["spinup_unstable"] = (
+    spinup_flagged(spinup_stability) if spinup_stability else False
+)
+pd.DataFrame([stability]).to_csv(snakemake.output.stability, index=False)
+if stability["unstable"]:
+    log.warning(f"[Check 0] {stability_note(stability)}")
+else:
+    log.info(
+        f"[Check 0] Largest hourly level swing on the river network "
+        f"{stability['max_swing_m']:.2f} m (alpha {stability['alpha']:g}): stable"
+    )
+if stability["spinup_unstable"]:
+    log.warning("[Check 0] the spin-up this run restarts from is unstable or not steady (its stability.csv)")
 
 # ── Check 1: inundation ratio (envelope, zsmax), as in 13b_sanity_checks.py ──
 da_hmax, da_dep = compute_max_inundation(
@@ -110,6 +150,17 @@ if hasattr(snakemake.output, "plot_inundation_ratio"):
         run_label=run,
     )
     log.info(f"Inundation ratio plot written: {snakemake.output.plot_inundation_ratio}")
+    if stability_note(stability):
+        stamp_unstable(snakemake.output.plot_inundation_ratio, stability_note(stability))
+
+# ── water level at the observation points (analysis), river and sea panels ──
+if hasattr(snakemake.output, "plot_water_level"):
+    t_hr, zs_obs = read_observation_levels(sfincs_root)
+    plot_observation_levels(
+        t_hr, zs_obs, gpd.read_file(snakemake.input.obs_points), str(snakemake.output.plot_water_level)
+    )
+    if stability_note(stability):
+        stamp_unstable(snakemake.output.plot_water_level, stability_note(stability))
 
 # ── flood progression (analysis): animation + per-timestep area/volume CSV ──
 if hasattr(snakemake.output, "animation_flood_progress"):
