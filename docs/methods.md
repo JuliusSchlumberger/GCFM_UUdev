@@ -309,12 +309,12 @@ streaming rows in blocks of 20 M pixels.
 | cell size `dx` | `sfincs.grid.resolution_m` (100 m) for every basin; `resolution_overrides_m` per basin (`4267691: 150`) to fit memory |
 | subgrid pixel | `dx / sfincs.subgrid.nr_subgrid_pixels` (10 m at the defaults); channels narrower than a cell live in the subgrid tables |
 | orientation | axis-aligned (north-up), `rotation` 0 |
+| extent | the delta polygon's bounds floored/ceiled to multiples of `dx`, so every cell the polygon touches exists and the active mask (`all_touched`) can include it |
 
 `{basin_id}_sfincs_grid.json` (rule 04) holds `x0, y0, dx, dy, mmax, nmax,
 rotation, epsg` and the affine transform in SfincsModel orientation:
 `translation(x0, y0) × scale(dx, dy)` with `dy` positive, so row 0 is on the
-south side, row = SFINCS `n`, column = `m`. The grid is flipped to y-ascending
-when the JSON is written, so it matches the grid HydroMT builds. Models are created with `src.grid.create_model_grid`, which
+south side, row = SFINCS `n`, column = `m`. Models are created with `src.grid.create_model_grid`, which
 raises if the SfincsModel transform differs from the JSON.
 
 On the south-up model grid rioxarray's `rio.bounds` and `rio.reproject` can

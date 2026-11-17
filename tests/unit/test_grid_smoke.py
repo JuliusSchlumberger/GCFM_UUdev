@@ -36,7 +36,7 @@ def test_footprint_area_equals_cell_count_times_cell_area():
     assert footprint(t, (20, 30)).area == pytest.approx(20 * 30 * cell_area_m2(t))
 
 
-def test_grid_is_axis_aligned_south_up_and_covers_domain_within_one_cell():
+def test_grid_is_axis_aligned_south_up_and_covers_the_whole_domain():
     domain = _oblique_domain()
     grid_def = build_grid_def(domain, resolution_m=500.0)
     assert grid_def["rotation"] == 0.0
@@ -45,9 +45,19 @@ def test_grid_is_axis_aligned_south_up_and_covers_domain_within_one_cell():
     assert t.b == 0.0 and t.d == 0.0
     assert t.e > 0.0  # row 0 on the southern side
     assert cell_size_m(t) == pytest.approx(500.0)
+    assert t.c % 500.0 == 0.0 and t.f % 500.0 == 0.0
     outline = footprint(t, (grid_def["nmax"], grid_def["mmax"]))
-    # hydromt's align=True rounds the origin, so the edges may fall short by < 1 cell.
-    assert outline.buffer(500.0).contains(domain.union_all())
+    assert outline.contains(domain.union_all())
+    # no spare row or column: each edge lies within one cell of the domain
+    assert not outline.buffer(-500.0).contains(domain.union_all())
+    xmin, ymin, xmax, ymax = domain.total_bounds
+    x1, y1 = outline.bounds[2:]
+    assert max(xmin - t.c, ymin - t.f, x1 - xmax, y1 - ymax) < 500.0
+
+
+def test_grid_rejects_a_geographic_domain():
+    with pytest.raises(ValueError, match="projected CRS"):
+        build_grid_def(_oblique_domain().to_crs(4326), resolution_m=500.0)
 
 
 def test_grid_def_json_round_trip_restores_transform_and_shape(tmp_path):

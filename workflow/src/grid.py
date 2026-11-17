@@ -42,28 +42,19 @@ def footprint(transform, shape) -> Polygon:
 def build_grid_def(domain: gpd.GeoDataFrame, resolution_m: float) -> dict:
     """Return the JSON-serialisable grid definition with square cells of resolution_m.
 
+    The grid lies on multiples of resolution_m in the domain's projected CRS and
+    covers the domain completely, so every cell the domain touches exists.
     Holds the SFINCS grid parameters (x0, y0, dx, dy, mmax, nmax, rotation,
     epsg) plus the equivalent affine six-tuple and raster shape.
     """
-    # Same call and y-ascending flip as SfincsModel.grid.create_from_region(),
-    # so the grid matches hydromt_sfincs' own grid.
-    from hydromt.model.processes.grid import create_grid_from_region
-
-    ds = create_grid_from_region(
-        region={"geom": domain},
-        res=resolution_m,
-        crs="utm",
-        region_crs=4326,
-        rotated=False,
-        add_mask=False,
-        align=True,
-    )
-    if ds.raster.res[1] < 0:
-        ds = ds.raster.flipud()
-    t = ds.raster.transform
-    x0, y0 = t.c, t.f
-    nmax, mmax = ds.raster.shape
-    crs = ds.raster.crs
+    crs = domain.crs
+    if crs is None or not crs.is_projected:
+        raise ValueError(f"domain needs a projected CRS in metres, got {crs}")
+    xmin, ymin, xmax, ymax = domain.total_bounds
+    x0 = math.floor(xmin / resolution_m) * resolution_m
+    y0 = math.floor(ymin / resolution_m) * resolution_m
+    mmax = math.ceil(xmax / resolution_m) - math.floor(xmin / resolution_m)
+    nmax = math.ceil(ymax / resolution_m) - math.floor(ymin / resolution_m)
     transform = Affine.translation(x0, y0) * Affine.scale(resolution_m, resolution_m)
     return {
         "resolution": float(resolution_m),

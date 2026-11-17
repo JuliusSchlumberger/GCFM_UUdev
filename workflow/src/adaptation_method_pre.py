@@ -26,6 +26,7 @@ from shapely.ops import unary_union
 from shapely.strtree import STRtree
 from src.adaptation_measures import _is_current_protection, validate_measure_params
 from src.adaptation_scaling import read_polyline
+from src.hydromt_sfincs_patch import raster_catalog_entry
 from src.landuse import LANDUSE_SEA_CODE
 from src.protection_weir import _flatten_elevation_from_z, merge_weir_preserve_unmatched
 from src.sfincs_restart import patch_restart_zs
@@ -76,6 +77,16 @@ def _infer_nr_subgrid_pixels(mod: SfincsModel, dep: xr.DataArray) -> int:
     return nr
 
 
+def _chunked_source(mod: SfincsModel, source):
+    # A bare path opens unchunked, so every subgrid block decompresses the whole
+    # file; a catalog entry opens it in dask chunks (raster_catalog_entry).
+    if not isinstance(source, (str, Path)):
+        return source
+    name = f"adapt_{Path(source).stem}"
+    mod.data_catalog.from_dict({name: raster_catalog_entry(source)})
+    return name
+
+
 def _rebuild_subgrid(
     mod: SfincsModel,
     elevation,
@@ -94,8 +105,8 @@ def _rebuild_subgrid(
             "subgrid_table (config sfincs.subgrid: nr_levels, nrmax) is required"
         )
     mod.subgrid.create(
-        elevation_list=[{"elevation": elevation}],
-        roughness_list=[{"manning": str(roughness_path)}],
+        elevation_list=[{"elevation": _chunked_source(mod, elevation)}],
+        roughness_list=[{"manning": _chunked_source(mod, roughness_path)}],
         nr_subgrid_pixels=(
             _infer_nr_subgrid_pixels(mod, dep)
             if nr_subgrid_pixels is None

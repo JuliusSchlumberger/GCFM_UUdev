@@ -3,6 +3,22 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-17: model grid covers the whole delta polygon (- JS)
+
+**What changed:**
+- `src/grid.py:build_grid_def` (rule 04) floors/ceils the delta polygon's bounds to multiples of `dx` in the domain's UTM CRS instead of calling hydromt's `create_grid_from_region(align=True)`, which rounded them and left polygon tips of up to half a cell outside the grid. The active mask already takes every cell the polygon touches (`all_touched`); those cells now exist.
+- Cell positions are unchanged (both lattices sit on multiples of `dx`; origin moves by 0 or 1 whole cell); CRS and EPSG identical for all 8 basins. Grids grow by 0–2 rows/columns, e.g. 2433835 515×383 → 516×383 (one row on the south side), 1248635 834×2001 → 836×2003.
+- Cells touched by the polygon, before → after: 1248635 +10, 1416812 +4, 1475442 +14, 2209166 +1, 2433835 +1, 2444235 +5, 3279946 +4, 620947 +6; none lost. Every basin reruns from rule 04, because the grid JSON changes; results move only through these edge cells. DAG job counts unchanged (preprocess 15, build 22).
+
+# 2026-11-17: adaptation subgrid rebuilds read their rasters in dask chunks (- JS)
+
+> **⚠ KIARA, PLEASE REVIEW: `_rebuild_subgrid` in `src/adaptation_method_pre.py`** (used by nbs_land_reclamation, water_retention, urban_raising, retreat) now registers its file inputs as chunked catalog entries named `adapt_<file stem>`. Tables are unchanged; check that nothing of yours relies on the bare paths.
+
+**What changed:**
+- `_rebuild_subgrid` passed elevation and roughness to `sf.subgrid.create` as bare paths, which hydromt opens unchunked, so every subgrid block decompressed the whole file. Path inputs now go through `raster_catalog_entry` (2048 px chunks), as in rules 11 and 12a. In-memory elevations (water_retention, urban_raising load `dep` first) are passed through unchanged.
+- Parity on the 2433835 skeleton, old vs new `_rebuild_subgrid` (elevation as path and as a modified in-memory array, native roughness path): `sfincs_subgrid` table (18 variables), `dep_subgrid.tif` and `manning_subgrid.tif` identical. Runtime on 2433835 unchanged (43–49 s, noise); the gain is expected on large rasters with many blocks (3279946 in rule 12a: ~10 s → ~1.5 s per block's merge).
+- `advance_*` strategies do not rebuild the subgrid and are unaffected.
+
 # 2026-11-17: Windows lock file filled from a real `gcfm` env (- JS)
 
 **What changed:**

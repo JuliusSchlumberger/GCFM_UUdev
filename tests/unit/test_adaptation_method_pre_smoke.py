@@ -3,6 +3,7 @@
 import geopandas as gpd
 import numpy as np
 import pytest
+import xarray as xr
 from shapely.geometry import LineString
 from src.adaptation_method_pre import _levee_crests, validate_measure_params
 
@@ -76,11 +77,34 @@ def test_subgrid_rebuild_uses_the_baseline_table_settings():
 
     from src.adaptation_method_pre import _rebuild_subgrid
 
-    calls = []
-    mod = SimpleNamespace(subgrid=SimpleNamespace(create=lambda **kw: calls.append(kw)))
+    calls, catalog = [], {}
+    mod = SimpleNamespace(
+        subgrid=SimpleNamespace(create=lambda **kw: calls.append(kw)),
+        data_catalog=SimpleNamespace(from_dict=catalog.update),
+    )
     _rebuild_subgrid(
         mod, "dep.tif", "man.tif", None, 10, {"nr_levels": 20, "nrmax": 2000}
     )
     assert calls[0]["nr_levels"] == 20 and calls[0]["nrmax"] == 2000
     with pytest.raises(ValueError, match="subgrid_table"):
         _rebuild_subgrid(mod, "dep.tif", "man.tif", None, 10, None)
+
+
+def test_subgrid_rebuild_opens_path_inputs_in_chunks_and_passes_arrays_through():
+    from types import SimpleNamespace
+
+    from src.adaptation_method_pre import _rebuild_subgrid
+
+    calls, catalog = [], {}
+    mod = SimpleNamespace(
+        subgrid=SimpleNamespace(create=lambda **kw: calls.append(kw)),
+        data_catalog=SimpleNamespace(from_dict=catalog.update),
+    )
+    dep_new = xr.DataArray(np.zeros((2, 2)), dims=("y", "x"))
+    _rebuild_subgrid(
+        mod, dep_new, "man.tif", None, 10, {"nr_levels": 20, "nrmax": 2000}
+    )
+    assert calls[0]["elevation_list"][0]["elevation"] is dep_new
+    manning = calls[0]["roughness_list"][0]["manning"]
+    assert catalog[manning]["uri"] == "man.tif"
+    assert set(catalog[manning]["driver"]["options"]["chunks"]) == {"x", "y"}
