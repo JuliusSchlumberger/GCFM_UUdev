@@ -91,7 +91,7 @@ _BUILD_OUTPUTS_BASIN = [
     expand(results_path("{basin_id}/sfincs_skeleton/{basin_id}_coastal_protection_weir.gpkg"), basin_id=BASINS),
     expand(results_path("{basin_id}/sfincs_skeleton/sfincs_subgrid.nc"), basin_id=BASINS),
     expand(figure_path("{name}"), basin_id=BASINS, name=[
-        "10_build_grid.png", "11_build_elevation.png", "12_build_mask.png",
+        "11_build_elevation.png", "12_build_mask.png",
         "13_build_roughness.png", "14_build_zsini.png", "15_build_coastal_weir.png",
     ]),
     *(expand(results_path("{basin_id}/spin_up/slr_{slr}/" + RST_FNAME), basin_id=BASINS, slr=SPINUP_SLR_TAGS)

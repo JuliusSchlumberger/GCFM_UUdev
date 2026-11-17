@@ -22,7 +22,6 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 from _common import REPO_ROOT, analysis_path, script_parser, site_path
-from _figure_style import flag_unstable, unstable_flood_maps
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.patches import Patch
 from pre_post_heatmap import (
@@ -37,6 +36,7 @@ from pre_post_heatmap import (
     land_mask,
     wet_map,
 )
+from src.figure_style import flag_unstable, unstable_flood_maps
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
 from src.plots import read_raster_reprojected_for_plot  # noqa: E402

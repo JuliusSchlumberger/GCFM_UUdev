@@ -45,7 +45,7 @@ from src.sfincs_run import (
     set_sea_and_outflow_boundaries,
     write_weir_file,
 )
-from src.plots import add_land_background_to_geoaxes, imshow_on_grid, save_figure
+from src.plots import plot_initial_water_level, plot_skeleton_maps
 from src.protection_weir import GridArrays
 from src.raster import FLOAT_NODATA, dry_isolated_sea_cells, read_on_grid
 from src.river_burn import build_channel_mask_regular
@@ -550,56 +550,25 @@ if not weir_path.exists():
     log.info("sfincs.weir placeholder written (no weir set)")
 
 # ── diagnostic plots ──
-Path(snakemake.output.plot_grid).parent.mkdir(parents=True, exist_ok=True)
-
-
-def _save_with_buffer(fig, ax, out_path, buffer_frac=0.15):
-    xl, xr = ax.get_xlim()
-    yb, yt = ax.get_ylim()
-    dx, dy = (xr - xl) * buffer_frac, (yt - yb) * buffer_frac
-    ax.set_xlim(xl - dx, xr + dx)
-    ax.set_ylim(yb - dy, yt + dy)
-    save_figure(fig, out_path, dpi=150, bbox_inches="tight")
-    log.info(f"Plot written: {out_path}")
-
-
-# 1. Grid extent
-fig, ax = sf.plot_basemap(variable="grid", plot_region=True, plot_geoms=False)
-add_land_background_to_geoaxes(ax, str(land_mask_path), sf.crs)
-_save_with_buffer(fig, ax, snakemake.output.plot_grid)
-
-# 2. Elevation; obs points shown here only (plot_geoms defaults to True)
-fig, ax = sf.plot_basemap(variable="dep", vmin=-80, vmax=80)
-add_land_background_to_geoaxes(ax, str(land_mask_path), sf.crs)
-_save_with_buffer(fig, ax, snakemake.output.plot_elevation)
-
-# 3. Mask
-fig, ax = sf.plot_basemap(variable="mask", plot_bounds=False, plot_geoms=False)
-add_land_background_to_geoaxes(ax, str(land_mask_path), sf.crs)
-_save_with_buffer(fig, ax, snakemake.output.plot_mask)
-
-# 4. Roughness
-fig, ax = sf.plot_basemap(variable="manning", plot_bounds=False, plot_geoms=False)
-add_land_background_to_geoaxes(ax, str(land_mask_path), sf.crs)
-_save_with_buffer(fig, ax, snakemake.output.plot_roughness)
-
-# 5. Initial conditions (zsini)
-with rasterio.open(_zsini_out) as _src:
-    _zsini_arr = _src.read(1).astype(np.float32)
-    _nodata_val = _src.nodata
-    _zsini_transform = _src.transform
-
-if _nodata_val is not None:
-    _zsini_arr = np.where(
-        np.isclose(_zsini_arr, np.float32(_nodata_val)), np.nan, _zsini_arr
-    )
-
-fig, ax = plt.subplots(figsize=(8, 6))
-im = imshow_on_grid(ax, _zsini_arr, _zsini_transform, cmap="Blues")
-plt.colorbar(im, ax=ax, label="Initial water level (m)")
-ax.set_title(
-    f"Initial conditions (zsini)\nsea = {calm_sea_level_m:+.4f} m  |  land = nodata"
+# Elevation (with the observation points), mask (with the grid outline), roughness.
+plot_skeleton_maps(
+    sf.grid.data,
+    obs_gdf,
+    _domain_poly_4326,
+    str(land_mask_path),
+    snakemake.output.plot_elevation,
+    snakemake.output.plot_mask,
+    snakemake.output.plot_roughness,
+    basin_id=skeleton_root.parent.name,
 )
-ax.set_xlabel("Easting (m)")
-ax.set_ylabel("Northing (m)")
-_save_with_buffer(fig, ax, snakemake.output.plot_zsini)
+
+
+plot_initial_water_level(
+    _zsini_out,
+    _domain_poly_4326,
+    str(land_mask_path),
+    snakemake.output.plot_zsini,
+    calm_sea_level_m,
+    basin_id=skeleton_root.parent.name,
+    active_mask=sf.grid.data["mask"].values > 0,
+)

@@ -41,6 +41,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from _basin_inputs import (
+    add_land,
     basin_paths,
     calm_sea_level_m,
     load_config,
@@ -50,11 +51,11 @@ from _basin_inputs import (
     spinup_dir,
 )
 from _common import REPO_ROOT, script_parser, site_path
-from _figure_style import add_land, map_axes, panel_letters, save_figure, write_caption
 from _upstream_profile import mainstem_path, path_nodes
 from matplotlib.collections import LineCollection
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from scipy.spatial import cKDTree
+from src.figure_style import map_axes, panel_letters, save_figure, write_caption
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
 

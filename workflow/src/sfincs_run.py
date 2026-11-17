@@ -85,9 +85,10 @@ def parse_sfincs_inp(path: str | Path) -> dict[str, str]:
 def read_boundary_forcing(sfincs_root: str | Path) -> dict:
     """Return the water-level and discharge boundary timeseries a SFINCS run reads.
 
-    Keys: wl_times, wl_m (point, time), q_times, q_m3s (point, time), tstart.
-    Times are datetimes counted from tref; a run without a bzsfile or disfile
-    gets empty arrays for it.
+    Keys: wl_times, wl_m (point, time), q_times, q_m3s (point, time), tstart,
+    tstop. Times are datetimes counted from tref; a run without a bzsfile or
+    disfile gets empty arrays for it. The files may run past tstop (the
+    spin-up writes its whole series once and runs it in chunks).
     """
     root = Path(sfincs_root)
     cfg = parse_sfincs_inp(root / "sfincs.inp")
@@ -107,6 +108,7 @@ def read_boundary_forcing(sfincs_root: str | Path) -> dict:
         "q_times": q_times,
         "q_m3s": q_m3s,
         "tstart": pd.to_datetime(cfg["tstart"], format="%Y%m%d %H%M%S"),
+        "tstop": pd.to_datetime(cfg["tstop"], format="%Y%m%d %H%M%S"),
     }
 
 

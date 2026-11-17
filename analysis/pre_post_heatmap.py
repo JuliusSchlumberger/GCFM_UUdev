@@ -32,9 +32,9 @@ import numpy as np
 import pandas as pd
 import rasterio
 from _common import analysis_path, script_parser, site_path
-from _figure_style import flag_unstable, unstable_flood_maps
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from rasterio.warp import Resampling, reproject
+from src.figure_style import flag_unstable, unstable_flood_maps
 
 BASIN_ID = "2433835"
 EVENTS = ["coast_100_03SLR", "river_100_03SLR", "compound_100_03SLR"]

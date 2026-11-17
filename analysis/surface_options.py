@@ -16,11 +16,13 @@ coastal protection crest, plus freeboard_m) above the DEM at the river centre;
 the 1D Froude number at Q_bankfull x peak_ratio; bankfull freeboard (bank top, bank_freeboard.bank_top, minus the GVF level at
 Q_bankfull on the bed).
 
-Writes per basin 90_surface_options_{summary.csv,profile.png} to
+Writes per basin 90_surface_options_{summary.csv,profile.png} and the
+figure's data, 90_surface_options_profile_data.csv, to
 <results_dir>/<basin>/figures/analysis/ and surface_options_summary.csv
-to <results_dir>/figures/analysis/.
+to <results_dir>/figures/analysis/. --redraw redraws the figure from the
+saved profile data without rebuilding anything.
 
-Usage: python analysis/surface_options.py [basin_id ...]
+Usage: python analysis/surface_options.py [basin_id ...] [--redraw]
 """
 
 import logging
@@ -49,6 +51,15 @@ from _basin_inputs import (
 )
 from _common import analysis_dir, analysis_path, script_parser
 from bank_freeboard import bank_top, net_crs, node_tangents
+from matplotlib.lines import Line2D
+from src.figure_style import (
+    SURFACE_OPTION_STYLE,
+    figure_size,
+    panel_letters,
+    save_figure,
+    style_context,
+    write_caption,
+)
 
 log = logging.getLogger(__name__)
 SURFACES = {
@@ -66,6 +77,12 @@ DESIGNS = ("bankfull", "period_median")
 INVERSION_CASES = (
     ("fathom_two_scale", "bankfull"),
     ("swot_single_40km", "period_median"),
+)
+# (surface, design discharge) pairs drawn on the profile figure
+PROFILE_OPTIONS = (
+    ("fathom_two_scale", "bankfull"),
+    ("swot_two_scale", "bankfull"),
+    ("swot_single", "period_median"),
 )
 
 
@@ -256,82 +273,177 @@ def basin(basin_id: str, cfg: dict, peak_ratio: float = 1.0) -> list[dict]:
         index=False,
         float_format="%.4g",
     )
-    _figure(basin_id, profiles, bank, surfaces)
+    table = profile_table(profiles, bank, surfaces)
+    table.to_csv(profile_data_path(basin_id), index=False, float_format="%.4g")
+    plot_profile(basin_id, table)
     return rows
 
 
-def _figure(basin_id, profiles, bank, surfaces) -> None:
+def profile_data_path(basin_id: str):
+    return analysis_path(basin_id, __file__, "profile_data.csv")
+
+
+def profile_table(profiles, bank, surfaces) -> pd.DataFrame:
+    """Return the profile figure's data: one row per node on the largest-discharge paths.
+
+    Columns: reach_id, dist_to_sea_km, swot_level_m (NaN off SWOT-observed
+    nodes), bank_top_m, and <surface>_surface_m / <surface>_bed_m for the
+    PROFILE_OPTIONS; levels in m above the GOCO06s geoid.
+    """
     from src.water_surface import read_water_surface
 
-    ref = profiles[("fathom_two_scale", "bankfull")]
-    net = ref.net
-    owner = np.asarray(net.owner)
+    ref = profiles[PROFILE_OPTIONS[0]]
+    on_path = np.asarray(ref.main_path)
     sw, _ = read_water_surface(surfaces["swot_two_scale"])
     sw = sw.drop_duplicates("node_id").set_index("node_id").sort_index()
-    obs = (sw["level_source"] == "swot").to_numpy() & ref.main_path
-    km_all = ref.dist_to_sea_m / 1e3
-    fig, ax = plt.subplots(figsize=(13, 6))
-    ax.plot(
-        km_all[obs],
-        sw["level_source_m"].to_numpy()[obs],
-        ".",
-        ms=2.5,
-        color="tab:blue",
-        alpha=0.6,
-        label="SWOT node level (window median)",
+    observed = (sw["level_source"] == "swot").to_numpy()
+    table = pd.DataFrame(
+        {
+            "reach_id": np.asarray(ref.net.owner)[on_path],
+            "dist_to_sea_km": ref.dist_to_sea_m[on_path] / 1e3,
+            "swot_level_m": np.where(observed, sw["level_source_m"].to_numpy(), np.nan)[
+                on_path
+            ],
+            "bank_top_m": np.asarray(bank)[on_path],
+        }
     )
-    ax.plot(
-        km_all[ref.main_path],
-        bank[ref.main_path],
-        ".",
-        ms=2,
-        color="tab:brown",
-        alpha=0.5,
-        label="bank top (P90, lower bank)",
+    for s, d in PROFILE_OPTIONS:
+        table[f"{s}_surface_m"] = profiles[(s, d)].level_m[on_path]
+        table[f"{s}_bed_m"] = profiles[(s, d)].bed_m[on_path]
+    return table
+
+
+def plot_profile(basin_id: str, table: pd.DataFrame) -> None:
+    """Plot (a) the surface options with SWOT levels and bank top, (b) the beds hung from them.
+
+    Several seeds' largest-discharge paths overlap in distance to the sea, so
+    each reach is its own line. The y axis spans the surfaces and beds; bank-top
+    points above it are drawn as triangles on the top edge.
+    """
+    lines = [f"{s}_{kind}_m" for s, _ in PROFILE_OPTIONS for kind in ("surface", "bed")]
+    lo, hi = np.nanmin(table[lines].to_numpy()), np.nanmax(table[lines].to_numpy())
+    pad = 0.08 * (hi - lo)
+    y_lim = (lo - pad, hi + pad)
+    bank = table["bank_top_m"].to_numpy()
+    above = bank > y_lim[1]
+    path = analysis_path(basin_id, __file__, "profile.png")
+    with style_context():
+        fig, (ax_s, ax_b) = plt.subplots(
+            2,
+            1,
+            figsize=figure_size(120),
+            sharex=True,
+            sharey=True,
+            layout="constrained",
+        )
+        km = table["dist_to_sea_km"].to_numpy()
+        ax_s.plot(km[~above], bank[~above], ".", ms=2, color="0.6", zorder=1)
+        ax_s.plot(
+            km[above],
+            np.full(above.sum(), y_lim[1]),
+            "^",
+            ms=3,
+            color="0.6",
+            clip_on=False,
+            zorder=1,
+        )
+        ax_s.plot(km, table["swot_level_m"], ".", ms=2.5, color="0.15", zorder=2)
+        for _, reach in table.groupby("reach_id", sort=True):
+            reach = reach.sort_values("dist_to_sea_km", ascending=False)
+            for s, _ in PROFILE_OPTIONS:
+                style = {
+                    k: v for k, v in SURFACE_OPTION_STYLE[s].items() if k != "label"
+                }
+                ax_s.plot(
+                    reach["dist_to_sea_km"],
+                    reach[f"{s}_surface_m"],
+                    linewidth=1.2,
+                    **style,
+                )
+                ax_b.plot(
+                    reach["dist_to_sea_km"], reach[f"{s}_bed_m"], linewidth=1.2, **style
+                )
+        ax_s.set_ylim(*y_lim)
+        ax_s.invert_xaxis()
+        for ax in (ax_s, ax_b):
+            ax.set_ylabel("Elevation (m +GOCO06s)")
+        ax_b.set_xlabel("Distance to the sea (km)")
+        panel_letters([ax_s, ax_b])
+        fig.legend(
+            handles=[
+                *(
+                    Line2D([0], [0], linewidth=1.2, **SURFACE_OPTION_STYLE[s])
+                    for s, _ in PROFILE_OPTIONS
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    ms=3,
+                    linestyle="none",
+                    color="0.15",
+                    label="SWOT node level",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    ms=3,
+                    linestyle="none",
+                    color="0.6",
+                    label="Bank top",
+                ),
+            ],
+            loc="outside lower center",
+            ncols=5,
+        )
+        save_figure(fig, path)
+        plt.close(fig)
+
+    def _gap(s: str) -> str:
+        d = (table[f"{s}_surface_m"] - table["swot_level_m"]).dropna()
+        label = SURFACE_OPTION_STYLE[s]["label"]
+        return f"{label} {d.median():+.2f} m" if len(d) else f"{label} no SWOT node"
+
+    designs = dict(PROFILE_OPTIONS)
+    clipped = (
+        f", {int(above.sum())} bank-top point(s) above the axis drawn as triangles on its top edge"
+        if above.any()
+        else ""
     )
-    styles = {
-        ("fathom_two_scale", "bankfull"): ("0.4", "FathomDEM two-scale"),
-        ("swot_two_scale", "bankfull"): ("tab:orange", "SWOT two-scale"),
-        ("swot_single", "period_median"): ("tab:green", "SWOT single fit"),
-    }
-    # One line per reach: several seeds' largest-Q paths overlap in distance to sea.
-    for k, r in enumerate(sorted({o for o, mm in zip(owner, ref.main_path) if mm})):
-        ids = np.flatnonzero((owner == r) & ref.main_path)
-        ids = ids[np.argsort(-ref.dist_to_sea_m[ids])]
-        for (s, d), (c, lab) in styles.items():
-            b = profiles[(s, d)]
-            ax.plot(
-                km_all[ids],
-                b.level_m[ids],
-                "-",
-                color=c,
-                lw=1.6,
-                label=f"surface: {lab}" if k == 0 else None,
-            )
-            ax.plot(
-                km_all[ids],
-                b.bed_m[ids],
-                "--",
-                color=c,
-                lw=1.0,
-                label=f"bed: {lab}, {d}" if k == 0 else None,
-            )
-    ax.invert_xaxis()
-    ax.set_xlabel("distance to sea (km), largest-Q paths")
-    ax.set_ylabel("m (GOCO06s)")
-    ax.grid(alpha=0.3)
-    ax.legend(fontsize=7, ncol=2)
-    ax.set_title(f"surface_options | {basin_id} | surface options and round-0 beds")
-    fig.tight_layout()
-    fig.savefig(analysis_path(basin_id, __file__, "profile.png"), dpi=130)
-    plt.close(fig)
+    write_caption(
+        path,
+        f"River water-surface options of basin {basin_id} and the round-0 river beds hung from "
+        "them, along the largest-discharge paths from the seeds to the sea; median surface minus "
+        f"SWOT level on observed nodes: {'; '.join(_gap(s) for s, _ in PROFILE_OPTIONS)}.\n"
+        "(a) Water surfaces, (b) river beds (round 0, Manning depth at the design discharge: "
+        + ", ".join(
+            f"{SURFACE_OPTION_STYLE[s]['label']} at {designs[s].replace('_', ' ')}"
+            for s, _ in PROFILE_OPTIONS
+        )
+        + "). Black solid: FathomDEM surface, two-scale fit; green dash-dot: SWOT, two-scale fit; "
+        "sky-blue dotted: SWOT, single fit; one line per reach. Dark dots: SWOT node levels "
+        "(window median); grey dots: bank top (90th percentile of the lower bank)"
+        + clipped
+        + ". Elevations in m above the GOCO06s geoid; distance to the sea along the path, "
+        "sea on the right.",
+    )
 
 
 def main() -> int:
     parser = script_parser(__doc__)
     parser.add_argument("basin_ids", nargs="*", default=DEFAULT_BASINS)
+    parser.add_argument(
+        "--redraw",
+        action="store_true",
+        help="redraw the profile figure from its saved data only",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
+    if args.redraw:
+        for b in args.basin_ids:
+            plot_profile(str(b), pd.read_csv(profile_data_path(str(b))))
+        return 0
     cfg = load_config()
     rows = [r for b in args.basin_ids for r in basin(str(b), cfg)]
     print(

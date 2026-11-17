@@ -33,8 +33,25 @@ from rasterio.enums import Resampling
 from rasterio.warp import calculate_default_transform
 from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
+from src.figure_style import (
+    EVENT_STYLE,
+    OKABE_ITO,
+    add_scale_bar,
+    draw_land,
+    figure_size,
+    land_legend_handle,
+    map_axes,
+    map_figure_height_mm,
+    map_projection,
+    panel_letters,
+    style_context,
+    warning_footnote,
+    write_caption,
+)
+from src.figure_style import save_figure as save_figure_deliverable
 from src.geometry import pick_utm_crs
 from src.grid import footprint
+from src.raster import FLOAT_NODATA
 
 matplotlib.use("Agg")
 
@@ -592,86 +609,120 @@ def plot_domain_map(
     _save(fig, output_path)
 
 
+def _days_since(times, t0) -> np.ndarray:
+    return np.asarray(
+        (pd.DatetimeIndex(times) - pd.Timestamp(t0)) / pd.Timedelta(days=1), dtype=float
+    )
+
+
 def plot_run_forcing(
     sfincs_root: str | Path,
     output_path: str | Path,
     basin_id: str,
     run_label: str,
+    unstable_note: str | None = None,
 ) -> None:
-    """Plot the boundary forcing a SFINCS run reads: water level (top), river discharge (bottom).
+    """Plot the boundary forcing a SFINCS run reads: (a) water level, (b) river discharge.
 
     Read from the run's own sfincs.inp/.bzs/.dis, so every run (calibration,
-    spin-up, scenario, adaptation) is shown the same way. A dashed line marks
-    tstart when the timeseries start earlier (the spin-up lead-in).
+    spin-up, scenario, adaptation) is shown the same way, from tstart to
+    tstop. Several boundary points are drawn as their range (band) and mean (line).
+    Water levels are in the GOCO06s geoid frame (docs/methods.md, Datums).
+    Writes PNG, PDF and the caption file.
     """
-    import matplotlib.dates as mdates
+    import matplotlib.ticker as mticker
     from src.sfincs_run import read_boundary_forcing
 
     forcing = read_boundary_forcing(sfincs_root)
-    fig, (ax_wl, ax_q) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
-    max_box = dict(boxstyle="round,pad=0.3", fc="white", ec="grey", alpha=0.85)
     panels = (
+        ("wl_times", "wl_m", "Water level (m +GOCO06s)", EVENT_STYLE["coast"]["color"]),
         (
-            ax_wl,
-            forcing["wl_times"],
-            forcing["wl_m"],
-            "Water level (m+ref)",
-            "Water-level boundary",
-            "Max WL = {:.2f} m",
-        ),
-        (
-            ax_q,
-            forcing["q_times"],
-            forcing["q_m3s"],
-            "Discharge (m³/s)",
-            "River discharge",
-            "Max Q = {:,.0f} m³/s",
+            "q_times",
+            "q_m3s",
+            r"Discharge (m$^3$ s$^{-1}$)",
+            EVENT_STYLE["river"]["color"],
         ),
     )
-    for ax, times, values, ylabel, title, max_fmt in panels:
-        for series in values:
-            ax.plot(times, series, linewidth=0.8, alpha=0.7)
-        ax.set_ylabel(ylabel)
-        ax.set_title(f"{title} ({values.shape[0]} point(s))")
-        ax.grid(True, alpha=0.3)
+    end_day = _days_since([forcing["tstop"]], forcing["tstart"])[0]
+    # Only the part the run reads, tstart to tstop: the files can start earlier
+    # (an event restarted from the spin-up keeps tref) and run longer (the
+    # spin-up writes its whole series once); the values at both ends are interpolated.
+    clipped = {}
+    for t_key, v_key, *_ in panels:
+        days, values = _days_since(forcing[t_key], forcing["tstart"]), forcing[v_key]
         if values.size:
-            ax.text(
-                0.01,
-                0.97,
-                max_fmt.format(np.nanmax(values)),
-                transform=ax.transAxes,
-                fontsize=9,
-                va="top",
-                ha="left",
-                bbox=max_box,
+            ends = [d for d in (0.0, end_day) if days[0] < d < days[-1]]
+            keep = (days >= 0.0) & (days <= end_day)
+            days_out = np.concatenate([days[keep], ends])
+            order = np.argsort(days_out, kind="stable")
+            at_ends = np.array(
+                [[np.interp(d, days, row) for d in ends] for row in values]
             )
-        else:
-            ax.text(
-                0.5,
-                0.5,
-                "none in this run",
-                transform=ax.transAxes,
-                ha="center",
-                va="center",
-                color="grey",
-            )
-        starts = [t[0] for t in (forcing["wl_times"], forcing["q_times"]) if len(t)]
-        if starts and forcing["tstart"] > min(starts):
-            ax.axvline(
-                forcing["tstart"],
-                color="black",
-                linewidth=1.2,
-                linestyle="--",
-                label="model tstart (end of spin-up lead-in)",
-            )
-            ax.legend(fontsize=8, loc="upper right")
+            values = np.hstack([values[:, keep], at_ends.reshape(len(values), -1)])[
+                :, order
+            ]
+            days = days_out[order]
+        clipped[v_key] = (days, values)
 
-    locator = mdates.AutoDateLocator()
-    ax_q.xaxis.set_major_locator(locator)
-    ax_q.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
-    fig.suptitle(f"Basin {basin_id} | {run_label} | boundary forcing", fontsize=10)
-    fig.tight_layout()
-    save_figure(fig, output_path, dpi=150, bbox_inches="tight")
+    with style_context():
+        fig, axes = plt.subplots(
+            2, 1, figsize=figure_size(110), sharex=True, layout="constrained"
+        )
+        for ax, (t_key, v_key, ylabel, colour) in zip(axes, panels):
+            days, values = clipped[v_key]
+            if values.size:
+                if values.shape[0] > 1:
+                    ax.fill_between(
+                        days,
+                        np.nanmin(values, axis=0),
+                        np.nanmax(values, axis=0),
+                        color=colour,
+                        alpha=0.25,
+                        linewidth=0,
+                    )
+                ax.plot(days, np.nanmean(values, axis=0), color=colour)
+            else:
+                ax.text(
+                    0.5,
+                    0.5,
+                    "none in this run",
+                    transform=ax.transAxes,
+                    ha="center",
+                    va="center",
+                    color="0.5",
+                )
+            ax.set_ylabel(ylabel)
+            ax.yaxis.set_major_locator(mticker.MaxNLocator(5))
+        axes[1].xaxis.set_major_locator(mticker.MaxNLocator(6, steps=[1, 2, 5, 10]))
+        axes[1].set_xlabel("Time since model start (days)")
+        axes[1].set_xlim(0.0, end_day)
+        panel_letters(axes)
+        if unstable_note:
+            warning_footnote(fig, unstable_note)
+        save_figure_deliverable(fig, output_path)
+        plt.close(fig)
+
+    def _summary(values: np.ndarray, what: str, fmt: str) -> str:
+        if not values.size:
+            return f"No {what} boundary in this run."
+        n = values.shape[0]
+        spread = (
+            "band: range across the points, line: their mean"
+            if n > 1
+            else "one point, drawn as a line"
+        )
+        return f"{n} {what} boundary point(s) ({spread}); maximum {fmt.format(np.nanmax(values))}."
+
+    write_caption(
+        output_path,
+        f"Boundary forcing of SFINCS run {run_label} in basin {basin_id}, as written to the run's input files.\n"
+        "(a) Water level in the GOCO06s geoid frame (blue): "
+        + _summary(clipped["wl_m"][1], "water-level", "{:.2f} m")
+        + "\n(b) River discharge (orange): "
+        + _summary(clipped["q_m3s"][1], "discharge", "{:,.0f} m3/s")
+        + "\nTime in days since the model start (tstart), up to its end (tstop)."
+        + (f"\nWarning: {unstable_note}" if unstable_note else ""),
+    )
 
 
 def plot_storm_tide_shapes(
@@ -1428,10 +1479,11 @@ def _overlay_layers(
     bounds: tuple[float, float, float, float],
     domain_poly: Polygon,
     land_polygons_path: str,
-    river_network_path: str,
+    river_network_path: str | None,
 ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
     # Returns (land, rivers, domain_gdf) in crs. Land is bbox-filtered with
-    # bounds (in crs) transformed to WGS84; domain_poly is in WGS84.
+    # bounds (in crs) transformed to WGS84; domain_poly is in WGS84. No river
+    # network path: empty rivers.
     from rasterio.warp import transform_bounds
 
     wgs84_bounds = transform_bounds(crs, "EPSG:4326", *bounds)
@@ -1441,7 +1493,11 @@ def _overlay_layers(
         land = land.to_crs(crs)
 
     # The river network may be in UTM, where a WGS84 bbox filter returns nothing.
-    rivers = gpd.read_file(river_network_path)
+    rivers = (
+        gpd.read_file(river_network_path)
+        if river_network_path
+        else gpd.GeoDataFrame(geometry=[], crs=crs)
+    )
     if not rivers.empty and rivers.crs is not None and rivers.crs != crs:
         rivers = rivers.to_crs(crs)
 
@@ -2056,44 +2112,79 @@ def plot_crest_profiles(
     profiles maps seed reach id to a DataFrame with 'along_path_m', 'dem_m',
     'river_depth_m' and 'weir_crest_m' (src.river_depth_calibration.
     gather_calibration_round_profile); the bed is dem_m - river_depth_m.
+    Elevations are in the GOCO06s geoid frame. Writes PNG, PDF and the caption file.
     """
     seeds = list(profiles) or [None]
-    fig, axes = plt.subplots(
-        len(seeds), 1, figsize=(12, 3.4 * len(seeds)), squeeze=False
+    lines = (  # column(s), label, style; the crest is the calibration result, the only colour
+        ("dem_m", "DEM", dict(color="0.6", linewidth=0.8, linestyle=":")),
+        ("bed", "River bed", dict(color="#3b3b3b", linewidth=1.2)),
+        (
+            "weir_crest_m",
+            "Dike crest",
+            dict(color=OKABE_ITO[6], linewidth=1.2, linestyle="--"),
+        ),
     )
-    for ax, seed in zip(axes[:, 0], seeds):
-        if seed is None:
-            ax.text(
-                0.5,
-                0.5,
-                "no seed reach",
-                transform=ax.transAxes,
-                ha="center",
-                va="center",
-                color="grey",
-            )
-            continue
-        df = profiles[seed]
-        x_km = df["along_path_m"] / 1000.0
-        ax.plot(x_km, df["dem_m"], color="grey", lw=1.0, ls=":", label="DEM")
-        ax.plot(
-            x_km,
-            df["dem_m"] - df["river_depth_m"],
-            color="steelblue",
-            lw=1.4,
-            label="river bed",
+    with style_context():
+        fig, axes = plt.subplots(
+            len(seeds),
+            1,
+            figsize=figure_size(70 * len(seeds)),
+            squeeze=False,
+            sharex=True,
+            layout="constrained",
         )
-        ax.plot(x_km, df["weir_crest_m"], color="firebrick", lw=1.4, label="dike crest")
-        ax.set_ylabel("Elevation (m)")
-        ax.set_title(f"seed {seed}", fontsize=9)
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc="best", fontsize=8)
-    axes[-1, 0].set_xlabel("Distance along path from seed (km)")
-    fig.suptitle(
-        f"Basin {basin_id}: DEM, river bed and dike crest along each seed-to-mouth path"
+        for ax, seed in zip(axes[:, 0], seeds):
+            ax.set_ylabel("Elevation (m +GOCO06s)")
+            if seed is None:
+                ax.text(
+                    0.5,
+                    0.5,
+                    "no seed reach",
+                    transform=ax.transAxes,
+                    ha="center",
+                    va="center",
+                    color="0.5",
+                )
+                continue
+            df = profiles[seed].assign(bed=lambda d: d["dem_m"] - d["river_depth_m"])
+            x_km = df["along_path_m"].to_numpy() / 1000.0
+            for column, label, style in lines:
+                ax.plot(x_km, df[column].to_numpy(), label=label, **style)
+            ax.yaxis.set_major_locator(mticker.MaxNLocator(5))
+        # style-override: label lines directly | user: legend in one row below the plot, as on the maps
+        fig.legend(
+            *axes[0, 0].get_legend_handles_labels(), loc="outside lower center", ncols=3
+        )
+        axes[-1, 0].set_xlabel("Distance downstream of the seed reach (km)")
+        if len(seeds) > 1:
+            panel_letters(axes[:, 0])
+        save_figure_deliverable(fig, output_path)
+        plt.close(fig)
+
+    def _summary(seed) -> str:
+        df = profiles[seed]
+        bed = df["dem_m"] - df["river_depth_m"]
+        return (
+            f"seed reach {seed}: path {df['along_path_m'].max() / 1000:.1f} km, "
+            f"crest {np.nanmin(df['weir_crest_m']):.1f} to {np.nanmax(df['weir_crest_m']):.1f} m, "
+            f"bed {np.nanmin(bed):.1f} to {np.nanmax(bed):.1f} m"
+        )
+
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    per_seed = (
+        "; ".join(
+            (f"({letters[k]}) " if len(profiles) > 1 else "") + _summary(s)
+            for k, s in enumerate(profiles)
+        )
+        if profiles
+        else "no seed reach in this basin"
     )
-    fig.tight_layout()
-    save_figure(fig, output_path, dpi=150)
+    write_caption(
+        output_path,
+        f"Dike crest and river bed from the last crest-calibration round along each seed-to-mouth path of basin {basin_id}: {per_seed}.\n"
+        "Grey dotted: DEM; dark solid: river bed (DEM minus river depth); vermillion dashed: dike crest. "
+        "Elevations in m above the GOCO06s geoid; distance along the widest path downstream from the seed reach.",
+    )
 
 
 def draw_depth_map(
@@ -2109,8 +2200,7 @@ def draw_depth_map(
     extent is (left, right, bottom, top) in the CRS of land and rivers.
     Returns the image for a colorbar.
     """
-    if not land.empty:
-        land.plot(ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
+    draw_land(ax, land, zorder=1)
     im = ax.imshow(
         depth_m,
         cmap="Blues",
@@ -2126,6 +2216,45 @@ def draw_depth_map(
     return im
 
 
+def _model_map_figure(model_crs, frame_bounds, pad_frac: float = 0.03):
+    # (fig, ax, x_lim, y_lim): a cartopy axes in the model CRS around
+    # frame_bounds (x0, y0, x1, y1), sized to 180 mm wide. Call inside style_context().
+    x0, y0, x1, y1 = frame_bounds
+    pad = pad_frac * max(x1 - x0, y1 - y0)
+    x_lim, y_lim = (x0 - pad, x1 + pad), (y0 - pad, y1 + pad)
+    fig, ax = plt.subplots(
+        figsize=figure_size(
+            map_figure_height_mm(x_lim[1] - x_lim[0], y_lim[1] - y_lim[0])
+        ),
+        layout="constrained",
+        subplot_kw={"projection": map_projection(model_crs)},
+    )
+    return fig, ax, x_lim, y_lim
+
+
+def _finish_model_map(ax, x_lim, y_lim, legend_handles) -> None:
+    ax.set_xlim(*x_lim)
+    ax.set_ylim(*y_lim)
+    map_axes(ax)
+    add_scale_bar(ax)
+    # One row under the map, so it never covers data.
+    ax.figure.legend(
+        handles=legend_handles, loc="outside lower center", ncols=len(legend_handles)
+    )
+
+
+def _north_up(da: xr.DataArray, resampling: Resampling) -> tuple[np.ndarray, tuple]:
+    # (values, extent) of da north-up in its own CRS; extent is (left, right, bottom, top).
+    da_plot = reproject_max_for_plot(
+        da.squeeze(), dst_crs=da.raster.crs, resampling=resampling
+    )
+    left, bottom, right, top = da_plot.raster.bounds
+    return da_plot.values.astype(np.float32), (left, right, bottom, top)
+
+
+_DOMAIN_HANDLE = Line2D([0], [0], color="black", linewidth=1.0, label="Model domain")
+
+
 def plot_max_inundation_map(
     da_hmax: xr.DataArray,
     domain_poly: Polygon,
@@ -2134,62 +2263,394 @@ def plot_max_inundation_map(
     output_path: str,
     basin_id: str = "",
     run_label: str = "",
+    hmin_m: float | None = None,
+    unstable_note: str | None = None,
 ) -> None:
-    """Plot max inundation depth of a SFINCS run with land, rivers and domain overlaid.
+    """Plot max inundation depth of a SFINCS run in the model CRS, with land, rivers and domain.
 
     da_hmax (postprocessing.compute_max_inundation) uses NaN for dry or
     outside the land domain and must carry a CRS; domain_poly is in WGS84.
+    hmin_m (the wet threshold da_hmax was made with) only goes into the
+    caption. unstable_note is written as a red footnote. Writes PNG, PDF and
+    the caption file.
     """
-    # imshow with explicit extent instead of da.plot() to guarantee north-up.
-    da_wgs = reproject_max_for_plot(da_hmax.squeeze())
-    y_dim = da_wgs.rio.y_dim
-    x_dim = da_wgs.rio.x_dim
-    if da_wgs.dims[0] != y_dim:
-        da_wgs = da_wgs.transpose(y_dim, x_dim)
-    wgs_arr = da_wgs.values.astype(np.float32)
-    ys = da_wgs.coords[y_dim].values
-    if len(ys) >= 2 and float(ys[0]) < float(ys[-1]):
-        wgs_arr = wgs_arr[::-1]
-
+    model_crs = da_hmax.raster.crs
+    # North-up in the model CRS, max-aggregated to the plot resolution.
+    da_plot = reproject_max_for_plot(da_hmax.squeeze(), dst_crs=model_crs)
+    left, bottom, right, top = da_plot.raster.bounds
     land, rivers, domain_gdf = _overlay_layers(
-        da_wgs.rio.crs,
-        da_wgs.rio.bounds(),
+        model_crs,
+        (left, bottom, right, top),
         domain_poly,
         land_polygons_path,
         river_network_path,
     )
-    wgs_left, wgs_bottom, wgs_right, wgs_top = da_wgs.rio.bounds()
-
-    vmax = _INUNDATION_DEPTH_CBAR_MAX_M
     n_flooded = int(da_hmax.notnull().sum().item())
 
-    lon_min, lat_min, lon_max, lat_max = domain_poly.bounds
-    _margin = max(lon_max - lon_min, lat_max - lat_min) * 0.3
+    with style_context():
+        fig, ax, x_lim, y_lim = _model_map_figure(model_crs, domain_gdf.total_bounds)
+        im = draw_depth_map(
+            ax,
+            da_plot.values.astype(np.float32),
+            (left, right, bottom, top),
+            land,
+            rivers,
+            _INUNDATION_DEPTH_CBAR_MAX_M,
+        )
+        domain_gdf.boundary.plot(ax=ax, color="black", linewidth=1.0, zorder=4)
+        cbar = fig.colorbar(im, ax=ax, extend="max", shrink=0.6)
+        cbar.set_label("Maximum flood depth (m)")
 
-    fig, ax = plt.subplots(figsize=(10, 8))
-    im = draw_depth_map(
-        ax, wgs_arr, (wgs_left, wgs_right, wgs_bottom, wgs_top), land, rivers, vmax
-    )
-    cbar = fig.colorbar(im, ax=ax, extend="max", fraction=0.03, pad=0.04)
-    cbar.set_label("Max inundation depth (m)")
-    domain_gdf.boundary.plot(ax=ax, color="black", linewidth=1.5, zorder=4)
+        _finish_model_map(
+            ax,
+            x_lim,
+            y_lim,
+            [
+                _DOMAIN_HANDLE,
+                land_legend_handle(),
+                Line2D(
+                    [0], [0], color="steelblue", linewidth=1.0, label="River network"
+                ),
+            ],
+        )
+        if unstable_note:
+            warning_footnote(fig, unstable_note)
+        save_figure_deliverable(fig, output_path)
+        plt.close(fig)
 
-    ax.set_xlim(lon_min - _margin, lon_max + _margin)
-    ax.set_ylim(lat_min - _margin, lat_max + _margin)
-    ax.set_aspect("equal")
-    title = "Max inundation depth"
-    if run_label:
-        title = f"{title} — {run_label}"
-    if basin_id:
-        title = f"{title} | {basin_id}"
-    ax.set_title(f"{title}\n{n_flooded:,} flooded land cells")
-    ax.legend(
-        handles=_OVERLAY_LEGEND_HANDLES, loc="lower right", framealpha=0.9, fontsize=8
+    wet = f"deeper than {hmin_m:g} m" if hmin_m else "wet"
+    write_caption(
+        output_path,
+        f"Maximum flood depth of SFINCS run {run_label or '?'} in basin {basin_id or '?'}: "
+        f"{n_flooded:,} land cells are {wet} at some time during the run.\n"
+        "Blue shading: maximum water depth on land (continuous, 0 to "
+        f"{_INUNDATION_DEPTH_CBAR_MAX_M:g} m; deeper cells take the darkest blue, arrow). "
+        "Light grey: dry land; white: sea. "
+        "Black line: model domain; steel-blue lines: river network. "
+        f"Map in the model CRS ({model_crs.to_string() if model_crs else 'unknown'}); "
+        "light grey lines: longitude/latitude graticule (degrees); scale bar in the lower left."
+        + (f"\nWarning: {unstable_note}" if unstable_note else ""),
     )
-    ax.set_xlabel("Longitude (°)")
-    ax.set_ylabel("Latitude (°)")
-    ax.grid(True, alpha=0.3, linewidth=0.5)
-    _save(fig, output_path)
+
+
+ELEVATION_CAP_M = (
+    -20.0,
+    30.0,
+)  # colour-scale limits of the elevation map; beyond them, arrows
+# Sea blue (deep to shallow), land brown (low to high); 0 m sits at the switch.
+_ELEVATION_CMAP = mcolors.LinearSegmentedColormap.from_list(
+    "sea_land", ["#08306b", "#2171b5", "#9ecae1", "#f6e8c3", "#bf812d", "#543005"]
+)
+MANNING_BREAKS = [0.02, 0.03, 0.04, 0.05, 0.07, 0.10, 0.13]  # s m^-1/3, class edges
+# sfincs.msk codes drawn on the mask map; 0 (inactive) is left transparent.
+_MASK_CLASSES = {
+    1: (OKABE_ITO[2], "Active cell"),
+    2: (OKABE_ITO[6], "Water-level boundary cell"),
+    3: (OKABE_ITO[3], "Outflow boundary cell"),
+}
+
+
+def plot_skeleton_maps(
+    grid: xr.Dataset,
+    observation_points: gpd.GeoDataFrame | None,
+    domain_poly: Polygon,
+    land_polygons_path: str,
+    elevation_path: str | Path,
+    mask_path: str | Path,
+    roughness_path: str | Path,
+    basin_id: str = "",
+) -> None:
+    """Plot the SFINCS skeleton's elevation, mask (with the grid outline) and roughness maps.
+
+    grid is the model's regular grid (``SfincsModel.grid.data``: 'dep',
+    'mask', 'manning', nodata -9999) in the model CRS; domain_poly is in
+    WGS84. Inactive cells (mask 0) are left out of every map. Elevation is
+    in m above the GOCO06s geoid. Each map writes PNG, PDF and caption.
+    """
+    model_crs = grid.raster.crs
+    transform, shape = grid.raster.transform, grid.raster.shape
+    grid_outline = gpd.GeoSeries([footprint(transform, shape)], crs=model_crs)
+    left, bottom, right, top = grid_outline.total_bounds
+    land, _, domain_gdf = _overlay_layers(
+        model_crs, (left, bottom, right, top), domain_poly, land_polygons_path, None
+    )
+    frame = np.r_[
+        np.minimum(grid_outline.total_bounds[:2], domain_gdf.total_bounds[:2]),
+        np.maximum(grid_outline.total_bounds[2:], domain_gdf.total_bounds[2:]),
+    ]
+    mask = grid["mask"]
+    active = mask > 0
+
+    def _with_crs(da: xr.DataArray) -> xr.DataArray:
+        da.raster.set_crs(model_crs)
+        return da
+
+    def _field(name: str) -> xr.DataArray:
+        return _with_crs(grid[name].where(active & (grid[name] != FLOAT_NODATA)))
+
+    crs_text = f"model CRS {model_crs.to_string()}"
+    common_caption = (
+        "Light grey: land; black line: model domain; grey lines: longitude/latitude "
+        f"graticule (degrees); scale bar lower left. Map in the {crs_text}."
+    )
+
+    # Elevation: blue below 0 m, brown above, each side stretched to its own range.
+    dep = _field("dep")
+    lo, hi = float(dep.min()), float(dep.max())
+    vmin, vmax = max(lo, ELEVATION_CAP_M[0]), min(hi, ELEVATION_CAP_M[1])
+    vmin, vmax = min(vmin, -0.01), max(vmax, 0.01)
+    extend = {
+        (False, False): "neither",
+        (True, False): "min",
+        (False, True): "max",
+    }.get((lo < ELEVATION_CAP_M[0], hi > ELEVATION_CAP_M[1]), "both")
+    values, extent = _north_up(dep, Resampling.nearest)
+    with style_context():
+        fig, ax, x_lim, y_lim = _model_map_figure(model_crs, frame)
+        draw_land(ax, land, zorder=1)
+        im = ax.imshow(
+            values,
+            extent=extent,
+            origin="upper",
+            interpolation="nearest",
+            zorder=2,
+            cmap=_ELEVATION_CMAP,
+            norm=mcolors.TwoSlopeNorm(0.0, vmin=vmin, vmax=vmax),
+        )
+        domain_gdf.boundary.plot(ax=ax, color="black", linewidth=1.0, zorder=4)
+        handles = [_DOMAIN_HANDLE, land_legend_handle()]
+        if observation_points is not None and not observation_points.empty:
+            observation_points.to_crs(model_crs).plot(
+                ax=ax,
+                color="black",
+                markersize=12,
+                edgecolor="white",
+                linewidth=0.5,
+                zorder=5,
+            )
+            handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    linestyle="none",
+                    color="black",
+                    markeredgecolor="white",
+                    label="Observation point",
+                )
+            )
+        cbar = fig.colorbar(im, ax=ax, extend=extend, shrink=0.6)
+        cbar.set_label("Bed elevation (m +GOCO06s)")
+        _finish_model_map(ax, x_lim, y_lim, handles)
+        save_figure_deliverable(fig, elevation_path)
+        plt.close(fig)
+    n_obs = 0 if observation_points is None else len(observation_points)
+    write_caption(
+        elevation_path,
+        f"Bed elevation of the SFINCS grid of basin {basin_id}: {lo:.1f} to {hi:.1f} m "
+        "above the GOCO06s geoid over the active cells.\n"
+        "Colour: below 0 m in blues, above 0 m in browns, each side stretched to its own "
+        f"range (capped at {ELEVATION_CAP_M[0]:g} and +{ELEVATION_CAP_M[1]:g} m; arrows mark "
+        f"values beyond a cap). Black dots: the {n_obs} observation point(s). "
+        + common_caption,
+    )
+
+    # Mask, with the computational grid outline.
+    codes = [c for c in _MASK_CLASSES if bool((mask == c).any())]
+    counts = {c: int((mask == c).sum()) for c in codes}
+    mask_values, mask_extent = _north_up(
+        _with_crs(mask.where(active).astype(np.float32)), Resampling.nearest
+    )
+    with style_context():
+        fig, ax, x_lim, y_lim = _model_map_figure(model_crs, frame)
+        draw_land(ax, land, zorder=1)
+        cmap = mcolors.ListedColormap([_MASK_CLASSES[c][0] for c in codes])
+        norm = mcolors.BoundaryNorm(
+            [c - 0.5 for c in codes] + [codes[-1] + 0.5], cmap.N
+        )
+        ax.imshow(
+            np.where(np.isin(mask_values, codes), mask_values, np.nan),
+            extent=mask_extent,
+            origin="upper",
+            interpolation="nearest",
+            cmap=cmap,
+            norm=norm,
+            zorder=2,
+        )
+        # Boundary cells are one cell wide: marked at their centres so they show at print size.
+        for c in (c for c in codes if c > 1):
+            rows_c, cols_c = np.nonzero(mask.values == c)
+            xs, ys = transform * (cols_c + 0.5, rows_c + 0.5)
+            ax.scatter(
+                xs,
+                ys,
+                s=2,
+                marker="s",
+                color=_MASK_CLASSES[c][0],
+                linewidths=0,
+                zorder=5,
+            )
+        grid_outline.boundary.plot(
+            ax=ax, color="black", linewidth=0.8, linestyle="--", zorder=3
+        )
+        domain_gdf.boundary.plot(ax=ax, color="black", linewidth=1.0, zorder=4)
+        handles = [
+            Patch(
+                facecolor=_MASK_CLASSES[c][0],
+                edgecolor="none",
+                label=_MASK_CLASSES[c][1],
+            )
+            for c in codes
+        ] + [
+            Line2D(
+                [0],
+                [0],
+                color="black",
+                linewidth=0.8,
+                linestyle="--",
+                label="Model grid",
+            ),
+            _DOMAIN_HANDLE,
+            land_legend_handle(),
+        ]
+        _finish_model_map(ax, x_lim, y_lim, handles)
+        save_figure_deliverable(fig, mask_path)
+        plt.close(fig)
+    rows, cols = shape
+    write_caption(
+        mask_path,
+        f"Active cells and boundary cells of the SFINCS grid of basin {basin_id}: "
+        f"{rows} x {cols} cells of {abs(transform.a):g} m, "
+        + ", ".join(f"{counts[c]:,} {_MASK_CLASSES[c][1].lower()}s" for c in codes)
+        + ".\nColours: "
+        + "; ".join(f"{_MASK_CLASSES[c][1].lower()}" for c in codes)
+        + " (Okabe-Ito); cells outside the active area are not drawn. Dashed black line: "
+        "computational grid outline. " + common_caption,
+    )
+
+    # Roughness: Manning's n in classes.
+    manning = _field("manning")
+    n_lo, n_hi = float(manning.min()), float(manning.max())
+    values, extent = _north_up(manning, Resampling.nearest)
+    # float32 stores 0.02 as 0.0199999..; rounding keeps class-edge values in their class.
+    values = np.round(values.astype(np.float64), 4)
+    with style_context():
+        fig, ax, x_lim, y_lim = _model_map_figure(model_crs, frame)
+        draw_land(ax, land, zorder=1)
+        norm = mcolors.BoundaryNorm(
+            MANNING_BREAKS, plt.get_cmap("viridis").N, extend="both"
+        )
+        im = ax.imshow(
+            values,
+            extent=extent,
+            origin="upper",
+            interpolation="nearest",
+            cmap="viridis",
+            norm=norm,
+            zorder=2,
+        )
+        domain_gdf.boundary.plot(ax=ax, color="black", linewidth=1.0, zorder=4)
+        cbar = fig.colorbar(im, ax=ax, shrink=0.6, ticks=MANNING_BREAKS)
+        cbar.set_label(r"Manning's $n$ (s m$^{-1/3}$)")
+        _finish_model_map(ax, x_lim, y_lim, [_DOMAIN_HANDLE, land_legend_handle()])
+        save_figure_deliverable(fig, roughness_path)
+        plt.close(fig)
+    write_caption(
+        roughness_path,
+        f"Manning roughness of the SFINCS grid of basin {basin_id}: n from {n_lo:.3f} to "
+        f"{n_hi:.3f} s m^-1/3 over the active cells (cell means of the subgrid roughness).\n"
+        f"Colour: viridis in classes with edges at {', '.join(f'{b:g}' for b in MANNING_BREAKS)} "
+        "s m^-1/3 (arrows: below or above the outer edges). " + common_caption,
+    )
+
+
+def plot_initial_water_level(
+    zsini_path: str | Path,
+    domain_poly: Polygon,
+    land_polygons_path: str,
+    output_path: str | Path,
+    calm_sea_level_m: float,
+    basin_id: str = "",
+    active_mask: np.ndarray | None = None,
+) -> None:
+    """Plot the skeleton's initial water level (zsini.tif) in the model CRS.
+
+    active_mask (True where the SFINCS mask is > 0, on the zsini.tif grid)
+    leaves out the inactive cells, whose zsini SFINCS never reads.
+
+    Sea cells start at calm_sea_level_m, river channel cells at the water
+    surface above it, isolated sea pockets dry at bed level below it, land is
+    nodata; levels in m above the GOCO06s geoid. The colour scale runs from
+    the calm level to the 98th percentile of the river cells (arrows beyond).
+    Writes PNG, PDF and caption.
+    """
+
+    da = rioxarray.open_rasterio(zsini_path, masked=True).squeeze("band", drop=True)
+    if active_mask is not None:
+        if active_mask.shape != da.shape:
+            raise ValueError(
+                f"active_mask {active_mask.shape} does not match zsini {da.shape}"
+            )
+        da = da.where(active_mask)
+    model_crs = da.rio.crs
+    da.raster.set_crs(model_crs.to_epsg())
+    levels = da.values[np.isfinite(da.values)]
+    tol_m = 5e-4  # zsini is written to the nearest 0.1 mm
+    river = levels[levels > calm_sea_level_m + tol_m]
+    pockets = levels[levels < calm_sea_level_m - tol_m]
+    n_sea = levels.size - river.size - pockets.size
+    vmin = calm_sea_level_m
+    vmax = max(float(np.percentile(river, 98)) if river.size else vmin, vmin + 0.1)
+    extend = {
+        (False, False): "neither",
+        (True, False): "min",
+        (False, True): "max",
+    }.get((levels.min() < vmin, levels.max() > vmax), "both")
+    left, bottom, right, top = da.raster.bounds
+    land, _, domain_gdf = _overlay_layers(
+        model_crs, (left, bottom, right, top), domain_poly, land_polygons_path, None
+    )
+    frame = np.r_[
+        np.minimum((left, bottom), domain_gdf.total_bounds[:2]),
+        np.maximum((right, top), domain_gdf.total_bounds[2:]),
+    ]
+    values, extent = _north_up(da, Resampling.nearest)
+    with style_context():
+        fig, ax, x_lim, y_lim = _model_map_figure(model_crs, frame)
+        draw_land(ax, land, zorder=1)
+        im = ax.imshow(
+            values,
+            extent=extent,
+            origin="upper",
+            interpolation="nearest",
+            cmap="viridis",
+            vmin=vmin,
+            vmax=vmax,
+            zorder=2,
+        )
+        domain_gdf.boundary.plot(ax=ax, color="black", linewidth=1.0, zorder=4)
+        cbar = fig.colorbar(im, ax=ax, extend=extend, shrink=0.6)
+        cbar.set_label("Initial water level (m +GOCO06s)")
+        _finish_model_map(ax, x_lim, y_lim, [_DOMAIN_HANDLE, land_legend_handle()])
+        save_figure_deliverable(fig, output_path)
+        plt.close(fig)
+
+    def _span(a: np.ndarray) -> str:
+        return f"{a.min():+.2f} to {a.max():+.2f} m" if a.size else "none"
+
+    write_caption(
+        output_path,
+        f"Initial water level (zsini) of the SFINCS model of basin {basin_id}: "
+        f"{n_sea:,} sea cells start at the calm sea level {calm_sea_level_m:+.2f} m, "
+        f"{river.size:,} river channel cells at the water surface ({_span(river)}), "
+        f"{pockets.size:,} isolated sea-pocket cells dry at bed level ({_span(pockets)}); "
+        "land starts dry.\n"
+        f"Colour: viridis from the calm level ({vmin:+.2f} m, darkest: the sea) to {vmax:+.2f} m "
+        "(98th percentile of the river cells); arrows: beyond. Levels in m above the GOCO06s "
+        "geoid. Light grey: land (dry at the start); "
+        "black line: model domain; grey lines: longitude/latitude graticule (degrees); scale "
+        f"bar lower left. Map in the model CRS {model_crs.to_string()}.",
+    )
 
 
 #: Colour scale per animate_flood_progression variable. Depth is pinned at 0

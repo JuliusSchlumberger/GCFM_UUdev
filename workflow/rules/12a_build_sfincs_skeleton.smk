@@ -56,7 +56,6 @@ rule build_sfincs_skeleton:
         sfincs_weir    = results_path("{basin_id}/sfincs_skeleton/sfincs.weir"),
         weir_gpkg      = results_path("{basin_id}/sfincs_skeleton/{basin_id}_coastal_protection_weir.gpkg"),
         zsini          = results_path("{basin_id}/sfincs_skeleton/zsini.tif"),
-        plot_grid      = figure_path("10_build_grid.png"),
         plot_elevation = figure_path("11_build_elevation.png"),
         plot_mask      = figure_path("12_build_mask.png"),
         plot_roughness = figure_path("13_build_roughness.png"),

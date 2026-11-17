@@ -32,9 +32,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
-from _basin_inputs import basin_paths
+from _basin_inputs import add_land, basin_paths
 from _common import REPO_ROOT, analysis_dir, script_parser, site_path
-from _figure_style import add_land, map_axes, panel_letters, save_figure, write_caption
 from _upstream_profile import (
     boundary_verdict,
     influence_length,
@@ -49,6 +48,7 @@ from check_upstream_boundary import (
     forcing_points,
     sea_levels_at,
 )
+from src.figure_style import map_axes, panel_letters, save_figure, write_caption
 from surge_reach import reach_basin
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))

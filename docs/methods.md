@@ -435,7 +435,7 @@ a warning in the log, the columns `unstable`, `spinup_unstable`, `max_swing_m`
 and `alpha` in `flood_metrics.csv` (and so in `metrics_comparison.csv`; `post`
 rows take the baseline run's), a red "Check stability: ..." banner on the run's forcing, inundation
 and max-depth figures (`src.plots.stamp_unstable`), and a red footnote on the
-analysis figures drawn from it (`analysis/_figure_style.flag_unstable`).
+analysis figures drawn from it (`src/figure_style.flag_unstable`).
 
 Round 2 reports some overtopped edges even though its inputs equal round 1's
 except the crests: lowering the crests from 1000 m changes SFINCS's solution by

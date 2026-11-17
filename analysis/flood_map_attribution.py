@@ -26,19 +26,25 @@ from _common import (  # noqa: E402
     script_parser,
     site_path,
 )
-from _figure_style import flag_unstable, unstable_flood_maps
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
+from src.figure_style import (  # noqa: E402
+    EVENT_STYLE,
+    draw_land,
+    flag_unstable,
+    land_legend_handle,
+    unstable_flood_maps,
+)
 from src.plots import draw_depth_map, read_raster_reprojected_for_plot  # noqa: E402
 
 BASIN_ID = "2433835"
 
 SCENARIOS = ["coast_100_03SLR", "river_100_03SLR", "compound_100_03SLR"]
 
-ATTR_COLORS = ["#d1c740", "#3277d3", "#d883e9"]
+ATTR_COLORS = [EVENT_STYLE[d]["color"] for d in ("river", "coast", "compound")]
 ATTR_LABELS = ["River", "Coastal", "Compound"]
 ATTR_CMAP = ListedColormap(ATTR_COLORS)
 ATTR_NORM = BoundaryNorm([0.5, 1.5, 2.5, 3.5], ATTR_CMAP.N)
@@ -100,7 +106,7 @@ def draw_attribution_panel(ax, scen, dst_bounds, basin_root):
         rivers = rivers.to_crs("EPSG:4326")
 
     if not land.empty:
-        land.plot(ax=ax, color="#d9d9d9", edgecolor="#aaaaaa", linewidth=0.3, zorder=1)
+        draw_land(ax, land, zorder=1)
     # Class 4 (embanked water, e.g. the river channel) has no colour
     # slot and would clip to "compound"; masked as in attribution_plot.py.
     attr_arr = np.nan_to_num(wgs_arr, nan=0)
@@ -143,7 +149,7 @@ def main() -> None:
         ax.legend(
             handles=[
                 Patch(color="#6baed6", label="Flooded"),
-                Patch(color="#d9d9d9", edgecolor="#aaaaaa", label="Dry / land"),
+                land_legend_handle("Dry / land"),
                 Line2D(
                     [0], [0], color="steelblue", linewidth=1.5, label="River network"
                 ),
@@ -194,7 +200,7 @@ def main() -> None:
         ax_depth.legend(
             handles=[
                 Patch(color="#6baed6", label="Flooded"),
-                Patch(color="#d9d9d9", edgecolor="#aaaaaa", label="Dry / land"),
+                land_legend_handle("Dry / land"),
                 Line2D(
                     [0], [0], color="steelblue", linewidth=1.5, label="River network"
                 ),

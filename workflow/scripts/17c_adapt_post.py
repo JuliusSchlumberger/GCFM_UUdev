@@ -122,6 +122,8 @@ plot_inundation_check(
     run_label=snakemake.params.run_label,
 )
 log.info(f"Inundation ratio plot written: {snakemake.output.plot_inundation_ratio}")
+# The post map is derived from the baseline run: its swing check carries over.
+stability = read_stability(snakemake.input.stability)
 plot_max_inundation_map(
     da_hmax,
     load_domain(snakemake.input.spec_basins_meta, snakemake.input.domain_gpkg)[2],
@@ -130,12 +132,11 @@ plot_max_inundation_map(
     snakemake.output.plot_max_depth,
     basin_id=snakemake.wildcards.basin_id,
     run_label=snakemake.params.run_label,
+    hmin_m=hmin,
+    unstable_note=stability_note(stability),
 )
-# The post map is derived from the baseline run: its swing check carries over.
-stability = read_stability(snakemake.input.stability)
 if stability_note(stability):
-    for _png in (snakemake.output.plot_inundation_ratio, snakemake.output.plot_max_depth):
-        stamp_unstable(_png, stability_note(stability))
+    stamp_unstable(snakemake.output.plot_inundation_ratio, stability_note(stability))
 
 row = {
     "basin_id": snakemake.wildcards.basin_id,

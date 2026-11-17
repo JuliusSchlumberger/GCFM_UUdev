@@ -29,10 +29,24 @@ Site paths: `config/site.yml` (gitignored; copy `config/site.example.yml`), keys
 
 ## Figures
 
-- No titles or subtitles; annotations kept to a minimum (axis labels, colour bars).
-- Every panel is numbered (a), (b), ... just outside its top-left corner (`analysis/_figure_style.panel_letters`).
-- Every figure gets a description `<figure>.txt` next to it: what is shown and what each colour, line style and marker means (`write_caption`).
-- Maps always show land in light grey for orientation (`add_land`).
+General rules: §9 of the general CLAUDE.md. Project specifics:
+
+- §9 applies to the pipeline figures (`<results_dir>/<basin>/figures/`) as well as
+  to `analysis/`; only the test quick-looks (`tests/unit/quicklook.py`) follow §8.
+- Style module: `workflow/src/figure_style.py` (style, sizes, fonts, project colour
+  assignments, land, scale bar, save helper), shared by the pipeline and `analysis/`.
+  Pipeline plot functions draw inside `style_context()` so they leave global
+  rcParams alone.
+- No titles or subtitles; annotations kept to a minimum (axis labels, colour
+  bars). Exception: small-multiple grids get short row and column headers
+  (e.g. "SSP2-4.5", "2100").
+- Every panel is numbered (a), (b), ... just outside its top-left corner (`panel_letters`).
+- Every figure gets a description `<figure>.txt` next to it: the main message
+  in one sentence, then what is shown and what each colour, line style and
+  marker means, plus CRS and uncertainty definition where relevant (`write_caption`).
+- Maps always show land in light grey for orientation (`draw_land`; `add_land` in
+  `analysis/_basin_inputs.py` reads a basin's land polygons and calls it).
+- Figure widths: 180 mm.
 
 ## Changelog
 

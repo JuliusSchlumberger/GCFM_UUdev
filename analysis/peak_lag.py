@@ -19,7 +19,7 @@ compound run; travel times do not depend on where each run places its peak.
 The basin's value is the main mouth's: the one with the largest filtered
 river-peak discharge. Times are hours from the forcing's tref.
 
-Writes per basin 90_peak_lag_<coast>_<river>.png to
+Writes one figure per mouth, 90_peak_lag_<coast>_<river>_<mouth>.png, to
 <results_dir>/<basin>/figures/analysis/ and peak_lag_summary.csv (one row per
 basin and mouth) to <results_dir>/figures/analysis/.
 
@@ -37,7 +37,16 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from _common import analysis_path, script_parser, site_path
-from check_river_bed import _git_hash
+from matplotlib.lines import Line2D
+from matplotlib.transforms import blended_transform_factory
+from src.figure_style import (
+    EVENT_STYLE,
+    figure_size,
+    panel_letters,
+    save_figure,
+    style_context,
+    write_caption,
+)
 
 log = logging.getLogger(__name__)
 
@@ -70,9 +79,7 @@ def _table(run_dir, name: str) -> tuple[np.ndarray, np.ndarray]:
     return a[:, 0] / 3600.0, a[:, 1:]
 
 
-def lag_basin(
-    results_dir, basin_id: str, coast: str, river: str, tag: str
-) -> list[dict]:
+def lag_basin(results_dir, basin_id: str, coast: str, river: str) -> list[dict]:
     root = results_dir / basin_id
     mouths = gpd.read_file(root / "sfincs_skeleton" / f"{basin_id}_mouths.gpkg")
     coast_dir = root / "runs" / coast / "sfincs"
@@ -119,59 +126,123 @@ def lag_basin(
                 - (t_river_mouth - t_river_inflow),
             }
         )
-        panels.append(
-            (
-                m["name"],
-                zs_coast,
-                q_river,
-                q_f,
-                t_surge_mouth,
-                t_river_mouth,
-                rows[-1]["lag_hr"],
-            )
-        )
+        panels.append((rows[-1], zs_coast, q_river, q_f))
     cds.close()
     rds.close()
     main = max(rows, key=lambda r: r["q_river_mouth_peak_m3s"])
     for r in rows:
         r["main_mouth"] = r is main
 
-    fig, axes = plt.subplots(
-        len(panels), 1, figsize=(11, 3.2 * len(panels)), squeeze=False
-    )
-    for ax, (name, zs_c, q, qf, ts, trv, lag) in zip(axes[:, 0], panels):
-        ax.plot(tc, zs_c, color="tab:blue", lw=1.0, label=f"{coast}: level at mouth")
-        ax.axvline(ts, color="tab:blue", ls="--", lw=1)
-        ax2 = ax.twinx()
-        ax2.plot(
-            tr,
-            q,
-            color="tab:orange",
-            lw=0.6,
-            alpha=0.5,
-            label=f"{river}: discharge at mouth",
-        )
-        ax2.plot(tr, qf, color="tab:red", lw=1.4, label="tide-filtered (Godin)")
-        ax2.axvline(trv, color="tab:red", ls="--", lw=1)
-        ax.set_ylabel("water level (m)")
-        ax2.set_ylabel("discharge (m3/s)")
-        ax.set_title(
-            f"{name}: lag = {lag:+.1f} h (surge travel - river travel to the mouth)",
-            fontsize=9,
-        )
-        ax.grid(alpha=0.3)
-        h1, l1 = ax.get_legend_handles_labels()
-        h2, l2 = ax2.get_legend_handles_labels()
-        ax.legend(h1 + h2, l1 + l2, fontsize=7, loc="upper left")
-    axes[-1, 0].set_xlabel("hours from tref")
-    fig.suptitle(
-        f"peak lag at the river mouths | {basin_id} | {coast} vs {river} | {tag}",
-        fontsize=10,
-    )
-    fig.tight_layout()
-    fig.savefig(analysis_path(basin_id, __file__, f"{coast}_{river}.png"), dpi=120)
-    plt.close(fig)
+    for row, zs_c, q, qf in panels:
+        plot_mouth(row, tc, zs_c, tr, q, qf)
     return rows
+
+
+def plot_mouth(row: dict, tc, zs_coast, tr, q_raw, q_filtered) -> None:
+    """Plot one mouth's surge and river peaks against the time since each run's boundary peak.
+
+    (a) water level at the mouth in the coastal run, (b) discharge through the
+    mouth in the river run, raw and tide-filtered. Both mouth-peak times are
+    drawn in both panels, so their gap is the compound lag.
+    """
+    surge, river = EVENT_STYLE["coast"]["color"], EVENT_STYLE["river"]["color"]
+    path = analysis_path(
+        row["basin_id"],
+        __file__,
+        f"{row['coast_run']}_{row['river_run']}_{row['mouth']}.png",
+    )
+    with style_context():
+        fig, (ax_l, ax_q) = plt.subplots(
+            2, 1, figsize=figure_size(110), sharex=True, layout="constrained"
+        )
+        ax_l.plot(tc - row["t_surge_boundary_hr"], zs_coast, color=surge)
+        ax_q.plot(
+            tr - row["t_river_inflow_hr"], q_raw, color=river, linewidth=0.5, alpha=0.5
+        )
+        ax_q.plot(tr - row["t_river_inflow_hr"], q_filtered, color=river, linewidth=1.4)
+        for ax in (ax_l, ax_q):
+            ax.axvline(0.0, color="0.6", linewidth=0.6)
+            ax.axvline(
+                row["surge_travel_hr"], color=surge, linestyle="--", linewidth=0.9
+            )
+            ax.axvline(
+                row["river_travel_hr"], color=river, linestyle="--", linewidth=0.9
+            )
+        # style-override: annotations kept to a minimum | user: the lag as an arrow between the peak lines
+        at_bottom = blended_transform_factory(ax_l.transData, ax_l.transAxes)
+        ax_l.annotate(
+            "",
+            xy=(row["surge_travel_hr"], 0.08),
+            xytext=(row["river_travel_hr"], 0.08),
+            xycoords=at_bottom,
+            textcoords=at_bottom,
+            arrowprops=dict(
+                arrowstyle="<->", color="0.3", linewidth=0.8, shrinkA=0, shrinkB=0
+            ),
+        )
+        ax_l.text(
+            max(row["surge_travel_hr"], row["river_travel_hr"]),
+            0.08,
+            f"  lag {row['lag_hr']:+.1f} h",
+            transform=at_bottom,
+            ha="left",
+            va="center",
+            color="0.3",
+        )
+        ax_l.set_ylabel("Water level (m +GOCO06s)")
+        ax_q.set_ylabel(r"Discharge (m$^3$ s$^{-1}$)")
+        ax_q.set_xlabel("Time since the peak at the model boundary (h)")
+        panel_letters([ax_l, ax_q])
+        fig.legend(
+            handles=[
+                Line2D([0], [0], color=surge, label="Water level, coastal run"),
+                Line2D(
+                    [0],
+                    [0],
+                    color=river,
+                    linewidth=0.5,
+                    alpha=0.5,
+                    label="Discharge, river run",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    color=river,
+                    linewidth=1.4,
+                    label="Discharge, tide-filtered",
+                ),
+                Line2D(
+                    [0], [0], color="0.4", linestyle="--", label="Peak at the mouth"
+                ),
+            ],
+            loc="outside lower center",
+            ncols=4,
+        )
+        save_figure(fig, path)
+        plt.close(fig)
+    lag = row["lag_hr"]
+    order = (
+        "the river peak leaves the inflow first"
+        if lag < 0
+        else "the surge peak leaves the sea boundary first"
+    )
+    write_caption(
+        path,
+        f"At mouth {row['mouth']} of basin {row['basin_id']} the surge peak takes "
+        f"{row['surge_travel_hr']:.1f} h from the sea boundary and the river peak "
+        f"{row['river_travel_hr']:.1f} h from the inflow, so the peaks meet at the mouth with a "
+        f"compound lag of {lag:+.1f} h ({order}).\n"
+        f"(a) Water level at the mouth in the coastal run {row['coast_run']} (blue), against the "
+        "time since the peak of the mean water-level boundary. "
+        f"(b) Discharge through the mouth cross-section in the river run {row['river_run']}: raw "
+        "(thin, light orange) and tide-filtered (Godin 24-24-25 h running means, solid orange), "
+        "against the time since the peak of the summed inflow. "
+        "Grey line: the boundary peak (0 h); dashed blue and orange lines, in both panels: the "
+        "peak at the mouth of the water level and of the filtered discharge; their gap, marked by the arrow in (a), is the lag "
+        f"(river-peak delay at the boundary, sfincs.boundary_setup.compound.lag_hr). Peak level "
+        f"{row['zs_surge_mouth_max_m']:.2f} m above the GOCO06s geoid, peak filtered discharge "
+        f"{row['q_river_mouth_peak_m3s']:,.0f} m3/s.",
+    )
 
 
 def main() -> int:
@@ -181,11 +252,11 @@ def main() -> int:
     parser.add_argument("--river", default="river_100_03SLR")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    results_dir, tag = site_path("results_dir"), _git_hash()
+    results_dir = site_path("results_dir")
     rows = [
         r
         for b in args.basin_ids
-        for r in lag_basin(results_dir, str(b), args.coast, args.river, tag)
+        for r in lag_basin(results_dir, str(b), args.coast, args.river)
     ]
     df = pd.DataFrame(rows)
     df.to_csv(

@@ -14,6 +14,19 @@ sys.path.insert(0, str(REPO_ROOT / "workflow"))
 DEFAULT_BASINS = ["2433835", "3279946"]  # Ebro first, then Chao Phraya
 
 
+def add_land(ax, basin_id: str) -> None:
+    """Draw the basin's land polygons in light grey under the map, in the model CRS."""
+    import geopandas as gpd
+    from src.figure_style import draw_land
+    from src.grid import load_grid_def
+
+    p = basin_paths(basin_id)
+    land = gpd.read_file(
+        p["sfincs_grid"].parent / f"{basin_id}_land_polygons.gpkg"
+    ).to_crs(load_grid_def(p["sfincs_grid"])["crs"])
+    draw_land(ax, land, zorder=0)
+
+
 def load_config() -> dict:
     """Return config/config.yml as a dict."""
     return yaml.safe_load(

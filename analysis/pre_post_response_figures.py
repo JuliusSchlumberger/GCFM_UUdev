@@ -19,10 +19,17 @@ import pandas as pd
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from _common import analysis_dir, analysis_path, label, script_parser, site_path
-from _figure_style import flag_unstable, unstable_metric_rows
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from scipy.stats import kendalltau
+from src.figure_style import (
+    APPROACH_STYLE,
+    MEASURE_ORDER,
+    MEASURE_STYLE,
+    SCALE_MARKER,
+    flag_unstable,
+    unstable_metric_rows,
+)
 
 BASIN_ID = "2433835"
 METRICS = ["flooded_area_km2", "urban_exposed_km2", "mean_depth_m", "volume_m3"]
@@ -34,23 +41,11 @@ EVENT_ORDER = ["coast_100_03SLR", "river_100_03SLR", "compound_100_03SLR"]
 EVENT_TAG = "_".join(dict.fromkeys(e.split("_", 1)[1] for e in EVENT_ORDER))
 EVENT_LABELS = {
     "coast_100_03SLR": "Coastal flood",
-    "river_100_03SLR": "Fluvial flood",
+    "river_100_03SLR": "River flood",
     "compound_100_03SLR": "Compound flood",
     "coast_500_03SLR": "Coastal flood",
-    "river_500_03SLR": "Fluvial flood",
+    "river_500_03SLR": "River flood",
     "compound_500_03SLR": "Compound flood",
-}
-MEASURE_ORDER = [
-    "advance",
-    "protect_closed",
-    "grey_protect_open",
-    "NbS_protect_open",
-    "accommodate",
-    "retreat",
-]
-STYLE = {
-    "PRE": dict(fmt="-o", color="#534eb8", label="Modelled (re-run)"),
-    "POST": dict(fmt="--s", color="#38b394", label="Postprocessed (not re-run)"),
 }
 METRIC_INFO = [  # metric, y label, y limits
     ("flooded_area_km2", "residual flood extent", (0, 2)),
@@ -80,7 +75,6 @@ TIE_DECIMALS = 2  # residual ratios equal at this precision share a rank ("=")
 # a reduction smaller than this fraction of the baseline (incl. an increase) counts as
 # "no effect", so all such measures tie for last; 0 = rank on the exact ratios
 NO_EFFECT_TOL = 0.05
-SCALE_MARKER = {"04": ("s", "#d62728"), "09": ("^", "#f0a30a"), "1": ("o", "#2ca02c")}
 
 SCATTER_EVENTS = [e for e in EVENT_ORDER if e.startswith("coast_")]
 SCATTER_BAND = 1
@@ -90,17 +84,6 @@ BUMP_METRICS = ["urban_exposed_km2", "flooded_area_km2", "volume_m3", "mean_dept
 BUMP_SCALE = "1"
 BUMP_APPROACHES = {"POST": "Post-processed rank", "PRE": "Modelled rank"}
 BUMP_NUDGE = 0.12  # rank units between tied lines
-# strategy colours of the adaptation wheel (adaptation_wheel_individ_colors.py), in
-# MEASURE_ORDER
-MEASURE_STYLE = dict(
-    zip(
-        MEASURE_ORDER,
-        zip(
-            ["#E3C03D", "#009c82", "#87898C", "#9dbf17", "#0c5aa0", "#cc4c29"],
-            ["o", "s", "^", "D", "v", "P"],
-        ),
-    )
-)
 METRIC_SHORT = {
     m: textwrap.fill(lbl.removeprefix("residual ").capitalize(), 10)
     for m, lbl, _ in METRIC_INFO
@@ -172,7 +155,7 @@ def shade_divergence(ax, modelled, post, n=200):
             pre_y,
             post_y,
             where=where,
-            color=STYLE[ap]["color"],
+            color=APPROACH_STYLE[ap]["color"],
             alpha=SHADE_ALPHA,
             linewidth=0,
             zorder=0,
@@ -279,7 +262,7 @@ def plot_scale_response(d, baselines, events, measures):
                 ax = axes[i, j]
                 g = d[(d.event == e) & (d.short == ms)]
                 curves = {}
-                for ap, s in STYLE.items():
+                for ap, s in APPROACH_STYLE.items():
                     gg = g[g.approach == ap].set_index("scale").reindex(SCALES)
                     ratios = [1.0] + gg["ratio"].tolist()  # scale 0 = no adaptation
                     ax.plot(
@@ -310,7 +293,11 @@ def plot_scale_response(d, baselines, events, measures):
         handles, labels = axes[0, 0].get_legend_handles_labels()
         for ap, text in (("POST", "underestimates"), ("PRE", "overestimates")):
             handles.append(
-                Patch(facecolor=STYLE[ap]["color"], alpha=SHADE_ALPHA, edgecolor="none")
+                Patch(
+                    facecolor=APPROACH_STYLE[ap]["color"],
+                    alpha=SHADE_ALPHA,
+                    edgecolor="none",
+                )
             )
             labels.append(f"Post-processed {text} effectiveness")
         handles.append(Patch(facecolor="crimson", alpha=0.1, edgecolor="none"))

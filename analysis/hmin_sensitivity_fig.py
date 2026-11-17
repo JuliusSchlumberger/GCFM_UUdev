@@ -32,13 +32,12 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from pre_post_response_figures import (
     EVENT_LABELS,
-    MEASURE_ORDER,
     METRIC_INFO,
     SCALES,
-    STYLE,
     X_LABELS,
     style_residual_axis,
 )
+from src.figure_style import APPROACH_STYLE, MEASURE_ORDER
 
 RANGE_COLOR = "#d62728"  # bars: range of the residual over the thresholds
 RANGE_OFFSET = {"PRE": -0.07, "POST": 0.07}  # x nudge so the two bars don't overlap
@@ -54,7 +53,7 @@ def plot_metric(df, metric, ylabel, ylim, ref_hmin, basin_id):
         ap: sorted(
             df.loc[(df.approach == ap) & df.flooded_area_km2.notna(), "hmin"].unique()
         )
-        for ap in STYLE
+        for ap in APPROACH_STYLE
     }
 
     # residual at each threshold, against the baseline at the same threshold
@@ -78,7 +77,7 @@ def plot_metric(df, metric, ylabel, ylim, ref_hmin, basin_id):
         for j, e in enumerate(events):
             ax = axes[i, j]
             g = runs[(runs.scenario == e) & (runs.measure == ms)]
-            for ap, s in STYLE.items():
+            for ap, s in APPROACH_STYLE.items():
                 piv = (
                     g[g.approach == ap]
                     .pivot_table(index="scale", columns="hmin", values="resid")
@@ -129,7 +128,7 @@ def plot_metric(df, metric, ylabel, ylim, ref_hmin, basin_id):
         + ", ".join(
             f"{s['label'].split(' (')[0].lower()} "
             f"{range_hmins[ap][0]:g}-{range_hmins[ap][-1]:g} m"
-            for ap, s in STYLE.items()
+            for ap, s in APPROACH_STYLE.items()
             if range_hmins[ap]
         )
         + ")"

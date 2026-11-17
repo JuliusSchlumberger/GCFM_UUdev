@@ -7,12 +7,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASIN_ID = "2433835"
 
+# The analysis scripts import the pipeline's src package; importing _common first
+# makes it importable.
+if str(REPO_ROOT / "workflow") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "workflow"))
+
 
 def site_path(key: str) -> Path:
     """Return a site setting (see config/site.example.yml) as a Path."""
-    workflow_dir = str(REPO_ROOT / "workflow")
-    if workflow_dir not in sys.path:
-        sys.path.insert(0, workflow_dir)
     from src.io import site_setting
 
     return Path(site_setting(key))

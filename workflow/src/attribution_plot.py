@@ -15,7 +15,16 @@ import rasterio
 import rioxarray as rxr
 from hydromt_sfincs import SfincsModel
 from matplotlib.colors import BoundaryNorm, ListedColormap
+from src.figure_style import EVENT_STYLE
 from src.plots import add_land_background_to_geoaxes, save_figure
+
+# Classes 1-3 in the project's event colours; class 4 (embanked water) grey-blue.
+ATTRIBUTION_COLOURS = [
+    EVENT_STYLE["river"]["color"],
+    EVENT_STYLE["coast"]["color"],
+    EVENT_STYLE["compound"]["color"],
+    "#7a9cb1",
+]
 
 
 def generate_attribution_maps(
@@ -23,7 +32,7 @@ def generate_attribution_maps(
     attribution_runs: list[tuple[str, Path, Path, Path, Path, Path]],
     land_mask_path: str | Path,
     threshold: float = 0.05,
-    colors_cat: list[str] = ["#d1c740", "#2168c5", "#b063c0", "#7a9cb1"],
+    colors_cat: list[str] = ATTRIBUTION_COLOURS,
     labels_cat: list[str] = [
         "River",
         "Coastal",

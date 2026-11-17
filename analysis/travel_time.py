@@ -35,9 +35,9 @@ import numpy as np
 import pandas as pd
 from _basin_inputs import basin_paths, load_config
 from _common import REPO_ROOT, script_parser, site_path
-from _figure_style import panel_letters, save_figure, write_caption
 from _upstream_profile import routed_discharge
 from lag_plateau import plateau_basin
+from src.figure_style import panel_letters, save_figure, write_caption
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
 

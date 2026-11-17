@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from _common import REPO_ROOT, script_parser, site_path
-from _figure_style import panel_letters, save_figure, write_caption
+from src.figure_style import panel_letters, save_figure, write_caption
 
 METRICS = {
     "flooded_area_km2": "flooded area",

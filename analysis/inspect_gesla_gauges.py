@@ -8,7 +8,7 @@ nearest GTSM station: duplicate sites, marsh/river networks (CRMS, USGS),
 datum steps in the monthly gauge - GTSM difference, hourly timing lag and
 correlation of the mean-removed levels. Heights stay on each gauge's own
 datum, so only variability is compared. Writes one figure per basin to
-<results_dir>/<basin>/figures/analysis/90_inspect_gesla_gauges_screen.png and
+<results_dir>/<basin>/figures/analysis/90_inspect_gesla_gauges_screen.png (with its caption) and
 the cross-basin inspect_gesla_gauges_screen.csv and _coverage.csv to
 <results_dir>/figures/analysis/.
 
@@ -36,7 +36,16 @@ from _common import REPO_ROOT, analysis_path, script_parser, site_path
 from scipy import stats
 
 sys.path.insert(0, str(REPO_ROOT / "workflow"))
+from matplotlib.lines import Line2D  # noqa: E402
 from src.domain import load_domain  # noqa: E402
+from src.figure_style import (  # noqa: E402
+    OKABE_ITO,
+    figure_size,
+    panel_letters,
+    save_figure,
+    style_context,
+    write_caption,
+)
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +59,7 @@ INLAND_NETWORKS = (
 )  # marsh and river monitoring networks, not open coast
 MIN_STEP_M = 0.05
 MAX_LAG_HR = 6
+DIFF_LIM_M = 0.3  # fixed y range of the gauge-minus-GTSM panels
 
 # The metadata CSV header merges the last two names: 24 names for 25 fields.
 METADATA_COLUMNS = [
@@ -378,32 +388,102 @@ def coverage_row(basin: str, gauges: pd.DataFrame, screen: pd.DataFrame) -> dict
 
 
 def plot_basin(basin: str, screen: pd.DataFrame, monthly: dict, out_png: Path) -> None:
-    """One panel per screened gauge: monthly gauge - GTSM (mean removed) with steps; status in the title."""
+    """One panel per screened gauge: monthly gauge - GTSM (mean removed) with the detected steps.
+
+    Panels share both axes; the y axis is fixed at +-DIFF_LIM_M and values
+    beyond it are clipped at the edge (counted in the caption).
+    """
     if screen.empty or not monthly:
         return
     rows = screen[screen["file_name"].isin(monthly)]
     if rows.empty:
         return
-    fig, axes = plt.subplots(len(rows), 1, figsize=(11, 2.2 * len(rows)), squeeze=False)
-    for ax, (_, r) in zip(axes[:, 0], rows.iterrows()):
-        md, steps = monthly[r["file_name"]]
-        ax.plot(md.index, md - md.mean(), lw=0.8, color="k")
-        for x in steps:
-            ax.axvline(x["date"], color="r", lw=1)
-        ax.set_ylim(-0.3, 0.3)
-        ax.set_ylabel("m")
-        ax.grid(alpha=0.3)
-        ax.set_title(
-            f"{r['site_name']} ({r['contributor']}), {r['n_years_used']} yr, lag {r['lag_min']:.0f} min, "
-            f"r {r['corr']:.2f}: {r['status']}{' - ' + r['reason'] if r['reason'] else ''}",
-            fontsize=8,
+    step_colour = OKABE_ITO[6]
+    n_clipped = 0
+    with style_context():
+        fig, axes = plt.subplots(
+            len(rows),
+            1,
+            figsize=figure_size(35 * len(rows) + 20),
+            sharex=True,
+            sharey=True,
+            squeeze=False,
+            layout="constrained",
         )
-    fig.suptitle(
-        f"Basin {basin}: monthly GESLA gauge - GTSM water level (own datums, mean removed)"
+        for ax, (_, r) in zip(axes[:, 0], rows.iterrows()):
+            md, steps = monthly[r["file_name"]]
+            anomaly = md - md.mean()
+            n_clipped += int((anomaly.abs() > DIFF_LIM_M).sum())
+            ax.axhline(0.0, color="0.7", linewidth=0.5)
+            ax.plot(
+                anomaly.index,
+                anomaly.clip(-DIFF_LIM_M, DIFF_LIM_M),
+                color="black",
+                linewidth=0.8,
+            )
+            for x in steps:
+                ax.axvline(x["date"], color=step_colour, linestyle="--", linewidth=1.0)
+            ax.set_ylim(-DIFF_LIM_M, DIFF_LIM_M)
+            ax.set_ylabel("Gauge minus GTSM (m)")
+            # small-multiple row header: site and screening status
+            ax.text(
+                0.01,
+                0.97,
+                f"{r['site_name']}, {r['status']}",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+            )
+        if len(rows) > 1:
+            panel_letters(axes[:, 0])
+        handles = [
+            Line2D(
+                [0],
+                [0],
+                color="black",
+                linewidth=0.8,
+                label="Monthly gauge minus GTSM, mean removed",
+            ),
+        ]
+        if any(monthly[f][1] for f in rows["file_name"]):
+            handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color=step_colour,
+                    linestyle="--",
+                    label="Detected datum step",
+                )
+            )
+        fig.legend(handles=handles, loc="outside lower center", ncols=len(handles))
+        save_figure(fig, out_png)
+        plt.close(fig)
+
+    letters = "abcdefghijklmnopqrstuvwxyz"
+
+    def _line(k: int, r: pd.Series) -> str:
+        head = f"({letters[k]}) " if len(rows) > 1 else ""
+        reason = f" ({r['reason']})" if r["reason"] else ""
+        steps = f", steps {r['steps']}" if r.get("steps") else ""
+        return (
+            f"{head}{r['site_name']} ({r['contributor']}): {r['status']}{reason}; "
+            f"{r['n_years_used']} complete years used, timing lag {r['lag_min']:.0f} min, "
+            f"r {r['corr']:.2f}, RMSE {r['rmse_m']:.3f} m, trend {r['trend_mm_per_yr']:+.1f} mm/yr{steps}."
+        )
+
+    n_usable = int((rows["status"] == "usable").sum())
+    write_caption(
+        out_png,
+        f"{n_usable} of {len(rows)} open-coast GESLA gauge(s) near basin {basin} pass the screen "
+        "against the nearest GTSM station.\n"
+        "Black line: monthly mean of the hourly gauge level minus the GTSM water level, each on "
+        "its own datum, with the record mean removed, so only variability is compared; thin grey "
+        "line: zero; dashed vermillion lines: detected datum steps. Axis fixed at "
+        f"+-{DIFF_LIM_M:g} m"
+        + (f"; {n_clipped} month(s) beyond it drawn at the edge" if n_clipped else "")
+        + ".\n"
+        + "\n".join(_line(k, r) for k, (_, r) in enumerate(rows.iterrows())),
     )
-    fig.tight_layout()
-    fig.savefig(out_png, dpi=110)
-    plt.close(fig)
 
 
 def main() -> None:

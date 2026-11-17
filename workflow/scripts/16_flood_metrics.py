@@ -11,7 +11,7 @@ import pandas as pd
 import xarray as xr
 
 from src.domain import load_domain
-from src.plots import plot_max_inundation_map, stamp_unstable
+from src.plots import plot_max_inundation_map
 from src.postprocessing import (
     compute_max_inundation,
     compute_risk_metrics,
@@ -39,6 +39,7 @@ da_hmax.raster.to_raster(
     str(tif_path), dtype="float32", nodata=FLOAT_NODATA, **FLOAT_GTIFF_COMPRESSION
 )
 
+stability = read_stability(snakemake.input.stability)
 plot_max_inundation_map(
     da_hmax,
     load_domain(snakemake.input.spec_basins_meta, snakemake.input.domain_gpkg)[2],
@@ -47,10 +48,9 @@ plot_max_inundation_map(
     snakemake.output.plot_max_depth,
     basin_id=snakemake.wildcards.basin_id,
     run_label=snakemake.params.run_label,
+    hmin_m=float(snakemake.params.hmin),
+    unstable_note=stability_note(stability),
 )
-stability = read_stability(snakemake.input.stability)
-if stability_note(stability):
-    stamp_unstable(snakemake.output.plot_max_depth, stability_note(stability))
 
 # An adapted run's metrics cover the baseline land only: land reclaimed from the
 # sea (nbs_land_reclamation) is low foreshore that floods by design, not new
