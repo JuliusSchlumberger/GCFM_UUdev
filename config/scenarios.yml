@@ -93,8 +93,8 @@ compound_500_03SLR:
   event: compound
 
 # Storm Gloria (Jan 2020) validation, 0.7 m surge
-storm_gloria:
-  surge_rp_yr: 1000 # (0.5 m)
+storm_gloria_04:
+  surge_rp_yr: 10 # (0.4 m)
   river_rp_yr: Mean
-  slr_m: 0.2
+  slr_m: 0
   event: coastal

@@ -53,3 +53,22 @@ Basin `2433835` (Ebro delta), scenario `default`; adaptation: strategy `advance_
 
 CI does not use `environment.yml`: `.github/workflows/ci.yml` pip-installs its own list for `tests/unit`.
 When a test, or a `src` module a test imports, gains a module-level third-party import, add it there.
+
+### Overrides and housekeeping
+- These rules are defaults. Precedence: instruction from the user for a
+  specific figure > project CLAUDE.md > this section.
+- A deliberate deviation is marked in the figure script on the line(s) it
+  affects:
+  `# style-override: <rule> | <reason>`
+  e.g. `# style-override: max 6 categories | all 9 basins needed for comparison`
+- Marked lines are never changed, removed or "fixed" unless the user asks for
+  that figure specifically. The marker moves with the code when refactoring.
+- Only the user decides on overrides. When the user asks for a deviation, add
+  the marker. Never add one on your own to get around a rule; ask instead.
+- Housekeeping and refactoring do not restyle existing figures. Unmarked
+  deviations found along the way are reported in a list, not fixed.
+- A figure that is edited for another reason keeps its current styling,
+  marked or not, apart from the change requested.
+- Overrides go through arguments of the style helpers
+  (e.g. `save_figure(fig, width_mm=120)`) or a local context manager, not
+  through global rcParams.

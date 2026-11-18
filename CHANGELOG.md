@@ -41,21 +41,6 @@ the pipeline works; this file only describes *what changed and why*.
 - Existing adapted pre results are out of date: `adapt_apply_pre` reruns on
   the changed params, and the adapted event runs and pre metrics downstream of it.
 
-# 2026-11-05: pre/post response figures plot the events chosen in EVENT_ORDER (-KL)
-
-- `analysis/pre_post_response_figures.py`: `EVENT_ORDER` now selects the events
-  to plot, and other events in `metrics_comparison.csv` are dropped. Before,
-  any event missing from the list (the new `*_100_03SLR` runs) stopped the
-  script with `ValueError: 'coast_100_03SLR' is not in list`.
-- Outputs computed over the selected events add their return period and SLR
-  to their names (`EVENT_TAG`, e.g. `_100_03SLR`): the scale-response
-  figures, the urban risk-reduction table, both Kendall tau-b tables and the
-  bump chart. 100-yr and 500-yr selections no longer overwrite each other.
-  `EVENT_LABELS` gains the 100-yr events.
-- `SCATTER_EVENTS` is the coastal event in `EVENT_ORDER` instead of a fixed
-  `coast_500_03SLR`, which stopped the script when only 100-yr events were
-  selected.
-
 # 2026-11-03: NbS pre runs: retention inlet snapped onto the levee; metrics on baseline land (-KL)
 
 - **Retention inlet (`adaptation_method_pre.apply_water_retention`):** the

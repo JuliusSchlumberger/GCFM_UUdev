@@ -219,7 +219,7 @@ def main() -> None:
     cbar.set_label("Elevation (m)")
     ax.set_xlabel("Longitude (°)")
     ax.set_ylabel("Latitude (°)")
-    ax.set_title(f"Elevation -- basin {BASIN_ID}")
+    # ax.set_title(f"Elevation -- basin {BASIN_ID}")
     fig.tight_layout()
     # out_path = out_dir / "fig_elevation_map.png"
     # fig.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -231,7 +231,7 @@ def main() -> None:
     present = draw_landuse_panel(ax, domain_dir, domain_poly)
     ax.set_xlabel("Longitude (°)")
     ax.set_ylabel("Latitude (°)")
-    ax.set_title(f"Land use (Copernicus LC100, 2019) -- basin {BASIN_ID}")
+    # ax.set_title(f"Land use (Copernicus LC100, 2019) -- basin {BASIN_ID}")
     ax.legend(
         handles=_lc_legend_handles(present),
         loc="lower right",
@@ -353,14 +353,14 @@ def plot_return_period_curves(basin_root):
     ax1.set_xscale("log")
     ax1.set_xlabel("Return period (years)")
     ax1.set_ylabel("Discharge (m3/s)")
-    ax1.set_title("River discharge")
+    # ax1.set_title("River discharge")
 
     for row in storm_tide_table:
         ax2.plot(surge_rp_yr, row, marker="o", markersize=3)
     ax2.set_xscale("log")
     ax2.set_xlabel("Return period (years)")
     ax2.set_ylabel("Water level (m)")
-    ax2.set_title("Coastal water level")
+    # ax2.set_title("Coastal water level")
 
     panel_protection = {
         ax1: protection["river_protection_rp_yr"],
