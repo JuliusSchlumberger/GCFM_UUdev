@@ -22,6 +22,7 @@ from src.river_network import (
     normalize_reach_id,
     outward_seed_reaches,
     remove_reaches_with_missing_width,
+    trim_overlapping_bifurcation_arms,
 )
 
 log = setup_logging(snakemake.log[0])
@@ -48,6 +49,10 @@ log.info(f"Loaded {len(rivers)} reaches")
 # Reaches starting on another reach's interior leave a ~18-111 m dangling
 # tail that fragments the merged-line connectivity used by burn_river_rect.
 rivers = fix_tjunction_tails(rivers)
+
+# Arms that run together or cross below the parent's end: the junction moves
+# to their last intersection.
+rivers = trim_overlapping_bifurcation_arms(rivers)
 
 crossings = load_forcing_crossings(
     snakemake.input.river_forcing,

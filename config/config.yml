@@ -156,8 +156,7 @@ river_processing:
     bifurcation_check:              # round 1 (walled, steady): SFINCS cross-sections across each arm of every bifurcation on the seeds' widest paths; end-of-run
                                     # discharge share per arm against the routed share, in round1/bifurcation_split.csv
       max_share_error: 0.05         # larger |SFINCS share - routed share| stops rule 11: fix the river network (arm alignment, widths), or set river_processing.split_override
-      accepted: [44306300275]       # parent reaches whose mismatch is known and accepted until the network is revised. 3279946: a 60 km loop whose
-                                    # SWORD arms are misaligned at the junction, so SFINCS sends 0.55 down the 84 m arm against a width share of 0.37
+      accepted: []                  # parent reaches whose mismatch is known and accepted until the network is revised
     ramp_hr: 6.0                    # half-cosine ramp, then held to the run end: every crossing from its mean discharge (the flow that holds zsini's river level, src.river_bed mean_level_m) to the calibration discharge, and every sea station from the calm level (where the sea starts) to its storm tide at the coastal protection RP. A step to the full (often many-times-bankfull) discharge sends a front that can oscillate for the whole run.
     weir_crest_m: 1000.0            # confinement weir crest (m) for round 1 -- effectively never overtopped
     # ── weir-building params (used by modelled_depth_estimation every round)

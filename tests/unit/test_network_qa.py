@@ -1,4 +1,4 @@
-"""Unit tests for the width, canal and outward-seed checks in src.river_network."""
+"""Unit tests for the width, canal, outward-seed and bifurcation-arm checks in src.river_network."""
 
 import geopandas as gpd
 import numpy as np
@@ -15,6 +15,7 @@ from src.river_network import (
     normalize_reach_id,
     outflow_crossing_mask,
     outward_seed_reaches,
+    trim_overlapping_bifurcation_arms,
 )
 
 
@@ -166,3 +167,74 @@ def test_kahn_order_rejects_successor_outside_nodes():
 )
 def test_normalize_reach_id_edge_cases(raw, expected):
     assert normalize_reach_id(raw) == expected
+
+
+def _bifurcation(arm_a, arm_b, parent=((0, 0), (1000, 0))):
+    return gpd.GeoDataFrame(
+        {
+            "reach_id": ["1", "2", "3"],
+            "rch_id_dn": ["[2, 3]", "[]", "[]"],
+            "width": [100.0, 80.0, 40.0],
+            "reach_length": [
+                1000.0,
+                LineString(arm_a).length,
+                LineString(arm_b).length,
+            ],
+            "dist_out": [5000.0, 4000.0, 4000.0],
+            "hydro_dist_hw": [0.0, 1000.0, -9999.0],
+            "pathlen_hw": [1000.0, 3000.0, 3000.0],
+        },
+        geometry=[LineString(parent), LineString(arm_a), LineString(arm_b)],
+        crs="EPSG:32631",
+    )
+
+
+def _by_id(net):
+    return net.set_index(net["reach_id"])
+
+
+def test_shared_arm_stretch_moves_junction_to_its_end():
+    net = _bifurcation(
+        [(1000, 0), (1050, 0), (2000, 500)], [(1000, 0), (1050, 0), (2000, -500)]
+    )
+    out = _by_id(trim_overlapping_bifurcation_arms(net))
+    assert out.loc["1"].geometry.coords[-1] == (1050.0, 0.0)
+    assert out.loc["2"].geometry.coords[0] == (1050.0, 0.0)
+    assert out.loc["3"].geometry.coords[0] == (1050.0, 0.0)
+    assert out.loc["1", "reach_length"] == pytest.approx(1050.0)
+    assert out.loc["2", "reach_length"] == pytest.approx(out.loc["2"].geometry.length)
+    assert out.loc["2", "dist_out"] == pytest.approx(3950.0)
+    assert out.loc["1", "dist_out"] == 5000.0
+    assert out.loc["1", "pathlen_hw"] == pytest.approx(1050.0)
+    assert out.loc["2", "hydro_dist_hw"] == pytest.approx(1050.0)
+    assert out.loc["3", "hydro_dist_hw"] == -9999.0
+
+
+def test_crossing_arms_meet_at_the_new_junction_along_the_wider_arm():
+    net = _bifurcation(
+        [(1000, 0), (1040, 20), (1080, 0), (2000, -500)],
+        [(1000, 0), (1040, -20), (1080, 0), (2000, 500)],
+    )
+    out = _by_id(trim_overlapping_bifurcation_arms(net))
+    assert out.loc["1"].geometry.coords[-1] == pytest.approx((1080.0, 0.0))
+    assert (1040.0, 20.0) in list(out.loc["1"].geometry.coords)
+    for arm in ("2", "3"):
+        assert out.loc[arm].geometry.coords[0] == pytest.approx((1080.0, 0.0))
+
+
+def test_arms_drawn_upstream_keep_their_direction():
+    net = _bifurcation(
+        [(2000, 500), (1050, 0), (1000, 0)], [(1000, 0), (1050, 0), (2000, -500)]
+    )
+    out = _by_id(trim_overlapping_bifurcation_arms(net))
+    assert out.loc["2"].geometry.coords[-1] == (1050.0, 0.0)
+    assert out.loc["2"].geometry.coords[0] == (2000.0, 500.0)
+
+
+def test_arms_meeting_only_at_their_downstream_ends_are_left_alone():
+    net = _bifurcation(
+        [(1000, 0), (1500, 300), (2000, 0)], [(1000, 0), (1500, -300), (2000, 0)]
+    )
+    out = trim_overlapping_bifurcation_arms(net)
+    assert out.geometry.geom_equals(net.geometry).all()
+    assert out["reach_length"].equals(net["reach_length"])

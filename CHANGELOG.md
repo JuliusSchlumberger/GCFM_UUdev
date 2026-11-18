@@ -3,6 +3,18 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-18: bifurcation junction moved to the arms' last intersection; B37 width (- JS)
+
+- **What changed:** new `src.river_network.trim_overlapping_bifurcation_arms`, run by rule 08 after `fix_tjunction_tails`. Where two downstream arms intersect other than at the parent's end (and other than where both end, a loop closing), the intersection farthest from the junction becomes the parent's new end. The parent is extended along its widest arm, and each arm is cut to start there. `reach_length` and the SWORD distance fields follow their reporting end (v17c variable reference): arms lose the trimmed length from `dist_out`, `hydro_dist_out`, `dist_out_dijkstra` and `pathlen_out` and gain the extension in `hydro_dist_hw`; the parent gains it in `pathlen_hw`. Bifurcations where not every arm passes through that point are logged and left unchanged.
+- **Why:** SWORD arms run together or cross just below some junctions, so the split sits upstream of where the channels part.
+- **Effect** (uncleaned networks, all 8 deltas, 34 arm pairs): 3 junctions move; 1416812 (5 bifurcations, no intersecting arms) and the five deltas without bifurcations are unchanged.
+  - 1248635: 23261000201 by 21 m.
+  - 3279946: 44306300275 by 42 m (B37's bifurcation), 44306300265 by 45 m.
+  - Left unchanged: 1248635 23261001561 (three arms; two share 44 m, the third does not pass through that point). Its arms 23261001571 and 23261001541 also meet where both end, which is not counted.
+  - Topology and widths are unchanged, so routed discharges are too; all moves are under one 100 m cell. Rule 08 and everything downstream rerun for every basin (code change); burned channels, depths and flooding will move only near these junctions.
+- **Width correction (B37):** `config/sword_width_corrections.csv` sets 3279946 reach 44306300365 from SWORD's 144.79 m to 42 m, the width of the reach below it (44306300355). The routed share at bifurcation 44306300275 changes from 0.367 / 0.633 to 0.667 / 0.333 (44306200025 / 44306300365), and with it the discharge on every reach below either arm. The table is an input of rule 02, so every basin reruns from rule 02; only 3279946's widths change.
+- **Bifurcation check:** 44306300275 removed from `river_depth_modelling.bifurcation_check.accepted` (now empty), so rule 11 stops if SFINCS's split there is still more than 0.05 off. Not yet rerun.
+
 # 2026-11-17: model grid covers the whole delta polygon (- JS)
 
 **What changed:**

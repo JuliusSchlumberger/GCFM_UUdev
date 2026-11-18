@@ -280,6 +280,150 @@ def fix_tjunction_tails(
     return out
 
 
+# SWORD v17c distance fields by the reach end they are reported at
+# (v17c_variable_reference.md): moving a junction downstream shortens the
+# arms at their upstream end and lengthens the parent at its downstream end.
+_SWORD_DIST_AT_UPSTREAM_END_TO_OUTLET = (
+    "dist_out",
+    "hydro_dist_out",
+    "dist_out_dijkstra",
+    "pathlen_out",
+)
+_SWORD_DIST_AT_UPSTREAM_END_FROM_HEADWATER = ("hydro_dist_hw",)
+_SWORD_DIST_AT_DOWNSTREAM_END_FROM_HEADWATER = ("pathlen_hw",)
+_SWORD_NODATA = -9999.0
+
+
+def _intersection_points(geom) -> list[Point]:
+    if geom.is_empty:
+        return []
+    if hasattr(geom, "geoms"):
+        return [p for g in geom.geoms for p in _intersection_points(g)]
+    return [Point(c) for c in geom.coords]
+
+
+def trim_overlapping_bifurcation_arms(
+    rivers: gpd.GeoDataFrame,
+    junction_tol_m: float = 1.0,
+) -> gpd.GeoDataFrame:
+    """Move each bifurcation junction to the last point where its arms intersect.
+
+    SWORD arms often run together, or cross, for tens of metres below the
+    parent's end. Where two arms intersect other than at the junction (and
+    other than where both end, a loop closing), the intersection farthest from
+    the junction becomes the parent's new downstream end: the parent is
+    extended along the widest arm to it, and every arm is cut to start there.
+    Bifurcations where not every arm passes through that point are logged and
+    left as they are. reach_length and the SWORD distance fields follow the
+    new ends; -9999 stays -9999.
+    """
+    from shapely.ops import substring
+
+    metric_crs = pick_utm_crs(rivers) if rivers.crs.is_geographic else rivers.crs
+    rivers_m = rivers.to_crs(metric_crs)
+    rid = rivers_m["reach_id"].map(normalize_reach_id)
+    idx_of = dict(zip(rid, rivers_m.index))
+    geom = {
+        r: g
+        for r, g in zip(rid, rivers_m.geometry.map(_as_linestring))
+        if r is not None and g is not None and g.length > 0
+    }
+    width = dict(zip(rid, pd.to_numeric(rivers_m["width"], errors="coerce")))
+    adjacency = build_downstream_adjacency(rivers)
+
+    out = rivers.copy()
+    new_geom: dict[str, LineString] = {}
+    deltas: dict[str, dict[str, float]] = {}
+    for parent, arms in adjacency.items():
+        arms = [a for a in arms if a in geom]
+        if parent not in geom or len(arms) < 2:
+            continue
+        p_line = new_geom.get(parent, geom[parent])
+        ends = [Point(p_line.coords[0]), Point(p_line.coords[-1])]
+        junction = min(
+            ends,
+            key=lambda e: sum(e.distance(new_geom.get(a, geom[a])) for a in arms),
+        )
+        parent_ends_at_last = junction.equals(ends[1])
+
+        away, reversed_arm = {}, {}
+        for a in arms:
+            line = new_geom.get(a, geom[a])
+            rev = Point(line.coords[0]).distance(junction) > Point(
+                line.coords[-1]
+            ).distance(junction)
+            away[a], reversed_arm[a] = (line.reverse() if rev else line), rev
+
+        candidates = []
+        for i, a in enumerate(arms):
+            for c in arms[i + 1 :]:
+                far_ends = (Point(away[a].coords[-1]), Point(away[c].coords[-1]))
+                for p in _intersection_points(away[a].intersection(away[c])):
+                    if p.distance(junction) <= junction_tol_m:
+                        continue
+                    if any(p.distance(e) <= junction_tol_m for e in far_ends):
+                        continue
+                    candidates.append(p)
+        if not candidates:
+            continue
+        new_end = max(candidates, key=lambda p: p.distance(junction))
+        if any(away[a].distance(new_end) > junction_tol_m for a in arms):
+            log.warning(
+                f"trim_overlapping_bifurcation_arms: {parent}: not every arm of "
+                f"{arms} passes through the last intersection; left unchanged"
+            )
+            continue
+
+        main_arm = max(arms, key=lambda a: np.nan_to_num(width.get(a), nan=-1.0))
+        along_main = away[main_arm].project(new_end)
+        extension = substring(away[main_arm], 0.0, along_main)
+        ext_coords = list(extension.coords)
+        p_coords = list(p_line.coords)
+        if parent_ends_at_last:
+            merged = p_coords + ext_coords[1:]
+        else:
+            merged = ext_coords[::-1][:-1] + p_coords
+        new_geom[parent] = LineString(merged)
+        deltas.setdefault(parent, {"length": 0.0, "trim": 0.0, "ext": 0.0})
+        deltas[parent]["length"] += extension.length
+
+        for a in arms:
+            along = away[a].project(new_end)
+            cut = substring(away[a], along, away[a].length)
+            new_geom[a] = cut.reverse() if reversed_arm[a] else cut
+            deltas.setdefault(a, {"length": 0.0, "trim": 0.0, "ext": 0.0})
+            deltas[a]["trim"] += along
+            deltas[a]["ext"] += extension.length
+        log.info(
+            f"trim_overlapping_bifurcation_arms: {parent} junction moved "
+            f"{extension.length:.0f} m along {main_arm}; arms {arms} trimmed"
+        )
+
+    if not new_geom:
+        log.info("trim_overlapping_bifurcation_arms: no overlapping arms found")
+        return rivers
+
+    moved = gpd.GeoSeries(
+        list(new_geom.values()), index=list(new_geom.keys()), crs=metric_crs
+    ).to_crs(rivers.crs)
+    for r, g in moved.items():
+        out.at[idx_of[r], "geometry"] = g
+
+    def _shift(i, cols, amount):
+        for col in cols:
+            if col in out.columns and out.at[i, col] != _SWORD_NODATA:
+                out.at[i, col] = out.at[i, col] + amount
+
+    for r, d in deltas.items():
+        i = idx_of[r]
+        change = d["length"] - d["trim"]
+        _shift(i, ("reach_length",), change)
+        _shift(i, _SWORD_DIST_AT_UPSTREAM_END_TO_OUTLET, -d["trim"])
+        _shift(i, _SWORD_DIST_AT_UPSTREAM_END_FROM_HEADWATER, d["ext"])
+        _shift(i, _SWORD_DIST_AT_DOWNSTREAM_END_FROM_HEADWATER, d["length"])
+    return out
+
+
 def outward_seed_reaches(
     rivers: gpd.GeoDataFrame, seed_ids, adjacency: dict[str, list[str]]
 ) -> set[str]:
