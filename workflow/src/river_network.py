@@ -312,10 +312,11 @@ def trim_overlapping_bifurcation_arms(
     parent's end. Where two arms intersect other than at the junction (and
     other than where both end, a loop closing), the intersection farthest from
     the junction becomes the parent's new downstream end: the parent is
-    extended along the widest arm to it, and every arm is cut to start there.
-    Bifurcations where not every arm passes through that point are logged and
-    left as they are. reach_length and the SWORD distance fields follow the
-    new ends; -9999 stays -9999.
+    extended to it along the widest arm through it, those arms are cut to
+    start there, and any other arm starts there too, joining its own line at
+    the point nearest to it. reach_length and the SWORD distance fields follow
+    the new ends;
+    -9999 stays -9999.
     """
     from shapely.ops import substring
 
@@ -367,14 +368,9 @@ def trim_overlapping_bifurcation_arms(
         if not candidates:
             continue
         new_end = max(candidates, key=lambda p: p.distance(junction))
-        if any(away[a].distance(new_end) > junction_tol_m for a in arms):
-            log.warning(
-                f"trim_overlapping_bifurcation_arms: {parent}: not every arm of "
-                f"{arms} passes through the last intersection; left unchanged"
-            )
-            continue
+        passing = [a for a in arms if away[a].distance(new_end) <= junction_tol_m]
 
-        main_arm = max(arms, key=lambda a: np.nan_to_num(width.get(a), nan=-1.0))
+        main_arm = max(passing, key=lambda a: np.nan_to_num(width.get(a), nan=-1.0))
         along_main = away[main_arm].project(new_end)
         extension = substring(away[main_arm], 0.0, along_main)
         ext_coords = list(extension.coords)
@@ -388,15 +384,27 @@ def trim_overlapping_bifurcation_arms(
         deltas[parent]["length"] += extension.length
 
         for a in arms:
-            along = away[a].project(new_end)
-            cut = substring(away[a], along, away[a].length)
-            new_geom[a] = cut.reverse() if reversed_arm[a] else cut
             deltas.setdefault(a, {"length": 0.0, "trim": 0.0, "ext": 0.0})
-            deltas[a]["trim"] += along
             deltas[a]["ext"] += extension.length
+            if a in passing:
+                along = away[a].project(new_end)
+                line = substring(away[a], along, away[a].length)
+                deltas[a]["trim"] += along
+            else:
+                along = away[a].project(new_end)
+                rest = (
+                    list(substring(away[a], along, away[a].length).coords)
+                    if along > junction_tol_m
+                    else list(away[a].coords)[1:]
+                )
+                line = LineString([new_end.coords[0], *rest])
+                deltas[a]["trim"] += away[a].length - line.length
+            new_geom[a] = line.reverse() if reversed_arm[a] else line
+        extended = [a for a in arms if a not in passing]
         log.info(
             f"trim_overlapping_bifurcation_arms: {parent} junction moved "
-            f"{extension.length:.0f} m along {main_arm}; arms {arms} trimmed"
+            f"{extension.length:.0f} m along {main_arm}; arms {passing} trimmed"
+            + (f", {extended} reconnected to it" if extended else "")
         )
 
     if not new_geom:
@@ -420,7 +428,11 @@ def trim_overlapping_bifurcation_arms(
         _shift(i, ("reach_length",), change)
         _shift(i, _SWORD_DIST_AT_UPSTREAM_END_TO_OUTLET, -d["trim"])
         _shift(i, _SWORD_DIST_AT_UPSTREAM_END_FROM_HEADWATER, d["ext"])
-        _shift(i, _SWORD_DIST_AT_DOWNSTREAM_END_FROM_HEADWATER, d["length"])
+        _shift(
+            i,
+            _SWORD_DIST_AT_DOWNSTREAM_END_FROM_HEADWATER,
+            d["length"] + d["ext"] - d["trim"],
+        )
     return out
 
 

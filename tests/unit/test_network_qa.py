@@ -238,3 +238,35 @@ def test_arms_meeting_only_at_their_downstream_ends_are_left_alone():
     out = trim_overlapping_bifurcation_arms(net)
     assert out.geometry.geom_equals(net.geometry).all()
     assert out["reach_length"].equals(net["reach_length"])
+
+
+def test_third_arm_off_the_new_junction_starts_there_without_retracing():
+    third_arm = LineString([(1000, 0), (1100, -100), (1100, -500)])
+    net = gpd.GeoDataFrame(
+        {
+            "reach_id": ["1", "2", "3", "4"],
+            "rch_id_dn": ["[2, 3, 4]", "[]", "[]", "[]"],
+            "width": [100.0, 80.0, 40.0, 30.0],
+            "reach_length": [1000.0, 1000.0, 1000.0, third_arm.length],
+            "dist_out": [5000.0, 4000.0, 4000.0, 4000.0],
+        },
+        geometry=[
+            LineString([(0, 0), (1000, 0)]),
+            LineString([(1000, 0), (1050, 0), (2000, 500)]),
+            LineString([(1000, 0), (1050, 0), (2000, -500)]),
+            third_arm,
+        ],
+        crs="EPSG:32631",
+    )
+    out = _by_id(trim_overlapping_bifurcation_arms(net))
+    parent, third = out.loc["1"].geometry, out.loc["4"].geometry
+    for arm in ("2", "3", "4"):
+        assert out.loc[arm].geometry.coords[0] == (1050.0, 0.0)
+    assert list(third.coords) == pytest.approx(
+        [(1050.0, 0.0), (1025.0, -25.0), (1100.0, -100.0), (1100.0, -500.0)]
+    )
+    assert third.intersection(parent).length == 0.0
+    assert out.loc["4", "reach_length"] == pytest.approx(third.length)
+    assert out.loc["4", "dist_out"] == pytest.approx(
+        4000.0 + third.length - third_arm.length
+    )
