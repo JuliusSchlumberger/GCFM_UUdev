@@ -17,6 +17,7 @@ from src.surge import (
     periodic_tide,
     preview_station_rp_yr,
     read_calm_sea_level_m,
+    sea_ramp,
     sinusoidal_wave,
     storm_tide_at_rp_interpolated,
     storm_tide_event,
@@ -242,3 +243,22 @@ def test_periodic_tide_repeats_outside_the_window():
         0.5 * np.cos(2.0 * np.pi * rel_hr / 12.5),
         atol=1e-9,
     )
+
+
+def test_sea_ramp_runs_hourly_from_start_to_each_station_without_a_kink():
+    hours, levels = sea_ramp(0.10, np.array([0.40, -0.20]), 6.0)
+    np.testing.assert_array_equal(hours, np.arange(7.0))
+    np.testing.assert_allclose(levels[0], [0.10, 0.10])
+    np.testing.assert_allclose(levels[-1], [0.40, -0.20])
+    steps = np.diff(levels[:, 0])
+    assert np.all(steps > 0) and steps[0] < steps[2] and steps[-1] < steps[2]
+    assert np.all(np.diff(levels[:, 1]) < 0)
+
+
+def test_sea_ramp_shorter_than_an_hour_and_zero_length():
+    hours, levels = sea_ramp(0.0, np.array([1.0]), 0.5)
+    np.testing.assert_array_equal(hours, [0.0, 0.5])
+    np.testing.assert_allclose(levels[:, 0], [0.0, 1.0])
+    hours, levels = sea_ramp(0.0, np.array([1.0]), 0.0)
+    np.testing.assert_array_equal(hours, [0.0])
+    np.testing.assert_allclose(levels[:, 0], [1.0])

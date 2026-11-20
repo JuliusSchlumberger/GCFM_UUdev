@@ -45,6 +45,10 @@ rule modelled_depth_estimation:
         # - river_burned_dem_sfincs_grid: per-cell mean of those subgrid pixels.
         river_burned_subgrid          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_subgrid.tif"),
         river_burned_dem_sfincs_grid  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"),
+        # Pocket cells beside the weir lowered to their crest, on the subgrid
+        # pixel grid (NaN elsewhere); the first subgrid elevation source of
+        # round 2 and rule 12a.
+        pocket_cap_subgrid            = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_pocket_cap_subgrid.tif"),
         # Traced weir; each edge's crest from round 1's water level on its
         # water side (verified in round 2), not derivable from per-reach values.
         coastal_protection_weir       = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"),
@@ -54,8 +58,8 @@ rule modelled_depth_estimation:
         zsini_sea_cells               = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
         # Round 0's node table (bed, width, level, design discharge along the
         # network); read by the analysis checks (analysis/_upstream_profile.py).
-        # Round 1's subgrid table and mask; rule 12a copies the table when its
-        # mask is identical instead of building the same table again.
+        # The production subgrid table (pocket cells capped) and mask; rule 12a
+        # copies the table when its mask is identical instead of building it again.
         calibration_subgrid          = calibration_subgrid_files(),
         river_bed_nodes              = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_bed/{basin_id}_river_bed_nodes.csv"),
         # Walled hydraulics and travel times per crossing at the calibration
@@ -79,8 +83,6 @@ rule modelled_depth_estimation:
         ocean_wetland_mask = diagnostics_path("ocean_wetland_mask.tif"),
         crest_on_grid      = diagnostics_path("crest_on_grid.tif"),
         calibration_rounds = diagnostics_path("calibration_rounds.json"),
-        # One row per alpha tried in round 1; the selected one is the basin's (rule 12a).
-        alpha_check        = diagnostics_path("alpha_check.csv"),
         ocean_mask_on_grid = results_path("{basin_id}/preprocessing_inputs/depth_crest_calibration/ocean_mask_on_grid.tif"),
     params:
         calib_root  = lambda wildcards: results_path(f"{wildcards.basin_id}/preprocessing_inputs/depth_crest_calibration"),
@@ -110,12 +112,13 @@ rule modelled_depth_estimation:
         weir_freeboard_m              = config["river_processing"]["river_depth_modelling"]["freeboard_m"],
         unprotected_ocean_wetlands    = config["river_processing"]["river_depth_modelling"]["unprotected_ocean_wetlands"],
         min_component_cells           = config["river_processing"]["river_depth_modelling"]["min_component_cells"],
+        pocket_cap                    = config["river_processing"]["river_depth_modelling"]["pocket_cap"],
         # Same subgrid setup as rules 12a/13a, so calibration sees the production bathymetry.
         nr_subgrid_pixels  = config["sfincs"]["subgrid"]["nr_subgrid_pixels"],
         nr_levels          = config["sfincs"]["subgrid"]["nr_levels"],
         nrmax              = config["sfincs"]["subgrid"]["nrmax"],
         advection          = config["sfincs"]["advection"],
-        alpha              = lambda wildcards: alpha_candidates(wildcards.basin_id),
+        alpha              = lambda wildcards: basin_alpha(wildcards.basin_id),
         alpha_reversal_max_m = config["sfincs"]["alpha_reversal_max_m"],
     threads: rule_threads("modelled_depth_estimation")
     log:

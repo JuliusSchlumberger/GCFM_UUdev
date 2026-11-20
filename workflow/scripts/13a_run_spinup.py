@@ -14,8 +14,9 @@ overtopped the coastal dike during spin-up.
 
 Runs in chunks of chunk_hr, each restarting from the last, until rule 11's
 steady test (steady_check window_hr / tol_m, both directions) passes on the
-river-network cells, at most max_days; a spin-up still not steady is kept and
-marked (stability.csv steady, "Check stability" banner). Writes, under
+river-network cells, at most max_days. A spin-up still not steady, or with
+hourly level swings on the river network, stops the rule (map kept as
+sfincs_map.unstable.nc). Writes, under
 spin_up/slr_<slr_m>/: sfincs.inp (last chunk), the restart at the end
 (sfincs.spinup.rst), the last chunk's sfincs_map.nc (earlier chunks'
 sfincs_map_chunkNN.nc), the observation series
@@ -42,22 +43,23 @@ from src.log import setup_logging
 from src.plots import (
     plot_max_inundation_map,
     plot_run_forcing,
-    stamp_unstable,
 )
 from src.river_network import outflow_crossing_mask
 from src.postprocessing import compute_max_inundation, read_land_bed_level
 from src.river_burn import build_centerline_cells_regular
 from src.sfincs_run import (
     FORCING_FILE_KEYS,
+    alpha_remedy,
+    check_forcing_smoothness,
     parse_sfincs_inp,
     place_discharge_points,
     river_network_stability,
     river_network_steady,
     run_sfincs_subprocess,
-    stability_note,
+    stop_failed_run,
     write_sfincs_inp,
 )
-from src.surge import calm_sea_levels, read_calm_sea_level_m
+from src.surge import calm_sea_levels, read_calm_sea_level_m, sea_ramp
 
 log = setup_logging(snakemake.log[0])
 
@@ -140,19 +142,21 @@ stations_gdf = gpd.GeoDataFrame(
 start_level = read_calm_sea_level_m(surge_ds)
 # Each station's calm level plus slr_m x fingerprint.
 calm_levels = calm_sea_levels(surge_ds, slr_m)  # (n_station,)
-ramp_end = tref + timedelta(hours=min(boundary_ramp_hr, chunk_hr))
-wl_times = pd.DatetimeIndex(sorted({tref, ramp_end, tstop}))
-wl_values = np.array(
-    [np.full(n_stations, start_level) if t == tref else calm_levels for t in wl_times]
-)
+# Half-cosine, sampled hourly: no kink at either end, like the event ramps.
+ramp_hr = min(boundary_ramp_hr, chunk_hr)
+ramp_hours, wl_values = sea_ramp(start_level, calm_levels, ramp_hr)
+wl_times = pd.DatetimeIndex([tref + timedelta(hours=float(h)) for h in ramp_hours])
+if tstop > wl_times[-1]:
+    wl_times = wl_times.append(pd.DatetimeIndex([tstop]))
+    wl_values = np.vstack([wl_values, calm_levels])
 wl_df = pd.DataFrame(data=wl_values, index=wl_times, columns=range(n_stations))
 sf.water_level.create(
     timeseries=wl_df, locations=stations_gdf, buffer=water_level_buffer_m
 )
 log.info(
     f"Water-level forcing: {n_stations} station(s) at the calm-sea level + {slr_m:g} m SLR "
-    f"({calm_levels.min():+.2f}..{calm_levels.max():+.2f} m; ramped from the starting sea "
-    f"{start_level:+.2f} m over {boundary_ramp_hr:.1f} h), held until {tstop}"
+    f"({calm_levels.min():+.2f}..{calm_levels.max():+.2f} m; half-cosine ramp from the starting sea "
+    f"{start_level:+.2f} m over {ramp_hr:.1f} h), held until {tstop}"
 )
 sf.water_level.write()
 
@@ -241,6 +245,8 @@ for k in range(1, n_chunks_max + 1):
         {key: sf.config.get(key) for key in FORCING_FILE_KEYS},
         exclude_files=frozenset({"inifile", "ncinifile"}) if k > 1 else frozenset(),
     )
+    if k == 1:
+        check_forcing_smoothness(spin_up_root, snakemake.config["sfincs"]["forcing_checks"])
     run_sfincs_subprocess(
         sfincs_exe,
         spin_up_root,
@@ -311,6 +317,38 @@ for part in his_parts:
 
 basin_id = spin_up_root.parents[1].name
 
+# ── stability.csv: length, steady test, river-network swing check over all chunks ──
+# An unstable or unsettled spin-up stops the rule: every event restarts from it.
+stability = max(swings, key=lambda r: r["max_swing_m"]) | {
+    "unstable": any(r["unstable"] for r in swings),
+    "spinup_hr": spinup_hr,
+    "chunks": k,
+    **steady,
+}
+if stability["unstable"]:
+    stop_failed_run(
+        spin_up_root,
+        f"Spin-up UNSTABLE: hourly level swing {stability['max_swing_m']:.2f} m on the "
+        f"river network ({stability['cells_over']} cell(s), worst at x {stability['x']:.0f}, "
+        f"y {stability['y']:.0f}; alpha {stability['alpha']:g}).",
+        alpha_remedy(basin_id, stability["alpha"]),
+    )
+if not stability["steady"]:
+    stop_failed_run(
+        spin_up_root,
+        f"Spin-up NOT STEADY after {spinup_hr:g} h ({k} chunk(s)): mean level on the "
+        f"river network still changing by {stability['max_level_change_m']:.3f} m over "
+        f"{steady_cfg['window_hr']:g} h ({stability['cells_changing']} cell(s) above "
+        f"{steady_cfg['tol_m']:g} m).",
+        "Find the reach that keeps moving (the chunk maps are kept), or raise "
+        "sfincs.spinup.max_days in config/config.yml.",
+    )
+pd.DataFrame([stability]).to_csv(snakemake.output.stability, index=False)
+log.info(
+    f"Spin-up steady after {spinup_hr:g} h ({k} chunk(s)); largest hourly level "
+    f"swing {stability['max_swing_m']:.2f} m"
+)
+
 # ── forcing figure ──
 plot_run_forcing(spin_up_root, snakemake.output.plot_forcing, basin_id, "spinup")
 
@@ -324,22 +362,3 @@ plot_max_inundation_map(
     basin_id=basin_id,
     run_label=f"spinup slr {slr_m:g}",
 )
-
-# ── stability.csv: length, steady test, river-network swing check over all chunks ──
-stability = max(swings, key=lambda r: r["max_swing_m"]) | {
-    "unstable": any(r["unstable"] for r in swings),
-    "spinup_hr": spinup_hr,
-    "chunks": k,
-    **steady,
-}
-pd.DataFrame([stability]).to_csv(snakemake.output.stability, index=False)
-note = stability_note(stability)
-if note:
-    log.warning(f"Spin-up: {note}")
-    for path in (snakemake.output.plot_forcing, snakemake.output.plot_max_depth):
-        stamp_unstable(path, note)
-else:
-    log.info(
-        f"Spin-up steady after {spinup_hr:g} h ({k} chunk(s)); largest hourly level "
-        f"swing {stability['max_swing_m']:.2f} m"
-    )

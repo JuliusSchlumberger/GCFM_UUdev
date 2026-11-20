@@ -37,6 +37,11 @@ up to the next centimetre (src.surge.ceil_crest), the sfincs.weir precision,
 so a crest is never below its zsmax. A never-wetted water side falls back to
 coastal_protection_crest_m, so no edge is dropped.
 
+Production subgrid table -- round 1's subgrid elevation with the pocket cells
+beside the weir lowered to their crest (src.protection_weir.cap_pocket_cells;
+written as the pocket_cap_subgrid overlay). Round 2 runs on it and rule 12a
+copies it.
+
 Round 2 -- verification with the production weir. Changes nothing; reports
 every edge whose water side exceeds its crest.
 
@@ -85,12 +90,14 @@ from scipy.spatial import cKDTree
 from src.protection_weir import (
     GridArrays,
     build_coastal_protection_weir,
+    cap_pocket_cells,
     floor_crests_above_face_zmin,
     ocean_linked_wetland_mask,
 )
 from src.domain import load_domain
 from src.grid import create_model_grid, load_grid_def
 from src.hydromt_sfincs_patch import (
+    MASK_FILES,
     ReusableSubgrid,
     patch_nearest_extrapolation,
     patch_subgrid_write,
@@ -103,7 +110,6 @@ from src.plots import (
     plot_crest_profiles,
     plot_max_inundation_map,
     plot_run_forcing,
-    stamp_unstable,
 )
 from src.postprocessing import (
     compute_max_inundation,
@@ -142,12 +148,14 @@ from src.river_network import (
 )
 from src.sfincs_run import (
     create_active_mask,
+    alpha_remedy,
+    check_forcing_smoothness,
     level_reversal_m,
     place_discharge_points,
     read_face_zmin,
     run_sfincs_subprocess,
     set_sea_and_outflow_boundaries,
-    stability_note,
+    stop_failed_run,
     write_weir_file,
 )
 from src.river_forcing import cosine_ramp
@@ -212,11 +220,12 @@ weir_freeboard_m = float(snakemake.params.weir_freeboard_m)
 # coastal dike in all three rounds.
 unprotected_ocean_wetlands = bool(snakemake.params.unprotected_ocean_wetlands)
 min_component_cells = int(snakemake.params.min_component_cells)
+pocket_cap = dict(snakemake.params.pocket_cap)
 nr_subgrid_pixels = int(snakemake.params.nr_subgrid_pixels)
 nr_levels = int(snakemake.params.nr_levels)
 nrmax = int(snakemake.params.nrmax)
 advection = int(snakemake.params.advection)
-alpha_candidates = [float(a) for a in snakemake.params.alpha]
+alpha = float(snakemake.params.alpha)
 alpha_reversal_max_m = float(snakemake.params.alpha_reversal_max_m)
 active_mask_enabled = snakemake.params.active_mask_enabled
 active_mask_elevation_buffer_m = float(snakemake.params.active_mask_elevation_buffer_m)
@@ -308,9 +317,10 @@ delta_outflow_gdf = gpd.read_file(delta_outflow_points_path)
 delta_outflow_enabled = not delta_outflow_gdf.empty
 log.info(f"Delta-outline outflow points: {len(delta_outflow_gdf)}")
 
-# river_burned_subgrid is registered now although it is written only after
-# round 0: the catalog needs the URI at model construction.
+# river_burned_subgrid and pocket_cap_subgrid are registered now although they
+# are written later: the catalog needs the URI at model construction.
 river_burned_subgrid_path = Path(snakemake.output.river_burned_subgrid)
+pocket_cap_subgrid_path = Path(snakemake.output.pocket_cap_subgrid)
 local_catalog_path = calib_root / "data_catalog_local.yml"
 local_catalog = {
     "meta": {"root": str(elevation_path.parent)},
@@ -333,6 +343,7 @@ local_catalog = {
         else {}
     ),
     "local_river_burned_subgrid": raster_catalog_entry(river_burned_subgrid_path),
+    "local_pocket_cap_subgrid": raster_catalog_entry(pocket_cap_subgrid_path),
 }
 with open(local_catalog_path, "w") as fh:
     yaml.dump(local_catalog, fh, sort_keys=False)
@@ -359,7 +370,7 @@ sf.config.update(
         "dtrstout": 0,
         "zsini": -9999.0,
         "advection": advection,
-        "alpha": alpha_candidates[0],
+        "alpha": alpha,
     }
 )
 
@@ -655,6 +666,7 @@ def _run_calibration_round(round_label: str, round_root: Path):
     )
     sf.write()
     write_weir_file(sf)  # crests at 1 cm, not hydromt_sfincs' 0.1 m
+    check_forcing_smoothness(round_root, snakemake.config["sfincs"]["forcing_checks"])
     log.info(f"Running SFINCS calibration ({round_label}, {run_hr:.0f} h)")
     run_sfincs_subprocess(
         sfincs_exe,
@@ -1007,27 +1019,30 @@ burned_arr_subgrid = constrain_to_coarse_channel_mask(
     channel_mask,
     grid.transform,
 )
-river_burned_subgrid_path.parent.mkdir(parents=True, exist_ok=True)
-with rasterio.open(
-    river_burned_subgrid_path,
-    "w",
-    driver="GTiff",
-    dtype="float32",
-    width=burned_arr_subgrid.shape[1],
-    height=burned_arr_subgrid.shape[0],
-    count=1,
-    crs=sf.crs,
-    transform=transform_subgrid,
-    nodata=FLOAT_NODATA,
-    compress="deflate",
-    tiled=True,
-) as dst:
-    dst.write(
-        np.where(np.isnan(burned_arr_subgrid), FLOAT_NODATA, burned_arr_subgrid).astype(
-            np.float32
-        ),
-        1,
-    )
+
+
+def _write_subgrid_raster(path: Path, arr: np.ndarray) -> None:
+    # On the subgrid pixel grid, NaN as nodata: an overlay over the elevation
+    # sources that follow it in a subgrid elevation_list.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        dtype="float32",
+        width=arr.shape[1],
+        height=arr.shape[0],
+        count=1,
+        crs=sf.crs,
+        transform=transform_subgrid,
+        nodata=FLOAT_NODATA,
+        compress="deflate",
+        tiled=True,
+    ) as dst:
+        dst.write(np.where(np.isnan(arr), FLOAT_NODATA, arr).astype(np.float32), 1)
+
+
+_write_subgrid_raster(river_burned_subgrid_path, burned_arr_subgrid)
 log.info(
     f"Written: {river_burned_subgrid_path} ({stats_subgrid['n_reaches_burned']} reach(es) burned, "
     f"{int(np.isfinite(burned_arr_subgrid).sum()):,} subgrid pixel(s) @ "
@@ -1373,57 +1388,25 @@ if not _bif_crs.empty:
 log.info(f"[{round_label}] {len(_bif_crs)} bifurcation cross-section(s) set")
 
 
-def _clear_run_outputs(run_dir: Path) -> None:
-    # A rerun in the same directory cannot recreate netCDF files SFINCS
-    # left behind on Windows.
-    for path in [run_dir / "sfincs_map.nc", run_dir / "sfincs_his.nc", *run_dir.glob("sfincs.*.rst")]:
-        path.unlink(missing_ok=True)
-
-
-# Round 1 is also the alpha check: the first candidate whose run keeps the
-# river centreline free of hourly level swings is the basin's alpha (rule
-# 12a). With none stable the last (smallest) is kept and marked unstable.
-alpha_rows = []
-for i_alpha, alpha in enumerate(alpha_candidates):
-    sf.config.set("alpha", alpha)
-    # A failed SFINCS run raises: instability shows in the levels SFINCS
-    # writes (swings, non-finite values), a failed run is a different problem.
-    period_max_zs_1, final_zs, final_times_s = _run_calibration_round(
-        round_label, round_root
+# A failed SFINCS run raises; instability shows in the levels SFINCS writes
+# (swings, non-finite values) and stops the rule.
+period_max_zs_1, final_zs, final_times_s = _run_calibration_round(
+    round_label, round_root
+)
+reversal = level_reversal_m(final_zs)
+worst = int(np.argmax(np.nan_to_num(reversal, nan=-1.0)))
+cells_over = int((reversal > alpha_reversal_max_m).sum())
+swing_msg = (
+    f"[{round_label}] alpha {alpha:g}: largest hourly level swing on the river centreline "
+    f"{reversal[worst]:.2f} m (reach {cell_gdf['reach_id'].iloc[worst]}, "
+    f"{cell_gdf['along_m'].iloc[worst]:.0f} m along), {cells_over}/{reversal.size} "
+    f"cell(s) above {alpha_reversal_max_m:g} m"
+)
+if cells_over:
+    stop_failed_run(
+        round_root, f"UNSTABLE: {swing_msg}.", alpha_remedy(basin_id, alpha)
     )
-    reversal = level_reversal_m(final_zs)
-    worst = int(np.argmax(np.nan_to_num(reversal, nan=-1.0)))
-    stable = bool(reversal[worst] <= alpha_reversal_max_m)
-    alpha_rows.append(
-        {
-            "alpha": alpha,
-            "max_reversal_m": float(reversal[worst]),
-            "cells_over": int((reversal > alpha_reversal_max_m).sum()),
-            "reach_id": str(cell_gdf["reach_id"].iloc[worst]),
-            "along_m": float(cell_gdf["along_m"].iloc[worst]),
-            "stable": stable,
-        }
-    )
-    log.info(
-        f"[{round_label}] alpha {alpha:g}: largest hourly level swing on the river centreline "
-        f"{reversal[worst]:.2f} m (reach {alpha_rows[-1]['reach_id']}, {alpha_rows[-1]['along_m']:.0f} m along), "
-        f"{alpha_rows[-1]['cells_over']}/{reversal.size} cell(s) above {alpha_reversal_max_m:g} m -- "
-        f"{'stable' if stable else 'unstable'}"
-    )
-    if stable or i_alpha == len(alpha_candidates) - 1:
-        break
-    _clear_run_outputs(round_root)
-alpha_check = pd.DataFrame(alpha_rows)
-alpha_check["selected"] = alpha_check.index == len(alpha_check) - 1
-alpha_check.to_csv(snakemake.output.alpha_check, index=False)
-calibration_unstable = not bool(alpha_check["stable"].iloc[-1])
-if calibration_unstable:
-    log.warning(
-        f"[{round_label}] UNSTABLE: no alpha in {alpha_candidates} ran stable; alpha {alpha:g} kept "
-        f"(details in {snakemake.output.alpha_check}): check the bed in the reaches listed there"
-    )
-else:
-    log.info(f"alpha {alpha:g} kept for basin {basin_id}")
+log.info(f"{swing_msg}: stable")
 _steady_check(round_label, final_zs, final_times_s)
 
 
@@ -1488,7 +1471,8 @@ weir_gdf, final_weir_diagnostics = build_coastal_protection_weir(
 )
 # SFINCS drops a weir face whose crest is not above the face's subgrid
 # minimum (uv_zmin); floor every crest there so all runs keep round 1's dike.
-# Round 2 and rule 12a use the same subgrid table, so its faces apply there.
+# The production table below only lowers pixels, so every face stays below
+# its floored crest in round 2 and rule 12a too.
 if final_weir_diagnostics.get("applicable", True) and not weir_gdf.empty:
     _u_zmin, _v_zmin = read_face_zmin(
         round_root / "sfincs_subgrid.nc", sf.grid.data["mask"]
@@ -1509,6 +1493,46 @@ if final_weir_diagnostics.get("applicable", True) and not weir_gdf.empty:
         f"[{round_label}] {_n_raised} of {len(weir_gdf)} weir edge crest(s) raised to the face's subgrid "
         f"minimum (uv_zmin) + {CREST_PRECISION_M * 100:g} cm, so SFINCS keeps every weir face"
     )
+
+# Production subgrid table: round 1's merged subgrid elevation with the pocket
+# cells beside the weir lowered to their crest, so SFINCS's explicit weir flux
+# cannot overshoot their small wet area. Round 2 runs on it; rule 12a copies it.
+with rasterio.open(round_root / "subgrid" / "dep_subgrid.tif") as _src:
+    if _src.shape != subgrid_shape or not _src.transform.almost_equals(
+        subgrid_transform, precision=1e-6
+    ):
+        raise ValueError(
+            f"{_src.name} is not on the subgrid pixel grid: shape {_src.shape} vs {subgrid_shape}"
+        )
+    _merged_subgrid = _src.read(1, masked=True).filled(np.nan).astype(np.float32)
+pocket_overlay, pocket_cells = cap_pocket_cells(
+    weir_gdf,
+    _merged_subgrid,
+    grid.transform,
+    nr_subgrid_pixels,
+    float(pocket_cap["max_wet_area_m2"]),
+    tuple(float(d) for d in pocket_cap["overtopping_m"]),
+    float(pocket_cap["below_crest_m"]),
+)
+del _merged_subgrid
+_write_subgrid_raster(pocket_cap_subgrid_path, pocket_overlay)
+log.info(
+    f"Pocket cells lowered to crest - {pocket_cap['below_crest_m']:g} m: {int(pocket_cells.sum()):,} cell(s), "
+    f"{int(np.isfinite(pocket_overlay).sum()):,} subgrid pixel(s). Written: {pocket_cap_subgrid_path}"
+)
+del pocket_overlay
+production_subgrid_elevation_list = [
+    {"elevation": "local_pocket_cap_subgrid"},
+    *excavated_subgrid_elevation_list,
+]
+production_root = calib_root / "production"
+production_root.mkdir(parents=True, exist_ok=True)
+sf.root.set(production_root)
+_create_subgrid(production_subgrid_elevation_list, "production table")
+sf.subgrid.write()
+for _name in MASK_FILES:
+    shutil.copy2(round_root / _name, production_root / _name)
+sf.root.set(round_root)
 
 # Per-centerline-cell summary of the same rule; reporting only.
 weir_crest_cell = ceil_crest(
@@ -1553,7 +1577,7 @@ if verify_crests:
         round_label,
         "production crests (per edge, from round 1)",
     )
-    _create_subgrid(excavated_subgrid_elevation_list, round_label)
+    _create_subgrid(production_subgrid_elevation_list, round_label)
     period_max_zs_2, final_zs, final_times_s = _run_calibration_round(
         round_label, round_root
     )
@@ -1706,11 +1730,4 @@ with open(snakemake.output.calibration_rounds, "w") as _f:
         _f,
         indent=2,
     )
-if calibration_unstable:
-    _kept = alpha_rows[-1]
-    _note = stability_note(
-        {"max_swing_m": _kept["max_reversal_m"], "cells_over": _kept["cells_over"], "alpha": _kept["alpha"]}
-    )
-    for _name in ("plot_forcing_r1", "plot_max_depth_r1"):
-        stamp_unstable(getattr(snakemake.output, _name), _note)
 log.info("Done")

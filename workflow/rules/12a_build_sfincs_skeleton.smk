@@ -18,6 +18,8 @@ rule build_sfincs_skeleton:
         # otherwise), and its per-cell mean for the main-grid "dep".
         river_burned_subgrid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_subgrid.tif"),
         river_burned_dem_sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_burned_dem_sfincs_grid.tif"),
+        # Pocket cells beside the weir lowered to their crest (rule 11), on the subgrid pixel grid.
+        pocket_cap_subgrid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_pocket_cap_subgrid.tif"),
         elevation_conditioned_sfincs_grid = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_elevation_conditioned_sfincs_grid.tif"),
         river_elevation_max = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_elevation_max.json"),
         coastal_protection_weir = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_coastal_protection_weir.gpkg"),
@@ -35,11 +37,9 @@ rule build_sfincs_skeleton:
         # zsini: sea cells on this model's grid (no reprojection); rule 11's
         # steady mean-discharge level on the bed for the channel cells.
         zsini_sea_cells   = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_zsini_sea_cells_on_grid.tif"),
-        # Rule 11's round-1 subgrid table, copied when this model's mask is identical.
+        # Rule 11's production subgrid table, copied when this model's mask is identical.
         calibration_subgrid = calibration_subgrid_files(),
         river_bed_nodes   = results_path("{basin_id}/preprocessing_inputs/visuals/11_calibration/river_bed/{basin_id}_river_bed_nodes.csv"),
-        # The alpha rule 11's calibration round ran stable with.
-        alpha_check       = diagnostics_path("alpha_check.csv"),
         # Only calm_sea_level_m/coastal_protection_crest_m and bankfull_discharge_m3s/
         # has_glofas (observation points); no forcing timeseries.
         surge_forcing     = results_path("{basin_id}/preprocessing_inputs/forcing/surge_forcing.nc"),
@@ -67,6 +67,7 @@ rule build_sfincs_skeleton:
         nr_levels          = config["sfincs"]["subgrid"]["nr_levels"],
         nrmax              = config["sfincs"]["subgrid"]["nrmax"],
         advection          = config["sfincs"]["advection"],
+        alpha              = lambda wildcards: basin_alpha(wildcards.basin_id),
         inputs_dir        = lambda wildcards: results_path(f"{wildcards.basin_id}/preprocessing_inputs"),
         skeleton_root      = lambda wildcards: results_path(f"{wildcards.basin_id}/sfincs_skeleton"),
         active_mask_enabled        = config["sfincs"]["grid"]["active_mask"]["enabled"],

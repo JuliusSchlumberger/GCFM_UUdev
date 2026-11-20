@@ -10,7 +10,6 @@ import xarray as xr
 from src.domain import load_domain
 from src.extreme_values import (
     STANDARD_RETURN_PERIODS_YR,
-    EVAResult,
     analyse_cell,
     bias_correct_discharge,
     eva_active_flags,
@@ -20,10 +19,12 @@ from src.extreme_values import (
 from src.log import setup_logging
 from src.river_forcing import (
     build_river_dataset,
-    find_best_glofas_cell,
+    containing_glofas_cell,
     find_boundary_crossings,
     find_nearest_grdc_station,
+    glofas_mean_discharge,
     has_downstream_in_domain,
+    larger_glofas_cell_nearby,
     load_glofas_clip,
     load_grdc_series,
     load_grdc_stations,
@@ -61,7 +62,6 @@ extract_hydrograph_components = profiler.wrap(extract_hydrograph_components)
 find_boundary_crossings = profiler.wrap(find_boundary_crossings)
 resolve_inside_domain_reaches = profiler.wrap(resolve_inside_domain_reaches)
 load_glofas_clip = profiler.wrap(load_glofas_clip)
-find_best_glofas_cell = profiler.wrap(find_best_glofas_cell)
 analyse_cell = profiler.wrap(analyse_cell)
 build_river_dataset = profiler.wrap(build_river_dataset)
 load_grdc_stations = profiler.wrap(load_grdc_stations)
@@ -375,7 +375,8 @@ eva_cfg = dict(snakemake.params.eva)
 # Main grid resolution only: the subgrid does not change the cell size SFINCS
 # solves on.
 sfincs_resolution_m = float(snakemake.params.sfincs_resolution_m)
-glofas_radius_m = float(snakemake.params.glofas_search_radius_km) * 1000.0
+glofas_check_radius_m = float(snakemake.params.glofas_check_radius_km) * 1000.0
+glofas_check_ratio = float(snakemake.params.glofas_check_ratio)
 glofas_min_q = float(snakemake.params.glofas_min_mean_discharge_m3s)
 glofas_variable = (
     "dis24"  # sole variable in data_catalogue's river_discharge (GloFAS v4) source
@@ -471,13 +472,13 @@ else:
         )
 
     # Step 5: GloFAS matching
-    # Highest-mean-discharge GloFAS cell within glofas_radius_m above glofas_min_q;
-    # has_glofas only when EVA gives a finite RP2.
+    # The GloFAS cell containing the crossing point, if its mean discharge is at
+    # least glofas_min_q; has_glofas only when EVA gives a finite RP2.
     n_qualifying = int(crossings["enters_domain"].sum())
     log.info(
-        f"Step 5 — GloFAS matching: "
-        f"radius = {glofas_radius_m / 1000:.1f} km, "
-        f"min mean discharge = {glofas_min_q:.1f} m³/s"
+        f"Step 5 — GloFAS matching: containing cell, "
+        f"min mean discharge = {glofas_min_q:.1f} m³/s; warn if a cell within "
+        f"{glofas_check_radius_m / 1000:.1f} km carries {glofas_check_ratio:g}x more"
     )
 
     glofas_clip = load_glofas_clip(
@@ -499,6 +500,7 @@ else:
     lat_arr = glofas_clip[lat_dim].values
     lon_arr = glofas_clip[lon_dim].values
     times_arr = glofas_clip[time_dim].values
+    glofas_mean_q = glofas_mean_discharge(glofas_clip, glofas_variable)
 
     n = len(crossings)
     has_glofas = np.zeros(n, dtype=bool)
@@ -517,7 +519,7 @@ else:
     cell_i_lat = np.full(n, -1, dtype=int)
     cell_i_lon = np.full(n, -1, dtype=int)
 
-    eva_cache: dict[tuple[int, int], EVAResult] = {}
+    cell_owner: dict[tuple[int, int], str] = {}
     bias_cache: dict[tuple[int, int], dict | None] = {}
     # Series fed to analyse_cell (bias-corrected where applicable), reused so
     # plots and daily series use the same data as the fitted discharges.
@@ -535,69 +537,87 @@ else:
         ) or getattr(row, "reach_id", i)
         label = f"crossing{i}_reach{inside_id}"
 
-        match = find_best_glofas_cell(
-            glofas_clip,
-            glofas_variable,
-            pt_lon,
-            pt_lat,
-            glofas_radius_m,
-            glofas_min_q,
-            utm_crs=domain_crs,
-        )
+        match = containing_glofas_cell(glofas_clip, pt_lon, pt_lat)
         if match is None:
+            log.info(f"  {label}: crossing point outside the GloFAS clip")
+            continue
+        i_lat, i_lon = match
+        cell_q = float(glofas_mean_q[i_lat, i_lon])
+        if not cell_q >= glofas_min_q:
             log.info(
-                f"  {label}: no GloFAS cell within {glofas_radius_m / 1000:.1f} km "
-                f"with mean Q > {glofas_min_q:.1f} m³/s"
+                f"  {label}: containing GloFAS cell has mean Q {cell_q:.1f} m³/s, "
+                f"below {glofas_min_q:.1f}"
             )
             continue
+        larger = larger_glofas_cell_nearby(
+            glofas_clip,
+            glofas_mean_q,
+            match,
+            pt_lon,
+            pt_lat,
+            glofas_check_radius_m,
+            glofas_check_ratio,
+            utm_crs=domain_crs,
+        )
+        if larger is not None:
+            j_lat, j_lon, dist_m = larger
+            log.warning(
+                f"  {label}: GloFAS cell ({lat_arr[j_lat]:.3f}, {lon_arr[j_lon]:.3f}) "
+                f"{dist_m / 1000:.1f} km away has mean Q "
+                f"{glofas_mean_q[j_lat, j_lon]:.0f} m³/s against {cell_q:.0f} in the "
+                "crossing's own cell: GloFAS may route this river through a "
+                "neighbouring cell"
+            )
 
-        i_lat, i_lon = match
+        if (i_lat, i_lon) in cell_owner:
+            raise RuntimeError(
+                f"{label} and {cell_owner[(i_lat, i_lon)]} take the same GloFAS cell "
+                f"({lat_arr[i_lat]:.3f}, {lon_arr[i_lon]:.3f}): its discharge would enter "
+                "the model twice. Check the river network's inflow crossings there."
+            )
+        cell_owner[(i_lat, i_lon)] = label
 
-        if (i_lat, i_lon) in eva_cache:
-            eva = eva_cache[(i_lat, i_lon)]
+        ts = (
+            glofas_clip[glofas_variable]
+            .isel({lat_dim: i_lat, lon_dim: i_lon})
+            .values.astype(float)
+        )
+
+        # GRDC bias correction
+        # TODO: GRDC-Daily.nc covers only the 8 basins of 8_polygons.json, not
+        # the globe; other basins typically fall back to GloFAS-as-truth.
+        bc_diag = None
+        grdc_id = find_nearest_grdc_station(
+            grdc_stations,
+            pt_lon,
+            pt_lat,
+            grdc_radius_m,
+            utm_crs=domain_crs,
+        )
+        if grdc_id is not None:
+            grdc_times, grdc_values = load_grdc_series(
+                snakemake.input.grdc_data, grdc_id
+            )
+            ts_corrected, bc_diag = bias_correct_discharge(
+                times_arr,
+                ts,
+                grdc_times,
+                grdc_values,
+                bias_cfg,
+                label=label,
+            )
+            if bc_diag is not None:
+                ts = ts_corrected
+                bc_diag["grdc_station_id"] = grdc_id
         else:
-            ts = (
-                glofas_clip[glofas_variable]
-                .isel({lat_dim: i_lat, lon_dim: i_lon})
-                .values.astype(float)
+            log.info(
+                f"  {label}: no GRDC station within "
+                f"{grdc_radius_m / 1000:.1f} km — GloFAS-as-truth retained"
             )
+        bias_cache[(i_lat, i_lon)] = bc_diag
+        ts_cache[(i_lat, i_lon)] = ts
 
-            # GRDC bias correction (first crossing reaching this cell)
-            # TODO: GRDC-Daily.nc covers only the 8 basins of 8_polygons.json, not
-            # the globe; other basins typically fall back to GloFAS-as-truth.
-            bc_diag = None
-            grdc_id = find_nearest_grdc_station(
-                grdc_stations,
-                pt_lon,
-                pt_lat,
-                grdc_radius_m,
-                utm_crs=domain_crs,
-            )
-            if grdc_id is not None:
-                grdc_times, grdc_values = load_grdc_series(
-                    snakemake.input.grdc_data, grdc_id
-                )
-                ts_corrected, bc_diag = bias_correct_discharge(
-                    times_arr,
-                    ts,
-                    grdc_times,
-                    grdc_values,
-                    bias_cfg,
-                    label=label,
-                )
-                if bc_diag is not None:
-                    ts = ts_corrected
-                    bc_diag["grdc_station_id"] = grdc_id
-            else:
-                log.info(
-                    f"  {label}: no GRDC station within "
-                    f"{grdc_radius_m / 1000:.1f} km — GloFAS-as-truth retained"
-                )
-            bias_cache[(i_lat, i_lon)] = bc_diag
-            ts_cache[(i_lat, i_lon)] = ts
-
-            eva = analyse_cell(times_arr, ts, eva_cfg, label=label)
-            eva_cache[(i_lat, i_lon)] = eva
+        eva = analyse_cell(times_arr, ts, eva_cfg, label=label)
 
         results[i] = eva
         cell_i_lat[i] = i_lat

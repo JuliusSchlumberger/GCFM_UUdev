@@ -163,6 +163,10 @@ river_processing:
     min_component_cells: 30           # discard small isolated land islands or water patches below this cell count on either side -- neither gets a weir ring around it
     unprotected_ocean_wetlands: false # true: wetland/lagoon patches (80 = permanent water/tidal flats, 90 = herbaceous wetland, and 95 = mangroves under ESA WorldCover; src.landuse.OCEAN_WETLAND_CLASSES) sharing a cell edge with the open sea are left on the SEAWARD side of the coastal dike -- the dike runs along their landward edge and they flood freely (still counted as land in flood metrics). false: the dike follows the open-sea (200) boundary.
     weir_par1: 0.6                    # SFINCS weir discharge coefficient Cd (0.6 = SFINCS's own recommended value). Per metre of weir, with h1/h2 = water level above crest on the high/low side: free flow q = Cd * 1.7049 * h1^1.5 (1.7049 = (2/3)^1.5 * sqrt(g)); submerged (h2 > 2/3 h1) q = Cd * h2 * sqrt(2g (h1 - h2)). No flow while both sides are below the crest. Scales overtopping discharge directly; lower = more throttled flow for the same exceedance
+    pocket_cap:                       # cells beside the weir with little wet area just above the crest: SFINCS's explicit weir flux makes their level overshoot every time step once overtopped, at any alpha; their subgrid pixels above crest - below_crest_m are lowered to that level (src.protection_weir.cap_pocket_cells)
+      max_wet_area_m2: 3000           # a cell is a pocket if some but less than this of its 10,000 m2 is wet ...
+      overtopping_m: [0.02, 0.5]      # ... at some level between crest + these two depths
+      below_crest_m: 0.0              # pixels above crest - this are lowered to it; > 0 adds that depth times the cell area as storage below the crest
     freeboard_m: 0.0                  # margin added on top of every production weir crest: crest(edge) = max(round-1 water level on the edge's own water side, coastal protection crest) + freeboard_m, rounded UP to the next centimetre (src.surge.ceil_crest). The only margin -- round 1 is still confined by 1000 m walls, so its water level already holds the calibration discharge exactly (the round-up adds 0-0.1 m on top).
 
 # ── Boundary forcings (rule 07d) ─────────────────────────────────────────────
@@ -229,8 +233,9 @@ boundary_forcings:
                              # (0.02 -> a gap of 50 % of the peak takes 39 h). Relative, so it suits
                              # small and large rivers alike; real floods rise at ~0.01 of the 100-yr peak per hour
     glofas_buffer_deg: 1.0
-    glofas_search_radius_km: 5.0    # radius around inside-domain reach centroid to search for GloFAS cells
-    glofas_min_mean_discharge_m3s: 10.0  # minimum mean discharge (m³/s) for a GloFAS cell to be considered
+    glofas_check_radius_km: 10.0    # the crossing takes the GloFAS cell containing its point; a cell within this radius
+    glofas_check_ratio: 1.5         # carrying this many times its mean discharge logs a warning (GloFAS may route the river next door)
+    glofas_min_mean_discharge_m3s: 10.0  # a containing cell with a lower mean discharge (m³/s) gives the crossing no GloFAS forcing
 
     eva:  # Extreme value analysis on GloFAS discharge -- river-only
       preview_rp_yr: 100.0          # diagnostic-only return period (yr) of rule get_boundary_forcings: q_preview and its CI, the plot's vertical line, the has_glofas "ok" gate and the surge preview (storm_tide_at_rp_m, water_level). A fixed basin-level value, so no scenario reruns this rule (and with it rule 11); the production discharge_rp_table (rules 08/11/14) holds every standard RP regardless
@@ -256,9 +261,8 @@ boundary_forcings:
       # The GloFAS-vs-GRDC correlation diagnostic (compute_grdc_correlation)
       # runs only with `enabled: true`; bias_correct_discharge returns before
       # it otherwise.
-      grdc_search_radius_km: 15.0  # radius around inside-domain reach centroid to search
-                                    # for a nearby GRDC gauge station (gauges are sparse,
-                                    # hence a larger radius than glofas_search_radius_km)
+      grdc_search_radius_km: 15.0  # radius around the crossing point to search for a nearby
+                                    # GRDC gauge station (gauges are sparse)
       min_overlap_days: 730    # minimum overlapping valid days (GloFAS & GRDC) required
                                 # to attempt empirical quantile mapping (~2 yr); else skipped
       tail_percentile: 90.0    # the headline GloFAS-vs-GRDC correlation is restricted to overlap days where
@@ -321,18 +325,25 @@ sfincs:
                                  # and events match. On, steady channel levels stand up to 7 m above a 1D GVF
                                  # profile along deep sub-cell trenches (Chao Phraya); off, the gap median is
                                  # 0.19 m (Ebro) and 0.25 m (Chao Phraya)
-  alpha: [0.5, 0.35, 0.25]       # SFINCS time-step factor (fraction of the CFL limit), tried in this order in rule 11's
-                                 # calibration round 1; the first stable one is the basin's (12a skeleton: spin-up, events,
-                                 # adaptation). With advection off, 0.5 goes unstable where deep fast flow runs through a
-                                 # narrow subgrid trench (Ebro: inflow level swings 5-9 m per hour)
-  alpha_overrides: {2433835: 0.25}  # per basin id: the only alpha rule 11 tries (and so every run of the basin uses);
-                                 # for basins whose events swing at the alpha rule 11 chose (Ebro: calibration stable at
-                                 # 0.5, river_100 event 2.7 m swings)
+  alpha: 0.5                     # SFINCS time-step factor (fraction of the CFL limit) of every run of a basin (rules 11
+                                 # and 12a; spin-up, events and adaptation inherit it from the skeleton)
+  alpha_overrides:               # per basin id, only where the cause of an instability cannot be fixed. With advection
+                                 # off, 0.5 goes unstable where deep fast flow runs through a narrow subgrid trench
+                                 # (Ebro river_100 event: inflow level swings 5-9 m per hour; Chao Phraya rule 11
+                                 # calibration at 0.5 and 0.35)
+    3279946: 0.25
   alpha_reversal_max_m: 1.0      # unstable: a river-network cell's hourly level step undone by more than this in the next
                                  # hour (src.sfincs_run.level_reversal_m); stable runs stay below 0.2 m, Ebro at 0.5 reaches
-                                 # 2.7-2.9 m. Rule 11 then tries the next alpha (none stable: the last is kept, marked
-                                 # unstable); spin-up, event and adaptation runs are marked (stability.csv, flood_metrics.csv
-                                 # column unstable, a red banner on their figures), never stopped
+                                 # 2.7-2.9 m. An unstable calibration, spin-up, event or adaptation run stops its rule; the
+                                 # map is kept as sfincs_map.unstable.nc
+  forcing_checks:                # every run's discharge and water-level forcing, hourly as SFINCS interpolates it, before
+                                 # SFINCS starts (rules 11, 13a, 15; src.sfincs_run.check_forcing_smoothness); a failure is
+                                 # logged as a warning. Read from config, not rule params: changing them reruns nothing
+    discharge_kink_ratio_max: 0.6  # largest hour-to-hour change of a discharge slope over its largest hourly change: 1 at
+                                 # a step or a straight ramp's corner, 0.46 for a 6 h half-cosine ramp, <= 0.16 in events
+    water_level_jump_ratio_max: 3.0  # an hourly water-level step larger than this many times both neighbouring steps is a
+                                 # jump (tidal turns reach 1.8; a 0.3 m step on the Ebro's ~2 cm/h tide ~15)
+    water_level_jump_min_m: 0.05   # smaller hourly steps are never jumps
   subgrid:                       # always built -- the model relies on it for channels narrower than a cell
     nr_subgrid_pixels: 10        # subgrid pixels per grid cell (must be multiple of 2)
     nr_levels: 20                 # water-level bins for subgrid tables; memory scales linearly with this (default: 20)
@@ -363,8 +374,8 @@ sfincs:
                                  # chunks of this length, each restarting from the last, until rule 11's steady_check
                                  # (window_hr, tol_m; both directions) passes on the river-network cells (2433835
                                  # steady after 13 h, 3279946 after 87 h)
-    max_days: 14                 # a spin-up still not steady by then is kept and marked ("Check stability")
-    boundary_ramp_hr: 6.0    # the spin-up sea is held at each station's calm-sea level (the event lead-in's own level; the river stays at its mean discharge); the boundary ramps linearly from the sea's starting level (rounded basin mean) to those station levels over this many hours -- normally identical, but a step at the boundary sends a front in that can overtop the coastal dike (basin 2433835: a 0.30 m step gave up to +1.1 m at a 0.40 m crest)
+    max_days: 14                 # a spin-up still not steady by then stops rule 13a
+    boundary_ramp_hr: 6.0    # the spin-up sea is held at each station's calm-sea level (the event lead-in's own level; the river stays at its mean discharge); the boundary ramps (half-cosine) from the sea's starting level (rounded basin mean) to those station levels over this many hours -- normally identical, but a step at the boundary sends a front in that can overtop the coastal dike (basin 2433835: a 0.30 m step gave up to +1.1 m at a 0.40 m crest)
     dthisout_s: 3600              # obs-point output interval during spinup (s) — for validation plot
     dtmapout_s: 3600              # map snapshot interval during spinup (s) — controls animation frame count
 

@@ -87,7 +87,6 @@ rule adapt_run_event_pre:
         land_bed_level      = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs_skeleton/land_bed_level.nc"),
         domain_gpkg         = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
-        spinup_stability    = spinup_stability_input,
         obs_points          = results_path("{basin_id}/sfincs_skeleton/{basin_id}_obs_points.gpkg"),
     output:
         sfincs_map_nc            = results_path("{basin_id}/runs/{scenario}/adaptation/pre/{strategy}/sfincs/sfincs_map.nc"),

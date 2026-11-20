@@ -41,7 +41,6 @@ from src.landuse import LANDUSE_SEA_CODE
 from src.log import setup_logging
 from src.sfincs_run import (
     create_active_mask,
-    selected_alpha,
     set_sea_and_outflow_boundaries,
     write_weir_file,
 )
@@ -95,6 +94,7 @@ zsini_sea_cells_path = Path(snakemake.input.zsini_sea_cells)
 surge_forcing_path = Path(snakemake.input.surge_forcing)
 river_forcing_path = Path(snakemake.input.river_forcing)
 river_burned_subgrid_path = Path(snakemake.input.river_burned_subgrid)
+pocket_cap_subgrid_path = Path(snakemake.input.pocket_cap_subgrid)
 river_burned_dem_sfincs_grid_path = Path(snakemake.input.river_burned_dem_sfincs_grid)
 elevation_conditioned_sfincs_grid_path = Path(
     snakemake.input.elevation_conditioned_sfincs_grid
@@ -110,7 +110,7 @@ nr_subgrid_pixels = snakemake.params.nr_subgrid_pixels
 nr_levels = snakemake.params.nr_levels
 nrmax = snakemake.params.nrmax
 advection = int(snakemake.params.advection)
-alpha = selected_alpha(snakemake.input.alpha_check)
+alpha = float(snakemake.params.alpha)
 active_mask_enabled = snakemake.params.active_mask_enabled
 active_mask_elevation_buffer_m = float(snakemake.params.active_mask_elevation_buffer_m)
 outflow_buffer_m = snakemake.params.outflow_buffer_m
@@ -149,6 +149,7 @@ local_catalog = {
     "meta": {"root": str(inputs_dir)},
     "local_elevation_conditioned": raster_catalog_entry(elevation_conditioned_path),
     "local_river_burned_subgrid": raster_catalog_entry(river_burned_subgrid_path),
+    "local_pocket_cap_subgrid": raster_catalog_entry(pocket_cap_subgrid_path),
     "local_river_burned_sfincs_grid": raster_catalog_entry(
         river_burned_dem_sfincs_grid_path
     ),
@@ -179,13 +180,15 @@ log.info(f"Data catalog written: {local_catalog_path}")
 # modelled_depth_estimation) over the conditioned DEM, at each consumer's
 # resolution so nothing is reprojected. Main "dep": per-cell mean of the burned
 # subgrid pixels over rule 10's grid-resolution DEM, the same dep the
-# calibration rounds 1-2 ran on. Subgrid: the exact burned raster calibration
-# used, on this model's subgrid pixel grid (checked below), over the native DEM.
+# calibration rounds 1-2 ran on. Subgrid: rule 11's production sources, on this
+# model's subgrid pixel grid (checked below): the pocket cap, then the burned
+# channel, over the native DEM.
 elevation_list_main = [
     {"elevation": "local_river_burned_sfincs_grid"},
     {"elevation": "local_elevation_conditioned_sfincs_grid"},
 ]
 elevation_list_subgrid = [
+    {"elevation": "local_pocket_cap_subgrid"},
     {"elevation": "local_river_burned_subgrid"},
     {"elevation": "local_elevation_conditioned"},
 ]
@@ -425,14 +428,14 @@ log.info(
     f"rivwth [{rivers['rivwth'].min():.1f}–{rivers['rivwth'].max():.1f} m], "
     f"river_depth_m [{rivers['river_depth_m'].min():.2f}–{rivers['river_depth_m'].max():.2f} m]"
 )
-# Rule 11 round 1 built this table from the same sources and settings; it is
+# Rule 11 built its production table from the same elevation sources; it is
 # copied after sf.write() once the mask files can be compared, and built only
 # if the masks differ.
 sf.config.set("sbgfile", "sfincs_subgrid.nc")
 # Spin-up, event and adaptation runs inherit both from the skeleton's sfincs.inp.
 sf.config.set("advection", advection)
 sf.config.set("alpha", alpha)
-log.info(f"alpha {alpha:g} (rule 11's first stable candidate)")
+log.info(f"alpha {alpha:g} (sfincs.alpha, or the basin's sfincs.alpha_overrides)")
 
 
 def _create_subgrid() -> None:

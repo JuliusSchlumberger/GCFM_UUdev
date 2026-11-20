@@ -144,9 +144,9 @@ def calibration_round_figures():
 
 
 def calibration_subgrid_files():
-    """Return rule 11's round-1 subgrid table and mask files, reused by rule 12a."""
+    """Return rule 11's production subgrid table and mask files, reused by rule 12a."""
     return [
-        results_path(f"{{basin_id}}/preprocessing_inputs/depth_crest_calibration/round1/{name}")
+        results_path(f"{{basin_id}}/preprocessing_inputs/depth_crest_calibration/production/{name}")
         for name in SUBGRID_TABLE_FILES + MASK_FILES
     ]
 
@@ -357,11 +357,9 @@ for _key, _dt in [
 
 _ALPHA_OVERRIDES = {int(_b): float(_a) for _b, _a in (config["sfincs"]["alpha_overrides"] or {}).items()}
 
-def alpha_candidates(basin_id):
-    """Return the alphas rule 11 tries in order: the basin's override alone, else sfincs.alpha."""
-    if int(basin_id) in _ALPHA_OVERRIDES:
-        return [_ALPHA_OVERRIDES[int(basin_id)]]
-    return [float(a) for a in config["sfincs"]["alpha"]]
+def basin_alpha(basin_id):
+    """Return the basin's SFINCS alpha: its override, else sfincs.alpha."""
+    return _ALPHA_OVERRIDES.get(int(basin_id), float(config["sfincs"]["alpha"]))
 
 def spinup_stability_input(wildcards):
     """Return the stability.csv of the scenario's spin-up, or nothing with the spin-up disabled."""

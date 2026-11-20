@@ -161,55 +161,65 @@ def resolve_inside_domain_reaches(
     return result
 
 
-def find_best_glofas_cell(
-    glofas_clip: xr.Dataset,
-    variable: str,
-    pt_lon: float,
-    pt_lat: float,
-    radius_m: float,
-    min_mean_q: float,
-    utm_crs: str,
-) -> tuple[int, int] | None:
-    """Return (i_lat, i_lon) of the highest-mean-discharge GloFAS cell within radius_m.
-
-    Distances are Euclidean in utm_crs (e.g. 'EPSG:32636'). min_mean_q in
-    m3 s-1; pt_lon/pt_lat in degrees. None if no cell qualifies.
-    """
-    from pyproj import Transformer
-
+def glofas_mean_discharge(glofas_clip: xr.Dataset, variable: str) -> np.ndarray:
+    """Return the time-mean discharge (m3 s-1) per GloFAS cell, shape (n_lat, n_lon)."""
     lat_dim, lon_dim = latlon_dims(glofas_clip)
     time_dim = "valid_time" if "valid_time" in glofas_clip.dims else "time"
-    lat_arr = glofas_clip[lat_dim].values  # (n_lat,)
-    lon_arr = glofas_clip[lon_dim].values  # (n_lon,)
-
-    to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
-    pt_x, pt_y = to_utm.transform(pt_lon, pt_lat)
-
-    lon_g, lat_g = np.meshgrid(lon_arr, lat_arr)  # both (n_lat, n_lon)
-    cell_x, cell_y = to_utm.transform(lon_g.ravel(), lat_g.ravel())
-    cell_x = cell_x.reshape(lon_g.shape)  # (n_lat, n_lon)
-    cell_y = cell_y.reshape(lon_g.shape)
-
-    dist_m = np.sqrt((cell_x - pt_x) ** 2 + (cell_y - pt_y) ** 2)
-    within = dist_m <= radius_m  # (n_lat, n_lon)
-
-    if not within.any():
-        return None
-
-    mean_discharge_m3s = (
+    return (
         glofas_clip[variable]
         .mean(dim=time_dim, skipna=True)
         .transpose(lat_dim, lon_dim)
         .values
-    )  # (n_lat, n_lon)
+    )
 
-    qualified = within & (mean_discharge_m3s >= min_mean_q)
-    if not qualified.any():
-        return None
 
-    flat_best = int(np.argmax(np.where(qualified, mean_discharge_m3s, -np.inf)))
-    i_lat, i_lon = divmod(flat_best, len(lon_arr))
-    return i_lat, i_lon
+def containing_glofas_cell(
+    glofas_clip: xr.Dataset, pt_lon: float, pt_lat: float
+) -> tuple[int, int] | None:
+    """Return (i_lat, i_lon) of the GloFAS cell containing the point, None outside the grid."""
+    lat_dim, lon_dim = latlon_dims(glofas_clip)
+    idx = []
+    for coords, value in (
+        (glofas_clip[lat_dim].values, pt_lat),
+        (glofas_clip[lon_dim].values, pt_lon),
+    ):
+        k = int(np.argmin(np.abs(coords - value)))
+        half_cell = abs(float(coords[1] - coords[0])) / 2.0 if coords.size > 1 else 0.0
+        if abs(float(coords[k]) - value) > half_cell + 1e-9:
+            return None
+        idx.append(k)
+    return idx[0], idx[1]
+
+
+def larger_glofas_cell_nearby(
+    glofas_clip: xr.Dataset,
+    mean_q: np.ndarray,
+    cell: tuple[int, int],
+    pt_lon: float,
+    pt_lat: float,
+    radius_m: float,
+    ratio: float,
+    utm_crs: str,
+) -> tuple[int, int, float] | None:
+    """Return the largest-mean cell within radius_m if it has ratio x ``cell``'s mean.
+
+    Result is (i_lat, i_lon, distance_m), or None. Flags a crossing whose own
+    cell may miss the river GloFAS routes nearby.
+    Distances are from the point, Euclidean in utm_crs; NaN cells (sea) are skipped.
+    """
+    from pyproj import Transformer
+
+    lat_dim, lon_dim = latlon_dims(glofas_clip)
+    lon_g, lat_g = np.meshgrid(glofas_clip[lon_dim].values, glofas_clip[lat_dim].values)
+    to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
+    cell_x, cell_y = to_utm.transform(lon_g, lat_g)
+    pt_x, pt_y = to_utm.transform(pt_lon, pt_lat)
+    dist_m = np.hypot(cell_x - pt_x, cell_y - pt_y)
+    nearby = np.where((dist_m <= radius_m) & np.isfinite(mean_q), mean_q, -np.inf)
+    i_lat, i_lon = np.unravel_index(int(np.argmax(nearby)), nearby.shape)
+    if nearby[i_lat, i_lon] >= ratio * mean_q[cell]:
+        return int(i_lat), int(i_lon), float(dist_m[i_lat, i_lon])
+    return None
 
 
 def load_grdc_stations(path: str | Path) -> gpd.GeoDataFrame:

@@ -8,11 +8,14 @@ import xarray as xr
 from shapely.geometry import LineString, Point, box
 from src.river_forcing import (
     build_design_discharge_matrix,
+    containing_glofas_cell,
     cosine_ramp,
     derive_forcing_mode,
     find_boundary_crossings,
+    glofas_mean_discharge,
     has_downstream_in_domain,
     interpolate_discharge_at_rp,
+    larger_glofas_cell_nearby,
     load_forcing_crossings,
     resolve_inside_domain_reaches,
     snap_crossings_to_reaches,
@@ -252,3 +255,43 @@ def test_reach_touching_boundary_walks_to_downstream_reach():
     assert resolved["inside_reach_id"].tolist() == ["2"]
     assert resolved["width"].tolist() == [80.0]
     assert resolved.geometry.iloc[0].distance(Point(0.0, 0.5)) < 1e-12
+
+
+def _glofas_clip(mean_q: np.ndarray) -> xr.Dataset:
+    lat = 52.475 - 0.05 * np.arange(mean_q.shape[0])
+    lon = 4.025 + 0.05 * np.arange(mean_q.shape[1])
+    dis = np.repeat(mean_q[None], 3, axis=0)
+    return xr.Dataset(
+        {"dis24": (("valid_time", "latitude", "longitude"), dis)},
+        coords={"valid_time": np.arange(3), "latitude": lat, "longitude": lon},
+    )
+
+
+def test_containing_cell_is_the_cell_around_the_point():
+    clip = _glofas_clip(np.ones((4, 4)))
+    assert containing_glofas_cell(clip, 4.040, 52.390) == (2, 0)
+    assert containing_glofas_cell(clip, 4.180, 52.320) == (3, 3)
+
+
+def test_point_outside_the_clip_has_no_cell():
+    clip = _glofas_clip(np.ones((4, 4)))
+    assert containing_glofas_cell(clip, 4.400, 52.400) is None
+
+
+def test_larger_river_next_door_is_flagged_only_above_the_ratio():
+    q = np.full((4, 4), 20.0)
+    q[1, 2] = 100.0
+    q[0, 0] = np.nan
+    clip = _glofas_clip(q)
+    mean_q = glofas_mean_discharge(clip, "dis24")
+    cell = containing_glofas_cell(clip, 4.075, 52.425)
+    hit = larger_glofas_cell_nearby(
+        clip, mean_q, cell, 4.075, 52.425, 10_000.0, 1.5, "EPSG:32631"
+    )
+    assert hit is not None and hit[:2] == (1, 2) and 0 < hit[2] < 10_000.0
+    assert (
+        larger_glofas_cell_nearby(
+            clip, mean_q, cell, 4.075, 52.425, 10_000.0, 6.0, "EPSG:32631"
+        )
+        is None
+    )

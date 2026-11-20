@@ -304,24 +304,11 @@ def floor_crests_above_face_zmin(
     """
     out = weir_gdf.copy()
     crest = out["elevation"].to_numpy(dtype=float)
-    inv = ~transform
-    half = 0.5 * abs(transform.a), 0.5 * abs(transform.e)
     nrow, ncol = u_zmin.shape
     water_cell = np.full((len(out), 2), -1, dtype=np.int64)
     face_zmin = np.full(len(out), np.nan)
     for k, seg in enumerate(out.geometry):
-        (x0, y0), (x1, y1) = seg.coords[0], seg.coords[-1]
-        mx, my = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
-        horizontal = abs(y1 - y0) < abs(x1 - x0)
-        sides = (
-            ((mx, my - half[1]), (mx, my + half[1]))
-            if horizontal
-            else ((mx - half[0], my), (mx + half[0], my))
-        )
-        cells = []
-        for sx, sy in sides:
-            c, r = inv * (sx, sy)
-            cells.append((int(np.floor(r)), int(np.floor(c))))
+        cells, horizontal = _edge_side_cells(seg, transform)
         inside = [(r, c) for r, c in cells if 0 <= r < nrow and 0 <= c < ncol]
         for r, c in inside:
             if water_like[r, c]:
@@ -342,6 +329,81 @@ def floor_crests_above_face_zmin(
             z if not np.isfinite(crest_surface[r, c]) else min(crest_surface[r, c], z)
         )
     return out, crest_surface, int(raise_mask.sum())
+
+
+def _edge_side_cells(seg, transform) -> tuple[list[tuple[int, int]], bool]:
+    (x0, y0), (x1, y1) = seg.coords[0], seg.coords[-1]
+    mx, my = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+    half = 0.5 * abs(transform.a), 0.5 * abs(transform.e)
+    horizontal = abs(y1 - y0) < abs(x1 - x0)
+    sides = (
+        ((mx, my - half[1]), (mx, my + half[1]))
+        if horizontal
+        else ((mx - half[0], my), (mx + half[0], my))
+    )
+    inv = ~transform
+    cells = []
+    for sx, sy in sides:
+        c, r = inv * (sx, sy)
+        cells.append((int(np.floor(r)), int(np.floor(c))))
+    return cells, horizontal
+
+
+def cap_pocket_cells(
+    weir_gdf: gpd.GeoDataFrame,
+    subgrid_elevation: np.ndarray,
+    transform,
+    nr_subgrid_pixels: int,
+    max_wet_area_m2: float,
+    overtopping_m: tuple[float, float],
+    below_crest_m: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the subgrid overlay that lowers the pocket cells beside the weir to their crest.
+
+    A pocket is a cell on either side of a weir edge of which some, but less
+    than max_wet_area_m2, lies below crest + d for some d in overtopping_m.
+    SFINCS sets the weir discharge from the previous step's levels without
+    relaxation (sfincs_structures.f90), so once overtopped the level of such a
+    cell overshoots every time step when dt * sum(dQ/dz) / wet area > 2, at
+    any alpha (Ebro, TODO B42). Its subgrid pixels above crest - below_crest_m
+    are lowered to that level, so the whole cell is wet once overtopped; the
+    crest is the lowest of the cell's weir edges. Pixels are only lowered, so a
+    face's subgrid minimum never rises above a crest floored on it.
+    subgrid_elevation: the merged subgrid elevation in the array order of
+    transform (the model grid), nr_subgrid_pixels per cell side. Returns
+    (overlay: the lowered level on changed pixels, NaN elsewhere; pocket mask
+    on the grid).
+    """
+    n = int(nr_subgrid_pixels)
+    nrow, ncol = subgrid_elevation.shape[0] // n, subgrid_elevation.shape[1] // n
+    pixel_area_m2 = abs(transform.a) * abs(transform.e) / n**2
+    cell_crest = np.full((nrow, ncol), np.inf)
+    for seg, z in zip(weir_gdf.geometry, weir_gdf["elevation"].to_numpy(dtype=float)):
+        cells, _ = _edge_side_cells(seg, transform)
+        for r, c in cells:
+            if 0 <= r < nrow and 0 <= c < ncol:
+                cell_crest[r, c] = min(cell_crest[r, c], z)
+    low, high = overtopping_m
+    overlay = np.full(subgrid_elevation.shape, np.nan, dtype=np.float32)
+    pocket = np.zeros((nrow, ncol), dtype=bool)
+    for r, c in zip(*np.nonzero(np.isfinite(cell_crest))):
+        block = subgrid_elevation[r * n : (r + 1) * n, c * n : (c + 1) * n]
+        valid = np.isfinite(block)
+        crest = cell_crest[r, c]
+        if not (valid & (block <= crest + high)).any():
+            continue
+        # The smallest wet area in the overtopping range is where water first stands.
+        first_wet_level = max(crest + low, np.nanmin(block))
+        wet_area_m2 = pixel_area_m2 * np.count_nonzero(
+            valid & (block <= first_wet_level)
+        )
+        if wet_area_m2 >= max_wet_area_m2:
+            continue
+        cap = np.float32(crest - below_crest_m)
+        lowered = valid & (block > cap)
+        overlay[r * n : (r + 1) * n, c * n : (c + 1) * n][lowered] = cap
+        pocket[r, c] = True
+    return overlay, pocket
 
 
 def _flatten_elevation_from_z(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:

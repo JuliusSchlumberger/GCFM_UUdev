@@ -410,32 +410,38 @@ longer than `calibration_max_days` fail. After each round,
 `steady_check` warns when centreline cells still rose more than `tol_m` over the
 last `window_hr`.
 
-**Time-step factor (alpha check).** Round 1 runs with each `sfincs.alpha`
-candidate in turn (0.5, 0.35, 0.25) and keeps the first one whose run is
-stable. Unstable means a river-centreline cell's hourly level step is undone in
-the next hour by more than `alpha_reversal_max_m` (1 m;
-`src.sfincs_run.level_reversal_m`), or its level turns non-finite; a failed
-SFINCS run stops the rule with its error. A steady rise, such as the flood front
-filling the channel (up to 1.3 m/h on 3279946), counts 0, and flooding outside
-the river network is not looked at. Stable runs swing at most 0.17 m; the Ebro
-at 0.5 swings 2.7-2.9 m at about 200 cells. The kept alpha goes into the
-skeleton (rule 12a) and every spin-up, event and adaptation run. Each attempt
-is logged and written to `diagnostics/{basin_id}_alpha_check.csv`; with no
-stable candidate the last (smallest) is kept and marked unstable.
-`sfincs.alpha_overrides` replaces the candidates of a basin by one alpha, for
-basins whose events swing at the alpha the calibration chose (the Ebro is
-stable at 0.5 in calibration but its 100-year river event is not).
+**Time-step factor and stability.** Every run of a basin uses one
+`sfincs.alpha`: 0.5, or the basin's entry in `sfincs.alpha_overrides` (0.25 for
+3279946). Rule 11 sets it for calibration and rule 12a writes it
+into the skeleton, which the spin-up, event and adaptation runs inherit. An
+override is the remedy only where the cause of an instability cannot be fixed.
 
-**Run stability marking.** The spin-up (rule 13a), every event run (rule 15)
-and every adaptation `pre` run repeat the check on the cells along the river
-network (`src.sfincs_run.river_network_stability`) and write it to
-`stability.csv` next to the run; an event run also records whether the spin-up
-it restarts from was unstable. An unstable run is never stopped. It is marked:
-a warning in the log, the columns `unstable`, `spinup_unstable`, `max_swing_m`
-and `alpha` in `flood_metrics.csv` (and so in `metrics_comparison.csv`; `post`
-rows take the baseline run's), a red "Check stability: ..." banner on the run's forcing, inundation
-and max-depth figures (`src.plots.stamp_unstable`), and a red footnote on the
-analysis figures drawn from it (`src/figure_style.flag_unstable`).
+Round 1 of rule 11, the spin-up (rule 13a), every event run (rule 15) and every
+adaptation `pre` run check the cells along the river network
+(`src.sfincs_run.level_reversal_m`, `river_network_stability`). Unstable means
+a cell's hourly level step is undone in the next hour by more than
+`alpha_reversal_max_m` (1 m), or its level turns non-finite. A steady rise,
+such as the flood front filling the channel (up to 1.3 m/h on 3279946), counts
+0, and flooding outside the river network is not looked at. Stable runs swing
+at most 0.17 m; the Ebro at 0.5 swings 2.7-2.9 m at about 200 cells. An
+unstable run stops its rule with the swing, the worst cell and the remedy
+(`src.sfincs_run.stop_failed_run`); its map is kept as
+`sfincs_map.unstable.nc`, since Snakemake deletes a failed job's outputs. A
+failed SFINCS run stops the rule with its own error. A stable run writes the
+check to `stability.csv` and the columns `max_swing_m` and `alpha` of
+`flood_metrics.csv`.
+
+**Forcing smoothness.** Before SFINCS starts, rules 11, 13a and 15 check the
+run's discharge and water-level forcing, interpolated hourly as SFINCS reads it
+(`src.sfincs_run.check_forcing_smoothness`, `sfincs.forcing_checks`) and log a
+warning on a failure: the forcing is smooth by construction (half-cosine ramps
+and blends), so a warning points at the generator. Discharge: the largest hour-to-hour change of the slope over the
+largest hourly change stays at or below 0.6; a step or the corner of a straight
+ramp gives 1, a 6 h half-cosine ramp 0.46, the design events at most 0.16.
+Water level: no hourly step above 0.05 m may exceed 3 times both neighbouring
+steps. Tides turn sharply at low water (kink ratios up to 1 in the GTSM
+series), so water levels are checked for jumps only; their turns reach 1.8,
+while a 0.3 m step on the Ebro's 2 cm/h tide reaches about 15.
 
 Round 2 reports some overtopped edges even though its inputs equal round 1's
 except the crests: lowering the crests from 1000 m changes SFINCS's solution by
@@ -515,10 +521,38 @@ Crests are calibrated at present-day sea level. SFINCS keeps a weir face only if
 its crest is above the face's subgrid minimum level (`uv_zmin`); a lower face
 opens as plain subgrid flow, so later runs would not have round 1's dike
 (2433835: 372 of 3,266 faces, round 2 up to 0.19 m off). Every crest is
-therefore at least `uv_zmin` + 1 cm of its face (round 1's subgrid table, which
-round 2 and rule 12a share); the bank holds water to that level anyway
+therefore at least `uv_zmin` + 1 cm of its face in round 1's subgrid table; the
+bank holds water to that level anyway
 (`src.protection_weir.floor_crests_above_face_zmin`). Round 2 then reproduces
 round 1. Overtopping is reported above 1 cm, the crest precision.
+
+**Pocket cells.** SFINCS sets the weir discharge from the previous time step's
+levels, without relaxation. A cell beside the weir with little wet area just
+above the crest therefore overshoots every step once overtopped, when
+dt · Σ dQ/dz / wet area > 2. The overshoot does not depend on alpha alone: a smaller
+time step only moves it to a deeper overtopping. On the Ebro such cells on the
+gorge sides, with a few subgrid pixels at river level and the rest on the slope,
+swung 0.3-0.85 m per step at alpha 0.25 and set off the instability at 0.5.
+Rule 11 lowers them once, after the crests are set
+(`src.protection_weir.cap_pocket_cells`, `river_depth_modelling.pocket_cap`):
+- **Which cells:** cells on either side of a weir edge of which some, but less
+  than `max_wet_area_m2` (3,000 m²), lies below crest + d for some d in
+  `overtopping_m` (0.02-0.5 m).
+- **What changes:** their subgrid pixels above crest − `below_crest_m` (0) are
+  lowered to that level. The crest is the lowest of the cell's weir edges.
+  Pixels below it are kept.
+- **Where it is used:** the lowered pixels are written as
+  `{basin}_pocket_cap_subgrid.tif`, the first subgrid elevation source of the
+  production table (`depth_crest_calibration/production/`). Round 2 runs on that
+  table and rule 12a copies it.
+- **Floored crests stay valid:** pixels are only lowered, so every face stays
+  below its floored crest.
+
+On the Ebro 6 h probe (565 cells) alpha 0.5 then runs at its full time step
+(4.7 s, against 2.4 s at 0.25) with no oscillating cell. Peak levels stay within
+1 cm of the uncapped alpha 0.25 run in 90 % of cells. The pockets now hold overtopping water over
+their full cell area, which delays the overtopping front across the delta
+floodplain by about 9 min.
 
 **Weir geometry** (`src.protection_weir.build_coastal_protection_weir`). One
 continuous line along the coast and both river banks, built on the model grid
@@ -533,9 +567,11 @@ uses `weir_par1` (Cd 0.6).
 
 **River (rule 07d).** Crossings are the network reaches cutting the domain
 outline; each is moved to where it enters the domain and must flow into the
-network. Each takes the GloFAS v4.0 cell (`dis24`, daily, 0.05°) with the
-highest mean discharge within `glofas_search_radius_km` (5 km), at least
-`glofas_min_mean_discharge_m3s` (10). Extreme-value analysis
+network. Each takes the GloFAS v4.0 cell (`dis24`, daily, 0.05°) containing
+its point, if that cell's mean discharge is at least
+`glofas_min_mean_discharge_m3s` (10); a cell within `glofas_check_radius_km`
+(10 km) with `glofas_check_ratio` (1.5) times that mean logs a warning. Two
+crossings in the same cell stop the rule. Extreme-value analysis
 (`src/extreme_values.py`) needs at least `min_days` (9131, about 25 years):
 
 - bankfull discharge: annual maxima, GEV, at `bankfull_rp_yr` (1.5);
@@ -697,8 +733,7 @@ start from, so there is no jump at the restart. It runs in chunks of
 steady test passes on the river-network cells: no cell's
 `steady_check.window_hr` (12 h) mean level differs by more than `tol_m` (5 cm)
 from the window before (`src.sfincs_run.river_network_steady`). A spin-up still
-not steady after `max_days` (14) is kept and marked (`stability.csv` `steady`,
-a "Check stability" banner, and `spinup_unstable` in its events' metrics). The
+not steady after `max_days` (14), or unstable, stops rule 13a. The
 existing 48 h and 144 h spin-ups were steady after 13 h (2433835) and 87 h
 (3279946). The restart at the end (`sfincs.spinup.rst`) and the spin-up length
 (`stability.csv` `spinup_hr`) set the event's start: rule 14 places the event

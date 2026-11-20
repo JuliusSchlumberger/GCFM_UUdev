@@ -268,6 +268,25 @@ def calm_sea_levels(surge_ds: xr.Dataset, slr_m: float = 0.0) -> np.ndarray:
     return round_level(_station_calm_levels_unrounded(surge_ds, slr_m))
 
 
+def sea_ramp(
+    start_level_m: float, end_levels_m: np.ndarray, ramp_hr: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return hourly times (h) and levels (time, station) of a half-cosine sea ramp.
+
+    From start_level_m at 0 h to each station's end level at ramp_hr, with zero
+    slope at both ends (src.river_forcing.cosine_ramp); a ramp shorter than an
+    hour keeps its end point. ramp_hr <= 0 is the end levels at 0 h.
+    """
+    from src.river_forcing import cosine_ramp
+
+    end_levels_m = np.asarray(end_levels_m, dtype=float)
+    hours = np.unique(
+        np.append(np.arange(0.0, max(ramp_hr, 0.0), 1.0), max(ramp_hr, 0.0))
+    )
+    weight = cosine_ramp(hours, 0.0, ramp_hr)
+    return hours, start_level_m + np.outer(weight, end_levels_m - start_level_m)
+
+
 def read_calm_sea_level_m(surge_ds: xr.Dataset) -> float:
     """Read surge_forcing.nc's calm_sea_level_m, rounded to 1 cm.
 

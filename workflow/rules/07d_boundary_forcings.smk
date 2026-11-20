@@ -65,7 +65,8 @@ rule get_boundary_forcings:
         eva = config["boundary_forcings"]["river"]["eva"],
         # Diagnostic only: the "visible_on_grid" plot column.
         sfincs_resolution_m        = lambda wildcards: grid_resolution_m(wildcards.basin_id),
-        glofas_search_radius_km    = config["boundary_forcings"]["river"]["glofas_search_radius_km"],
+        glofas_check_radius_km     = config["boundary_forcings"]["river"]["glofas_check_radius_km"],
+        glofas_check_ratio         = config["boundary_forcings"]["river"]["glofas_check_ratio"],
         glofas_min_mean_discharge_m3s = config["boundary_forcings"]["river"]["glofas_min_mean_discharge_m3s"],
         bias_correction            = config["boundary_forcings"]["river"]["bias_correction"],
         # Sets where the surge peak sits (room for a GloFAS event's rise); the

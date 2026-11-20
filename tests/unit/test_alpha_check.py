@@ -2,10 +2,14 @@
 
 import geopandas as gpd
 import numpy as np
-import pandas as pd
 import pytest
 from shapely.geometry import LineString
-from src.sfincs_run import level_reversal_m, river_cells_on_map, selected_alpha
+from src.sfincs_run import (
+    UNSTABLE_MAP_NAME,
+    level_reversal_m,
+    river_cells_on_map,
+    stop_failed_run,
+)
 
 
 def test_steady_rise_is_not_a_reversal():
@@ -32,16 +36,9 @@ def test_river_cells_follow_the_line_only():
     assert sorted(m.tolist()) == list(range(10))
 
 
-def test_selected_alpha_reads_the_stable_row(tmp_path):
-    path = tmp_path / "alpha_check.csv"
-    pd.DataFrame({"alpha": [0.5, 0.35], "selected": [False, True]}).to_csv(
-        path, index=False
-    )
-    assert selected_alpha(path) == 0.35
-
-
-def test_selected_alpha_fails_without_a_stable_row(tmp_path):
-    path = tmp_path / "alpha_check.csv"
-    pd.DataFrame({"alpha": [0.5], "selected": [False]}).to_csv(path, index=False)
-    with pytest.raises(ValueError):
-        selected_alpha(path)
+def test_failed_run_keeps_its_map_and_names_the_remedy(tmp_path):
+    (tmp_path / "sfincs_map.nc").write_bytes(b"map")
+    with pytest.raises(RuntimeError, match="UNSTABLE.*Map kept.*alpha_overrides"):
+        stop_failed_run(tmp_path, "UNSTABLE: swing.", "set sfincs.alpha_overrides")
+    assert not (tmp_path / "sfincs_map.nc").exists()
+    assert (tmp_path / UNSTABLE_MAP_NAME).read_bytes() == b"map"

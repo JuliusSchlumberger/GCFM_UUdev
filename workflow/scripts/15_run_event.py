@@ -6,9 +6,9 @@ spin-up end and rstfile = the restart of the spin-up with the scenario's
 slr_m; without, tstart = tref from the skeleton's initial levels (sea at the
 calm level, channels at the steady mean-flow level; river_only starts dry).
 
-Writes stability.csv: the river-network swing check of rule 11's alpha check
-(src.sfincs_run.river_network_stability) plus the spin-up's verdict; an
-unstable run is marked (warning, red banner on its figures), never stopped.
+Writes stability.csv: the river-network swing check
+(src.sfincs_run.river_network_stability). An unstable run stops the rule (map
+kept as sfincs_map.unstable.nc).
 Writes the inundation-ratio map (zsmax envelope, as rule sanity_checks) and,
 when the rule declares them (analysis), the flood animation and
 flood_timeseries.csv. flood_volume_m3 is the total volume at each output step
@@ -30,7 +30,6 @@ from src.plots import (
     animate_flood_progression,
     plot_inundation_check,
     plot_observation_levels,
-    stamp_unstable,
 )
 from src.postprocessing import (
     compute_flood_progression,
@@ -40,11 +39,12 @@ from src.postprocessing import (
     read_land_bed_level,
 )
 from src.sfincs_run import (
+    alpha_remedy,
+    check_forcing_smoothness,
     read_observation_levels,
-    spinup_flagged,
     river_network_stability,
     run_sfincs_subprocess,
-    stability_note,
+    stop_failed_run,
 )
 
 log = setup_logging(snakemake.log[0])
@@ -75,6 +75,7 @@ basin_id = snakemake.params.basin_id
 run = snakemake.params.run_label
 
 # ── run SFINCS ──
+check_forcing_smoothness(sfincs_root, snakemake.config["sfincs"]["forcing_checks"])
 # cwd = sfincs_root so the relative file references in sfincs.inp resolve.
 run_sfincs_subprocess(
     sfincs_exe,
@@ -94,25 +95,23 @@ log.info(
     f"Event map output written: {sfincs_map_path} ({sfincs_map_path.stat().st_size / 1e6:.1f} MB)"
 )
 
-# ── Check 0: hourly level swings on the river network; marks the run, never stops it ──
+# ── Check 0: hourly level swings on the river network; an unstable run stops ──
 stability = river_network_stability(
     sfincs_root, gpd.read_file(river_network_path), alpha_reversal_max_m
 )
-# An unstable spin-up taints every event that restarts from it.
-spinup_stability = getattr(snakemake.input, "spinup_stability", None)
-stability["spinup_unstable"] = (
-    spinup_flagged(spinup_stability) if spinup_stability else False
-)
-pd.DataFrame([stability]).to_csv(snakemake.output.stability, index=False)
 if stability["unstable"]:
-    log.warning(f"[Check 0] {stability_note(stability)}")
-else:
-    log.info(
-        f"[Check 0] Largest hourly level swing on the river network "
-        f"{stability['max_swing_m']:.2f} m (alpha {stability['alpha']:g}): stable"
+    stop_failed_run(
+        sfincs_root,
+        f"[Check 0] {run} UNSTABLE: hourly level swing {stability['max_swing_m']:.2f} m on "
+        f"the river network ({stability['cells_over']} cell(s), worst at x "
+        f"{stability['x']:.0f}, y {stability['y']:.0f}; alpha {stability['alpha']:g}).",
+        alpha_remedy(basin_id, stability["alpha"]),
     )
-if stability["spinup_unstable"]:
-    log.warning("[Check 0] the spin-up this run restarts from is unstable or not steady (its stability.csv)")
+pd.DataFrame([stability]).to_csv(snakemake.output.stability, index=False)
+log.info(
+    f"[Check 0] Largest hourly level swing on the river network "
+    f"{stability['max_swing_m']:.2f} m (alpha {stability['alpha']:g}): stable"
+)
 
 # ── Check 1: inundation ratio (envelope, zsmax), as in 13b_sanity_checks.py ──
 da_hmax, da_dep = compute_max_inundation(
@@ -150,8 +149,6 @@ if hasattr(snakemake.output, "plot_inundation_ratio"):
         run_label=run,
     )
     log.info(f"Inundation ratio plot written: {snakemake.output.plot_inundation_ratio}")
-    if stability_note(stability):
-        stamp_unstable(snakemake.output.plot_inundation_ratio, stability_note(stability))
 
 # ── water level at the observation points (analysis), river and sea panels ──
 if hasattr(snakemake.output, "plot_water_level"):
@@ -159,8 +156,6 @@ if hasattr(snakemake.output, "plot_water_level"):
     plot_observation_levels(
         t_hr, zs_obs, gpd.read_file(snakemake.input.obs_points), str(snakemake.output.plot_water_level)
     )
-    if stability_note(stability):
-        stamp_unstable(snakemake.output.plot_water_level, stability_note(stability))
 
 # ── flood progression (analysis): animation + per-timestep area/volume CSV ──
 if hasattr(snakemake.output, "animation_flood_progress"):

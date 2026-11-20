@@ -15,6 +15,7 @@ import sys
 import threading
 from collections.abc import Sequence
 from pathlib import Path
+from typing import NoReturn
 
 import geopandas as gpd
 import numpy as np
@@ -598,12 +599,6 @@ def read_stability(path: str | Path) -> dict:
     return row
 
 
-def spinup_flagged(spinup_stability_csv: str | Path) -> bool:
-    """Return whether a spin-up is unstable or did not settle (its stability.csv)."""
-    row = read_stability(spinup_stability_csv)
-    return row["unstable"] or not row.get("steady", True)
-
-
 def stability_metrics(path: str | Path) -> dict:
     """Return the flood_metrics.csv columns of a run's stability.csv.
 
@@ -633,12 +628,120 @@ def read_observation_levels(run_dir: str | Path) -> tuple[np.ndarray, np.ndarray
     return np.asarray(t_hr, dtype=float), zs.reshape(len(t_hr), -1)
 
 
-def selected_alpha(alpha_check_csv: str | Path) -> float:
-    """Return the alpha rule 11's calibration round kept (row with selected true)."""
-    df = pd.read_csv(alpha_check_csv)
-    row = df[df["selected"].astype(bool)]
-    if len(row) != 1:
-        raise ValueError(
-            f"{alpha_check_csv}: expected one selected alpha, found {len(row)}"
+UNSTABLE_MAP_NAME = "sfincs_map.unstable.nc"
+
+
+def stop_failed_run(run_dir: str | Path, problem: str, remedy: str) -> NoReturn:
+    """Keep the run's map as sfincs_map.unstable.nc and raise RuntimeError.
+
+    Snakemake deletes a failed job's declared outputs; the renamed map stays
+    for inspection.
+    """
+    run_dir = Path(run_dir)
+    map_path = run_dir / "sfincs_map.nc"
+    kept = run_dir / UNSTABLE_MAP_NAME
+    if map_path.exists():
+        os.replace(map_path, kept)
+    raise RuntimeError(f"{problem} Map kept as {kept}. {remedy}")
+
+
+def alpha_remedy(basin_id: str, alpha: float) -> str:
+    """Return the advice for an unstable run of a basin at alpha."""
+    return (
+        "Fix the cause at that location (river bed, network geometry, forcing); "
+        f"if it cannot be fixed, set sfincs.alpha_overrides: {{{basin_id}: <alpha "
+        f"below {alpha:g}>}} in config/config.yml."
+    )
+
+
+def _hourly_forcing(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    table = np.loadtxt(path, ndmin=2)
+    t_hr, values = table[:, 0] / 3600.0, table[:, 1:]
+    hours = np.arange(t_hr[0], t_hr[-1] + 1e-9, 1.0)
+    return hours, np.column_stack(
+        [np.interp(hours, t_hr, values[:, j]) for j in range(values.shape[1])]
+    )
+
+
+def discharge_kinks(
+    hours: np.ndarray, q: np.ndarray, kink_ratio_max: float
+) -> list[str]:
+    """Return a line per discharge point whose hourly slope changes too abruptly.
+
+    Kink ratio = largest hour-to-hour change of the slope over the largest hourly
+    change: 1 at a step or at the corner of a straight ramp, about 2 pi / T for a
+    smooth curve of time scale T hours (0.46 for a 6 h half-cosine ramp). Constant
+    series pass.
+    """
+    lines = []
+    if q.shape[0] < 3:
+        return lines
+    d1, d2 = np.abs(np.diff(q, axis=0)), np.abs(np.diff(q, n=2, axis=0))
+    for j in range(q.shape[1]):
+        if d1[:, j].max() <= 0.0:
+            continue
+        ratio = d2[:, j].max() / d1[:, j].max()
+        if ratio > kink_ratio_max:
+            k = int(np.argmax(d2[:, j]))
+            lines.append(
+                f"discharge point {j + 1}: kink ratio {ratio:.2f} > {kink_ratio_max:g} "
+                f"at {hours[k + 1]:g} h (q {q[k, j]:.1f} -> {q[k + 1, j]:.1f} -> {q[k + 2, j]:.1f} m3/s)"
+            )
+    return lines
+
+
+def water_level_jumps(
+    hours: np.ndarray, zs: np.ndarray, jump_ratio_max: float, jump_min_m: float
+) -> list[str]:
+    """Return a line per boundary point with an hourly step out of line with its neighbours.
+
+    A step larger than jump_min_m counts when it exceeds jump_ratio_max times
+    the larger of the steps before and after it. Tidal turns stay below 2;
+    a step from a flat sea is unbounded.
+    """
+    lines = []
+    if zs.shape[0] < 2:
+        return lines
+    d = np.diff(zs, axis=0)
+    pad = np.vstack([np.zeros((1, d.shape[1])), d, np.zeros((1, d.shape[1]))])
+    neighbour = np.maximum(np.abs(pad[:-2]), np.abs(pad[2:]))
+    big = np.abs(d) > jump_min_m
+    ratio = np.where(big, np.abs(d) / np.maximum(neighbour, 1e-12), 0.0)
+    for j in range(zs.shape[1]):
+        if ratio[:, j].max() > jump_ratio_max:
+            k = int(np.argmax(ratio[:, j]))
+            lines.append(
+                f"water-level point {j + 1}: step {d[k, j]:+.3f} m from {hours[k]:g} to "
+                f"{hours[k + 1]:g} h, {min(ratio[k, j], 1e6):.1f} x its neighbours "
+                f"(max {jump_ratio_max:g})"
+            )
+    return lines
+
+
+def check_forcing_smoothness(run_dir: str | Path, checks: dict) -> list[str]:
+    """Log a warning and return a line per discharge kink or water-level jump of a run.
+
+    Reads the disfile and bzsfile of the run's sfincs.inp, interpolated hourly as
+    SFINCS interpolates them. checks: sfincs.forcing_checks
+    (discharge_kink_ratio_max, water_level_jump_ratio_max, water_level_jump_min_m).
+    """
+    run_dir = Path(run_dir)
+    inp = parse_sfincs_inp(run_dir / "sfincs.inp")
+    problems = []
+    if "disfile" in inp:
+        hours, q = _hourly_forcing(run_dir / inp["disfile"])
+        problems += discharge_kinks(hours, q, float(checks["discharge_kink_ratio_max"]))
+    if "bzsfile" in inp:
+        hours, zs = _hourly_forcing(run_dir / inp["bzsfile"])
+        problems += water_level_jumps(
+            hours,
+            zs,
+            float(checks["water_level_jump_ratio_max"]),
+            float(checks["water_level_jump_min_m"]),
         )
-    return float(row["alpha"].iloc[0])
+    if problems:
+        logger.warning(
+            f"Forcing of {run_dir} is not smooth (hours after tref; "
+            "sfincs.forcing_checks):\n  " + "\n  ".join(problems)
+        )
+    return problems

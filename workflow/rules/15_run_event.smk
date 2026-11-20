@@ -16,8 +16,6 @@ rule run_event:
         land_bed_level       = results_path("{basin_id}/sfincs_skeleton/land_bed_level.nc"),
         domain_gpkg          = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_domain.gpkg"),
         clean_river_network  = results_path("{basin_id}/preprocessing_inputs/domain/{basin_id}_river_network_clean.gpkg"),
-        # The spin-up's swing check, carried into this run's stability.csv.
-        spinup_stability     = spinup_stability_input,
         # sfincs.obs order: kind and distance from the mouth of every series.
         obs_points           = results_path("{basin_id}/sfincs_skeleton/{basin_id}_obs_points.gpkg"),
     output:

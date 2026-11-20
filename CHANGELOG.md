@@ -3,6 +3,58 @@
 Newest changes first. See `docs/methods.md` for the current description of how
 the pipeline works; this file only describes *what changed and why*.
 
+# 2026-11-20: pocket cells beside the weir lowered to their crest (- JS)
+
+- **What changed:**
+  - After round 1, rule 11 marks every cell beside a weir edge that has some, but less than 3,000 m², of its area below crest + 0.02 to 0.5 m: a "pocket".
+  - It lowers the pocket's subgrid pixels above the crest to the crest (`src.protection_weir.cap_pocket_cells`, new config block `river_depth_modelling.pocket_cap`).
+  - The lowered pixels are a new rule-11 output, `{basin}_pocket_cap_subgrid.tif`, the first subgrid elevation source of a production table in `depth_crest_calibration/production/`.
+  - Round 2 runs on that table, and rule 12a now copies it instead of round 1's (or builds it from the same sources when its mask differs). This is the one place the cap is made.
+- **Why:** SFINCS sets the weir discharge from the previous step's levels without relaxation. On the Ebro, cells on the gorge sides with only a few subgrid pixels at river level (165-600 m² wet) swung 0.3-0.85 m from one step to the next once overtopped. That happened at alpha 0.25 too. At alpha 0.5 it spread into the river and the probe blew up (6 m swings). A smaller alpha only delays it to a deeper overtopping. Diagnosis: `D:/GCFM_UU/scratch_plan/b42_probe/ebro_weir_instability.md`.
+- **Effect on the Ebro 6 h probe** (rule 11 round-1 restart with production crests, 3,247 → 3,739 m³/s; 565 pocket cells):
+
+  | | alpha 0.5, capped | alpha 0.25, uncapped |
+  |---|---|---|
+  | largest hourly swing | 0.01 m | 0.64 m |
+  | cells oscillating | 0 | 11 |
+  | time step | 4.74 s | 2.37 s |
+
+  - With a 2,000 m² threshold (462 cells), one cell with 2,200 m² wet still oscillated by 8 cm.
+  - Peak levels are within 1 cm in 90 % of cells; 217 cells change by more than 0.1 m.
+  - The overtopping front across the delta floodplain arrives about 9 min later, because the capped pockets hold about 0.4 Mm³ more water. Wet area at 6 h is −0.3 %.
+- Pipeline results move only after rule 11 is rerun; that rerun is needed for every basin, since rule 11 has a new output. DAG job counts unchanged.
+
+# 2026-11-20: schematic of the SFINCS run lengths (- JS)
+
+- New `analysis/run_lengths.py` draws how each run gets its length:
+  - rule 11's calibration: `ramp_hr` + max(T_walled, `settle_factor` x t_settle) + `calibration_margin_hr`;
+  - rule 13a's spin-up: chunks of `chunk_hr` until the steady check passes;
+  - rule 14's event run: `src.sfincs_run.event_timeline`, with the surge and river parts offset by the compound lag.
+- Fixed lengths are read from `config.yml`. The per-basin travel, settle and event-shape times are illustrative, because the results on this machine predate the spin-up `stability.csv` and the event-timing outputs.
+- Writes `<results_dir>/figures/analysis/run_lengths_schematic.png/.pdf/.txt`. No pipeline output changes.
+
+# 2026-11-19: forcing smoothness checked before every SFINCS run (- JS)
+
+- **What changed:** new `src.sfincs_run.check_forcing_smoothness`, called by rules 11, 13a and 15 before SFINCS starts. It reads the run's `disfile` and `bzsfile`, interpolates them hourly as SFINCS does, and logs a warning on a discharge kink (largest hour-to-hour slope change over the largest hourly change above `sfincs.forcing_checks.discharge_kink_ratio_max`, 0.6) or a water-level jump (an hourly step above `water_level_jump_min_m`, 0.05 m, larger than `water_level_jump_ratio_max`, 3, times both neighbouring steps). Water levels are checked for jumps only: GTSM tides turn sharply at low water (kink ratios up to 1). The thresholds are read from config, not rule params, so changing them reruns nothing.
+- **Why:** the forcing generators were tested on synthetic input only; this checks what each run actually reads.
+- **Effect:** none on results. All 9 existing runs of 2433835 and 3279946 (calibration, spin-ups, coast and river events) pass: discharge kink ratios up to 0.46 (calibration ramp), water-level jump ratios up to 1.83 (Chao Phraya tide). A discharge step or the corner of a straight ramp gives 1.0; a 0.3 m sea-level step on the Ebro's tide about 15.
+
+# 2026-11-18: one alpha per basin; unstable runs stop (- JS)
+
+- **What changed:** `sfincs.alpha` is one value (0.5); `sfincs.alpha_overrides` sets a basin's alpha where the cause of an instability cannot be fixed (3279946: 0.25). Rule 11 runs round 1 once at that alpha instead of trying 0.5, 0.35, 0.25 in turn; rule 12a takes the same value from config instead of rule 11's `alpha_check.csv`, which is no longer written. An unstable run now stops its rule: rule 11's round 1, the spin-up (rule 13a, which also stops when not steady after `max_days`), every event run and every adaptation `pre` run (rule 15). The error names the swing, the worst cell and the remedy; the map is kept as `sfincs_map.unstable.nc`. Before, the run was marked (warning, `unstable` columns, red banner) and the pipeline went on.
+- **Why:** results from an unstable run should not reach the flood metrics; a per-basin alpha is the explicit, last-resort fix.
+- **Effect:** none on runs that were stable. 3279946 keeps 0.25 (as rule 11 chose). 2433835 runs at 0.5 instead of 0.25, to find what makes it unstable there (river_100 event: inflow level swinging 5-9 m per hour) rather than pay for the smaller time step; it will stop until that is fixed. The six other deltas run at 0.5 and stop if unstable there. DAG job counts unchanged (preprocess 15, build 22).
+
+# 2026-11-18: spin-up sea ramp half-cosine (- JS)
+
+- **Spin-up sea ramp (TODO X61):** rule 13a ramps the sea boundary from the starting level to each station's calm level over `boundary_ramp_hr` (6 h) as a half-cosine sampled hourly (`src.surge.sea_ramp`, using `src.river_forcing.cosine_ramp`), like the calibration and event ramps; before, a straight line between two points. Start and end levels are unchanged, so the spin-up's steady state is too; only the first 6 h differ. Spin-up and every run restarted from it rerun.
+
+# 2026-11-18: river inflow from the GloFAS cell containing the crossing (- JS)
+
+- **What changed:** rule 07d takes the GloFAS cell containing each inflow crossing's point (`src.river_forcing.containing_glofas_cell`) instead of the highest-mean cell within 5 km. A containing cell with mean discharge below `glofas_min_mean_discharge_m3s` (10) leaves the crossing without GloFAS forcing, as before. A check logs a warning when a cell within `glofas_check_radius_km` (10) carries at least `glofas_check_ratio` (1.5) times that mean. Two crossings in the same cell stop the rule; before, the second reused the first's fit and the discharge entered twice. Config: `glofas_search_radius_km` replaced by `glofas_check_radius_km` and `glofas_check_ratio`.
+- **Why:** the search could take a larger river within 5 km instead of the crossing's own; a shared cell double-counts inflow (TODO B25).
+- **Effect** (12 inflow crossings, 8 deltas): 3 move to a neighbouring cell on the same river, with mean discharge changing by at most 0.1 % (1248635 reach 23261000201: 2349.5 -> 2348.6 m³/s; 2444235: 114.6 -> 114.3; 3279946 reach 44306200155: 123.6 -> 123.5); their return-period fits are redone on the new cell's series. 9 keep their cell. No check warning (largest neighbour within 10 km at most 1.02 times the own cell's mean), no shared cell. Rule 07d and everything downstream rerun for every basin.
+
 # 2026-11-18: bifurcation junction moved to the arms' last intersection; B37 and B43 widths (- JS)
 
 - **What changed:** new `src.river_network.trim_overlapping_bifurcation_arms`, run by rule 08 after `fix_tjunction_tails`. Where two downstream arms intersect other than at the parent's end (and other than where both end, a loop closing), the intersection farthest from the junction becomes the parent's new end. The parent is extended to it along the widest arm through it; those arms are cut to start there, and any other arm starts there too, joining its own line at the point nearest to it, so every arm leaves from one point. `reach_length` and the SWORD distance fields follow their reporting end (v17c variable reference): arms change `reach_length`, `dist_out`, `hydro_dist_out`, `dist_out_dijkstra` and `pathlen_out` by their change in length, and gain the extension in `hydro_dist_hw`; `pathlen_hw` (downstream end) follows both the parent's extension and the arm's own change.
